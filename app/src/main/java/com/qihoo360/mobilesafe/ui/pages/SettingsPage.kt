@@ -1,4 +1,4 @@
-// Copyright 2026, KernelEX contributors
+// Copyright 2026, shso contributors
 // SPDX-License-Identifier: Apache-2.0
 
 package com.qihoo360.mobilesafe.ui.pages
@@ -8,7 +8,12 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -29,9 +34,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,7 +57,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import android.os.PowerManager
 import com.qihoo360.mobilesafe.R
 import com.qihoo360.mobilesafe.data.AppSettings
+import com.qihoo360.mobilesafe.data.PermissionChecker
+import com.qihoo360.mobilesafe.data.RootService
 import com.qihoo360.mobilesafe.ui.components.ColorWheelDialog
+import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
@@ -98,21 +108,91 @@ fun createShrunkTextStyles(deltaSp: Float): TextStyles {
     )
 }
 
+/**
+ * 权限条目右侧的实时状态标签：已获得=绿色、未获得=红色/警示、检查中=次要色。
+ */
+@Composable
+private fun PermissionStatusLabel(granted: Boolean?) {
+    val (label, color) = when (granted) {
+        true -> "已获得" to Color(0xFF00E676)
+        false -> "未获得" to Color(0xFFFF5252)
+        null -> "检查中" to MiuixTheme.colorScheme.onSurfaceVariantActions
+    }
+    Text(
+        text = label,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.SemiBold,
+        color = color
+    )
+}
+
 @Composable
 fun SettingsPage(
     appSettings: AppSettings
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
     val powerManager = remember(context) { context.getSystemService(Context.POWER_SERVICE) as? PowerManager }
     var isIgnoringBattery by remember {
         mutableStateOf(powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true)
+    }
+
+    // ===== 权限分组状态（首次进入即同步初查，前台返回时统一刷新） =====
+    var permissionStorageGranted by remember {
+        mutableStateOf(PermissionChecker.isStorageGranted(context))
+    }
+    var permissionBatteryGranted by remember {
+        mutableStateOf(PermissionChecker.isIgnoringBatteryOptimizations(context))
+    }
+    var permissionBackgroundStartGranted by remember {
+        mutableStateOf(PermissionChecker.canStartBackgroundActivities(context))
+    }
+    var permissionRootGranted by remember {
+        mutableStateOf<Boolean?>(RootService.isRootGranted)
+    }
+
+    fun refreshPermissionStates() {
+        permissionStorageGranted = PermissionChecker.isStorageGranted(context)
+        permissionBatteryGranted = PermissionChecker.isIgnoringBatteryOptimizations(context)
+        permissionBackgroundStartGranted = PermissionChecker.canStartBackgroundActivities(context)
+        // su 探测为 IO 阻塞任务（带超时），放到协程中执行，避免卡 UI
+        scope.launch {
+            permissionRootGranted = PermissionChecker.hasRootAccess()
+        }
+    }
+
+    // 未获得「访问存储空间」(Android 6-10) 时逐个请求剩余运行时权限
+    var legacyPermissionQueue by remember { mutableStateOf<List<String>>(emptyList()) }
+    var permissionLauncherRef by remember { mutableStateOf<ActivityResultLauncher<String>?>(null) }
+
+    fun requestNextLegacyPermission() {
+        val next = legacyPermissionQueue.firstOrNull()
+        legacyPermissionQueue = legacyPermissionQueue.drop(1)
+        val launcher = permissionLauncherRef ?: return
+        if (next != null) {
+            launcher.launch(next)
+        }
+    }
+
+    val requestPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        if (legacyPermissionQueue.isNotEmpty()) {
+            requestNextLegacyPermission()
+        } else {
+            refreshPermissionStates()
+        }
+    }
+    LaunchedEffect(Unit) {
+        permissionLauncherRef = requestPermissionLauncher
     }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 isIgnoringBattery = powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
+                refreshPermissionStates()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -202,6 +282,108 @@ fun SettingsPage(
                 horizontalAlignment = Alignment.Start
             ) {
                 SmallTitle(
+                    text = "权限",
+                    insideMargin = PaddingValues(start = 0.dp, top = 8.dp, bottom = 4.dp)
+                )
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                ) {
+                    ArrowPreference(
+                        title = "访问存储空间",
+                        summary = "读取外部存储中的 .sh / .so 执行文件（Android 11+ 为“所有文件访问”）",
+                        endActions = {
+                            PermissionStatusLabel(granted = permissionStorageGranted)
+                        },
+                        onClick = {
+                            if (permissionStorageGranted) {
+                                Toast.makeText(context, "访问存储空间权限已获得", Toast.LENGTH_SHORT).show()
+                            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                try {
+                                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                        data = Uri.parse("package:${context.packageName}")
+                                    }
+                                    context.startActivity(intent)
+                                } catch (_: Exception) {
+                                    try {
+                                        context.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                                    } catch (_: Exception) {
+                                        Toast.makeText(context, "无法打开系统设置页面", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            } else {
+                                legacyPermissionQueue = PermissionChecker.missingLegacyStoragePermissions(context)
+                                requestNextLegacyPermission()
+                            }
+                        }
+                    )
+
+                    ArrowPreference(
+                        title = "省电策略 / 耗电保护",
+                        summary = "允许忽略电池优化，防止长时间后台执行任务时被系统休眠查杀",
+                        endActions = {
+                            PermissionStatusLabel(granted = permissionBatteryGranted)
+                        },
+                        onClick = {
+                            if (permissionBatteryGranted) {
+                                Toast.makeText(context, "已获得省电策略豁免（忽略电池优化）", Toast.LENGTH_SHORT).show()
+                            } else {
+                                try {
+                                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                        data = Uri.parse("package:${context.packageName}")
+                                    }
+                                    context.startActivity(intent)
+                                } catch (_: Exception) {
+                                    try {
+                                        context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                    } catch (_: Exception) {
+                                        Toast.makeText(context, "无法打开电池优化设置页面", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        }
+                    )
+
+                    ArrowPreference(
+                        title = "后台弹出页面",
+                        summary = "允许本应用在后台弹出界面（若系统 ROM 支持该开关）",
+                        endActions = {
+                            PermissionStatusLabel(granted = permissionBackgroundStartGranted)
+                        },
+                        onClick = {
+                            if (permissionBackgroundStartGranted) {
+                                Toast.makeText(context, "已允许后台弹出页面", Toast.LENGTH_SHORT).show()
+                            } else {
+                                try {
+                                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                        data = Uri.parse("package:${context.packageName}")
+                                    }
+                                    context.startActivity(intent)
+                                } catch (_: Exception) {
+                                    Toast.makeText(context, "无法打开应用详情设置页面", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    )
+
+                    ArrowPreference(
+                        title = "ROOT 权限",
+                        summary = "真实执行 su 校验；需在 Magisk / KernelSU 授权管理中放行本应用",
+                        endActions = {
+                            PermissionStatusLabel(granted = permissionRootGranted)
+                        },
+                        onClick = {
+                            if (permissionRootGranted == true) {
+                                Toast.makeText(context, "ROOT 权限已获得", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "未检测到 ROOT，请在 Magisk / KernelSU 中为本应用授权后返回自动刷新", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    )
+                }
+
+                SmallTitle(
                     text = "文件",
                     insideMargin = PaddingValues(start = 0.dp, top = 8.dp, bottom = 4.dp)
                 )
@@ -212,21 +394,21 @@ fun SettingsPage(
                 ) {
                     SwitchPreference(
                         title = "使用独立文件夹存储",
-                        summary = "在添加到KernelEX时新建独立文件夹进行存储",
+                        summary = "在添加到shso时新建独立文件夹进行存储",
                         checked = appSettings.useIndependentFolder,
                         onCheckedChange = { appSettings.setIndependentFolder(it) }
                     )
 
                     SwitchPreference(
                         title = "添加后自动删除文件",
-                        summary = "将文件复制到KernelEX后自动清理源文件",
+                        summary = "将文件复制到shso后自动清理源文件",
                         checked = appSettings.autoDeleteAfterAdding,
                         onCheckedChange = { appSettings.setAutoDelete(it) }
                     )
 
                     SwitchPreference(
                         title = "添加后自动执行文件",
-                        summary = "添加到KernelEX后自动跳转终端并开始执行",
+                        summary = "添加到shso后自动跳转终端并开始执行",
                         checked = appSettings.autoExecuteAfterAdding,
                         onCheckedChange = { appSettings.setAutoExecute(it) }
                     )
@@ -287,10 +469,10 @@ fun SettingsPage(
                     )
 
                     SwitchPreference(
-                        title = "KernelEX 终端提示",
+                        title = "shso 终端提示",
                         summary = "控制是否在终端显示任务启动、路径及退出状态信息",
-                        checked = appSettings.showKernelEXBanner,
-                        onCheckedChange = { appSettings.setKernelEXBanner(it) }
+                        checked = appSettings.showShsoBanner,
+                        onCheckedChange = { appSettings.setShsoBanner(it) }
                     )
 
                     ArrowPreference(
@@ -340,8 +522,8 @@ fun SettingsPage(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Image(
-                                painter = painterResource(id = R.drawable.ic_kernelex),
-                                contentDescription = "KernelEX 图标",
+                                painter = painterResource(id = R.drawable.ic_shso),
+                                contentDescription = "shso 图标",
                                 modifier = Modifier
                                     .size(60.dp)
                                     .clip(CircleShape)
@@ -353,7 +535,7 @@ fun SettingsPage(
                                 horizontalAlignment = Alignment.Start
                             ) {
                                 Text(
-                                    text = "KernelEX",
+                                    text = "shso",
                                     style = MiuixTheme.textStyles.title2,
                                     fontWeight = FontWeight.Bold,
                                     color = MiuixTheme.colorScheme.onSurface,
@@ -361,7 +543,7 @@ fun SettingsPage(
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = "v9.0.2 (KernelEX)",
+                                    text = "v9.0.2 (shso)",
                                     style = MiuixTheme.textStyles.footnote1,
                                     color = MiuixTheme.colorScheme.onSurfaceSecondary,
                                     textAlign = TextAlign.Start

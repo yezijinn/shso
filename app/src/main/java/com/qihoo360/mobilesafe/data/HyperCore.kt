@@ -1,4 +1,4 @@
-// Copyright 2026, KernelEX contributors
+// Copyright 2026, shso contributors
 // SPDX-License-Identifier: Apache-2.0
 
 package com.qihoo360.mobilesafe.data
@@ -50,9 +50,9 @@ object HyperCore {
         if (!showHyperCore) {
             sb.append("========================================\n")
         }
-        sb.append("[KernelEX Engine] 启动任务: $fileName\n")
-        sb.append("[KernelEX Engine] 路径: $filePath\n")
-        sb.append("[KernelEX Engine] 工作目录: $parentDir\n")
+        sb.append("[shso Engine] 启动任务: $fileName\n")
+        sb.append("[shso Engine] 路径: $filePath\n")
+        sb.append("[shso Engine] 工作目录: $parentDir\n")
         sb.append("========================================\n")
         return sb.toString()
     }

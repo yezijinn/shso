@@ -1,4 +1,4 @@
-// Copyright 2026, KernelEX contributors
+// Copyright 2026, shso contributors
 // SPDX-License-Identifier: Apache-2.0
 
 package com.qihoo360.mobilesafe.ui.pages
@@ -73,30 +73,30 @@ fun HomePage(
     var showFilePicker by remember { mutableStateOf(false) }
     var validationError by remember { mutableStateOf<String?>(null) }
 
-    var currentKernelEXDir by remember { mutableStateOf(RootFileManager.DEFAULT_KERNEL_EX_DIR) }
-    var kernelEXFiles by remember { mutableStateOf<List<FileItem>>(emptyList()) }
-    var isScanningKernelEX by remember { mutableStateOf(false) }
+    var currentShsoDir by remember { mutableStateOf(RootFileManager.DEFAULT_SHSO_DIR) }
+    var shsoFiles by remember { mutableStateOf<List<FileItem>>(emptyList()) }
+    var isScanningShso by remember { mutableStateOf(false) }
 
-    fun refreshKernelEXFiles(targetDir: String = currentKernelEXDir) {
-        isScanningKernelEX = true
-        currentKernelEXDir = targetDir
+    fun refreshShsoFiles(targetDir: String = currentShsoDir) {
+        isScanningShso = true
+        currentShsoDir = targetDir
         coroutineScope.launch {
             try {
-                RootFileManager.ensureKernelEXDir()
+                RootFileManager.ensureShsoDir()
                 val files = RootFileManager.listFiles(targetDir)
-                kernelEXFiles = files.sortedWith(
+                shsoFiles = files.sortedWith(
                     compareByDescending<FileItem> { it.isDirectory }.thenBy { it.name.lowercase() }
                 )
             } catch (_: Exception) {
-                kernelEXFiles = emptyList()
+                shsoFiles = emptyList()
             } finally {
-                isScanningKernelEX = false
+                isScanningShso = false
             }
         }
     }
 
     LaunchedEffect(Unit) {
-        refreshKernelEXFiles(RootFileManager.DEFAULT_KERNEL_EX_DIR)
+        refreshShsoFiles(RootFileManager.DEFAULT_SHSO_DIR)
     }
 
     var elapsedSeconds by remember { mutableLongStateOf(0L) }
@@ -122,7 +122,7 @@ fun HomePage(
         val isSo = trimmed.endsWith(".so", ignoreCase = true)
 
         if (!isSh && !isSo) {
-            validationError = "格式不支持！KernelEX 仅允许执行 .sh 脚本和 .so 二进制程序"
+            validationError = "格式不支持！shso 仅允许执行 .sh 脚本和 .so 二进制程序"
             return
         }
 
@@ -142,7 +142,7 @@ fun HomePage(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "KernelEX",
+                    text = "shso",
                     fontSize = 24.sp,
                     fontWeight = FontWeight.Bold,
                     color = MiuixTheme.colorScheme.onSurface
@@ -281,7 +281,7 @@ fun HomePage(
                         text = "支持输入文件路径或选择文件进行执行，目前仅支持 .sh 和 .so 文件",
                         style = MiuixTheme.textStyles.footnote2,
                         color = MiuixTheme.colorScheme.onSurfaceSecondary,
-                        fontSize = (MiuixTheme.textStyles.footnote2.fontSize.value - 5f).sp
+                        fontSize = (MiuixTheme.textStyles.footnote2.fontSize.value - 1f).sp
                     )
 
                     Button(
@@ -309,15 +309,15 @@ fun HomePage(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     SmallTitle(
-                        text = "KernelEX 目录文件",
+                        text = "shso 目录文件",
                         insideMargin = PaddingValues(start = 0.dp, top = 8.dp, bottom = 2.dp)
                     )
                     BoxWithConstraints(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
                         val approxChars = (maxWidth.value / 7.2f).toInt().coerceAtLeast(16)
-                        val displayPath = if (currentKernelEXDir.length > approxChars) {
-                            "..." + currentKernelEXDir.takeLast(approxChars - 3)
+                        val displayPath = if (currentShsoDir.length > approxChars) {
+                            "..." + currentShsoDir.takeLast(approxChars - 3)
                         } else {
-                            currentKernelEXDir
+                            currentShsoDir
                         }
                         Text(
                             text = displayPath,
@@ -330,11 +330,11 @@ fun HomePage(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (currentKernelEXDir != RootFileManager.DEFAULT_KERNEL_EX_DIR) {
+                    if (currentShsoDir != RootFileManager.DEFAULT_SHSO_DIR) {
                         IconButton(
                             onClick = {
-                                val parent = File(currentKernelEXDir).parent ?: RootFileManager.DEFAULT_KERNEL_EX_DIR
-                                refreshKernelEXFiles(parent)
+                                val parent = File(currentShsoDir).parent ?: RootFileManager.DEFAULT_SHSO_DIR
+                                refreshShsoFiles(parent)
                             },
                             modifier = Modifier.size(32.dp)
                         ) {
@@ -349,7 +349,7 @@ fun HomePage(
                     }
 
                     IconButton(
-                        onClick = { refreshKernelEXFiles() },
+                        onClick = { refreshShsoFiles() },
                         modifier = Modifier.size(32.dp)
                     ) {
                         Icon(
@@ -367,7 +367,7 @@ fun HomePage(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
             ) {
-                if (kernelEXFiles.isEmpty()) {
+                if (shsoFiles.isEmpty()) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -382,7 +382,7 @@ fun HomePage(
                             color = MiuixTheme.colorScheme.onSurfaceSecondary
                         )
                         Text(
-                            text = "可在「文件」页面长按任意文件选择「添加到KernelEX」",
+                            text = "可在「文件」页面长按任意文件选择「添加到shso」",
                             style = MiuixTheme.textStyles.footnote2,
                             color = MiuixTheme.colorScheme.onSurfaceSecondary.copy(0.7f)
                         )
@@ -393,7 +393,7 @@ fun HomePage(
                             .fillMaxWidth()
                             .padding(vertical = 4.dp)
                     ) {
-                        kernelEXFiles.forEachIndexed { index, fileItem ->
+                        shsoFiles.forEachIndexed { index, fileItem ->
                             val isSelected = filePathInput == fileItem.path
                             val isExecutable = fileItem.isExecutableScript || fileItem.isExecutableBinary
 
@@ -402,7 +402,7 @@ fun HomePage(
                                     .fillMaxWidth()
                                     .clickable {
                                         if (fileItem.isDirectory) {
-                                            refreshKernelEXFiles(fileItem.path)
+                                            refreshShsoFiles(fileItem.path)
                                         } else {
                                             filePathInput = fileItem.path
                                             validationError = null
@@ -487,7 +487,7 @@ fun HomePage(
                                 }
                             }
 
-                            if (index < kernelEXFiles.size - 1) {
+                            if (index < shsoFiles.size - 1) {
                                 HorizontalDivider(
                                     modifier = Modifier.padding(horizontal = 16.dp)
                                 )

@@ -1,4 +1,4 @@
-// Copyright 2026, KernelEX contributors
+// Copyright 2026, shso contributors
 // SPDX-License-Identifier: Apache-2.0
 
 package com.qihoo360.mobilesafe.ui.pages
@@ -156,7 +156,7 @@ fun PermissionGatePage(
                     horizontalAlignment = Alignment.Start
                 ) {
                     Text(
-                        text = "欢迎使用 KernelEX",
+                        text = "欢迎使用 shso",
                         style = MiuixTheme.textStyles.title2,
                         fontWeight = FontWeight.Bold,
                         color = MiuixTheme.colorScheme.onSurface,
@@ -165,7 +165,7 @@ fun PermissionGatePage(
                     )
 
                     Text(
-                        text = "KernelEX 是一款专为 ROOT 环境设计的高级执行工具。为了正常执行脚本、管理 /data/adb 文件并提供终端输出，需要授予以下运行权限。其中 ROOT 权限为可选项：未获取 ROOT 时仍可正常进入并使用软件，仅脚本执行等 ROOT 功能不可用。授权后页面将自动感知进入。",
+                        text = "shso 是一款专为 ROOT 环境设计的高级执行工具。为了正常执行脚本、管理 /data/adb 文件并提供终端输出，需要授予以下运行权限。其中 ROOT 权限为可选项：未获取 ROOT 时仍可正常进入并使用软件，仅脚本执行等 ROOT 功能不可用。授权后页面将自动感知进入。",
                         style = MiuixTheme.textStyles.body2,
                         color = MiuixTheme.colorScheme.onSurfaceSecondary,
                         lineHeight = 20.sp,

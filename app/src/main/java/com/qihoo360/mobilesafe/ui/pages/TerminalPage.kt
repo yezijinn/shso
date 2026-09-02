@@ -1,4 +1,4 @@
-// Copyright 2026, KernelEX contributors
+// Copyright 2026, shso contributors
 // SPDX-License-Identifier: Apache-2.0
 
 package com.qihoo360.mobilesafe.ui.pages

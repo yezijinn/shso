@@ -1,4 +1,4 @@
-// Copyright 2026, KernelEX contributors
+// Copyright 2026, shso contributors
 // SPDX-License-Identifier: Apache-2.0
 
 package com.qihoo360.mobilesafe.data
@@ -10,10 +10,10 @@ import java.util.Locale
 
 object RootFileManager {
 
-    const val DEFAULT_KERNEL_EX_DIR = "/data/adb/KernelEX"
+    const val DEFAULT_SHSO_DIR = "/data/adb/shso"
 
-    suspend fun ensureKernelEXDir(): Boolean = withContext(Dispatchers.IO) {
-        val cmd = "mkdir -p '$DEFAULT_KERNEL_EX_DIR' && chmod 777 '$DEFAULT_KERNEL_EX_DIR'"
+    suspend fun ensureShsoDir(): Boolean = withContext(Dispatchers.IO) {
+        val cmd = "mkdir -p '$DEFAULT_SHSO_DIR' && chmod 777 '$DEFAULT_SHSO_DIR'"
         val (code, _) = RootService.runCommandSync(cmd)
         code == 0
     }
@@ -87,12 +87,12 @@ object RootFileManager {
             )
     }
 
-    suspend fun addFileToKernelEX(
+    suspend fun addFileToShso(
         sourcePath: String,
         useIndependentFolder: Boolean,
         autoDeleteSource: Boolean
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
-        ensureKernelEXDir()
+        ensureShsoDir()
 
         val sourceFile = File(sourcePath)
         val sourceName = sourceFile.name
@@ -100,9 +100,9 @@ object RootFileManager {
 
         val targetDir = if (useIndependentFolder) {
             val timestamp = (System.currentTimeMillis() % 100000).toString()
-            "$DEFAULT_KERNEL_EX_DIR/${nameWithoutExt}_$timestamp"
+            "$DEFAULT_SHSO_DIR/${nameWithoutExt}_$timestamp"
         } else {
-            DEFAULT_KERNEL_EX_DIR
+            DEFAULT_SHSO_DIR
         }
 
         val escapedTargetDir = targetDir.replace("'", "'\\''")

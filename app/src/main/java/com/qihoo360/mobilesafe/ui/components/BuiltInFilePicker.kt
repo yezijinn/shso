@@ -1,4 +1,4 @@
-// Copyright 2026, KernelEX contributors
+// Copyright 2026, shso contributors
 // SPDX-License-Identifier: Apache-2.0
 
 package com.qihoo360.mobilesafe.ui.components
@@ -82,7 +82,7 @@ fun BuiltInFilePicker(
     }
 
     LaunchedEffect(Unit) {
-        RootFileManager.ensureKernelEXDir()
+        RootFileManager.ensureShsoDir()
         loadDirectory(initialDirectory)
     }
 
@@ -163,15 +163,15 @@ fun BuiltInFilePicker(
                     }
 
                     Button(
-                        onClick = { loadDirectory(RootFileManager.DEFAULT_KERNEL_EX_DIR) },
+                        onClick = { loadDirectory(RootFileManager.DEFAULT_SHSO_DIR) },
                         colors = ButtonDefaults.buttonColors(
-                            color = if (currentDir == RootFileManager.DEFAULT_KERNEL_EX_DIR) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surface,
-                            contentColor = if (currentDir == RootFileManager.DEFAULT_KERNEL_EX_DIR) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
+                            color = if (currentDir == RootFileManager.DEFAULT_SHSO_DIR) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surface,
+                            contentColor = if (currentDir == RootFileManager.DEFAULT_SHSO_DIR) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
                         ),
                         insideMargin = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 2.dp),
                         modifier = Modifier.weight(1.2f)
                     ) {
-                        Text("KernelEX", fontSize = 11.sp)
+                        Text("shso", fontSize = 11.sp)
                     }
                 }
             }

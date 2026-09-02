@@ -1,4 +1,4 @@
-// Copyright 2026, KernelEX contributors
+// Copyright 2026, shso contributors
 // SPDX-License-Identifier: Apache-2.0
 
 package com.qihoo360.mobilesafe.ui.pages
@@ -99,8 +99,8 @@ fun SplashPage(
             verticalArrangement = Arrangement.Center
         ) {
             Image(
-                painter = painterResource(id = R.drawable.ic_kernelex),
-                contentDescription = "KernelEX 图标",
+                painter = painterResource(id = R.drawable.ic_shso),
+                contentDescription = "shso 图标",
                 modifier = Modifier
                     .size(96.dp)
                     .clip(CircleShape)
@@ -109,7 +109,7 @@ fun SplashPage(
             Spacer(modifier = Modifier.height(20.dp))
 
             Text(
-                text = "KernelEX",
+                text = "shso",
                 style = MiuixTheme.textStyles.title1,
                 fontWeight = FontWeight.Bold,
                 color = MiuixTheme.colorScheme.onSurface
@@ -138,7 +138,7 @@ fun SplashPage(
                 .padding(bottom = 24.dp)
         ) {
             Text(
-                text = "KernelEX v9.0.2",
+                text = "shso v9.0.2",
                 style = MiuixTheme.textStyles.footnote2,
                 color = MiuixTheme.colorScheme.onSurfaceSecondary.copy(alpha = 0.5f)
             )

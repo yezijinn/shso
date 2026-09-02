@@ -1,4 +1,4 @@
-// Copyright 2026, KernelEX contributors
+// Copyright 2026, shso contributors
 // SPDX-License-Identifier: Apache-2.0
 
 package com.qihoo360.mobilesafe.data
@@ -122,7 +122,7 @@ object RootService {
 
         val file = File(filePath)
         val fileName = file.name
-        val parentDir = file.parent ?: "/data/adb/KernelEX"
+        val parentDir = file.parent ?: "/data/adb/shso"
         val isSh = fileName.endsWith(".sh", ignoreCase = true)
         val isSo = fileName.endsWith(".so", ignoreCase = true)
 
@@ -135,7 +135,7 @@ object RootService {
 
         HyperCore.clearBatchQueue()
         val showHyperCore = appSettings?.showHyperCoreBanner ?: true
-        val showKernelEX = appSettings?.showKernelEXBanner ?: true
+        val showShso = appSettings?.showShsoBanner ?: true
 
         outputLog = if (showHyperCore) HyperCore.generateEngineBanner("工作中") else ""
         isTaskRunning = true
@@ -144,7 +144,7 @@ object RootService {
         taskStartTime = System.currentTimeMillis()
         lastExitCode = null
 
-        if (showKernelEX) {
+        if (showShso) {
             appendOutputDirect(HyperCore.generateTaskHeader(fileName, filePath, parentDir, showHyperCore))
         }
 
@@ -191,15 +191,15 @@ object RootService {
                 HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
                 withContext(Dispatchers.Main) {
                     lastExitCode = exitCode
-                    if (appSettings?.showKernelEXBanner != false) {
-                        appendOutputDirect("\n[KernelEX Engine] 任务已退出，退出码: $exitCode\n")
+                    if (appSettings?.showShsoBanner != false) {
+                        appendOutputDirect("\n[shso Engine] 任务已退出，退出码: $exitCode\n")
                     }
                 }
             } catch (e: Exception) {
                 HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
                 withContext(Dispatchers.Main) {
-                    if (appSettings?.showKernelEXBanner != false) {
-                        appendOutputDirect("\n[KernelEX Engine] 异常终止: ${e.message}\n")
+                    if (appSettings?.showShsoBanner != false) {
+                        appendOutputDirect("\n[shso Engine] 异常终止: ${e.message}\n")
                     }
                     lastExitCode = -1
                 }
@@ -270,8 +270,8 @@ object RootService {
                 executionJob?.cancel()
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    if (appSettings?.showKernelEXBanner != false) {
-                        appendOutputDirect("\n[KernelEX Engine] 结束进程失败: ${e.message}\n")
+                    if (appSettings?.showShsoBanner != false) {
+                        appendOutputDirect("\n[shso Engine] 结束进程失败: ${e.message}\n")
                     }
                 }
             } finally {
@@ -282,8 +282,8 @@ object RootService {
                     currentTaskPath = null
                     lastExitCode = 137
                     processPid = 0
-                    if (appSettings?.showKernelEXBanner != false) {
-                        appendOutputDirect("\n[KernelEX Engine] 用户已手动结束进程\n")
+                    if (appSettings?.showShsoBanner != false) {
+                        appendOutputDirect("\n[shso Engine] 用户已手动结束进程\n")
                     }
                 }
             }

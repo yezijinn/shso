@@ -1,4 +1,4 @@
-// Copyright 2026, KernelEX contributors
+// Copyright 2026, shso contributors
 // SPDX-License-Identifier: Apache-2.0
 
 package com.qihoo360.mobilesafe.data
@@ -45,7 +45,7 @@ class AppSettings private constructor(context: Context) {
     var showHyperCoreBanner by mutableStateOf(prefs.getBoolean(KEY_SHOW_HYPERCORE_BANNER, true))
         private set
 
-    var showKernelEXBanner by mutableStateOf(prefs.getBoolean(KEY_SHOW_KERNELEX_BANNER, true))
+    var showShsoBanner by mutableStateOf(prefs.getBoolean(KEY_SHOW_SHSO_BANNER, true))
         private set
 
     var fileListFontSize by mutableFloatStateOf(prefs.getFloat(KEY_FILE_LIST_FONT_SIZE, DEFAULT_FILE_LIST_FONT_SIZE))
@@ -126,9 +126,9 @@ class AppSettings private constructor(context: Context) {
         prefs.edit().putBoolean(KEY_SHOW_HYPERCORE_BANNER, enable).apply()
     }
 
-    fun setKernelEXBanner(enable: Boolean) {
-        showKernelEXBanner = enable
-        prefs.edit().putBoolean(KEY_SHOW_KERNELEX_BANNER, enable).apply()
+    fun setShsoBanner(enable: Boolean) {
+        showShsoBanner = enable
+        prefs.edit().putBoolean(KEY_SHOW_SHSO_BANNER, enable).apply()
     }
 
     fun updateFileListFontSize(size: Float) {
@@ -157,7 +157,7 @@ class AppSettings private constructor(context: Context) {
         private const val MAX_FILE_LIST_FONT_SIZE = 20f
         private const val DEFAULT_FILE_LIST_FONT_SIZE = 16f
 
-        private const val PREF_NAME = "KernelEX_Settings"
+        private const val PREF_NAME = "shso_settings"
         private const val KEY_USE_INDEPENDENT_FOLDER = "use_independent_folder"
         private const val KEY_AUTO_DELETE_AFTER_ADDING = "auto_delete_after_adding"
         private const val KEY_AUTO_EXECUTE_AFTER_ADDING = "auto_execute_after_adding"
@@ -170,7 +170,7 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_CUSTOM_FONT_PATH = "custom_font_path"
         private const val KEY_CUSTOM_FONT_NAME = "custom_font_name"
         private const val KEY_SHOW_HYPERCORE_BANNER = "show_hypercore_banner"
-        private const val KEY_SHOW_KERNELEX_BANNER = "show_kernelex_banner"
+        private const val KEY_SHOW_SHSO_BANNER = "show_shso_banner"
 
         private const val DEFAULT_TERMINAL_COLOR = 0xFF00E676L
 
