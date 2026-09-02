@@ -69,7 +69,6 @@ fun TerminalPage(
     appSettings: AppSettings
 ) {
     val context = LocalContext.current
-    val isMaterial = appSettings.appThemeOption == AppSettings.THEME_MATERIAL
     var inputText by remember { mutableStateOf("") }
     val scrollState = rememberScrollState()
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -246,7 +245,7 @@ fun TerminalPage(
                         contentColor = MiuixTheme.colorScheme.error
                     ),
                     insideMargin = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                    modifier = if (isMaterial) Modifier.clip(RoundedCornerShape(20.dp)) else Modifier
+                    modifier = Modifier.clip(RoundedCornerShape(20.dp))
                 ) {
                     Text("中断", fontSize = 12.sp)
                 }
@@ -258,7 +257,7 @@ fun TerminalPage(
                         contentColor = MiuixTheme.colorScheme.onSurface
                     ),
                     insideMargin = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                    modifier = if (isMaterial) Modifier.clip(RoundedCornerShape(20.dp)) else Modifier
+                    modifier = Modifier.clip(RoundedCornerShape(20.dp))
                 ) {
                     Text("清屏", fontSize = 12.sp)
                 }
@@ -275,7 +274,7 @@ fun TerminalPage(
                             contentColor = MiuixTheme.colorScheme.primary
                         ),
                         insideMargin = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        modifier = if (isMaterial) Modifier.clip(RoundedCornerShape(20.dp)) else Modifier
+                        modifier = Modifier.clip(RoundedCornerShape(20.dp))
                     ) {
                         Text("重新运行", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     }
@@ -290,7 +289,7 @@ fun TerminalPage(
                         contentColor = MiuixTheme.colorScheme.onSurface
                     ),
                     insideMargin = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
-                    modifier = if (isMaterial) Modifier.clip(RoundedCornerShape(20.dp)) else Modifier
+                    modifier = Modifier.clip(RoundedCornerShape(20.dp))
                 ) {
                     Text("Enter", fontSize = 12.sp)
                 }
@@ -335,7 +334,7 @@ fun TerminalPage(
                         contentColor = MiuixTheme.colorScheme.onPrimary
                     ),
                     insideMargin = PaddingValues(horizontal = 18.dp, vertical = 11.dp),
-                    modifier = if (isMaterial) Modifier.clip(RoundedCornerShape(20.dp)) else Modifier
+                    modifier = Modifier.clip(RoundedCornerShape(20.dp))
                 ) {
                     Text("发送", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 }

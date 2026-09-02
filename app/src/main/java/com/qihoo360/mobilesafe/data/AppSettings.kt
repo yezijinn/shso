@@ -6,6 +6,7 @@ package com.qihoo360.mobilesafe.data
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -32,12 +33,6 @@ class AppSettings private constructor(context: Context) {
     var darkModeOption by mutableIntStateOf(prefs.getInt(KEY_DARK_MODE, 0))
         private set
 
-    var appThemeOption by mutableIntStateOf(prefs.getInt(KEY_APP_THEME, THEME_MATERIAL))
-        private set
-
-    var enableFloatingDock by mutableStateOf(prefs.getBoolean(KEY_FLOATING_DOCK, false))
-        private set
-
     var useCustomFont by mutableStateOf(prefs.getBoolean(KEY_CUSTOM_FONT_ENABLED, true))
         private set
 
@@ -51,6 +46,15 @@ class AppSettings private constructor(context: Context) {
         private set
 
     var showKernelEXBanner by mutableStateOf(prefs.getBoolean(KEY_SHOW_KERNELEX_BANNER, true))
+        private set
+
+    var fileListFontSize by mutableFloatStateOf(prefs.getFloat(KEY_FILE_LIST_FONT_SIZE, DEFAULT_FILE_LIST_FONT_SIZE))
+        private set
+
+    var showHiddenFiles by mutableStateOf(prefs.getBoolean(KEY_SHOW_HIDDEN_FILES, true))
+        private set
+
+    var fileSortMode by mutableIntStateOf(prefs.getInt(KEY_FILE_SORT_MODE, FILE_SORT_NAME_ASC))
         private set
 
     fun setIndependentFolder(enable: Boolean) {
@@ -77,16 +81,6 @@ class AppSettings private constructor(context: Context) {
     fun setDarkMode(option: Int) {
         darkModeOption = option
         prefs.edit().putInt(KEY_DARK_MODE, option).apply()
-    }
-
-    fun setAppTheme(theme: Int) {
-        appThemeOption = theme
-        prefs.edit().putInt(KEY_APP_THEME, theme).apply()
-    }
-
-    fun setFloatingDock(enable: Boolean) {
-        enableFloatingDock = enable
-        prefs.edit().putBoolean(KEY_FLOATING_DOCK, enable).apply()
     }
 
     fun setCustomFontEnabled(enable: Boolean) {
@@ -137,9 +131,31 @@ class AppSettings private constructor(context: Context) {
         prefs.edit().putBoolean(KEY_SHOW_KERNELEX_BANNER, enable).apply()
     }
 
+    fun updateFileListFontSize(size: Float) {
+        val clamped = size.coerceIn(MIN_FILE_LIST_FONT_SIZE, MAX_FILE_LIST_FONT_SIZE)
+        fileListFontSize = clamped
+        prefs.edit().putFloat(KEY_FILE_LIST_FONT_SIZE, clamped).apply()
+    }
+
+    fun updateShowHiddenFiles(enable: Boolean) {
+        showHiddenFiles = enable
+        prefs.edit().putBoolean(KEY_SHOW_HIDDEN_FILES, enable).apply()
+    }
+
+    fun updateFileSortMode(mode: Int) {
+        fileSortMode = mode
+        prefs.edit().putInt(KEY_FILE_SORT_MODE, mode).apply()
+    }
+
     companion object {
-        const val THEME_MATERIAL = 0
-        const val THEME_MIUIX = 1
+        const val FILE_SORT_NAME_ASC = 0
+        const val FILE_SORT_NAME_DESC = 1
+        const val FILE_SORT_TIME_ASC = 2
+        const val FILE_SORT_TIME_DESC = 3
+
+        private const val MIN_FILE_LIST_FONT_SIZE = 12f
+        private const val MAX_FILE_LIST_FONT_SIZE = 20f
+        private const val DEFAULT_FILE_LIST_FONT_SIZE = 16f
 
         private const val PREF_NAME = "KernelEX_Settings"
         private const val KEY_USE_INDEPENDENT_FOLDER = "use_independent_folder"
@@ -147,8 +163,9 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_AUTO_EXECUTE_AFTER_ADDING = "auto_execute_after_adding"
         private const val KEY_TERMINAL_TEXT_COLOR = "terminal_text_color"
         private const val KEY_DARK_MODE = "dark_mode_option"
-        private const val KEY_APP_THEME = "app_theme_option"
-        private const val KEY_FLOATING_DOCK = "floating_dock"
+        private const val KEY_FILE_LIST_FONT_SIZE = "file_list_font_size"
+        private const val KEY_SHOW_HIDDEN_FILES = "show_hidden_files"
+        private const val KEY_FILE_SORT_MODE = "file_sort_mode"
         private const val KEY_CUSTOM_FONT_ENABLED = "custom_font_enabled"
         private const val KEY_CUSTOM_FONT_PATH = "custom_font_path"
         private const val KEY_CUSTOM_FONT_NAME = "custom_font_name"

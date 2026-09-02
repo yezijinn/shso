@@ -75,26 +75,16 @@ class MainActivity : ComponentActivity() {
         RootService.initSettings(appSettings)
 
         setContent {
-            val isMaterial = appSettings.appThemeOption == AppSettings.THEME_MATERIAL
-
-            val colorSchemeMode = if (isMaterial) {
-                when (appSettings.darkModeOption) {
-                    1 -> ColorSchemeMode.MonetLight
-                    2 -> ColorSchemeMode.MonetDark
-                    else -> ColorSchemeMode.MonetSystem
-                }
-            } else {
-                when (appSettings.darkModeOption) {
-                    1 -> ColorSchemeMode.Light
-                    2 -> ColorSchemeMode.Dark
-                    else -> ColorSchemeMode.System
-                }
+            val colorSchemeMode = when (appSettings.darkModeOption) {
+                1 -> ColorSchemeMode.MonetLight
+                2 -> ColorSchemeMode.MonetDark
+                else -> ColorSchemeMode.MonetSystem
             }
 
-            val themeController = remember(colorSchemeMode, isMaterial) {
+            val themeController = remember(colorSchemeMode) {
                 ThemeController(
                     colorSchemeMode = colorSchemeMode,
-                    keyColor = if (isMaterial) Color(0xFF0B57D0) else null
+                    keyColor = Color(0xFF0B57D0)
                 )
             }
 
@@ -195,8 +185,6 @@ fun MainContainer(appSettings: AppSettings) {
         if (!WindowInsets.isImeVisible) {
             DockBar(
                 selectedPage = pagerState.currentPage,
-                appTheme = appSettings.appThemeOption,
-                isFloating = appSettings.enableFloatingDock,
                 onTabSelected = { targetPage ->
                     coroutineScope.launch {
                         pagerState.animateScrollToPage(targetPage)
