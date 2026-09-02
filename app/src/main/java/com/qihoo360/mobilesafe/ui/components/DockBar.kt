@@ -1,4 +1,4 @@
-// Copyright 2026, KernelEX contributors
+// Copyright 2026, shso contributors
 // SPDX-License-Identifier: Apache-2.0
 
 package com.qihoo360.mobilesafe.ui.components
@@ -85,6 +85,7 @@ val DOCK_TABS = listOf(
 fun DockBar(
     selectedPage: Int,
     onTabSelected: (Int) -> Unit,
+    terminalLocked: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -103,13 +104,22 @@ fun DockBar(
         ) {
             DOCK_TABS.forEachIndexed { index, tab ->
                 val isSelected = selectedPage == index
+                val isTerminalLocked = index == 1 && terminalLocked
                 val contentColor by animateColorAsState(
-                    targetValue = if (isSelected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceSecondary,
+                    targetValue = when {
+                        isTerminalLocked -> Color(0xFFFF5252)
+                        isSelected -> MiuixTheme.colorScheme.primary
+                        else -> MiuixTheme.colorScheme.onSurfaceSecondary
+                    },
                     animationSpec = spring(),
                     label = "MaterialDockColor"
                 )
                 val pillColor by animateColorAsState(
-                    targetValue = if (isSelected) MiuixTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent,
+                    targetValue = when {
+                        isTerminalLocked -> Color.Transparent
+                        isSelected -> MiuixTheme.colorScheme.primary.copy(alpha = 0.16f)
+                        else -> Color.Transparent
+                    },
                     animationSpec = spring(),
                     label = "MaterialPillColor"
                 )
@@ -121,7 +131,10 @@ fun DockBar(
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null
-                        ) { onTabSelected(index) }
+                        ) {
+                            if (isTerminalLocked) return@clickable
+                            onTabSelected(index)
+                        }
                         .padding(vertical = 4.dp),
                     contentAlignment = Alignment.Center
                 ) {

@@ -1,4 +1,4 @@
-// Copyright 2026, KernelEX contributors
+// Copyright 2026, shso contributors
 // SPDX-License-Identifier: Apache-2.0
 
 package com.qihoo360.mobilesafe.ui.components
@@ -159,14 +159,14 @@ fun ColorWheelDialog(
                 Spacer(modifier = Modifier.height(2.dp))
 
                 Text(
-                    text = "root@android:~# KernelEX --status",
+                    text = "root@android:~# shso --status",
                     color = currentColor,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Medium
                 )
                 Text(
-                    text = "[KernelEX] 任务执行成功 [退出码: 0]",
+                    text = "[shso] 任务执行成功 [退出码: 0]",
                     color = currentColor,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace
