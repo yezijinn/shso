@@ -1,7 +1,7 @@
 // Copyright 2026, KernelEX contributors
 // SPDX-License-Identifier: Apache-2.0
 
-package Kernel.Extend.ui.pages
+package com.qihoo360.mobilesafe.ui.pages
 
 import android.content.Context
 import android.content.Intent
@@ -44,7 +44,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import Kernel.Extend.data.RootService
+import com.qihoo360.mobilesafe.data.RootService
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch

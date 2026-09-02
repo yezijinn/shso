@@ -1,7 +1,7 @@
 // Copyright 2026, KernelEX contributors
 // SPDX-License-Identifier: Apache-2.0
 
-package Kernel.Extend.ui.pages
+package com.qihoo360.mobilesafe.ui.pages
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -39,11 +39,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import Kernel.Extend.data.AppSettings
-import Kernel.Extend.data.FileItem
-import Kernel.Extend.data.RootFileManager
-import Kernel.Extend.data.RootService
-import Kernel.Extend.ui.components.BuiltInFilePicker
+import com.qihoo360.mobilesafe.data.AppSettings
+import com.qihoo360.mobilesafe.data.FileItem
+import com.qihoo360.mobilesafe.data.RootFileManager
+import com.qihoo360.mobilesafe.data.RootService
+import com.qihoo360.mobilesafe.ui.components.BuiltInFilePicker
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope

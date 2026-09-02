@@ -1,7 +1,7 @@
 // Copyright 2026, KernelEX contributors
 // SPDX-License-Identifier: Apache-2.0
 
-package Kernel.Extend.ui.pages
+package com.qihoo360.mobilesafe.ui.pages
 
 import android.os.Build
 import android.os.Environment
@@ -35,8 +35,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import Kernel.Extend.R
-import Kernel.Extend.data.RootService
+import com.qihoo360.mobilesafe.R
+import com.qihoo360.mobilesafe.data.RootService
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.Text
