@@ -45,19 +45,74 @@ import androidx.compose.ui.unit.sp
 import com.qihoo360.mobilesafe.data.AppSettings
 import com.qihoo360.mobilesafe.data.FileItem
 import com.qihoo360.mobilesafe.data.RootFileManager
+import java.util.Locale
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.Slider
+import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
+import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 import java.io.File
+
+/**
+ * Applies the FilePage list view preferences to a freshly loaded file list:
+ * filters hidden files (if disabled) and sorts with directories always first.
+ */
+private fun applyFileViewSettings(
+    list: List<FileItem>,
+    showHiddenFiles: Boolean,
+    sortMode: Int
+): List<FileItem> {
+    val filtered = if (showHiddenFiles) list else list.filter { !it.name.startsWith(".") }
+    val directories = filtered.filter { it.isDirectory }
+    val files = filtered.filter { !it.isDirectory }
+
+    val sortByTime = sortMode == AppSettings.FILE_SORT_TIME_ASC || sortMode == AppSettings.FILE_SORT_TIME_DESC
+    val descending = sortMode == AppSettings.FILE_SORT_NAME_DESC || sortMode == AppSettings.FILE_SORT_TIME_DESC
+
+    val baseComparator = if (sortByTime) {
+        compareBy<FileItem> { it.lastModified }
+    } else {
+        compareBy<FileItem> { it.name.lowercase(Locale.getDefault()) }
+    }
+    val comparator = if (descending) baseComparator.reversed() else baseComparator
+
+    return directories.sortedWith(comparator) + files.sortedWith(comparator)
+}
+
+@Composable
+private fun SortModePillButton(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(
+            color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surfaceContainerHighest,
+            contentColor = if (selected) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
+        ),
+        insideMargin = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+        modifier = modifier
+    ) {
+        Text(
+            text = text,
+            fontSize = 12.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+        )
+    }
+}
 
 @Composable
 fun FilePage(
@@ -66,7 +121,6 @@ fun FilePage(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val isMaterial = appSettings.appThemeOption == AppSettings.THEME_MATERIAL
 
     var currentDirectory by remember { mutableStateOf("/storage/emulated/0") }
     var fileList by remember { mutableStateOf<List<FileItem>>(emptyList()) }
@@ -84,6 +138,8 @@ fun FilePage(
 
     var showFontPreviewDialog by remember { mutableStateOf(false) }
     var previewFontItem by remember { mutableStateOf<FileItem?>(null) }
+
+    var showFileSettingsDialog by remember { mutableStateOf(false) }
 
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
 
@@ -112,6 +168,12 @@ fun FilePage(
         }
     }
 
+    val displayFileList = remember(fileList, appSettings.showHiddenFiles, appSettings.fileSortMode) {
+        applyFileViewSettings(fileList, appSettings.showHiddenFiles, appSettings.fileSortMode)
+    }
+    val listFontSize = appSettings.fileListFontSize.sp
+    val listSecondaryFontSize = (appSettings.fileListFontSize - 5f).coerceAtLeast(8f).sp
+
     Scaffold(
         topBar = {
             Row(
@@ -128,6 +190,16 @@ fun FilePage(
                     fontWeight = FontWeight.Bold,
                     color = MiuixTheme.colorScheme.onSurface
                 )
+                Spacer(modifier = Modifier.weight(1f))
+                IconButton(
+                    onClick = { showFileSettingsDialog = true }
+                ) {
+                    Icon(
+                        imageVector = MiuixIcons.Settings,
+                        contentDescription = "文件列表设置",
+                        tint = MiuixTheme.colorScheme.onSurface
+                    )
+                }
             }
         }
     ) { innerPadding ->
@@ -140,7 +212,7 @@ fun FilePage(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(if (isMaterial) RoundedCornerShape(16.dp) else RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(16.dp))
                     .background(MiuixTheme.colorScheme.surfaceContainer)
                     .padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -200,7 +272,7 @@ fun FilePage(
                             contentColor = if (currentDirectory == "/") MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
                         ),
                         insideMargin = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = if (isMaterial) Modifier.weight(1f).clip(RoundedCornerShape(20.dp)) else Modifier.weight(1f)
+                        modifier = Modifier.weight(1f).clip(RoundedCornerShape(20.dp))
                     ) {
                         Text("根目录 (/)", fontSize = 12.sp)
                     }
@@ -212,7 +284,7 @@ fun FilePage(
                             contentColor = if (currentDirectory == "/storage/emulated/0") MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
                         ),
                         insideMargin = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = if (isMaterial) Modifier.weight(1.2f).clip(RoundedCornerShape(20.dp)) else Modifier.weight(1.2f)
+                        modifier = Modifier.weight(1.2f).clip(RoundedCornerShape(20.dp))
                     ) {
                         Text("内部存储", fontSize = 12.sp)
                     }
@@ -224,7 +296,7 @@ fun FilePage(
                             contentColor = if (currentDirectory == RootFileManager.DEFAULT_KERNEL_EX_DIR) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
                         ),
                         insideMargin = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = if (isMaterial) Modifier.weight(1.3f).clip(RoundedCornerShape(20.dp)) else Modifier.weight(1.3f)
+                        modifier = Modifier.weight(1.3f).clip(RoundedCornerShape(20.dp))
                     ) {
                         Text("KernelEX目录", fontSize = 12.sp)
                     }
@@ -238,7 +310,7 @@ fun FilePage(
                     .weight(1f)
                     .fillMaxWidth()
             ) {
-                if (fileList.isEmpty() && !isLoading) {
+                if (displayFileList.isEmpty() && !isLoading) {
                     Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
@@ -254,14 +326,14 @@ fun FilePage(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        itemsIndexed(fileList, key = { index, item -> "${item.path}_$index" }) { _, item ->
+                        itemsIndexed(displayFileList, key = { index, item -> "${item.path}_$index" }) { _, item ->
                             val isExecutable = item.isExecutableScript || item.isExecutableBinary
                             val isFontFile = !item.isDirectory && (item.name.endsWith(".ttf", ignoreCase = true) || item.name.endsWith(".otf", ignoreCase = true))
 
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(if (isMaterial) RoundedCornerShape(16.dp) else RoundedCornerShape(12.dp))
+                                    .clip(RoundedCornerShape(16.dp))
                                     .background(MiuixTheme.colorScheme.surfaceContainer)
                                     .combinedClickable(
                                         onClick = {
@@ -318,6 +390,7 @@ fun FilePage(
                                     Text(
                                         text = item.name,
                                         style = MiuixTheme.textStyles.body1,
+                                        fontSize = listFontSize,
                                         fontWeight = FontWeight.Normal,
                                         color = MiuixTheme.colorScheme.onSurface,
                                         maxLines = 1,
@@ -331,6 +404,7 @@ fun FilePage(
                                         Text(
                                             text = if (item.isDirectory) "文件夹" else item.formattedSize,
                                             style = MiuixTheme.textStyles.footnote2,
+                                            fontSize = listSecondaryFontSize,
                                             color = MiuixTheme.colorScheme.onSurfaceSecondary
                                         )
 
@@ -338,6 +412,7 @@ fun FilePage(
                                             Text(
                                                 text = item.permissions,
                                                 style = MiuixTheme.textStyles.footnote2,
+                                                fontSize = listSecondaryFontSize,
                                                 fontFamily = FontFamily.Monospace,
                                                 color = MiuixTheme.colorScheme.onSurfaceSecondary.copy(0.7f)
                                             )
@@ -353,7 +428,7 @@ fun FilePage(
                                             contentColor = MiuixTheme.colorScheme.onPrimary
                                         ),
                                         insideMargin = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
-                                        modifier = if (isMaterial) Modifier.clip(RoundedCornerShape(20.dp)) else Modifier
+                                        modifier = Modifier.clip(RoundedCornerShape(20.dp))
                                     ) {
                                         Text("执行", fontSize = 12.sp)
                                     }
@@ -368,7 +443,7 @@ fun FilePage(
                                             contentColor = MiuixTheme.colorScheme.onPrimary
                                         ),
                                         insideMargin = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
-                                        modifier = if (isMaterial) Modifier.clip(RoundedCornerShape(20.dp)) else Modifier
+                                        modifier = Modifier.clip(RoundedCornerShape(20.dp))
                                     ) {
                                         Text("预览", fontSize = 12.sp)
                                     }
@@ -380,6 +455,128 @@ fun FilePage(
             }
 
             Spacer(modifier = Modifier.height(60.dp))
+        }
+    }
+
+    if (showFileSettingsDialog) {
+        WindowDialog(
+            show = true,
+            title = "文件列表设置",
+            onDismissRequest = { showFileSettingsDialog = false }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "列表字体大小",
+                        style = MiuixTheme.textStyles.body1,
+                        color = MiuixTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = "${appSettings.fileListFontSize.roundToInt()} sp",
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.primary
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "小",
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = MiuixTheme.colorScheme.onSurfaceSecondary
+                    )
+                    Slider(
+                        value = appSettings.fileListFontSize,
+                        onValueChange = { appSettings.updateFileListFontSize(it) },
+                        valueRange = 12f..20f,
+                        steps = 7,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = "大",
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = MiuixTheme.colorScheme.onSurfaceSecondary
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "显示隐藏文件",
+                            style = MiuixTheme.textStyles.body1,
+                            color = MiuixTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "关闭后将隐藏以 \".\" 开头的文件",
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = MiuixTheme.colorScheme.onSurfaceSecondary
+                        )
+                    }
+                    Switch(
+                        checked = appSettings.showHiddenFiles,
+                        onCheckedChange = { appSettings.updateShowHiddenFiles(it) }
+                    )
+                }
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "排序方式",
+                        style = MiuixTheme.textStyles.body1,
+                        color = MiuixTheme.colorScheme.onSurface
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SortModePillButton(
+                            text = "名称↑",
+                            selected = appSettings.fileSortMode == AppSettings.FILE_SORT_NAME_ASC,
+                            onClick = { appSettings.updateFileSortMode(AppSettings.FILE_SORT_NAME_ASC) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        SortModePillButton(
+                            text = "名称↓",
+                            selected = appSettings.fileSortMode == AppSettings.FILE_SORT_NAME_DESC,
+                            onClick = { appSettings.updateFileSortMode(AppSettings.FILE_SORT_NAME_DESC) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SortModePillButton(
+                            text = "时间↑",
+                            selected = appSettings.fileSortMode == AppSettings.FILE_SORT_TIME_ASC,
+                            onClick = { appSettings.updateFileSortMode(AppSettings.FILE_SORT_TIME_ASC) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        SortModePillButton(
+                            text = "时间↓",
+                            selected = appSettings.fileSortMode == AppSettings.FILE_SORT_TIME_DESC,
+                            onClick = { appSettings.updateFileSortMode(AppSettings.FILE_SORT_TIME_DESC) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
         }
     }
 

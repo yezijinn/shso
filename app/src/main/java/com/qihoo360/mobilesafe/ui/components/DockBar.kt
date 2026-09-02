@@ -4,7 +4,6 @@
 package com.qihoo360.mobilesafe.ui.components
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -19,7 +18,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -27,7 +25,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -42,7 +39,6 @@ import top.yukonga.miuix.kmp.icon.extended.Folder
 import top.yukonga.miuix.kmp.icon.extended.Home
 import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import com.qihoo360.mobilesafe.data.AppSettings
 
 val TerminalIcon: ImageVector
     get() {
@@ -88,194 +84,72 @@ val DOCK_TABS = listOf(
 @Composable
 fun DockBar(
     selectedPage: Int,
-    appTheme: Int = AppSettings.THEME_MATERIAL,
-    isFloating: Boolean = false,
     onTabSelected: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    if (appTheme == AppSettings.THEME_MIUIX && isFloating) {
-        Box(
-            modifier = modifier
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(MiuixTheme.colorScheme.surfaceContainer)
+            .navigationBarsPadding()
+    ) {
+        Row(
+            modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(bottom = 12.dp),
-            contentAlignment = Alignment.BottomCenter
+                .height(64.dp)
+                .padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.SpaceAround,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .background(MiuixTheme.colorScheme.surfaceContainer.copy(0.96f))
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                DOCK_TABS.forEachIndexed { index, tab ->
-                    val isSelected = selectedPage == index
-                    val contentColor by animateColorAsState(
-                        targetValue = if (isSelected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceSecondary,
-                        animationSpec = spring(),
-                        label = "FloatingDockColor"
-                    )
-                    val iconScale by animateFloatAsState(
-                        targetValue = if (isSelected) 1.15f else 1.0f,
-                        animationSpec = spring(),
-                        label = "FloatingDockScale"
-                    )
+            DOCK_TABS.forEachIndexed { index, tab ->
+                val isSelected = selectedPage == index
+                val contentColor by animateColorAsState(
+                    targetValue = if (isSelected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceSecondary,
+                    animationSpec = spring(),
+                    label = "MaterialDockColor"
+                )
+                val pillColor by animateColorAsState(
+                    targetValue = if (isSelected) MiuixTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent,
+                    animationSpec = spring(),
+                    label = "MaterialPillColor"
+                )
 
-                    Box(
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(
-                                if (isSelected) MiuixTheme.colorScheme.primary.copy(0.12f)
-                                else Color.Transparent
-                            )
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null
-                            ) { onTabSelected(index) }
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        contentAlignment = Alignment.Center
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(16.dp))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { onTabSelected(index) }
+                        .padding(vertical = 4.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
                     ) {
-                        Icon(
-                            imageVector = tab.icon,
-                            contentDescription = tab.label,
-                            tint = contentColor,
+                        Box(
                             modifier = Modifier
-                                .scale(iconScale)
-                                .size(24.dp)
-                        )
-                    }
-                }
-            }
-        }
-    } else if (appTheme == AppSettings.THEME_MIUIX) {
-        Box(
-            modifier = modifier
-                .fillMaxWidth()
-                .background(MiuixTheme.colorScheme.surfaceContainer)
-                .navigationBarsPadding()
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(54.dp)
-                    .padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.SpaceAround,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                DOCK_TABS.forEachIndexed { index, tab ->
-                    val isSelected = selectedPage == index
-                    val contentColor by animateColorAsState(
-                        targetValue = if (isSelected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceSecondary,
-                        animationSpec = spring(),
-                        label = "DockTextColor"
-                    )
-                    val iconScale by animateFloatAsState(
-                        targetValue = if (isSelected) 1.12f else 1.0f,
-                        animationSpec = spring(),
-                        label = "DockIconScale"
-                    )
-
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null
-                            ) { onTabSelected(index) }
-                            .padding(vertical = 4.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(pillColor)
+                                .padding(horizontal = 18.dp, vertical = 3.dp),
+                            contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = tab.icon,
                                 contentDescription = tab.label,
                                 tint = contentColor,
-                                modifier = Modifier
-                                    .scale(iconScale)
-                                    .size(24.dp)
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = tab.label,
-                                fontSize = 11.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = contentColor
+                                modifier = Modifier.size(24.dp)
                             )
                         }
-                    }
-                }
-            }
-        }
-    } else {
-        Box(
-            modifier = modifier
-                .fillMaxWidth()
-                .background(MiuixTheme.colorScheme.surfaceContainer)
-                .navigationBarsPadding()
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(64.dp)
-                    .padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.SpaceAround,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                DOCK_TABS.forEachIndexed { index, tab ->
-                    val isSelected = selectedPage == index
-                    val contentColor by animateColorAsState(
-                        targetValue = if (isSelected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceSecondary,
-                        animationSpec = spring(),
-                        label = "MaterialDockColor"
-                    )
-                    val pillColor by animateColorAsState(
-                        targetValue = if (isSelected) MiuixTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent,
-                        animationSpec = spring(),
-                        label = "MaterialPillColor"
-                    )
-
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(16.dp))
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null
-                            ) { onTabSelected(index) }
-                            .padding(vertical = 4.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(pillColor)
-                                    .padding(horizontal = 18.dp, vertical = 3.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = tab.icon,
-                                    contentDescription = tab.label,
-                                    tint = contentColor,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = tab.label,
-                                fontSize = 11.sp,
-                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                color = contentColor
-                            )
-                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = tab.label,
+                            fontSize = 11.sp,
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                            color = contentColor
+                        )
                     }
                 }
             }
