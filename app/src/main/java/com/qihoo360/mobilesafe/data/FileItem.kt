@@ -1,7 +1,7 @@
 // Copyright 2026, KernelEX contributors
 // SPDX-License-Identifier: Apache-2.0
 
-package Kernel.Extend.data
+package com.qihoo360.mobilesafe.data
 
 import java.text.SimpleDateFormat
 import java.util.Date
