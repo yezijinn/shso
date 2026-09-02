@@ -138,7 +138,7 @@ fun SplashPage(
                 .padding(bottom = 24.dp)
         ) {
             Text(
-                text = "KernelEX v1.0.2",
+                text = "KernelEX v9.0.2",
                 style = MiuixTheme.textStyles.footnote2,
                 color = MiuixTheme.colorScheme.onSurfaceSecondary.copy(alpha = 0.5f)
             )
