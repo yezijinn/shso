@@ -69,7 +69,6 @@ fun HomePage(
     onNavigateToTerminal: () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
-    val isMaterial = appSettings.appThemeOption == AppSettings.THEME_MATERIAL
     var filePathInput by remember { mutableStateOf("") }
     var showFilePicker by remember { mutableStateOf(false) }
     var validationError by remember { mutableStateOf<String?>(null) }
@@ -164,7 +163,7 @@ fun HomePage(
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(if (isMaterial) RoundedCornerShape(16.dp) else RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(16.dp))
                 ) {
                     Column(
                         modifier = Modifier
@@ -212,7 +211,7 @@ fun HomePage(
 
                         Button(
                             onClick = onNavigateToTerminal,
-                            modifier = if (isMaterial) Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)) else Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)),
                             colors = ButtonDefaults.buttonColors(
                                 color = MiuixTheme.colorScheme.primary,
                                 contentColor = MiuixTheme.colorScheme.onPrimary
@@ -224,15 +223,17 @@ fun HomePage(
                 }
             }
 
-            SmallTitle(
+            Text(
                 text = "执行目标",
-                insideMargin = PaddingValues(start = 0.dp, top = 8.dp, bottom = 4.dp)
+                modifier = Modifier.padding(PaddingValues(start = 0.dp, top = 8.dp, bottom = 4.dp)),
+                style = MiuixTheme.textStyles.subtitle.copy(fontSize = (MiuixTheme.textStyles.subtitle.fontSize.value - 5f).sp),
+                color = MiuixTheme.colorScheme.onBackgroundVariant
             )
 
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(if (isMaterial) RoundedCornerShape(16.dp) else RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(16.dp))
             ) {
                 Column(
                     modifier = Modifier
@@ -250,18 +251,21 @@ fun HomePage(
                         label = "请输入文件路径",
                         useLabelAsPlaceholder = true,
                         singleLine = true,
+                        textStyle = MiuixTheme.textStyles.main.copy(
+                            fontSize = (MiuixTheme.textStyles.main.fontSize.value - 5f).sp
+                        ),
                         modifier = Modifier.fillMaxWidth()
                     )
 
                     Button(
                         onClick = { showFilePicker = true },
-                        modifier = if (isMaterial) Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)) else Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)),
                         colors = ButtonDefaults.buttonColors(
                             color = MiuixTheme.colorScheme.surfaceContainerHighest,
                             contentColor = MiuixTheme.colorScheme.onSurface
                         )
                     ) {
-                        Text("从文件管理器选择", fontWeight = FontWeight.Medium)
+                        Text("从文件管理器选择", fontSize = (MiuixTheme.textStyles.main.fontSize.value - 5f).sp, fontWeight = FontWeight.Medium)
                     }
 
                     if (validationError != null) {
@@ -269,20 +273,21 @@ fun HomePage(
                             text = validationError ?: "",
                             style = MiuixTheme.textStyles.footnote1,
                             color = MiuixTheme.colorScheme.error,
-                            fontSize = 12.sp
+                            fontSize = 7.sp
                         )
                     }
 
                     Text(
                         text = "支持输入文件路径或选择文件进行执行，目前仅支持 .sh 和 .so 文件",
                         style = MiuixTheme.textStyles.footnote2,
-                        color = MiuixTheme.colorScheme.onSurfaceSecondary
+                        color = MiuixTheme.colorScheme.onSurfaceSecondary,
+                        fontSize = (MiuixTheme.textStyles.footnote2.fontSize.value - 5f).sp
                     )
 
                     Button(
                         enabled = filePathInput.isNotBlank(),
                         onClick = { execute(filePathInput) },
-                        modifier = if (isMaterial) Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)) else Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)),
                         colors = ButtonDefaults.buttonColors(
                             color = MiuixTheme.colorScheme.primary,
                             contentColor = MiuixTheme.colorScheme.onPrimary
@@ -290,6 +295,7 @@ fun HomePage(
                     ) {
                         Text(
                             text = if (RootService.isTaskRunning) "任务运行中 (点击覆盖启动)" else "立即执行",
+                            fontSize = (MiuixTheme.textStyles.main.fontSize.value - 5f).sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -359,7 +365,7 @@ fun HomePage(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(if (isMaterial) RoundedCornerShape(16.dp) else RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(16.dp))
             ) {
                 if (kernelEXFiles.isEmpty()) {
                     Column(
@@ -470,7 +476,7 @@ fun HomePage(
                                             contentColor = if (isSelected) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
                                         ),
                                         insideMargin = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                        modifier = if (isMaterial) Modifier.clip(RoundedCornerShape(20.dp)) else Modifier
+                                        modifier = Modifier.clip(RoundedCornerShape(20.dp))
                                     ) {
                                         Text(
                                             text = if (isSelected) "已选择" else "选择",

@@ -23,7 +23,7 @@ object RootFileManager {
         val items = mutableListOf<FileItem>()
 
         val escapedPath = targetPath.replace("'", "'\\''")
-        val cmd = "cd '$escapedPath' 2>/dev/null && for f in .* *; do [ -e \"\$f\" ] || continue; [ \"\$f\" = \".\" ] && continue; [ \"\$f\" = \"..\" ] && continue; [ -d \"\$f\" ] && d=1 || d=0; s=\$(stat -c %s \"\$f\" 2>/dev/null || echo 0); echo \"\$d|\$s|\$f\"; done"
+        val cmd = "cd '$escapedPath' 2>/dev/null && for f in .* *; do [ -e \"\$f\" ] || continue; [ \"\$f\" = \".\" ] && continue; [ \"\$f\" = \"..\" ] && continue; [ -d \"\$f\" ] && d=1 || d=0; s=\$(stat -c %s \"\$f\" 2>/dev/null || echo 0); m=\$(stat -c %Y \"\$f\" 2>/dev/null || echo 0); echo \"\$d|\$s|\$m|\$f\"; done"
         val (exitCode, output) = RootService.runCommandSync(cmd)
 
         if (exitCode == 0 && output.isNotBlank()) {
@@ -32,11 +32,12 @@ object RootFileManager {
                 val trimmed = line.trim()
                 if (trimmed.isEmpty()) continue
 
-                val parts = trimmed.split("|", limit = 3)
-                if (parts.size == 3) {
+                val parts = trimmed.split("|", limit = 4)
+                if (parts.size == 4) {
                     val isDir = parts[0] == "1"
                     val size = parts[1].toLongOrNull() ?: 0L
-                    var name = parts[2]
+                    val modified = parts[2].toLongOrNull() ?: 0L
+                    var name = parts[3]
 
                     if (name.contains(" -> ")) {
                         name = name.substringBefore(" -> ").trim()
@@ -52,7 +53,7 @@ object RootFileManager {
                             path = itemPath,
                             isDirectory = isDir,
                             size = size,
-                            lastModified = System.currentTimeMillis()
+                            lastModified = modified
                         )
                     )
                 }
