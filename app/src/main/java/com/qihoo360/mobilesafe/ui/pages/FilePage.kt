@@ -9,7 +9,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -51,7 +51,6 @@ import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.Switch
@@ -110,6 +109,47 @@ private fun SortModePillButton(
             text = text,
             fontSize = 12.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+        )
+    }
+}
+
+/**
+ * Compact equal-width shortcut chip used in the FilePage top toolbar row.
+ * data / storage / shso share the same height and visual weight as the
+ * surrounding icon buttons.
+ */
+@Composable
+private fun FileShortcutButton(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .height(36.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                if (selected) {
+                    MiuixTheme.colorScheme.primary
+                } else {
+                    MiuixTheme.colorScheme.surfaceContainerHighest
+                }
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) {
+                MiuixTheme.colorScheme.onPrimary
+            } else {
+                MiuixTheme.colorScheme.onSurface
+            },
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
@@ -181,23 +221,69 @@ fun FilePage(
                     .fillMaxWidth()
                     .background(MiuixTheme.colorScheme.surface)
                     .statusBarsPadding()
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "文件管理器",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MiuixTheme.colorScheme.onSurface
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MiuixTheme.colorScheme.surfaceContainerHighest)
+                        .clickable(enabled = currentDirectory != "/") {
+                            val parent = File(currentDirectory).parent ?: "/"
+                            currentDirectory = parent
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = MiuixIcons.Back,
+                        contentDescription = "返回上一级",
+                        tint = if (currentDirectory != "/") {
+                            MiuixTheme.colorScheme.onSurface
+                        } else {
+                            MiuixTheme.colorScheme.disabledOnSecondaryVariant
+                        },
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                FileShortcutButton(
+                    label = "data",
+                    selected = currentDirectory == "/",
+                    onClick = { currentDirectory = "/" },
+                    modifier = Modifier.weight(1f)
                 )
-                Spacer(modifier = Modifier.weight(1f))
-                IconButton(
-                    onClick = { showFileSettingsDialog = true }
+
+                FileShortcutButton(
+                    label = "storage",
+                    selected = currentDirectory == "/storage/emulated/0",
+                    onClick = { currentDirectory = "/storage/emulated/0" },
+                    modifier = Modifier.weight(1f)
+                )
+
+                FileShortcutButton(
+                    label = "shso",
+                    selected = currentDirectory == RootFileManager.DEFAULT_SHSO_DIR,
+                    onClick = { currentDirectory = RootFileManager.DEFAULT_SHSO_DIR },
+                    modifier = Modifier.weight(1f)
+                )
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MiuixTheme.colorScheme.surfaceContainerHighest)
+                        .clickable { showFileSettingsDialog = true },
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = MiuixIcons.Settings,
                         contentDescription = "文件列表设置",
-                        tint = MiuixTheme.colorScheme.onSurface
+                        tint = MiuixTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
             }
@@ -207,103 +293,36 @@ fun FilePage(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(horizontal = 14.dp, vertical = 4.dp)
         ) {
-            Column(
+            // 路径行：独占一整行，固定可容纳两行文本的高度，点击仍弹「跳转路径」
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(MiuixTheme.colorScheme.surfaceContainer)
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                    .heightIn(min = 42.dp)
+                    .clickable {
+                        jumpPathInput = currentDirectory
+                        showJumpPathDialog = true
+                    }
+                    .padding(horizontal = 16.dp, vertical = 9.dp),
+                contentAlignment = Alignment.CenterStart
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = {
-                            val parent = File(currentDirectory).parent ?: "/"
-                            currentDirectory = parent
-                        },
-                        enabled = currentDirectory != "/"
-                    ) {
-                        Icon(
-                            imageVector = MiuixIcons.Back,
-                            contentDescription = "返回上一级",
-                            tint = if (currentDirectory != "/") MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.disabledOnSecondaryVariant
-                        )
-                    }
-
-                    BoxWithConstraints(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable {
-                                jumpPathInput = currentDirectory
-                                showJumpPathDialog = true
-                            }
-                            .padding(start = 2.dp, end = 2.dp, top = 4.dp, bottom = 4.dp),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        val approxChars = (maxWidth.value / 7.6f).toInt().coerceAtLeast(16)
-                        val displayPath = if (currentDirectory.length > approxChars) {
-                            "..." + currentDirectory.takeLast(approxChars - 3)
-                        } else {
-                            currentDirectory
-                        }
-                        Text(
-                            text = displayPath,
-                            style = MiuixTheme.textStyles.footnote1,
-                            fontFamily = FontFamily.Monospace,
-                            maxLines = 1
-                        )
-                    }
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = { currentDirectory = "/" },
-                        colors = ButtonDefaults.buttonColors(
-                            color = if (currentDirectory == "/") MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surfaceContainerHighest,
-                            contentColor = if (currentDirectory == "/") MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
-                        ),
-                        insideMargin = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.weight(1f).clip(RoundedCornerShape(20.dp))
-                    ) {
-                        Text("根目录 (/)", fontSize = 12.sp)
-                    }
-
-                    Button(
-                        onClick = { currentDirectory = "/storage/emulated/0" },
-                        colors = ButtonDefaults.buttonColors(
-                            color = if (currentDirectory == "/storage/emulated/0") MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surfaceContainerHighest,
-                            contentColor = if (currentDirectory == "/storage/emulated/0") MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
-                        ),
-                        insideMargin = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.weight(1.2f).clip(RoundedCornerShape(20.dp))
-                    ) {
-                        Text("内部存储", fontSize = 12.sp)
-                    }
-
-                    Button(
-                        onClick = { currentDirectory = RootFileManager.DEFAULT_SHSO_DIR },
-                        colors = ButtonDefaults.buttonColors(
-                            color = if (currentDirectory == RootFileManager.DEFAULT_SHSO_DIR) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surfaceContainerHighest,
-                            contentColor = if (currentDirectory == RootFileManager.DEFAULT_SHSO_DIR) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
-                        ),
-                        insideMargin = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        modifier = Modifier.weight(1.3f).clip(RoundedCornerShape(20.dp))
-                    ) {
-                        Text("shso目录", fontSize = 12.sp)
-                    }
-                }
+                Text(
+                    text = currentDirectory,
+                    style = MiuixTheme.textStyles.footnote1,
+                    fontFamily = FontFamily.Monospace,
+                    color = MiuixTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            // 路径行与列表区的分隔线
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(0.7.dp)
+                    .background(MiuixTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.6f))
+            )
 
             Box(
                 modifier = Modifier
@@ -323,32 +342,30 @@ fun FilePage(
                     }
                 } else {
                     LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        modifier = Modifier.fillMaxSize()
                     ) {
                         itemsIndexed(displayFileList, key = { index, item -> "${item.path}_$index" }) { _, item ->
                             val isExecutable = item.isExecutableScript || item.isExecutableBinary
                             val isFontFile = !item.isDirectory && (item.name.endsWith(".ttf", ignoreCase = true) || item.name.endsWith(".otf", ignoreCase = true))
 
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(MiuixTheme.colorScheme.surfaceContainer)
-                                    .combinedClickable(
-                                        onClick = {
-                                            if (item.isDirectory) {
-                                                currentDirectory = item.path
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .combinedClickable(
+                                            onClick = {
+                                                if (item.isDirectory) {
+                                                    currentDirectory = item.path
+                                                }
+                                            },
+                                            onLongClick = {
+                                                selectedItem = item
+                                                showActionDialog = true
                                             }
-                                        },
-                                        onLongClick = {
-                                            selectedItem = item
-                                            showActionDialog = true
-                                        }
-                                    )
-                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                                        )
+                                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                 Box(
                                     modifier = Modifier
                                         .size(38.dp)
@@ -448,6 +465,16 @@ fun FilePage(
                                         Text("预览", fontSize = 12.sp)
                                     }
                                 }
+                                }
+
+                                // inset 分割线：起点与文件名文本对齐（16 行内 padding + 38 图标 + 12 间距）
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 66.dp)
+                                        .height(0.7.dp)
+                                        .background(MiuixTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.6f))
+                                )
                             }
                         }
                     }
