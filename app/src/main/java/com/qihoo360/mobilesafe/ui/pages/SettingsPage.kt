@@ -447,7 +447,7 @@ fun SettingsPage(
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "v1.0.2 (Kernel.Extend)",
+                                text = "v1.0.2 (KernelEX)",
                                 style = MiuixTheme.textStyles.footnote1,
                                 color = MiuixTheme.colorScheme.onSurfaceSecondary,
                                 textAlign = TextAlign.Start
