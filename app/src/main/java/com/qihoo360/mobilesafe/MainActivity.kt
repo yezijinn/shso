@@ -28,7 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import java.io.File
+import androidx.compose.ui.text.font.FontFamily
 import com.qihoo360.mobilesafe.data.AppSettings
 import com.qihoo360.mobilesafe.data.RootService
 import com.qihoo360.mobilesafe.ui.components.DockBar
@@ -39,20 +39,10 @@ import com.qihoo360.mobilesafe.ui.pages.SettingsPage
 import com.qihoo360.mobilesafe.ui.pages.SplashPage
 import com.qihoo360.mobilesafe.ui.pages.TerminalPage
 import kotlinx.coroutines.launch
-import androidx.compose.ui.text.font.Font
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.TextStyles
 import top.yukonga.miuix.kmp.theme.ThemeController
-
-val AppFontFamily = FontFamily(
-    Font(R.font.app_font, FontWeight.Normal),
-    Font(R.font.app_font, FontWeight.Medium),
-    Font(R.font.app_font, FontWeight.Bold),
-    Font(R.font.app_font, FontWeight.SemiBold)
-)
 
 @Composable
 fun createCustomTextStyles(fontFamily: FontFamily): TextStyles {
@@ -108,26 +98,8 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
-            val activeFontFamily = remember(appSettings.useCustomFont, appSettings.customFontPath) {
-                if (appSettings.useCustomFont) {
-                    if (appSettings.customFontPath.isNotEmpty()) {
-                        val file = File(appSettings.customFontPath)
-                        if (file.exists()) {
-                            try {
-                                FontFamily(android.graphics.Typeface.createFromFile(file))
-                            } catch (_: Exception) {
-                                AppFontFamily
-                            }
-                        } else {
-                            AppFontFamily
-                        }
-                    } else {
-                        AppFontFamily
-                    }
-                } else {
-                    FontFamily.Default
-                }
-            }
+            // APP 全局固定使用等宽字体（Typeface.MONOSPACE），不随系统/自定义字体变化
+            val activeFontFamily = FontFamily.Monospace
 
             val customTextStyles = createCustomTextStyles(activeFontFamily)
 
