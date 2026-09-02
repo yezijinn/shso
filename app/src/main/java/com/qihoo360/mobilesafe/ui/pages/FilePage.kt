@@ -1,4 +1,4 @@
-// Copyright 2026, KernelEX contributors
+// Copyright 2026, shso contributors
 // SPDX-License-Identifier: Apache-2.0
 
 package com.qihoo360.mobilesafe.ui.pages
@@ -157,7 +157,7 @@ fun FilePage(
     }
 
     LaunchedEffect(currentDirectory) {
-        RootFileManager.ensureKernelEXDir()
+        RootFileManager.ensureShsoDir()
         refresh()
     }
 
@@ -290,15 +290,15 @@ fun FilePage(
                     }
 
                     Button(
-                        onClick = { currentDirectory = RootFileManager.DEFAULT_KERNEL_EX_DIR },
+                        onClick = { currentDirectory = RootFileManager.DEFAULT_SHSO_DIR },
                         colors = ButtonDefaults.buttonColors(
-                            color = if (currentDirectory == RootFileManager.DEFAULT_KERNEL_EX_DIR) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surfaceContainerHighest,
-                            contentColor = if (currentDirectory == RootFileManager.DEFAULT_KERNEL_EX_DIR) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
+                            color = if (currentDirectory == RootFileManager.DEFAULT_SHSO_DIR) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surfaceContainerHighest,
+                            contentColor = if (currentDirectory == RootFileManager.DEFAULT_SHSO_DIR) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
                         ),
                         insideMargin = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                         modifier = Modifier.weight(1.3f).clip(RoundedCornerShape(20.dp))
                     ) {
-                        Text("KernelEX目录", fontSize = 12.sp)
+                        Text("shso目录", fontSize = 12.sp)
                     }
                 }
             }
@@ -597,13 +597,13 @@ fun FilePage(
                     onClick = {
                         showActionDialog = false
                         scope.launch {
-                            val (success, resultPath) = RootFileManager.addFileToKernelEX(
+                            val (success, resultPath) = RootFileManager.addFileToShso(
                                 sourcePath = item.path,
                                 useIndependentFolder = appSettings.useIndependentFolder,
                                 autoDeleteSource = appSettings.autoDeleteAfterAdding
                             )
                             if (success) {
-                                feedbackMessage = "已添加到 KernelEX: $resultPath"
+                                feedbackMessage = "已添加到 shso: $resultPath"
                                 refresh()
                                 if (appSettings.autoExecuteAfterAdding && (item.isExecutableScript || item.isExecutableBinary)) {
                                     onExecuteFileAndNavigate(resultPath)
@@ -619,7 +619,7 @@ fun FilePage(
                         contentColor = MiuixTheme.colorScheme.onPrimary
                     )
                 ) {
-                    Text("添加到KernelEX")
+                    Text("添加到shso")
                 }
 
                 Button(
@@ -847,7 +847,7 @@ fun FilePage(
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            text = if (customTestText.isNotEmpty()) customTestText else "KernelEX 任务调度引擎",
+                            text = if (customTestText.isNotEmpty()) customTestText else "shso 任务调度引擎",
                             fontFamily = targetFontFamily,
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold,

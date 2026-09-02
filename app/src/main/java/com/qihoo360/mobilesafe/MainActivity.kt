@@ -1,4 +1,4 @@
-// Copyright 2026, KernelEX contributors
+// Copyright 2026, shso contributors
 // SPDX-License-Identifier: Apache-2.0
 
 package com.qihoo360.mobilesafe
@@ -12,14 +12,22 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,9 +37,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.qihoo360.mobilesafe.data.AppSettings
+import com.qihoo360.mobilesafe.data.PermissionChecker
 import com.qihoo360.mobilesafe.data.RootService
 import com.qihoo360.mobilesafe.ui.components.DockBar
+import com.qihoo360.mobilesafe.ui.components.TerminalIcon
 import com.qihoo360.mobilesafe.ui.pages.FilePage
 import com.qihoo360.mobilesafe.ui.pages.HomePage
 import com.qihoo360.mobilesafe.ui.pages.PermissionGatePage
@@ -39,6 +56,8 @@ import com.qihoo360.mobilesafe.ui.pages.SettingsPage
 import com.qihoo360.mobilesafe.ui.pages.SplashPage
 import com.qihoo360.mobilesafe.ui.pages.TerminalPage
 import kotlinx.coroutines.launch
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.TextStyles
@@ -148,6 +167,33 @@ fun AppRootContent(appSettings: AppSettings) {
 fun MainContainer(appSettings: AppSettings) {
     val pagerState = rememberPagerState(initialPage = 0, pageCount = { 4 })
     val coroutineScope = rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // 终端 ROOT 门禁状态：null=检测中，false=未获得，true=已获得
+    var rootGranted by remember { mutableStateOf<Boolean?>(null) }
+
+    fun refreshRootGranted() {
+        // PermissionChecker.hasRootAccess() 内部在 IO 线程执行带超时的 su 探测
+        coroutineScope.launch {
+            rootGranted = PermissionChecker.hasRootAccess()
+        }
+    }
+
+    // 首次进入即检测；每次回到前台（用户授权完跳回/切换页面）自动重查
+    LaunchedEffect(Unit) {
+        refreshRootGranted()
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refreshRootGranted()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -168,7 +214,13 @@ fun MainContainer(appSettings: AppSettings) {
                         }
                     }
                 )
-                1 -> TerminalPage(appSettings = appSettings)
+                // 终端页仅在确认 ROOT 后渲染；检测中/未获得一律显示 ROOT 占位页，
+                // 保证无 ROOT 用户无论通过点击、滑动还是跳转都看不到 TerminalPage
+                1 -> if (rootGranted == true) {
+                    TerminalPage(appSettings = appSettings)
+                } else {
+                    RootRequiredNotice()
+                }
                 2 -> FilePage(
                     appSettings = appSettings,
                     onExecuteFileAndNavigate = { filePath ->
@@ -190,7 +242,45 @@ fun MainContainer(appSettings: AppSettings) {
                         pagerState.animateScrollToPage(targetPage)
                     }
                 },
+                terminalLocked = rootGranted != true,
                 modifier = Modifier.align(Alignment.BottomCenter)
+            )
+        }
+    }
+}
+
+/**
+ * 无 ROOT 时终端页的占位内容：居中红色警示，提示终端功能不可用。
+ */
+@Composable
+private fun RootRequiredNotice() {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.padding(horizontal = 32.dp)
+        ) {
+            Icon(
+                imageVector = TerminalIcon,
+                contentDescription = null,
+                tint = Color(0xFFFF5252),
+                modifier = Modifier.size(64.dp)
+            )
+            Text(
+                text = "需要 ROOT 权限",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFFFF5252),
+                textAlign = TextAlign.Center
+            )
+            Text(
+                text = "未检测到 ROOT 权限，终端功能不可用",
+                fontSize = 13.sp,
+                color = MiuixTheme.colorScheme.onSurfaceSecondary,
+                textAlign = TextAlign.Center
             )
         }
     }
