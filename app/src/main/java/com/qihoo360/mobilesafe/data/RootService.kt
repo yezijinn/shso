@@ -1,7 +1,7 @@
 // Copyright 2026, KernelEX contributors
 // SPDX-License-Identifier: Apache-2.0
 
-package Kernel.Extend.data
+package com.qihoo360.mobilesafe.data
 
 import android.os.Build
 import androidx.compose.runtime.getValue

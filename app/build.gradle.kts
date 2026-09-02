@@ -8,11 +8,11 @@ plugins {
 }
 
 android {
-    namespace = "Kernel.Extend"
+    namespace = "com.qihoo360.mobilesafe"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "Kernel.Extend"
+        applicationId = "com.qihoo360.mobilesafe"
         minSdk = 26
         targetSdk = 35
         versionCode = 3

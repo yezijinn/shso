@@ -1,7 +1,7 @@
 // Copyright 2026, KernelEX contributors
 // SPDX-License-Identifier: Apache-2.0
 
-package Kernel.Extend
+package com.qihoo360.mobilesafe
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -29,15 +29,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import java.io.File
-import Kernel.Extend.data.AppSettings
-import Kernel.Extend.data.RootService
-import Kernel.Extend.ui.components.DockBar
-import Kernel.Extend.ui.pages.FilePage
-import Kernel.Extend.ui.pages.HomePage
-import Kernel.Extend.ui.pages.PermissionGatePage
-import Kernel.Extend.ui.pages.SettingsPage
-import Kernel.Extend.ui.pages.SplashPage
-import Kernel.Extend.ui.pages.TerminalPage
+import com.qihoo360.mobilesafe.data.AppSettings
+import com.qihoo360.mobilesafe.data.RootService
+import com.qihoo360.mobilesafe.ui.components.DockBar
+import com.qihoo360.mobilesafe.ui.pages.FilePage
+import com.qihoo360.mobilesafe.ui.pages.HomePage
+import com.qihoo360.mobilesafe.ui.pages.PermissionGatePage
+import com.qihoo360.mobilesafe.ui.pages.SettingsPage
+import com.qihoo360.mobilesafe.ui.pages.SplashPage
+import com.qihoo360.mobilesafe.ui.pages.TerminalPage
 import kotlinx.coroutines.launch
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily

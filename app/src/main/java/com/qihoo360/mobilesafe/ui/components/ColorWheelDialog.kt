@@ -1,7 +1,7 @@
 // Copyright 2026, KernelEX contributors
 // SPDX-License-Identifier: Apache-2.0
 
-package Kernel.Extend.ui.components
+package com.qihoo360.mobilesafe.ui.components
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background

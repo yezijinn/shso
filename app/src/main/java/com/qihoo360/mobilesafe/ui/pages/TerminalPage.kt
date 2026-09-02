@@ -1,7 +1,7 @@
 // Copyright 2026, KernelEX contributors
 // SPDX-License-Identifier: Apache-2.0
 
-package Kernel.Extend.ui.pages
+package com.qihoo360.mobilesafe.ui.pages
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -48,9 +48,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import Kernel.Extend.data.AnsiParser
-import Kernel.Extend.data.AppSettings
-import Kernel.Extend.data.RootService
+import com.qihoo360.mobilesafe.data.AnsiParser
+import com.qihoo360.mobilesafe.data.AppSettings
+import com.qihoo360.mobilesafe.data.RootService
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults

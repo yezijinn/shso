@@ -1,7 +1,7 @@
 // Copyright 2026, KernelEX contributors
 // SPDX-License-Identifier: Apache-2.0
 
-package Kernel.Extend.ui.pages
+package com.qihoo360.mobilesafe.ui.pages
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -52,10 +52,10 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import android.os.PowerManager
 import java.io.File
-import Kernel.Extend.AppFontFamily
-import Kernel.Extend.R
-import Kernel.Extend.data.AppSettings
-import Kernel.Extend.ui.components.ColorWheelDialog
+import com.qihoo360.mobilesafe.AppFontFamily
+import com.qihoo360.mobilesafe.R
+import com.qihoo360.mobilesafe.data.AppSettings
+import com.qihoo360.mobilesafe.ui.components.ColorWheelDialog
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
