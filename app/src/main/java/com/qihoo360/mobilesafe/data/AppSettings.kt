@@ -51,7 +51,7 @@ class AppSettings private constructor(context: Context) {
     var fileListFontSize by mutableFloatStateOf(prefs.getFloat(KEY_FILE_LIST_FONT_SIZE, DEFAULT_FILE_LIST_FONT_SIZE))
         private set
 
-    var showHiddenFiles by mutableStateOf(prefs.getBoolean(KEY_SHOW_HIDDEN_FILES, true))
+    var showHiddenFiles by mutableStateOf(prefs.getBoolean(KEY_SHOW_HIDDEN_FILES, false))
         private set
 
     var fileSortMode by mutableIntStateOf(prefs.getInt(KEY_FILE_SORT_MODE, FILE_SORT_NAME_ASC))
@@ -155,7 +155,7 @@ class AppSettings private constructor(context: Context) {
 
         private const val MIN_FILE_LIST_FONT_SIZE = 12f
         private const val MAX_FILE_LIST_FONT_SIZE = 20f
-        private const val DEFAULT_FILE_LIST_FONT_SIZE = 16f
+        private const val DEFAULT_FILE_LIST_FONT_SIZE = 12f
 
         private const val PREF_NAME = "shso_settings"
         private const val KEY_USE_INDEPENDENT_FOLDER = "use_independent_folder"
