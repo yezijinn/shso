@@ -40,19 +40,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import android.os.PowerManager
-import java.io.File
-import com.qihoo360.mobilesafe.AppFontFamily
 import com.qihoo360.mobilesafe.R
 import com.qihoo360.mobilesafe.data.AppSettings
 import com.qihoo360.mobilesafe.ui.components.ColorWheelDialog
@@ -60,22 +54,14 @@ import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.DropdownItem
-import top.yukonga.miuix.kmp.basic.HorizontalDivider
-import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
-import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.basic.ArrowRight
-import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.OverlaySpinnerPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
 
 @Composable
 fun SettingsPage(
@@ -101,40 +87,6 @@ fun SettingsPage(
     }
     val isMaterial = appSettings.appThemeOption == AppSettings.THEME_MATERIAL
     var showColorDialog by remember { mutableStateOf(false) }
-    var showFontDialog by remember { mutableStateOf(false) }
-
-    val fontPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            try {
-                var fileName = "custom_font.ttf"
-                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                    val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                    if (nameIndex != -1 && cursor.moveToFirst()) {
-                        fileName = cursor.getString(nameIndex) ?: "custom_font.ttf"
-                    }
-                }
-
-                val destFile = File(context.filesDir, "custom_app_font.ttf")
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    destFile.outputStream().use { output ->
-                        input.copyTo(output)
-                    }
-                }
-
-                val typeface = android.graphics.Typeface.createFromFile(destFile)
-                if (typeface != null) {
-                    appSettings.setCustomFont(destFile.absolutePath, fileName)
-                    Toast.makeText(context, "成功加载字体: $fileName", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "字体解析失败，请选择有效的 TTF / OTF 文件", Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: Exception) {
-                Toast.makeText(context, "加载字体失败: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
 
     val darkModeOptions = remember {
         listOf(
@@ -271,58 +223,6 @@ fun SettingsPage(
                     }
                 )
 
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(if (isMaterial) RoundedCornerShape(16.dp) else RoundedCornerShape(12.dp))
-                        .clickable { appSettings.setCustomFontEnabled(!appSettings.useCustomFont) }
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "自定义软件字体",
-                            fontSize = MiuixTheme.textStyles.headline1.fontSize,
-                            fontWeight = FontWeight.Medium,
-                            color = MiuixTheme.colorScheme.onSurface
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = if (appSettings.useCustomFont) {
-                                if (appSettings.customFontPath.isNotEmpty() && appSettings.customFontName.isNotEmpty())
-                                    "当前已启用：${appSettings.customFontName}"
-                                else
-                                    "当前已启用：内置字体"
-                            } else {
-                                "当前使用：系统默认字体"
-                            },
-                            fontSize = MiuixTheme.textStyles.body2.fontSize,
-                            color = MiuixTheme.colorScheme.onSurfaceSecondary
-                        )
-                    }
-
-                    IconButton(
-                        onClick = { showFontDialog = true },
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = MiuixIcons.Settings,
-                            contentDescription = "配置字体",
-                            tint = MiuixTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(6.dp))
-
-                    Switch(
-                        checked = appSettings.useCustomFont,
-                        onCheckedChange = { enable ->
-                            appSettings.setCustomFontEnabled(enable)
-                        }
-                    )
-                }
-
                 OverlaySpinnerPreference(
                     title = "深色模式",
                     items = darkModeOptions,
@@ -447,7 +347,7 @@ fun SettingsPage(
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "v1.0.2 (KernelEX)",
+                                text = "v9.0.2 (KernelEX)",
                                 style = MiuixTheme.textStyles.footnote1,
                                 color = MiuixTheme.colorScheme.onSurfaceSecondary,
                                 textAlign = TextAlign.Start
@@ -455,84 +355,20 @@ fun SettingsPage(
                         }
                     }
 
-                    Text(
-                        text = "KernelEX 是一款专为 Android 打造的高性能 ROOT 执行工具。支持在安全、高效的环境中运行 .sh 脚本与 .so 二进制文件，提供交互式终端、ANSI 着色以及强大的全盘 ROOT 文件管理能力。",
-                        style = MiuixTheme.textStyles.body2,
-                        color = MiuixTheme.colorScheme.onSurfaceSecondary,
-                        lineHeight = 20.sp,
-                        textAlign = TextAlign.Start,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-                    Row(
+                    Button(
+                        onClick = { openInBrowserOnly("https://github.com/yezijinn") },
+                        colors = ButtonDefaults.buttonColors(
+                            color = MiuixTheme.colorScheme.primary,
+                            contentColor = MiuixTheme.colorScheme.onPrimary
+                        ),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable {
-                                openInBrowserOnly("https://github.com/KernelExtend/KernelEX")
-                            }
-                            .padding(vertical = 8.dp, horizontal = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                            .height(44.dp)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Image(
-                                painterResource(id = R.drawable.ic_github),
-                                contentDescription = "GitHub",
-                                modifier = Modifier.size(24.dp)
-                            )
-                            Text(
-                                text = "在 GitHub 上查看源代码",
-                                style = MiuixTheme.textStyles.body2,
-                                fontWeight = FontWeight.Medium,
-                                color = MiuixTheme.colorScheme.onSurface
-                            )
-                        }
-                        Icon(
-                            imageVector = MiuixIcons.Basic.ArrowRight,
-                            contentDescription = null,
-                            tint = MiuixTheme.colorScheme.onSurfaceSecondary.copy(0.6f),
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable {
-                                openInBrowserOnly("https://t.me/KernelEX")
-                            }
-                            .padding(vertical = 8.dp, horizontal = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Image(
-                                painterResource(id = R.drawable.ic_telegram),
-                                contentDescription = "Telegram",
-                                modifier = Modifier.size(24.dp)
-                            )
-                            Text(
-                                text = "加入我们的 Telegram 频道",
-                                style = MiuixTheme.textStyles.body2,
-                                fontWeight = FontWeight.Medium,
-                                color = MiuixTheme.colorScheme.onSurface
-                            )
-                        }
-                        Icon(
-                            imageVector = MiuixIcons.Basic.ArrowRight,
-                            contentDescription = null,
-                            tint = MiuixTheme.colorScheme.onSurfaceSecondary.copy(0.6f),
-                            modifier = Modifier.size(18.dp)
+                        Text(
+                            text = "Github",
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
                         )
                     }
                 }
@@ -552,136 +388,5 @@ fun SettingsPage(
             }
         )
     }
-
-    if (showFontDialog) {
-        val previewFontFamily = remember(appSettings.customFontPath, appSettings.useCustomFont) {
-            if (appSettings.useCustomFont) {
-                if (appSettings.customFontPath.isNotEmpty() && File(appSettings.customFontPath).exists()) {
-                    try {
-                        FontFamily(android.graphics.Typeface.createFromFile(File(appSettings.customFontPath)))
-                    } catch (_: Exception) {
-                        AppFontFamily
-                    }
-                } else {
-                    AppFontFamily
-                }
-            } else {
-                FontFamily.Default
-            }
-        }
-
-        WindowDialog(
-            show = true,
-            title = "自定义软件字体",
-            summary = "支持选择 .ttf 或 .otf 字体文件",
-            onDismissRequest = { showFontDialog = false }
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "当前字体：",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
-                    )
-                    Text(
-                        text = if (appSettings.useCustomFont) {
-                            if (appSettings.customFontName.isNotEmpty()) appSettings.customFontName else "内置字体"
-                        } else {
-                            "系统默认字体"
-                        },
-                        color = MiuixTheme.colorScheme.primary,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(MiuixTheme.colorScheme.surfaceContainerHighest)
-                        .padding(12.dp)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            text = "字体实时预览 Preview",
-                            fontSize = 10.sp,
-                            color = MiuixTheme.colorScheme.onSurfaceSecondary
-                        )
-                        Text(
-                            text = "KernelEX 任务调度引擎",
-                            fontFamily = previewFontFamily,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MiuixTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz 0123456789",
-                            fontFamily = previewFontFamily,
-                            fontSize = 12.sp,
-                            color = MiuixTheme.colorScheme.onSurface
-                        )
-                    }
-                }
-
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = {
-                            fontPickerLauncher.launch("*/*")
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            color = MiuixTheme.colorScheme.primary,
-                            contentColor = MiuixTheme.colorScheme.onPrimary
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("上传 / 选择字体文件 (.ttf / .otf)")
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                val oldFile = File(context.filesDir, "custom_app_font.ttf")
-                                if (oldFile.exists()) oldFile.delete()
-                                appSettings.resetCustomFont()
-                                Toast.makeText(context, "已恢复默认字体", Toast.LENGTH_SHORT).show()
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                color = MiuixTheme.colorScheme.surfaceContainerHighest,
-                                contentColor = MiuixTheme.colorScheme.error
-                            ),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("恢复默认字体")
-                        }
-
-                        Button(
-                            onClick = { showFontDialog = false },
-                            colors = ButtonDefaults.buttonColors(
-                                color = MiuixTheme.colorScheme.surfaceContainerHighest,
-                                contentColor = MiuixTheme.colorScheme.onSurface
-                            ),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("完成")
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
+
