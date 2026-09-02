@@ -363,7 +363,7 @@ fun FilePage(
                                                 showActionDialog = true
                                             }
                                         )
-                                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                                        .padding(horizontal = 16.dp, vertical = 0.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                 Box(
