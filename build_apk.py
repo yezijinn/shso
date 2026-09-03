@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-KernelEX 一键编译脚本
-=====================
+shso 一键编译脚本
+====================
 
 功能：自动完成环境预检 → 依赖校正 → Gradle 构建 → 产物签名校验 → 结果汇总，
       一步产出可直接安装的 Release APK。
@@ -16,7 +16,7 @@ KernelEX 一键编译脚本
 依赖（本机环境，见 C:\\ENVIRONMENT.md）：
     - JDK 17      : C:\\Program Files\\Eclipse Adoptium\\jdk-17.0.20+8   （运行 Gradle）
     - Android SDK : C:\\Android\\sdk                                     （platforms;android-37.0 / build-tools;37.0.0）
-    - MIUIX 源码  : 与本项目同级目录 ../../MIUIX（即 D:\\WorkBuddy_Project\\MIUIX，Gradle 组合构建依赖）
+    - 原生控件    : 100% 采用 AndroidX Compose Material 3 原生控件（自包含工程，无仓库外 UI 组件库）
     - 签名密钥    : E:\\JinnKeyStores\\Kernel.Extend\\release.jks          （alias: kernel.extend）
 
 作者：Jinn / 小梦
@@ -50,11 +50,10 @@ for _stream in (sys.stdout, sys.stderr):
 # 常量配置
 # --------------------------------------------------------------------------- #
 PROJECT_DIR: Path = Path(__file__).resolve().parent
-PROJECT_NAME: str = "KernelEX"
+PROJECT_NAME: str = "shso"
 
 JAVA_HOME = Path(r"C:\Program Files\Eclipse Adoptium\jdk-17.0.20+8")
 ANDROID_SDK = Path(r"C:\Android\sdk")
-MIUIX_DIR = PROJECT_DIR.parent.parent / "MIUIX"  # 与 settings.gradle.kts 的 ../../MIUIX 一致
 
 # 签名配置（与 app/build.gradle.kts 保持一致）
 SIGNING = {
@@ -254,28 +253,19 @@ def precheck() -> bool:
         log(FAIL, f"构建工具缺失：{apksigner}")
         passed = False
 
-    # 5. MIUIX 组合构建源码（7 个子模块 + build-plugins）
-    required_modules = [
-        "build-plugins",
-        "miuix-core",
-        "miuix-ui",
-        "miuix-preference",
-        "miuix-icons",
-        "miuix-blur",
-        "miuix-squircle",
-        "miuix-shader",
-    ]
-    if MIUIX_DIR.is_dir():
-        missing = [m for m in required_modules if not (MIUIX_DIR / m).is_dir()]
-        if missing:
-            log(FAIL, f"MIUIX 模块缺失：{', '.join(missing)}")
-            passed = False
-        else:
-            log(OK, f"MIUIX 源码就绪：{MIUIX_DIR}（{len(required_modules)} 个模块齐全）")
-    else:
-        log(FAIL, f"MIUIX 源码缺失：{MIUIX_DIR}")
-        log(INFO, "  修复：git clone --depth 1 https://github.com/compose-miuix-ui/miuix.git \"%s\"" % MIUIX_DIR)
+    # 5. 原生 Material 3 校验（自包含工程，禁止回退到仓库外 UI 组件库）
+    settings_file = PROJECT_DIR / "settings.gradle.kts"
+    app_build = PROJECT_DIR / "app" / "build.gradle.kts"
+    settings_txt = settings_file.read_text(encoding="utf-8") if settings_file.is_file() else ""
+    app_txt = app_build.read_text(encoding="utf-8") if app_build.is_file() else ""
+    if any(t in settings_txt.lower() for t in ("includebuild", "../", "..\\")):
+        log(FAIL, "检测到 settings.gradle.kts 引用仓库外工程/模块，自包含约束被破坏")
         passed = False
+    elif "material3" not in app_txt:
+        log(FAIL, "app/build.gradle.kts 未声明 Material 3 依赖，原生控件迁移未完成")
+        passed = False
+    else:
+        log(OK, "原生 Material 3 校验通过：自包含工程，无仓库外 UI 组件库")
 
     # 6. 签名密钥
     ks = SIGNING["keystore"]
@@ -483,7 +473,7 @@ def summarize(apk: Optional[Path], variant: str, code: int, schemes: Optional[di
 # --------------------------------------------------------------------------- #
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="KernelEX 一键编译脚本：环境预检 → 依赖校正 → Gradle 构建 → 签名校验",
+        description="shso 一键编译脚本：环境预检 → 依赖校正 → Gradle 构建 → 签名校验",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(

@@ -3,11 +3,13 @@
 
 package com.qihoo360.mobilesafe.ui.components
 
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,8 +20,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+
+
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -38,17 +48,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.qihoo360.mobilesafe.data.FileItem
 import com.qihoo360.mobilesafe.data.RootFileManager
+import com.qihoo360.mobilesafe.ui.theme.AuroraTextStyles
+import com.qihoo360.mobilesafe.ui.theme.AuroraTokens
+import com.qihoo360.mobilesafe.ui.theme.AuroraWindowDialog
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.Button
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.basic.Check
-import top.yukonga.miuix.kmp.icon.extended.Back
-import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
 import java.io.File
 
 @Composable
@@ -86,7 +89,7 @@ fun BuiltInFilePicker(
         loadDirectory(initialDirectory)
     }
 
-    WindowDialog(
+    AuroraWindowDialog(
         show = show,
         title = "选择执行文件",
         summary = "支持选择 .sh 脚本与 .so 二进制程序",
@@ -101,8 +104,8 @@ fun BuiltInFilePicker(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(MiuixTheme.colorScheme.surfaceContainerHighest.copy(0.6f))
+                    .clip(RoundedCornerShape(0.dp))
+                    .background(AuroraTokens.SurfaceHover.copy(0.6f))
                     .padding(horizontal = 6.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
@@ -118,15 +121,15 @@ fun BuiltInFilePicker(
                         enabled = currentDir != "/"
                     ) {
                         Icon(
-                            imageVector = MiuixIcons.Back,
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "上一级",
-                            tint = if (currentDir != "/") MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.disabledOnSecondaryVariant
+                            tint = if (currentDir != "/") AuroraTokens.Accent else AuroraTokens.TextDisabled
                         )
                     }
 
                     Text(
                         text = currentDir,
-                        style = MiuixTheme.textStyles.footnote1,
+                        style = AuroraTextStyles.footnote1,
                         fontFamily = FontFamily.Monospace,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -141,10 +144,10 @@ fun BuiltInFilePicker(
                     Button(
                         onClick = { loadDirectory("/") },
                         colors = ButtonDefaults.buttonColors(
-                            color = if (currentDir == "/") MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surface,
-                            contentColor = if (currentDir == "/") MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
+                            containerColor = if (currentDir == "/") AuroraTokens.Accent else AuroraTokens.Surface,
+                            contentColor = if (currentDir == "/") AuroraTokens.OnAccent else AuroraTokens.Text
                         ),
-                        insideMargin = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
                         modifier = Modifier.weight(1f)
                     ) {
                         Text("根目录", fontSize = 11.sp)
@@ -153,10 +156,10 @@ fun BuiltInFilePicker(
                     Button(
                         onClick = { loadDirectory("/storage/emulated/0") },
                         colors = ButtonDefaults.buttonColors(
-                            color = if (currentDir == "/storage/emulated/0") MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surface,
-                            contentColor = if (currentDir == "/storage/emulated/0") MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
+                            containerColor = if (currentDir == "/storage/emulated/0") AuroraTokens.Accent else AuroraTokens.Surface,
+                            contentColor = if (currentDir == "/storage/emulated/0") AuroraTokens.OnAccent else AuroraTokens.Text
                         ),
-                        insideMargin = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
                         modifier = Modifier.weight(1.1f)
                     ) {
                         Text("内部存储", fontSize = 11.sp)
@@ -165,10 +168,10 @@ fun BuiltInFilePicker(
                     Button(
                         onClick = { loadDirectory(RootFileManager.DEFAULT_SHSO_DIR) },
                         colors = ButtonDefaults.buttonColors(
-                            color = if (currentDir == RootFileManager.DEFAULT_SHSO_DIR) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surface,
-                            contentColor = if (currentDir == RootFileManager.DEFAULT_SHSO_DIR) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
+                            containerColor = if (currentDir == RootFileManager.DEFAULT_SHSO_DIR) AuroraTokens.Accent else AuroraTokens.Surface,
+                            contentColor = if (currentDir == RootFileManager.DEFAULT_SHSO_DIR) AuroraTokens.OnAccent else AuroraTokens.Text
                         ),
-                        insideMargin = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
                         modifier = Modifier.weight(1.2f)
                     ) {
                         Text("shso", fontSize = 11.sp)
@@ -180,8 +183,8 @@ fun BuiltInFilePicker(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 280.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(MiuixTheme.colorScheme.surfaceContainerHighest.copy(0.3f))
+                    .clip(RoundedCornerShape(0.dp))
+                    .background(AuroraTokens.SurfaceHover.copy(0.3f))
             ) {
                 if (fileList.isEmpty() && !isLoading) {
                     Box(
@@ -192,8 +195,8 @@ fun BuiltInFilePicker(
                     ) {
                         Text(
                             text = "当前目录为空",
-                            style = MiuixTheme.textStyles.footnote1,
-                            color = MiuixTheme.colorScheme.onSurfaceSecondary
+                            style = AuroraTextStyles.footnote1,
+                            color = AuroraTokens.TextSecondary
                         )
                     }
                 } else {
@@ -205,9 +208,9 @@ fun BuiltInFilePicker(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(RoundedCornerShape(0.dp))
                                     .background(
-                                        if (isSelected) MiuixTheme.colorScheme.primary.copy(0.18f)
+                                        if (isSelected) AuroraTokens.Accent.copy(0.18f)
                                         else Color.Transparent
                                     )
                                     .clickable {
@@ -223,13 +226,13 @@ fun BuiltInFilePicker(
                                 Box(
                                     modifier = Modifier
                                         .size(30.dp)
-                                        .clip(CircleShape)
+                                        .clip(RoundedCornerShape(0.dp))
                                         .background(
                                             when {
-                                                item.isDirectory -> MiuixTheme.colorScheme.primary.copy(0.15f)
-                                                item.isExecutableScript -> Color(0xFF4CAF50).copy(0.2f)
-                                                item.isExecutableBinary -> Color(0xFF2196F3).copy(0.2f)
-                                                else -> MiuixTheme.colorScheme.surfaceContainerHighest
+                                                item.isDirectory -> AuroraTokens.Accent.copy(0.15f)
+                                                item.isExecutableScript -> AuroraTokens.Accent.copy(0.2f)
+                                                item.isExecutableBinary -> AuroraTokens.GlowBlue.copy(0.2f)
+                                                else -> AuroraTokens.SurfaceHover
                                             }
                                         ),
                                     contentAlignment = Alignment.Center
@@ -244,9 +247,10 @@ fun BuiltInFilePicker(
                                         fontSize = if (item.isDirectory || !isSupported) 14.sp else 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = when {
-                                            item.isExecutableScript -> Color(0xFF2E7D32)
-                                            item.isExecutableBinary -> Color(0xFF1565C0)
-                                            else -> MiuixTheme.colorScheme.onSurfaceSecondary
+                                            item.isDirectory -> AuroraTokens.Accent
+                                            item.isExecutableScript -> AuroraTokens.Accent
+                                            item.isExecutableBinary -> AuroraTokens.GlowBlue
+                                            else -> AuroraTokens.TextSecondary
                                         }
                                     )
                                 }
@@ -256,24 +260,24 @@ fun BuiltInFilePicker(
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         text = item.name,
-                                        style = MiuixTheme.textStyles.body2,
+                                        style = AuroraTextStyles.body2,
                                         fontWeight = FontWeight.Normal,
-                                        color = if (item.isDirectory || isSupported) MiuixTheme.colorScheme.onSurface else MiuixTheme.colorScheme.onSurfaceSecondary.copy(0.6f),
+                                        color = if (item.isDirectory || isSupported) AuroraTokens.Text else AuroraTokens.TextSecondary.copy(0.6f),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
                                         text = if (item.isDirectory) "文件夹" else item.formattedSize,
-                                        style = MiuixTheme.textStyles.footnote2,
-                                        color = MiuixTheme.colorScheme.onSurfaceSecondary
+                                        style = AuroraTextStyles.footnote2,
+                                        color = AuroraTokens.TextSecondary
                                     )
                                 }
 
                                 if (isSelected) {
                                     Icon(
-                                        imageVector = MiuixIcons.Basic.Check,
+                                        imageVector = Icons.Filled.Check,
                                         contentDescription = "已选中",
-                                        tint = MiuixTheme.colorScheme.primary,
+                                        tint = AuroraTokens.Accent,
                                         modifier = Modifier.size(18.dp)
                                     )
                                 }
@@ -291,8 +295,8 @@ fun BuiltInFilePicker(
                 Button(
                     onClick = onDismissRequest,
                     colors = ButtonDefaults.buttonColors(
-                        color = MiuixTheme.colorScheme.surfaceContainerHighest,
-                        contentColor = MiuixTheme.colorScheme.onSurface
+                        containerColor = AuroraTokens.SurfaceHover,
+                        contentColor = AuroraTokens.Text
                     )
                 ) {
                     Text("取消")
@@ -308,8 +312,8 @@ fun BuiltInFilePicker(
                         }
                     },
                     colors = ButtonDefaults.buttonColors(
-                        color = MiuixTheme.colorScheme.primary,
-                        contentColor = MiuixTheme.colorScheme.onPrimary
+                        containerColor = AuroraTokens.Accent,
+                        contentColor = AuroraTokens.OnAccent
                     )
                 ) {
                     Text("选定该文件")

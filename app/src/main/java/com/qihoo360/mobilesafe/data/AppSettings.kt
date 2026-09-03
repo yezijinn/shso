@@ -155,7 +155,7 @@ class AppSettings private constructor(context: Context) {
 
         private const val MIN_FILE_LIST_FONT_SIZE = 12f
         private const val MAX_FILE_LIST_FONT_SIZE = 20f
-        private const val DEFAULT_FILE_LIST_FONT_SIZE = 12f
+        private const val DEFAULT_FILE_LIST_FONT_SIZE = 15f
 
         private const val PREF_NAME = "shso_settings"
         private const val KEY_USE_INDEPENDENT_FOLDER = "use_independent_folder"
