@@ -3,7 +3,7 @@
 
 package com.qihoo360.mobilesafe.ui.components
 
-import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,8 +24,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+
+
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -46,11 +49,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import top.yukonga.miuix.kmp.basic.Button
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
+import com.qihoo360.mobilesafe.ui.theme.AuroraTextStyles
+import com.qihoo360.mobilesafe.ui.theme.AuroraTokens
+import com.qihoo360.mobilesafe.ui.theme.AuroraWindowDialog
 import kotlin.math.roundToInt
 
 private data class PresetColorItem(
@@ -116,7 +117,7 @@ fun ColorWheelDialog(
         )
     }
 
-    WindowDialog(
+    AuroraWindowDialog(
         show = show,
         title = "终端文字颜色",
         onDismissRequest = onDismissRequest
@@ -130,8 +131,8 @@ fun ColorWheelDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0xFF141416))
+                    .clip(RoundedCornerShape(0.dp))
+                    .background(AuroraTokens.BgDeep)
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
@@ -176,15 +177,15 @@ fun ColorWheelDialog(
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     text = "色相",
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = MiuixTheme.colorScheme.onSurfaceSecondary
+                    style = AuroraTextStyles.footnote2,
+                    color = AuroraTokens.TextSecondary
                 )
 
                 BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(34.dp)
-                        .clip(RoundedCornerShape(17.dp))
+                        .clip(RoundedCornerShape(0.dp))
                         .background(rainbowBrush)
                         .pointerInput(Unit) {
                             fun updateHue(x: Float, maxWidthPx: Float) {
@@ -217,12 +218,12 @@ fun ColorWheelDialog(
                         modifier = Modifier
                             .offset { IntOffset(thumbX.roundToInt(), with(density) { 3.dp.toPx().roundToInt() }) }
                             .size(thumbDiameter)
-                            .shadow(4.dp, CircleShape)
-                            .clip(CircleShape)
+                            .shadow(4.dp, RoundedCornerShape(0.dp))
+                            .clip(RoundedCornerShape(0.dp))
                             .background(Color.White)
-                            .border(2.dp, Color(0xFF222226), CircleShape)
+                            .border(2.dp, AuroraTokens.StrokeLight, RoundedCornerShape(0.dp))
                             .padding(3.dp)
-                            .clip(CircleShape)
+                            .clip(RoundedCornerShape(0.dp))
                             .background(Color.hsv(hue, 1f, 1f))
                     )
                 }
@@ -231,8 +232,8 @@ fun ColorWheelDialog(
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     text = "明暗",
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = MiuixTheme.colorScheme.onSurfaceSecondary
+                    style = AuroraTextStyles.footnote2,
+                    color = AuroraTokens.TextSecondary
                 )
 
                 val brightnessBrush = remember(hue, saturation) {
@@ -249,7 +250,7 @@ fun ColorWheelDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(34.dp)
-                        .clip(RoundedCornerShape(17.dp))
+                        .clip(RoundedCornerShape(0.dp))
                         .background(brightnessBrush)
                         .pointerInput(Unit) {
                             fun updateBrightness(x: Float, maxWidthPx: Float) {
@@ -281,12 +282,12 @@ fun ColorWheelDialog(
                         modifier = Modifier
                             .offset { IntOffset(thumbX.roundToInt(), with(density) { 3.dp.toPx().roundToInt() }) }
                             .size(thumbDiameter)
-                            .shadow(4.dp, CircleShape)
-                            .clip(CircleShape)
+                            .shadow(4.dp, RoundedCornerShape(0.dp))
+                            .clip(RoundedCornerShape(0.dp))
                             .background(Color.White)
-                            .border(2.dp, Color(0xFF222226), CircleShape)
+                            .border(2.dp, AuroraTokens.StrokeLight, RoundedCornerShape(0.dp))
                             .padding(3.dp)
-                            .clip(CircleShape)
+                            .clip(RoundedCornerShape(0.dp))
                             .background(currentColor)
                     )
                 }
@@ -295,8 +296,8 @@ fun ColorWheelDialog(
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     text = "预设",
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = MiuixTheme.colorScheme.onSurfaceSecondary
+                    style = AuroraTextStyles.footnote2,
+                    color = AuroraTokens.TextSecondary
                 )
 
                 LazyVerticalGrid(
@@ -314,15 +315,15 @@ fun ColorWheelDialog(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(28.dp)
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(0.dp))
                                 .background(
                                     if (isSelected) item.color.copy(alpha = 0.25f)
-                                    else MiuixTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.6f)
+                                    else AuroraTokens.SurfaceHover.copy(alpha = 0.6f)
                                 )
                                 .border(
                                     width = if (isSelected) 1.5.dp else 0.dp,
                                     color = if (isSelected) item.color else Color.Transparent,
-                                    shape = RoundedCornerShape(8.dp)
+                                    shape = RoundedCornerShape(0.dp)
                                 )
                                 .clickable {
                                     val hsv = FloatArray(3)
@@ -338,19 +339,19 @@ fun ColorWheelDialog(
                             Box(
                                 modifier = Modifier
                                     .size(12.dp)
-                                    .clip(CircleShape)
+                                    .clip(RoundedCornerShape(0.dp))
                                     .background(item.color)
                                     .border(
                                         width = 1.dp,
                                         color = if (item.color == Color.White) Color.Gray.copy(0.5f) else Color.Transparent,
-                                        shape = CircleShape
+                                        shape = RoundedCornerShape(0.dp)
                                     )
                             )
                             Text(
                                 text = item.name,
                                 fontSize = 10.sp,
                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isSelected) item.color else MiuixTheme.colorScheme.onSurface,
+                                color = if (isSelected) item.color else AuroraTokens.Text,
                                 maxLines = 1
                             )
                         }
@@ -368,8 +369,8 @@ fun ColorWheelDialog(
                 Button(
                     onClick = onDismissRequest,
                     colors = ButtonDefaults.buttonColors(
-                        color = MiuixTheme.colorScheme.surfaceContainerHighest,
-                        contentColor = MiuixTheme.colorScheme.onSurface
+                        containerColor = AuroraTokens.SurfaceHover,
+                        contentColor = AuroraTokens.Text
                     )
                 ) {
                     Text("取消", fontSize = 12.sp)
@@ -383,8 +384,8 @@ fun ColorWheelDialog(
                         onDismissRequest()
                     },
                     colors = ButtonDefaults.buttonColors(
-                        color = MiuixTheme.colorScheme.primary,
-                        contentColor = MiuixTheme.colorScheme.onPrimary
+                        containerColor = AuroraTokens.Accent,
+                        contentColor = AuroraTokens.OnAccent
                     )
                 ) {
                     Text("确定应用", fontWeight = FontWeight.Bold, fontSize = 12.sp)

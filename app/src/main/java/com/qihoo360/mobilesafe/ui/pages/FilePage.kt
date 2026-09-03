@@ -4,6 +4,7 @@
 package com.qihoo360.mobilesafe.ui.pages
 
 import android.widget.Toast
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -23,8 +24,20 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+
+
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,22 +58,14 @@ import androidx.compose.ui.unit.sp
 import com.qihoo360.mobilesafe.data.AppSettings
 import com.qihoo360.mobilesafe.data.FileItem
 import com.qihoo360.mobilesafe.data.RootFileManager
+import com.qihoo360.mobilesafe.ui.theme.AuroraTextStyles
+import com.qihoo360.mobilesafe.ui.theme.AuroraTokens
+import com.qihoo360.mobilesafe.ui.theme.AuroraWindowDialog
+import com.qihoo360.mobilesafe.ui.theme.auroraSwitchColors
+import com.qihoo360.mobilesafe.ui.theme.auroraTextFieldColors
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.Button
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.Scaffold
-import top.yukonga.miuix.kmp.basic.Slider
-import top.yukonga.miuix.kmp.basic.Switch
-import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Back
-import top.yukonga.miuix.kmp.icon.extended.Settings
-import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
 import java.io.File
 
 /**
@@ -99,10 +104,10 @@ private fun SortModePillButton(
     Button(
         onClick = onClick,
         colors = ButtonDefaults.buttonColors(
-            color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surfaceContainerHighest,
-            contentColor = if (selected) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
+            containerColor = if (selected) AuroraTokens.Accent else AuroraTokens.SurfaceHover,
+            contentColor = if (selected) AuroraTokens.OnAccent else AuroraTokens.Text
         ),
-        insideMargin = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
         modifier = modifier
     ) {
         Text(
@@ -128,12 +133,12 @@ private fun FileShortcutButton(
     Box(
         modifier = modifier
             .height(36.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(0.dp))
             .background(
                 if (selected) {
-                    MiuixTheme.colorScheme.primary
+                    AuroraTokens.Accent
                 } else {
-                    MiuixTheme.colorScheme.surfaceContainerHighest
+                    AuroraTokens.SurfaceHover
                 }
             )
             .clickable(onClick = onClick),
@@ -144,9 +149,9 @@ private fun FileShortcutButton(
             fontSize = 11.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             color = if (selected) {
-                MiuixTheme.colorScheme.onPrimary
+                AuroraTokens.OnAccent
             } else {
-                MiuixTheme.colorScheme.onSurface
+                AuroraTokens.Text
             },
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -219,7 +224,7 @@ fun FilePage(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MiuixTheme.colorScheme.surface)
+                    .background(AuroraTokens.Surface)
                     .statusBarsPadding()
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -229,8 +234,8 @@ fun FilePage(
                     modifier = Modifier
                         .weight(1f)
                         .height(36.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(MiuixTheme.colorScheme.surfaceContainerHighest)
+                        .clip(RoundedCornerShape(0.dp))
+                        .background(AuroraTokens.SurfaceHover)
                         .clickable(enabled = currentDirectory != "/") {
                             val parent = File(currentDirectory).parent ?: "/"
                             currentDirectory = parent
@@ -238,12 +243,12 @@ fun FilePage(
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = MiuixIcons.Back,
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                         contentDescription = "返回上一级",
                         tint = if (currentDirectory != "/") {
-                            MiuixTheme.colorScheme.onSurface
+                            AuroraTokens.Text
                         } else {
-                            MiuixTheme.colorScheme.disabledOnSecondaryVariant
+                            AuroraTokens.TextDisabled
                         },
                         modifier = Modifier.size(20.dp)
                     )
@@ -274,15 +279,15 @@ fun FilePage(
                     modifier = Modifier
                         .weight(1f)
                         .height(36.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(MiuixTheme.colorScheme.surfaceContainerHighest)
+                        .clip(RoundedCornerShape(0.dp))
+                        .background(AuroraTokens.SurfaceHover)
                         .clickable { showFileSettingsDialog = true },
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = MiuixIcons.Settings,
+                        imageVector = Icons.Filled.Settings,
                         contentDescription = "文件列表设置",
-                        tint = MiuixTheme.colorScheme.onSurface,
+                        tint = AuroraTokens.Text,
                         modifier = Modifier.size(20.dp)
                     )
                 }
@@ -308,9 +313,9 @@ fun FilePage(
             ) {
                 Text(
                     text = currentDirectory,
-                    style = MiuixTheme.textStyles.footnote1,
+                    style = AuroraTextStyles.footnote1,
                     fontFamily = FontFamily.Monospace,
-                    color = MiuixTheme.colorScheme.onSurface,
+                    color = AuroraTokens.Text,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -321,7 +326,7 @@ fun FilePage(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(0.7.dp)
-                    .background(MiuixTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.6f))
+                    .background(AuroraTokens.SurfaceHover.copy(alpha = 0.6f))
             )
 
             Box(
@@ -336,8 +341,8 @@ fun FilePage(
                     ) {
                         Text(
                             text = "当前目录为空",
-                            style = MiuixTheme.textStyles.body2,
-                            color = MiuixTheme.colorScheme.onSurfaceSecondary
+                            style = AuroraTextStyles.body2,
+                            color = AuroraTokens.TextSecondary
                         )
                     }
                 } else {
@@ -369,14 +374,14 @@ fun FilePage(
                                 Box(
                                     modifier = Modifier
                                         .size(38.dp)
-                                        .clip(CircleShape)
+                                        .clip(RoundedCornerShape(0.dp))
                                         .background(
                                             when {
-                                                item.isDirectory -> MiuixTheme.colorScheme.primary.copy(0.15f)
-                                                item.isExecutableScript -> Color(0xFF4CAF50).copy(0.2f)
-                                                item.isExecutableBinary -> Color(0xFF2196F3).copy(0.2f)
-                                                isFontFile -> Color(0xFF9C27B0).copy(0.2f)
-                                                else -> MiuixTheme.colorScheme.surfaceContainerHighest
+                                                item.isDirectory -> AuroraTokens.Accent.copy(0.15f)
+                                                item.isExecutableScript -> AuroraTokens.Accent.copy(0.2f)
+                                                item.isExecutableBinary -> AuroraTokens.GlowBlue.copy(0.2f)
+                                                isFontFile -> AuroraTokens.AccentViolet.copy(0.2f)
+                                                else -> AuroraTokens.SurfaceHover
                                             }
                                         ),
                                     contentAlignment = Alignment.Center
@@ -392,11 +397,11 @@ fun FilePage(
                                         fontSize = if (item.isDirectory || (!isExecutable && !isFontFile)) 16.sp else 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = when {
-                                            item.isDirectory -> MiuixTheme.colorScheme.primary
-                                            item.isExecutableScript -> Color(0xFF2E7D32)
-                                            item.isExecutableBinary -> Color(0xFF1565C0)
-                                            isFontFile -> Color(0xFF7B1FA2)
-                                            else -> MiuixTheme.colorScheme.onSurfaceSecondary
+                                            item.isDirectory -> AuroraTokens.Accent
+                                            item.isExecutableScript -> AuroraTokens.Accent
+                                            item.isExecutableBinary -> AuroraTokens.GlowBlue
+                                            isFontFile -> AuroraTokens.AccentViolet
+                                            else -> AuroraTokens.TextSecondary
                                         }
                                     )
                                 }
@@ -406,10 +411,10 @@ fun FilePage(
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         text = item.name,
-                                        style = MiuixTheme.textStyles.body1,
+                                        style = AuroraTextStyles.body1,
                                         fontSize = listFontSize,
                                         fontWeight = FontWeight.Normal,
-                                        color = MiuixTheme.colorScheme.onSurface,
+                                        color = AuroraTokens.Text,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -420,18 +425,18 @@ fun FilePage(
                                     ) {
                                         Text(
                                             text = if (item.isDirectory) "文件夹" else item.formattedSize,
-                                            style = MiuixTheme.textStyles.footnote2,
+                                            style = AuroraTextStyles.footnote2,
                                             fontSize = listSecondaryFontSize,
-                                            color = MiuixTheme.colorScheme.onSurfaceSecondary
+                                            color = AuroraTokens.TextSecondary
                                         )
 
                                         if (item.permissions.isNotEmpty()) {
                                             Text(
                                                 text = item.permissions,
-                                                style = MiuixTheme.textStyles.footnote2,
+                                                style = AuroraTextStyles.footnote2,
                                                 fontSize = listSecondaryFontSize,
                                                 fontFamily = FontFamily.Monospace,
-                                                color = MiuixTheme.colorScheme.onSurfaceSecondary.copy(0.7f)
+                                                color = AuroraTokens.TextSecondary.copy(0.7f)
                                             )
                                         }
                                     }
@@ -441,11 +446,11 @@ fun FilePage(
                                     Button(
                                         onClick = { onExecuteFileAndNavigate(item.path) },
                                         colors = ButtonDefaults.buttonColors(
-                                            color = MiuixTheme.colorScheme.primary,
-                                            contentColor = MiuixTheme.colorScheme.onPrimary
+                                            containerColor = AuroraTokens.Accent,
+                                            contentColor = AuroraTokens.OnAccent
                                         ),
-                                        insideMargin = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
-                                        modifier = Modifier.clip(RoundedCornerShape(20.dp))
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
+                                        modifier = Modifier.clip(RoundedCornerShape(0.dp))
                                     ) {
                                         Text("执行", fontSize = 12.sp)
                                     }
@@ -456,11 +461,11 @@ fun FilePage(
                                             showFontPreviewDialog = true
                                         },
                                         colors = ButtonDefaults.buttonColors(
-                                            color = MiuixTheme.colorScheme.primary,
-                                            contentColor = MiuixTheme.colorScheme.onPrimary
+                                            containerColor = AuroraTokens.Accent,
+                                            contentColor = AuroraTokens.OnAccent
                                         ),
-                                        insideMargin = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
-                                        modifier = Modifier.clip(RoundedCornerShape(20.dp))
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
+                                        modifier = Modifier.clip(RoundedCornerShape(0.dp))
                                     ) {
                                         Text("预览", fontSize = 12.sp)
                                     }
@@ -473,7 +478,7 @@ fun FilePage(
                                         .fillMaxWidth()
                                         .padding(start = 66.dp)
                                         .height(0.7.dp)
-                                        .background(MiuixTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.6f))
+                                        .background(AuroraTokens.SurfaceHover.copy(alpha = 0.6f))
                                 )
                             }
                         }
@@ -486,7 +491,7 @@ fun FilePage(
     }
 
     if (showFileSettingsDialog) {
-        WindowDialog(
+        AuroraWindowDialog(
             show = true,
             title = "文件列表设置",
             onDismissRequest = { showFileSettingsDialog = false }
@@ -503,14 +508,14 @@ fun FilePage(
                 ) {
                     Text(
                         text = "列表字体大小",
-                        style = MiuixTheme.textStyles.body1,
-                        color = MiuixTheme.colorScheme.onSurface,
+                        style = AuroraTextStyles.body1,
+                        color = AuroraTokens.Text,
                         modifier = Modifier.weight(1f)
                     )
                     Text(
                         text = "${appSettings.fileListFontSize.roundToInt()} sp",
-                        style = MiuixTheme.textStyles.footnote1,
-                        color = MiuixTheme.colorScheme.primary
+                        style = AuroraTextStyles.footnote1,
+                        color = AuroraTokens.Accent
                     )
                 }
                 Row(
@@ -520,20 +525,27 @@ fun FilePage(
                 ) {
                     Text(
                         text = "小",
-                        style = MiuixTheme.textStyles.footnote2,
-                        color = MiuixTheme.colorScheme.onSurfaceSecondary
+                        style = AuroraTextStyles.footnote2,
+                        color = AuroraTokens.TextSecondary
                     )
                     Slider(
                         value = appSettings.fileListFontSize,
                         onValueChange = { appSettings.updateFileListFontSize(it) },
                         valueRange = 12f..20f,
-                        steps = 7,
+                        steps = 0,
+                        colors = SliderDefaults.colors(
+                            thumbColor = AuroraTokens.Accent,
+                            activeTrackColor = AuroraTokens.Accent,
+                            activeTickColor = Color.Transparent,
+                            inactiveTrackColor = AuroraTokens.ControlOff,
+                            inactiveTickColor = Color.Transparent
+                        ),
                         modifier = Modifier.weight(1f)
                     )
                     Text(
                         text = "大",
-                        style = MiuixTheme.textStyles.footnote2,
-                        color = MiuixTheme.colorScheme.onSurfaceSecondary
+                        style = AuroraTextStyles.footnote2,
+                        color = AuroraTokens.TextSecondary
                     )
                 }
 
@@ -544,18 +556,19 @@ fun FilePage(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "显示隐藏文件",
-                            style = MiuixTheme.textStyles.body1,
-                            color = MiuixTheme.colorScheme.onSurface
+                            style = AuroraTextStyles.body1,
+                            color = AuroraTokens.Text
                         )
                         Text(
                             text = "关闭后将隐藏以 \".\" 开头的文件",
-                            style = MiuixTheme.textStyles.footnote2,
-                            color = MiuixTheme.colorScheme.onSurfaceSecondary
+                            style = AuroraTextStyles.footnote2,
+                            color = AuroraTokens.TextSecondary
                         )
                     }
                     Switch(
                         checked = appSettings.showHiddenFiles,
-                        onCheckedChange = { appSettings.updateShowHiddenFiles(it) }
+                        onCheckedChange = { appSettings.updateShowHiddenFiles(it) },
+                        colors = auroraSwitchColors()
                     )
                 }
 
@@ -565,8 +578,8 @@ fun FilePage(
                 ) {
                     Text(
                         text = "排序方式",
-                        style = MiuixTheme.textStyles.body1,
-                        color = MiuixTheme.colorScheme.onSurface
+                        style = AuroraTextStyles.body1,
+                        color = AuroraTokens.Text
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -609,7 +622,7 @@ fun FilePage(
 
     if (showActionDialog && selectedItem != null) {
         val item = selectedItem!!
-        WindowDialog(
+        AuroraWindowDialog(
             show = true,
             title = item.name,
             onDismissRequest = { showActionDialog = false }
@@ -642,8 +655,8 @@ fun FilePage(
                     },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
-                        color = MiuixTheme.colorScheme.primary,
-                        contentColor = MiuixTheme.colorScheme.onPrimary
+                        containerColor = AuroraTokens.Accent,
+                        contentColor = AuroraTokens.OnAccent
                     )
                 ) {
                     Text("添加到shso")
@@ -657,8 +670,8 @@ fun FilePage(
                     },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
-                        color = MiuixTheme.colorScheme.surfaceContainerHighest,
-                        contentColor = MiuixTheme.colorScheme.onSurface
+                        containerColor = AuroraTokens.SurfaceHover,
+                        contentColor = AuroraTokens.Text
                     )
                 ) {
                     Text("重命名")
@@ -671,8 +684,8 @@ fun FilePage(
                     },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
-                        color = MiuixTheme.colorScheme.error.copy(0.15f),
-                        contentColor = MiuixTheme.colorScheme.error
+                        containerColor = AuroraTokens.Error.copy(0.15f),
+                        contentColor = AuroraTokens.Error
                     )
                 ) {
                     Text("删除")
@@ -683,7 +696,7 @@ fun FilePage(
 
     if (showRenameDialog && selectedItem != null) {
         val item = selectedItem!!
-        WindowDialog(
+        AuroraWindowDialog(
             show = true,
             title = "重命名",
             onDismissRequest = { showRenameDialog = false }
@@ -697,10 +710,12 @@ fun FilePage(
                 TextField(
                     value = renameInput,
                     onValueChange = { renameInput = it },
-                    label = "输入新名称",
-                    useLabelAsPlaceholder = true,
+                    label = { Text("输入新名称") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    colors = auroraTextFieldColors(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(0.dp))
                 )
 
                 Row(
@@ -710,8 +725,8 @@ fun FilePage(
                     Button(
                         onClick = { showRenameDialog = false },
                         colors = ButtonDefaults.buttonColors(
-                            color = MiuixTheme.colorScheme.surfaceContainerHighest,
-                            contentColor = MiuixTheme.colorScheme.onSurface
+                            containerColor = AuroraTokens.SurfaceHover,
+                            contentColor = AuroraTokens.Text
                         )
                     ) {
                         Text("取消")
@@ -729,8 +744,8 @@ fun FilePage(
                             }
                         },
                         colors = ButtonDefaults.buttonColors(
-                            color = MiuixTheme.colorScheme.primary,
-                            contentColor = MiuixTheme.colorScheme.onPrimary
+                            containerColor = AuroraTokens.Accent,
+                            contentColor = AuroraTokens.OnAccent
                         )
                     ) {
                         Text("确认")
@@ -742,7 +757,7 @@ fun FilePage(
 
     if (showDeleteDialog && selectedItem != null) {
         val item = selectedItem!!
-        WindowDialog(
+        AuroraWindowDialog(
             show = true,
             title = "确认删除",
             summary = "您确定要删除 \"${item.name}\" 吗？此操作无法撤销。",
@@ -757,8 +772,8 @@ fun FilePage(
                 Button(
                     onClick = { showDeleteDialog = false },
                     colors = ButtonDefaults.buttonColors(
-                        color = MiuixTheme.colorScheme.surfaceContainerHighest,
-                        contentColor = MiuixTheme.colorScheme.onSurface
+                        containerColor = AuroraTokens.SurfaceHover,
+                        contentColor = AuroraTokens.Text
                     )
                 ) {
                     Text("取消")
@@ -774,8 +789,8 @@ fun FilePage(
                         }
                     },
                     colors = ButtonDefaults.buttonColors(
-                        color = MiuixTheme.colorScheme.error,
-                        contentColor = MiuixTheme.colorScheme.onError
+                        containerColor = AuroraTokens.Error,
+                        contentColor = Color.White
                     )
                 ) {
                     Text("确认删除")
@@ -785,7 +800,7 @@ fun FilePage(
     }
 
     if (showJumpPathDialog) {
-        WindowDialog(
+        AuroraWindowDialog(
             show = true,
             title = "跳转路径",
             summary = "请输入要跳转的目标文件夹绝对路径：",
@@ -800,10 +815,12 @@ fun FilePage(
                 TextField(
                     value = jumpPathInput,
                     onValueChange = { jumpPathInput = it },
-                    label = "路径（例如 /data/adb/modules）",
-                    useLabelAsPlaceholder = true,
+                    label = { Text("路径（例如 /data/adb/modules）") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    colors = auroraTextFieldColors(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(0.dp))
                 )
 
                 Row(
@@ -813,8 +830,8 @@ fun FilePage(
                     Button(
                         onClick = { showJumpPathDialog = false },
                         colors = ButtonDefaults.buttonColors(
-                            color = MiuixTheme.colorScheme.surfaceContainerHighest,
-                            contentColor = MiuixTheme.colorScheme.onSurface
+                            containerColor = AuroraTokens.SurfaceHover,
+                            contentColor = AuroraTokens.Text
                         )
                     ) {
                         Text("取消")
@@ -831,8 +848,8 @@ fun FilePage(
                             currentDirectory = targetPath
                         },
                         colors = ButtonDefaults.buttonColors(
-                            color = MiuixTheme.colorScheme.primary,
-                            contentColor = MiuixTheme.colorScheme.onPrimary
+                            containerColor = AuroraTokens.Accent,
+                            contentColor = AuroraTokens.OnAccent
                         )
                     ) {
                         Text("跳转")
@@ -853,7 +870,7 @@ fun FilePage(
         }
         var customTestText by remember { mutableStateOf("") }
 
-        WindowDialog(
+        AuroraWindowDialog(
             show = true,
             title = "字体预览",
             summary = "${targetItem.name} (${targetItem.formattedSize})",
@@ -868,8 +885,8 @@ fun FilePage(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(MiuixTheme.colorScheme.surfaceContainerHighest)
+                        .clip(RoundedCornerShape(0.dp))
+                        .background(AuroraTokens.SurfaceHover)
                         .padding(12.dp)
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -878,19 +895,19 @@ fun FilePage(
                             fontFamily = targetFontFamily,
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold,
-                            color = MiuixTheme.colorScheme.onSurface
+                            color = AuroraTokens.Text
                         )
                         Text(
                             text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz 0123456789",
                             fontFamily = targetFontFamily,
                             fontSize = 12.sp,
-                            color = MiuixTheme.colorScheme.onSurface
+                            color = AuroraTokens.Text
                         )
                         Text(
                             text = "天地玄黄 宇宙洪荒 日月盈昃 辰宿列张\n极速流式任务调度 高并发内核增强",
                             fontFamily = targetFontFamily,
                             fontSize = 12.sp,
-                            color = MiuixTheme.colorScheme.onSurfaceSecondary
+                            color = AuroraTokens.TextSecondary
                         )
                     }
                 }
@@ -898,10 +915,12 @@ fun FilePage(
                 TextField(
                     value = customTestText,
                     onValueChange = { customTestText = it },
-                    label = "输入任意文字实时预览效果...",
-                    useLabelAsPlaceholder = true,
+                    label = { Text("输入任意文字实时预览效果...") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    colors = auroraTextFieldColors(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(0.dp))
                 )
 
                 Row(
@@ -921,8 +940,8 @@ fun FilePage(
                             }
                         },
                         colors = ButtonDefaults.buttonColors(
-                            color = MiuixTheme.colorScheme.primary,
-                            contentColor = MiuixTheme.colorScheme.onPrimary
+                            containerColor = AuroraTokens.Accent,
+                            contentColor = AuroraTokens.OnAccent
                         ),
                         modifier = Modifier.weight(1.2f)
                     ) {
@@ -932,8 +951,8 @@ fun FilePage(
                     Button(
                         onClick = { showFontPreviewDialog = false },
                         colors = ButtonDefaults.buttonColors(
-                            color = MiuixTheme.colorScheme.surfaceContainerHighest,
-                            contentColor = MiuixTheme.colorScheme.onSurface
+                            containerColor = AuroraTokens.SurfaceHover,
+                            contentColor = AuroraTokens.Text
                         ),
                         modifier = Modifier.weight(0.8f)
                     ) {
