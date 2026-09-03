@@ -27,6 +27,14 @@ data class FileItem(
     val isSupportedExecutable: Boolean
         get() = isExecutableScript || isExecutableBinary
 
+    /** 是否为已知压缩包（zip/7z/rar/tar/tgz）——长按菜单据此显示「自动解压文件」。 */
+    val isArchive: Boolean
+        get() = !isDirectory && ArchiveExtractor.isKnownArchive(name)
+
+    /** 是否实际可解压（rar 仅识别，暂不支持解压）。 */
+    val isExtractableArchive: Boolean
+        get() = !isDirectory && ArchiveExtractor.isExtractable(name)
+
     val formattedSize: String
         get() {
             if (isDirectory) return "目录"
