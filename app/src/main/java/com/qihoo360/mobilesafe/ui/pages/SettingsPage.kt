@@ -72,22 +72,9 @@ import com.qihoo360.mobilesafe.ui.theme.auroraPrimaryButtonColors
 import kotlinx.coroutines.launch
 
 /**
- * 权限条目右侧的实时状态标签：已获得=绿色、未获得=红色/警示、检查中=次要色。
+ * 权限 4 行右侧统一为胶囊开关（与下方 3 个 Switch 视觉一致）：ON=已获得 / OFF=未获得。
+ * 只读展示——点击胶囊/整行触发 onClick（跳转系统设置），状态由系统检查结果驱动。
  */
-@Composable
-private fun PermissionStatusLabel(granted: Boolean?) {
-    val (label, color) = when (granted) {
-        true -> "已获得" to AuroraTokens.Accent
-        false -> "未获得" to AuroraTokens.Error
-        null -> "检查中" to AuroraTokens.TextUnselected
-    }
-    Text(
-        text = label,
-        fontSize = 12.sp,
-        fontWeight = FontWeight.SemiBold,
-        color = color
-    )
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -236,7 +223,7 @@ fun SettingsPage(
             )
         }
     ) { innerPadding ->
-        // 全部条目单列表直排：不分组、无分割线，权限块与文件块之间空一行分隔
+        // 全部条目单列表直排：不分组、无分割线、无空行
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -248,10 +235,8 @@ fun SettingsPage(
         ) {
             AuroraArrowPreference(
                 title = "存储空间",
-                summary = "读取外部存储-所有文件访问权限",
-                endActions = {
-                    PermissionStatusLabel(granted = permissionStorageGranted)
-                },
+                summary = "允许读取外部存储,所有文件访问权限",
+                statusSwitch = permissionStorageGranted,
                 onClick = {
                     if (permissionStorageGranted) {
                         Toast.makeText(context, "存储空间权限已获得", Toast.LENGTH_SHORT).show()
@@ -277,10 +262,8 @@ fun SettingsPage(
 
             AuroraArrowPreference(
                 title = "省电策略",
-                summary = "省电策略-无限制  耗电保护-允许后台运行",
-                endActions = {
-                    PermissionStatusLabel(granted = permissionBatteryGranted)
-                },
+                summary = "省电策略无限制  耗电保护允许后台",
+                statusSwitch = permissionBatteryGranted,
                 onClick = {
                     if (permissionBatteryGranted) {
                         Toast.makeText(context, "已获得省电策略豁免（忽略电池优化）", Toast.LENGTH_SHORT).show()
@@ -303,10 +286,8 @@ fun SettingsPage(
 
             AuroraArrowPreference(
                 title = "后台弹出",
-                summary = "权限管理-其他权限-后台弹出页面",
-                endActions = {
-                    PermissionStatusLabel(granted = permissionBackgroundStartGranted)
-                },
+                summary = "权限管理 其他权限 允许后台弹出页",
+                statusSwitch = permissionBackgroundStartGranted,
                 onClick = {
                     if (permissionBackgroundStartGranted) {
                         Toast.makeText(context, "已允许后台弹出页面", Toast.LENGTH_SHORT).show()
@@ -325,10 +306,9 @@ fun SettingsPage(
 
             AuroraArrowPreference(
                 title = "超级用户",
-                summary = "Magisk,KernelSU,Apatch...超级用户授权",
-                endActions = {
-                    PermissionStatusLabel(granted = permissionRootGranted)
-                },
+                summary = "Magisk KernelSU 超级用户授权",
+                statusSwitch = permissionRootGranted == true,
+                statusSwitchEnabled = permissionRootGranted != null,
                 onClick = {
                     if (permissionRootGranted == true) {
                         Toast.makeText(context, "超级用户授权已获得", Toast.LENGTH_SHORT).show()
@@ -338,26 +318,24 @@ fun SettingsPage(
                 }
             )
 
-            // 空一行分隔权限区与文件区
-            Spacer(modifier = Modifier.height(16.dp))
-
+            // 无空行直连：权限区后紧跟三个开关项
             AuroraSwitchPreference(
                 title = "独立存储",
-                summary = "在添加到shso时新建独立文件夹进行存储",
+                summary = "添加到 shso 时存到专用的文件夹",
                 checked = appSettings.useIndependentFolder,
                 onCheckedChange = { appSettings.setIndependentFolder(it) }
             )
 
             AuroraSwitchPreference(
                 title = "自动删除",
-                summary = "将文件复制到shso后自动清理源文件",
+                summary = "添加到 shso 后自动删除原始文件",
                 checked = appSettings.autoDeleteAfterAdding,
                 onCheckedChange = { appSettings.setAutoDelete(it) }
             )
 
             AuroraSwitchPreference(
                 title = "自动执行",
-                summary = "添加到shso后自动跳转终端并开始执行",
+                summary = "添加到 shso 时转到终端立即执行",
                 checked = appSettings.autoExecuteAfterAdding,
                 onCheckedChange = { appSettings.setAutoExecute(it) }
             )
@@ -369,7 +347,7 @@ fun SettingsPage(
     if (showAboutDialog) {
         AuroraWindowDialog(
             show = true,
-            title = "关于",
+            title = "Jinn",
             onDismissRequest = { showAboutDialog = false }
         ) {
             Row(
@@ -394,7 +372,7 @@ fun SettingsPage(
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "v9.0.2 (shso)",
+                        text = "v9.0.2",
                         style = AuroraTextStyles.footnote1,
                         color = AuroraTokens.TextSecondary,
                         textAlign = TextAlign.Start
@@ -402,19 +380,21 @@ fun SettingsPage(
                 }
             }
             Spacer(modifier = Modifier.height(16.dp))
-            Button(
-                onClick = { openInBrowserOnly("https://github.com/yezijinn") },
-                colors = auroraPrimaryButtonColors(),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(44.dp)
-                    .auroraFilledButton()
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center
             ) {
-                Text(
-                    text = "Github",
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
-                )
+                Button(
+                    onClick = { openInBrowserOnly("https://github.com/yezijinn") },
+                    colors = auroraPrimaryButtonColors(),
+                    modifier = Modifier.auroraFilledButton()
+                ) {
+                    Text(
+                        text = "访问Github",
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
         }
     }

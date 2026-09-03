@@ -3,19 +3,24 @@
 
 package com.qihoo360.mobilesafe.ui.theme
 
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -30,7 +35,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -44,7 +51,7 @@ import androidx.compose.ui.window.Dialog
 @Composable
 fun AuroraWindowDialog(
     show: Boolean,
-    title: String,
+    title: String? = null,
     summary: String? = null,
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
@@ -66,11 +73,13 @@ fun AuroraWindowDialog(
                     .verticalScroll(rememberScrollState())
                     .padding(16.dp)
             ) {
-                Text(
-                    text = title,
-                    style = AuroraTextStyles.title3,
-                    color = AuroraTokens.Text
-                )
+                if (title != null) {
+                    Text(
+                        text = title,
+                        style = AuroraTextStyles.title3,
+                        color = AuroraTokens.Text
+                    )
+                }
                 if (summary != null) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
@@ -113,6 +122,13 @@ fun AuroraArrowPreference(
     title: String,
     summary: String? = null,
     endActions: @Composable (() -> Unit)? = null,
+    /**
+     * 右侧胶囊开关状态（权限类只读展示）。非 null 时优先渲染 M3 Switch（缩小 50%，
+     * 与 AuroraSwitchPreference 视觉完全一致），取代 endActions 文本与末尾箭头；
+     * 点击开关 / 整行均触发 onClick。
+     */
+    statusSwitch: Boolean? = null,
+    statusSwitchEnabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     Row(
@@ -130,8 +146,19 @@ fun AuroraArrowPreference(
                 Text(text = summary, style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary)
             }
         }
-        endActions?.invoke()
-        IconChevron()
+        if (statusSwitch != null) {
+            // 胶囊开关：checked=权限状态（已获得=ON/未获得=OFF），点击跳转系统设置而非本地切换
+            Switch(
+                checked = statusSwitch,
+                onCheckedChange = { onClick() },
+                enabled = statusSwitchEnabled,
+                colors = auroraSwitchColors(),
+                modifier = Modifier.scale(0.5f)
+            )
+        } else {
+            endActions?.invoke()
+            IconChevron()
+        }
     }
 }
 
@@ -211,3 +238,83 @@ fun auroraTextFieldColors(): TextFieldColors = TextFieldDefaults.colors(
     disabledTrailingIconColor = AuroraTokens.TextDisabled,
     errorTrailingIconColor = AuroraTokens.Error,
 )
+
+/**
+ * 极简滑杆：一条 1.5dp 细刻度线 + `|` 极细光标（2dp 宽、10dp 高，为常规 20dp 拇指高度的一半）。
+ *
+ * 相对 M3 Slider 去除圆点拇指 / 立体轨道，只保留语义化的细线交互；
+ * 点击任意位置即跳值，横向拖动连续改值，映射区两端各留 2dp 保证光标不裁切。
+ */
+@Composable
+fun AuroraThinSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .height(48.dp)
+            .pointerInput(valueRange) {
+                val insetPx = 2.dp.toPx()
+                fun pick(x: Float) {
+                    val usable = (size.width - 2 * insetPx).coerceAtLeast(1f)
+                    val fraction = ((x - insetPx) / usable).coerceIn(0f, 1f)
+                    val span = valueRange.endInclusive - valueRange.start
+                    onValueChange(valueRange.start + fraction * span)
+                }
+                detectTapGestures { offset -> pick(offset.x) }
+            }
+            .pointerInput(valueRange) {
+                val insetPx = 2.dp.toPx()
+                fun pick(x: Float) {
+                    val usable = (size.width - 2 * insetPx).coerceAtLeast(1f)
+                    val fraction = ((x - insetPx) / usable).coerceIn(0f, 1f)
+                    val span = valueRange.endInclusive - valueRange.start
+                    onValueChange(valueRange.start + fraction * span)
+                }
+                detectHorizontalDragGestures { change, _ ->
+                    change.consume()
+                    pick(change.position.x)
+                }
+            }
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val insetPx = 2.dp.toPx()
+            val thickness = 1.5.dp.toPx()
+            val centerY = size.height / 2f
+            val usable = (size.width - 2 * insetPx).coerceAtLeast(0f)
+            val startX = insetPx
+            val endX = insetPx + usable
+            val fraction =
+                if (valueRange.endInclusive <= valueRange.start) 0f
+                else ((value - valueRange.start) / (valueRange.endInclusive - valueRange.start)).coerceIn(0f, 1f)
+            val thumbX = insetPx + usable * fraction
+
+            // 全段细刻度线（未选中段）
+            drawLine(
+                color = AuroraTokens.ControlOff,
+                start = Offset(startX, centerY),
+                end = Offset(endX, centerY),
+                strokeWidth = thickness
+            )
+            // 已选中段（青）
+            if (fraction > 0f) {
+                drawLine(
+                    color = AuroraTokens.Accent,
+                    start = Offset(startX, centerY),
+                    end = Offset(thumbX, centerY),
+                    strokeWidth = thickness
+                )
+            }
+            // | 极细光标：2dp 宽 × 10dp 高，居中覆盖在刻度线上
+            val cursorHalfHeight = 5.dp.toPx()
+            drawLine(
+                color = AuroraTokens.Accent,
+                start = Offset(thumbX, centerY - cursorHalfHeight),
+                end = Offset(thumbX, centerY + cursorHalfHeight),
+                strokeWidth = 2.dp.toPx()
+            )
+        }
+    }
+}

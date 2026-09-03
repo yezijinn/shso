@@ -89,7 +89,7 @@ UI 层 100% 采用 AndroidX Compose Material 3 原生控件（`androidx.compose.
 ```
 
 - Windows 下推荐仓库内一键脚本：`python build_apk.py --skip-check`
-- Release 签名 `E:/JinnKeyStores/Kernel.Extend/release.jks`（仓库外，V2+V3，alias=kernel.extend），debug buildType 复用 release 签名
+- Release 签名：本地 keystore（仓库外，V2+V3，alias=kernel.extend），debug buildType 复用 release 签名
 - `isMinifyEnabled=false`（当前未混淆）
 - packaging excludes 清理了 META-INF/kotlin/assets 冗余；ArtProfile 与 mergeAssets 任务被禁用
 
@@ -99,7 +99,7 @@ UI 层 100% 采用 AndroidX Compose Material 3 原生控件（`androidx.compose.
 |---|---|
 | 主页 | 执行目标输入框 + 居中「立即执行」「从文件管理器选择」（无框/自适应宽度）+ 当前任务状态区 + `/data/adb/shso` 目录文件列表 |
 | 终端 | 顶栏（左 IDLE/RUNNING 状态灯，右 复制输出/结束进程/重启终端/设置）；内容区为 ANSI 着色滚动日志；底部输入行 + 中断/清屏/Enter/发送；「设置」弹窗含 终端文字颜色/HyperCore 终端提示/shso 终端提示 |
-| 文件 | ROOT 全盘浏览（/、/storage/emulated/0 快捷入口）、排序（名称/时间升降序）、隐藏文件开关、列表字号滑块（默认 15sp）、长按「添加到shso」、.ttf/.otf 预览并应用为软件字体、刷新/删除 |
+| 文件 | ROOT 全盘浏览（/、/storage/emulated/0 快捷入口）、排序（名称/时间升降序）、隐藏文件开关、列表字号滑块（5–30sp，默认 15sp）、长按「添加到shso」、.ttf/.otf 预览并应用为软件字体、刷新/删除 |
 | 设置 | 单列扁平列表：存储空间/省电策略/后台弹出/超级用户（权限状态 + 授权跳转）+ 独立存储/自动删除/自动执行开关；右上角「关于」按钮弹窗（图标/版本/Github） |
 
 ## 已知注意点

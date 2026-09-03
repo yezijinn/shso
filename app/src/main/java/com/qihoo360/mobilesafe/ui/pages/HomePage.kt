@@ -81,6 +81,10 @@ fun HomePage(
     var shsoFiles by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var isScanningShso by remember { mutableStateOf(false) }
 
+    // shso 目录文件列表：字号跟随全局文件列表字号设置（与「文件」页一致）
+    val listFontSize = appSettings.fileListFontSize.sp
+    val listSecondaryFontSize = (appSettings.fileListFontSize - 5f).coerceAtLeast(8f).sp
+
     fun refreshShsoFiles(targetDir: String = currentShsoDir) {
         isScanningShso = true
         currentShsoDir = targetDir
@@ -142,16 +146,16 @@ fun HomePage(
                     .fillMaxWidth()
                     .background(AuroraTokens.Surface)
                     .statusBarsPadding()
-                    .padding(horizontal = 20.dp, vertical = 10.dp)
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
                 Text(
                     text = "shso",
-                    fontSize = 18.sp,
+                    fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     color = AuroraTokens.Text
                 )
-                Spacer(modifier = Modifier.height(6.dp))
-                AuroraAccentBar(width = 44.dp, height = 3.dp)
+                Spacer(modifier = Modifier.height(4.dp))
+                AuroraAccentBar(width = 36.dp, height = 3.dp)
             }
         }
     ) { innerPadding ->
@@ -209,20 +213,15 @@ fun HomePage(
 
                     Button(
                         onClick = onNavigateToTerminal,
-                        modifier = Modifier.fillMaxWidth().auroraFilledButton(),
+                        modifier = Modifier
+                            .align(Alignment.CenterHorizontally)
+                            .auroraFilledButton(),
                         colors = auroraPrimaryButtonColors()
                     ) {
                         Text("返回终端查看进度")
                     }
                 }
             }
-
-            Text(
-                text = "执行目标",
-                modifier = Modifier.padding(PaddingValues(start = 0.dp, top = 8.dp, bottom = 4.dp)),
-                style = AuroraTextStyles.subtitle.copy(fontSize = (AuroraTextStyles.subtitle.fontSize.value - 5f).sp),
-                color = AuroraTokens.TextSecondary
-            )
 
             TextField(
                 value = filePathInput,
@@ -241,6 +240,7 @@ fun HomePage(
                     .clip(RoundedCornerShape(0.dp))
             )
 
+            // 「从文件管理器选择」入口：无框裸文字 + 底部小字说明，与输入框构成「键入 / 选择」二选一
             Text(
                 text = "从文件管理器选择",
                 fontSize = (AuroraTextStyles.main.fontSize.value - 5f).sp,
@@ -249,23 +249,25 @@ fun HomePage(
                 modifier = Modifier
                     .align(Alignment.CenterHorizontally)
                     .clickable(onClick = { showFilePicker = true })
-                    .padding(vertical = 8.dp)
+                    .padding(vertical = 6.dp)
+            )
+
+            Text(
+                text = "支持输入文件路径或选择文件进行执行，目前仅支持 .sh 和 .so 文件",
+                style = AuroraTextStyles.footnote2,
+                color = AuroraTokens.TextSecondary,
+                fontSize = (AuroraTextStyles.footnote2.fontSize.value - 1f).sp,
+                modifier = Modifier.align(Alignment.CenterHorizontally)
             )
 
             if (validationError != null) {
                 Text(
                     text = validationError ?: "",
                     style = AuroraTextStyles.footnote1,
-                    color = AuroraTokens.Error
+                    color = AuroraTokens.Error,
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
                 )
             }
-
-            Text(
-                text = "支持输入文件路径或选择文件进行执行，目前仅支持 .sh 和 .so 文件",
-                style = AuroraTextStyles.footnote2,
-                color = AuroraTokens.TextSecondary,
-                fontSize = (AuroraTextStyles.footnote2.fontSize.value - 1f).sp
-            )
 
             Button(
                 enabled = filePathInput.isNotBlank(),
@@ -380,57 +382,57 @@ fun HomePage(
                                     if (isSelected) AuroraTokens.Accent.copy(0.08f)
                                     else Color.Transparent
                                 )
-                                .padding(vertical = 10.dp),
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(RoundedCornerShape(0.dp))
-                                    .background(
-                                        when {
-                                            fileItem.isDirectory -> AuroraTokens.Accent.copy(0.15f)
-                                            fileItem.isExecutableScript -> AuroraTokens.Accent.copy(0.2f)
-                                            fileItem.isExecutableBinary -> AuroraTokens.GlowBlue.copy(0.2f)
-                                            else -> AuroraTokens.SurfaceHover
-                                        }
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = when {
-                                        fileItem.isDirectory -> "📁"
-                                        fileItem.isExecutableScript -> "SH"
-                                        fileItem.isExecutableBinary -> "SO"
-                                        else -> "📄"
-                                    },
-                                    fontSize = if (fileItem.isDirectory || !isExecutable) 14.sp else 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = when {
-                                        fileItem.isDirectory -> AuroraTokens.Accent
-                                        fileItem.isExecutableScript -> AuroraTokens.Accent
-                                        fileItem.isExecutableBinary -> AuroraTokens.GlowBlue
-                                        else -> AuroraTokens.TextSecondary
-                                    }
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.width(12.dp))
+                            // 类型图标：无底色方框、左右零间隙，直接裸文字
+                            Text(
+                                text = when {
+                                    fileItem.isDirectory -> "📁"
+                                    fileItem.isExecutableScript -> "SH"
+                                    fileItem.isExecutableBinary -> "SO"
+                                    else -> "📄"
+                                },
+                                fontSize = if (fileItem.isDirectory || !isExecutable) 16.sp else 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = when {
+                                    fileItem.isDirectory -> AuroraTokens.Accent
+                                    fileItem.isExecutableScript -> AuroraTokens.Accent
+                                    fileItem.isExecutableBinary -> AuroraTokens.GlowBlue
+                                    else -> AuroraTokens.TextSecondary
+                                }
+                            )
 
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = fileItem.name,
-                                    style = AuroraTextStyles.body2,
+                                    style = AuroraTextStyles.body1,
+                                    fontSize = listFontSize,
                                     fontWeight = FontWeight.Normal,
                                     color = if (isSelected) AuroraTokens.Accent else AuroraTokens.Text,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                Text(
-                                    text = if (fileItem.isDirectory) "文件夹" else fileItem.formattedSize,
-                                    style = AuroraTextStyles.footnote2,
-                                    color = AuroraTokens.TextSecondary
-                                )
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = if (fileItem.isDirectory) "文件夹" else fileItem.formattedSize,
+                                        style = AuroraTextStyles.footnote2,
+                                        fontSize = listSecondaryFontSize,
+                                        color = AuroraTokens.TextSecondary
+                                    )
+                                    if (fileItem.permissions.isNotEmpty()) {
+                                        Text(
+                                            text = fileItem.permissions,
+                                            style = AuroraTextStyles.footnote2,
+                                            fontSize = listSecondaryFontSize,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = AuroraTokens.TextSecondary.copy(0.7f)
+                                        )
+                                    }
+                                }
                             }
 
                             if (!fileItem.isDirectory) {
@@ -443,12 +445,12 @@ fun HomePage(
                                         containerColor = if (isSelected) AuroraTokens.Accent else AuroraTokens.SurfaceHover,
                                         contentColor = if (isSelected) AuroraTokens.OnAccent else AuroraTokens.Text
                                     ),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
                                     modifier = Modifier.clip(RoundedCornerShape(0.dp))
                                 ) {
                                     Text(
                                         text = if (isSelected) "已选择" else "选择",
-                                        fontSize = 11.sp,
+                                        fontSize = 12.sp,
                                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                     )
                                 }
@@ -459,7 +461,7 @@ fun HomePage(
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(start = 44.dp)
+                                    .padding(start = 16.dp)
                                     .height(0.7.dp)
                                     .background(AuroraTokens.SurfaceHover.copy(alpha = 0.6f))
                             )
@@ -468,12 +470,13 @@ fun HomePage(
                 }
             }
 
-            Spacer(modifier = Modifier.height(70.dp))
+            Spacer(modifier = Modifier.height(56.dp))
         }
     }
 
     if (showFilePicker) {
         BuiltInFilePicker(
+            appSettings = appSettings,
             show = true,
             initialDirectory = "/storage/emulated/0",
             onDismissRequest = { showFilePicker = false },

@@ -14,13 +14,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
@@ -33,11 +32,11 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
@@ -49,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -62,12 +62,12 @@ import com.qihoo360.mobilesafe.data.RootService
 import com.qihoo360.mobilesafe.ui.components.ColorWheelDialog
 import com.qihoo360.mobilesafe.ui.theme.AuroraSwitchPreference
 import com.qihoo360.mobilesafe.ui.theme.AuroraTextStyles
+import com.qihoo360.mobilesafe.ui.theme.AuroraThinSlider
 import com.qihoo360.mobilesafe.ui.theme.AuroraTokens
 import com.qihoo360.mobilesafe.ui.theme.AuroraWindowDialog
-import com.qihoo360.mobilesafe.ui.theme.auroraFilledButton
-import com.qihoo360.mobilesafe.ui.theme.auroraPrimaryButtonColors
 import com.qihoo360.mobilesafe.ui.theme.auroraTextFieldColors
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -153,56 +153,51 @@ fun TerminalPage(
                 // 弹性间隔把按钮推右侧
                 Spacer(modifier = Modifier.weight(1f))
 
-                // 4 个等宽操作按钮：复制输出 / 结束进程 / 重启终端 / 设置
+                // 4 个裸文字操作按钮（无背景无描边）：复制输出 / 结束进程 / 重启终端 / 设置
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Button(
-                        onClick = { copyOutput() },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = AuroraTokens.SurfaceHover,
-                            contentColor = AuroraTokens.Text
-                        ),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp)
-                    ) {
-                        Text("复制输出", fontSize = 12.sp, maxLines = 1)
-                    }
+                    Text(
+                        text = "复制输出",
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        color = AuroraTokens.Text,
+                        modifier = Modifier
+                            .clickable { copyOutput() }
+                            .padding(horizontal = 4.dp, vertical = 6.dp)
+                    )
 
-                    Button(
-                        enabled = taskRunning,
-                        onClick = { RootService.killCurrentProcess() },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = AuroraTokens.Error.copy(0.18f),
-                            contentColor = AuroraTokens.Error
-                        ),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp)
-                    ) {
-                        Text("结束进程", fontSize = 12.sp, maxLines = 1)
-                    }
+                    Text(
+                        text = "结束进程",
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        color = if (taskRunning) AuroraTokens.Error else AuroraTokens.TextUnselected,
+                        modifier = Modifier
+                            .clickable(enabled = taskRunning) { RootService.killCurrentProcess() }
+                            .padding(horizontal = 4.dp, vertical = 6.dp)
+                    )
 
-                    Button(
-                        onClick = { RootService.restartTerminal() },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = AuroraTokens.Accent.copy(0.15f),
-                            contentColor = AuroraTokens.Accent
-                        ),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp)
-                    ) {
-                        Text("重启终端", fontSize = 12.sp, maxLines = 1)
-                    }
+                    Text(
+                        text = "重启终端",
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        color = AuroraTokens.Accent,
+                        modifier = Modifier
+                            .clickable { RootService.restartTerminal() }
+                            .padding(horizontal = 4.dp, vertical = 6.dp)
+                    )
 
                     // 设置：弹出终端设置对话框（文字颜色 / HyperCore 提示 / shso 提示）
-                    Button(
-                        onClick = { showTerminalSettings = true },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = AuroraTokens.SurfaceHover,
-                            contentColor = AuroraTokens.Text
-                        ),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp)
-                    ) {
-                        Text("设置", fontSize = 12.sp, maxLines = 1)
-                    }
+                    Text(
+                        text = "设置",
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        color = AuroraTokens.Text,
+                        modifier = Modifier
+                            .clickable { showTerminalSettings = true }
+                            .padding(horizontal = 4.dp, vertical = 6.dp)
+                    )
                 }
             }
         }
@@ -220,7 +215,8 @@ fun TerminalPage(
                     start = 14.dp,
                     end = 14.dp,
                     top = 4.dp,
-                    bottom = if (isImeVisible) 0.dp else 4.dp
+                    // 仅给底部 DockBar(约 58dp) 让位，按钮行紧贴 DockBar 上沿，无额外大留白
+                    bottom = if (isImeVisible) 0.dp else 58.dp
                 ),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -241,8 +237,8 @@ fun TerminalPage(
                         Text(
                             text = parsedOutput.text,
                             fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp,
-                            lineHeight = 17.sp
+                            fontSize = appSettings.terminalFontSize.sp,
+                            lineHeight = (appSettings.terminalFontSize + 5f).sp
                         )
                     }
                 }
@@ -280,66 +276,50 @@ fun TerminalPage(
                 )
             }
 
-            // 动作行：中断 / 清屏 / Enter / 发送（紧凑右对齐）
+            // 动作行：中断 / 清屏 / Enter / 发送（紧凑右对齐，裸文字无背景）
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Spacer(modifier = Modifier.weight(1f))
 
-                Button(
-                    enabled = taskRunning,
-                    onClick = { RootService.sendInterrupt() },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = AuroraTokens.Error.copy(0.18f),
-                        contentColor = AuroraTokens.Error
-                    ),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
-                    modifier = Modifier.clip(RoundedCornerShape(0.dp))
-                ) {
-                    Text("中断", fontSize = 12.sp)
-                }
+                Text(
+                    text = "中断",
+                    fontSize = 12.sp,
+                    color = if (taskRunning) AuroraTokens.Error else AuroraTokens.TextUnselected,
+                    modifier = Modifier
+                        .clickable(enabled = taskRunning) { RootService.sendInterrupt() }
+                        .padding(horizontal = 2.dp, vertical = 6.dp)
+                )
 
-                Button(
-                    onClick = { RootService.clearOutput() },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = AuroraTokens.SurfaceHover,
-                        contentColor = AuroraTokens.Text
-                    ),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
-                    modifier = Modifier.clip(RoundedCornerShape(0.dp))
-                ) {
-                    Text("清屏", fontSize = 12.sp)
-                }
+                Text(
+                    text = "清屏",
+                    fontSize = 12.sp,
+                    color = AuroraTokens.Text,
+                    modifier = Modifier
+                        .clickable { RootService.clearOutput() }
+                        .padding(horizontal = 2.dp, vertical = 6.dp)
+                )
 
-                Button(
-                    onClick = { handleSend("") },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = AuroraTokens.SurfaceHover,
-                        contentColor = AuroraTokens.Text
-                    ),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
-                    modifier = Modifier.clip(RoundedCornerShape(0.dp))
-                ) {
-                    Text("Enter", fontSize = 12.sp)
-                }
+                Text(
+                    text = "Enter",
+                    fontSize = 12.sp,
+                    color = AuroraTokens.Text,
+                    modifier = Modifier
+                        .clickable { handleSend("") }
+                        .padding(horizontal = 2.dp, vertical = 6.dp)
+                )
 
-                Button(
-                    enabled = inputText.isNotBlank(),
-                    onClick = {
-                        handleSend(inputText)
-                    },
-                    colors = auroraPrimaryButtonColors(),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
-                    modifier = Modifier.auroraFilledButton()
-                ) {
-                    Text("发送", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-
-            if (!isImeVisible) {
-                Spacer(modifier = Modifier.height(76.dp))
+                Text(
+                    text = "发送",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (inputText.isNotBlank()) AuroraTokens.Accent else AuroraTokens.TextUnselected,
+                    modifier = Modifier
+                        .clickable(enabled = inputText.isNotBlank()) { handleSend(inputText) }
+                        .padding(horizontal = 2.dp, vertical = 6.dp)
+                )
             }
         }
     }
@@ -350,22 +330,79 @@ fun TerminalPage(
             title = "终端设置",
             onDismissRequest = { showTerminalSettings = false }
         ) {
+            // 行1：终端文字颜色 —— 与下方 AuroraSwitchPreference 等结构（min 48dp 统一行高 + 行间距），右侧用 Switch 同尺寸的胶囊色块（32×16dp / 8dp 圆角 = 完全胶囊），点击弹色轮
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { showColorDialog = true }
-                    .padding(vertical = 6.dp)
+                    .heightIn(min = 48.dp)
+                    .clickable { showColorDialog = true },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(text = "终端文字颜色", style = AuroraTextStyles.body2, color = AuroraTokens.Text)
+                    Text(
+                        text = "终端文字颜色",
+                        style = AuroraTextStyles.body2,
+                        color = AuroraTokens.Text
+                    )
                 }
-                Box(
-                    modifier = Modifier
-                        .size(24.dp)
-                        .clip(RoundedCornerShape(0.dp))
-                        .background(Color(appSettings.terminalTextColor))
+                // 视觉与下方 AuroraSwitchPreference 完全同构：同 Switch 控件 + scale(0.5f)，
+                // 体积、垂直中心、行间距逐像素一致；轨道填当前文字色，thumb 用弹窗底色
+                Switch(
+                    checked = true,
+                    onCheckedChange = { showColorDialog = true },
+                    colors = SwitchDefaults.colors(
+                        checkedTrackColor = terminalDefaultColor,
+                        checkedThumbColor = AuroraTokens.DialogBg,
+                        uncheckedTrackColor = terminalDefaultColor,
+                        uncheckedThumbColor = AuroraTokens.DialogBg,
+                        disabledCheckedTrackColor = terminalDefaultColor,
+                        disabledUncheckedTrackColor = terminalDefaultColor
+                    ),
+                    modifier = Modifier.scale(0.5f)
+                )
+            }
+
+            // 行2：终端字体大小 —— 「文字颜色」下一行，与「文件列表设置」同款：标签+实时值 + 小/大滑杆
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "终端字体大小",
+                        style = AuroraTextStyles.body2,
+                        color = AuroraTokens.Text
+                    )
+                }
+                Text(
+                    text = "${appSettings.terminalFontSize.roundToInt()} sp",
+                    style = AuroraTextStyles.footnote1,
+                    color = AuroraTokens.Accent
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "小",
+                    style = AuroraTextStyles.footnote2,
+                    color = AuroraTokens.TextSecondary
+                )
+                AuroraThinSlider(
+                    value = appSettings.terminalFontSize,
+                    onValueChange = { appSettings.updateTerminalFontSize(it) },
+                    valueRange = 5f..30f,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = "大",
+                    style = AuroraTextStyles.footnote2,
+                    color = AuroraTokens.TextSecondary
                 )
             }
 

@@ -52,6 +52,7 @@ Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + 
 - 全工程零圆角：所有 Card/Button/TextField/弹窗/面板/状态点/DockBar 一律直角矩形。实现：① `AuroraShapes`（M3 Shapes 五槽位 `RoundedCornerShape(0.dp)`）注入 `MaterialTheme`；② 显式 `clip/shape/shadow/border` 全用 `RoundedCornerShape(0.dp)`。`foundation 1.12.0` 缓存制品 shape 包**无 `RectangleShape`/`CircleShape` 符号**，勿 import。
 - 禁止外层 Card/Container 容器包裹列表项：设置页/文件页/主页均为无容器列表，行内容（Row 图标+文本）直接置于页面 Column。
 - 页面文案按需求用字号内联（如 section 标题 14sp、preference 主标题 body2、summary 用注释色）；行高统一 `heightIn(min = 48.dp)`；分隔线用 0.7dp 细线（`SurfaceHover.copy(0.6f)`）或纯零间距。
+- **自适应图标（Adaptive Icon）**：`AndroidManifest.xml` 的 `icon`/`roundIcon` 指向 `@mipmap/ic_launcher`（background + foreground 两层）；背景透明、前景为去白去黑后的彩色 PNG，缩进中心安全区（≤72dp）确保圆形/圆角矩形/水滴等 OEM mask 下完整显示，无需为不同形状单独出图。
 
 ## 场景导航
 

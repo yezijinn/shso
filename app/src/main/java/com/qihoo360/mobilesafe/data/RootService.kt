@@ -46,8 +46,15 @@ object RootService {
     var taskStartTime by mutableLongStateOf(0L)
         private set
 
-    var outputLog by mutableStateOf(HyperCore.generateEngineBanner("工作中"))
+    var outputLog by mutableStateOf(HyperCore.generateEngineBanner("工作中", isRootGranted))
         private set
+
+    /**
+     * 输出是否仍是「纯引擎横幅」（尚未混入任务/命令输出），以及该横幅对应的 ROOT 状态。
+     * 用于 ROOT 探测完成后原位刷新横幅，避免误覆盖已跑完任务的日志。
+     */
+    private var outputIsPristineBanner: Boolean = true
+    private var pristineBannerRoot: Boolean? = null
 
     var lastExitCode by mutableStateOf<Int?>(null)
         private set
@@ -61,12 +68,38 @@ object RootService {
 
     fun initSettings(settings: AppSettings) {
         appSettings = settings
-        outputLog = if (settings.showHyperCoreBanner) HyperCore.generateEngineBanner("工作中") else ""
+        refreshPristineBanner()
     }
 
     fun detectEnvironmentInfo(): String = HyperCore.detectEnvironmentInfo()
     fun detectKernelInfo(): String = HyperCore.detectKernelInfo()
-    fun generateEngineBanner(statusText: String = "工作中"): String = HyperCore.generateEngineBanner(statusText)
+    fun generateEngineBanner(statusText: String = "工作中"): String = HyperCore.generateEngineBanner(statusText, isRootGranted)
+
+    /**
+     * 将当前输出置为「纯引擎横幅」；横幅关闭时置空。
+     */
+    private fun refreshPristineBanner(statusText: String = "工作中") {
+        val showBanner = appSettings?.showHyperCoreBanner ?: true
+        pristineBannerRoot = if (showBanner) isRootGranted else null
+        outputLog = if (showBanner) HyperCore.generateEngineBanner(statusText, isRootGranted) else ""
+        outputIsPristineBanner = true
+    }
+
+    /**
+     * 上报最新 ROOT 探测结果（MainActivity 每次前台 ON_RESUME 探测后调用）。
+     * 仅在当前输出仍是纯横幅且无任务运行时原位重写横幅，保证权限行文案与真实探测一致，
+     * 且不会覆盖已跑完任务的输出日志。
+     */
+    fun reportRootState(granted: Boolean) {
+        isRootGranted = granted
+        if (isTaskRunning || !outputIsPristineBanner) return
+        val showBanner = appSettings?.showHyperCoreBanner ?: true
+        if (!showBanner) return
+        if (outputLog == HyperCore.generateEngineBanner("工作中", pristineBannerRoot)) {
+            pristineBannerRoot = granted
+            outputLog = HyperCore.generateEngineBanner("工作中", granted)
+        }
+    }
 
     suspend fun checkRoot(force: Boolean = false): Boolean = withContext(Dispatchers.IO) {
         if (!force && isRootGranted == true) return@withContext true
@@ -137,7 +170,7 @@ object RootService {
         val showHyperCore = appSettings?.showHyperCoreBanner ?: true
         val showShso = appSettings?.showShsoBanner ?: true
 
-        outputLog = if (showHyperCore) HyperCore.generateEngineBanner("工作中") else ""
+        refreshPristineBanner("工作中")
         isTaskRunning = true
         currentTaskName = fileName
         currentTaskPath = filePath
@@ -333,8 +366,7 @@ object RootService {
                     taskStartTime = 0L
                     lastExitCode = null
                     processPid = 0
-                    val showHyperCore = appSettings?.showHyperCoreBanner ?: true
-                    outputLog = if (showHyperCore) HyperCore.generateEngineBanner("工作中") else ""
+                    refreshPristineBanner("工作中")
                 }
             }
         }
@@ -342,10 +374,12 @@ object RootService {
 
     fun clearOutput() {
         HyperCore.clearBatchQueue()
+        outputIsPristineBanner = false
         outputLog = ""
     }
 
     private fun appendOutputDirect(text: String) {
+        outputIsPristineBanner = false
         outputLog = HyperCore.appendWithSlidingWindow(outputLog, text)
     }
 }
