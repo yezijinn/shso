@@ -355,7 +355,7 @@ fun SettingsPage(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Image(
-                    painter = painterResource(id = R.mipmap.ic_launcher),
+                    painter = painterResource(id = R.mipmap.ic_launcher_foreground),
                     contentDescription = "shso 图标",
                     modifier = Modifier
                         .size(60.dp)
