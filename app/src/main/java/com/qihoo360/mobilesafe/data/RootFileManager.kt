@@ -160,7 +160,10 @@ object RootFileManager {
         if (sanitized.isEmpty()) {
             return@withContext Pair(false, "文件名不能为空")
         }
-        if (sanitized.contains("/") || sanitized.contains("\\") || sanitized.contains("..") || sanitized.contains("\u0000")) {
+        // 换行/回车可被 shell 解释为命令分隔，必须一并拒绝（与 /、\、..、\0 同级）
+        if (sanitized.contains("/") || sanitized.contains("\\") || sanitized.contains("..") ||
+            sanitized.contains("\n") || sanitized.contains("\r") || sanitized.contains("\u0000")
+        ) {
             return@withContext Pair(false, "文件名不能包含路径分隔符或非法字符")
         }
 

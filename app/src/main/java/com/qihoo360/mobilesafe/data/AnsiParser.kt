@@ -38,25 +38,27 @@ object AnsiParser {
     )
 
     fun parseAnsi(raw: String, defaultColor: Color): ParsedAnsiResult {
-        if (raw.isEmpty()) {
+        // CR 归一化：\r\n 视为换行，孤立 \r 剥离（终端回车符在文本容器中会导致光标/显示异常）
+        val normalized = raw.replace("\r\n", "\n").replace('\r', '\n')
+        if (normalized.isEmpty()) {
             return ParsedAnsiResult(AnnotatedString(""), "")
         }
 
-        if (!raw.contains('\u001B')) {
+        if (!normalized.contains('\u001B')) {
             val singleStyle = SpanStyle(color = defaultColor, fontWeight = FontWeight.Normal)
-            val annotated = AnnotatedString(raw, spanStyles = listOf(AnnotatedString.Range(singleStyle, 0, raw.length)))
-            return ParsedAnsiResult(annotated, raw)
+            val annotated = AnnotatedString(normalized, spanStyles = listOf(AnnotatedString.Range(singleStyle, 0, normalized.length)))
+            return ParsedAnsiResult(annotated, normalized)
         }
 
-        val plainSb = StringBuilder(raw.length)
+        val plainSb = StringBuilder(normalized.length)
         val annotated = buildAnnotatedString {
             var currentColor = defaultColor
             var isBold = false
             var lastIndex = 0
 
-            ANSI_REGEX.findAll(raw).forEach { matchResult ->
+            ANSI_REGEX.findAll(normalized).forEach { matchResult ->
                 if (matchResult.range.first > lastIndex) {
-                    val segment = raw.substring(lastIndex, matchResult.range.first)
+                    val segment = normalized.substring(lastIndex, matchResult.range.first)
                     plainSb.append(segment)
                     append(segment)
                     addStyle(
@@ -78,23 +80,46 @@ object AnsiParser {
                     currentColor = defaultColor
                     isBold = false
                 } else {
-                    for (code in codes) {
+                    // 索引遍历：38;5;n（256 色）与 38;2;r;g;b（真彩色）为可变长度参数，
+                    // 解析后跳过其参数，避免把 5/2 或颜色分量误当独立 SGR 码处理
+                    var i = 0
+                    while (i < codes.size) {
+                        val code = codes[i]
                         when {
                             code == 1 -> isBold = true
                             code == 22 -> isBold = false
+                            code == 39 -> currentColor = defaultColor
                             code in 30..37 || code in 90..97 -> {
                                 currentColor = COLOR_MAP[code] ?: defaultColor
                             }
-                            code == 39 -> currentColor = defaultColor
+                            // 前景扩展色：256 色（38;5;n）与真彩色（38;2;r;g;b）
+                            code == 38 && i + 1 < codes.size -> {
+                                when (codes[i + 1]) {
+                                    5 -> if (i + 2 < codes.size) {
+                                        currentColor = ansi256ToColor(codes[i + 2])
+                                        i += 2
+                                    }
+                                    2 -> if (i + 4 < codes.size) {
+                                        currentColor = Color(
+                                            codes[i + 2].coerceIn(0, 255),
+                                            codes[i + 3].coerceIn(0, 255),
+                                            codes[i + 4].coerceIn(0, 255)
+                                        )
+                                        i += 4
+                                    }
+                                }
+                            }
+                            // 背景色（48/34 等）、下划线等未识别码保持忽略，与历史行为一致
                         }
+                        i++
                     }
                 }
 
                 lastIndex = matchResult.range.last + 1
             }
 
-            if (lastIndex < raw.length) {
-                val tail = raw.substring(lastIndex)
+            if (lastIndex < normalized.length) {
+                val tail = normalized.substring(lastIndex)
                 plainSb.append(tail)
                 append(tail)
                 addStyle(
@@ -109,5 +134,29 @@ object AnsiParser {
         }
 
         return ParsedAnsiResult(annotated, plainSb.toString())
+    }
+
+    /**
+     * xterm 256 色调色板（CLUT）到颜色：
+     * 0-15 映射 ANSI 基础色，16-231 为 6×6×6 色块，232-255 为 24 阶灰度。
+     */
+    private fun ansi256ToColor(index: Int): Color {
+        return when (index) {
+            in 0..7 -> COLOR_MAP.getValue(30 + index)
+            in 8..15 -> COLOR_MAP.getValue(90 + index - 8)
+            in 16..231 -> {
+                val v = index - 16
+                val component = { x: Int -> if (x == 0) 0 else 55 + x * 40 }
+                Color(
+                    component(v / 36),
+                    component((v / 6) % 6),
+                    component(v % 6)
+                )
+            }
+            else -> {
+                val gray = 8 + (index - 232) * 10
+                Color(gray.coerceIn(0, 255), gray.coerceIn(0, 255), gray.coerceIn(0, 255))
+            }
+        }
     }
 }
