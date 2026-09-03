@@ -12,6 +12,7 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -123,6 +124,9 @@ object RootService {
 
         withContext(Dispatchers.Main) {
             isRootGranted = granted
+            // 若当前输出仍是纯横幅且无任务运行时，原位刷新横幅的 ROOT 权限行，
+            // 保证引擎横幅与本次探测结果一致（与 MainActivity 路径 reportRootState 行为对齐）。
+            reportRootState(granted)
         }
         granted
     }
@@ -188,6 +192,7 @@ object RootService {
         executionJob?.cancel()
         executionJob = scope.launch(Dispatchers.IO) {
             var process: Process? = null
+            var writer: OutputStreamWriter? = null
             try {
                 val escapedParent = parentDir.replace("'", "'\\''")
                 val escapedFile = filePath.replace("'", "'\\''")
@@ -196,7 +201,8 @@ object RootService {
 
                 process = ProcessBuilder("su", "-c", execCmd).redirectErrorStream(true).start()
                 activeProcess = process
-                processWriter = OutputStreamWriter(process.outputStream, Charsets.UTF_8)
+                writer = OutputStreamWriter(process.outputStream, Charsets.UTF_8)
+                processWriter = writer
 
                 try {
                     val pidField = process.javaClass.getDeclaredField("pid")
@@ -222,35 +228,54 @@ object RootService {
 
                 val exitCode = process.waitFor()
                 HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
+                // 本轮执行仍是当前任务（代际判断）才写「退出」文案；被新任务/重启取代后由对方写
                 withContext(Dispatchers.Main) {
-                    lastExitCode = exitCode
-                    if (appSettings?.showShsoBanner != false) {
-                        appendOutputDirect("\n[shso Engine] 任务已退出，退出码: $exitCode\n")
+                    if (executionJob === coroutineContext[Job]) {
+                        lastExitCode = exitCode
+                        if (appSettings?.showShsoBanner != false) {
+                            appendOutputDirect("\n[shso Engine] 任务已退出，退出码: $exitCode\n")
+                        }
                     }
                 }
             } catch (e: Exception) {
-                HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
-                withContext(Dispatchers.Main) {
-                    if (appSettings?.showShsoBanner != false) {
-                        appendOutputDirect("\n[shso Engine] 异常终止: ${e.message}\n")
+                // 被取消（kill/restart/覆盖）时协程会抛 CancellationException，走到这里。
+                // 「异常终止」文案仅在协程未取消、且仍是当前任务时输出；
+                // flush/清理统一交给 finally 处理，避免取消路径上挂起引发二次抛错。
+                if (coroutineContext[Job]?.isCancelled != true) {
+                    withContext(Dispatchers.Main) {
+                        if (executionJob === coroutineContext[Job]) {
+                            lastExitCode = -1
+                            if (appSettings?.showShsoBanner != false) {
+                                appendOutputDirect("\n[shso Engine] 异常终止: ${e.message}\n")
+                            }
+                        }
                     }
-                    lastExitCode = -1
                 }
             } finally {
-                try {
-                    processWriter?.close()
-                } catch (_: Exception) {}
-                try {
-                    process?.destroy()
-                } catch (_: Exception) {}
-                HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
-                withContext(Dispatchers.Main) {
-                    isTaskRunning = false
-                    currentTaskName = null
-                    currentTaskPath = null
-                    activeProcess = null
-                    processWriter = null
-                    processPid = 0
+                // 任何取消路径（kill/restart/覆盖启动）必然走到这里；
+                // 但只有本轮仍是当前执行协程（执行 Job 未被替换）时才清理 Compose 状态。
+                // 关键：executionJob 在协程外已切换到新值（覆盖启动先 cancel 再赋新 job），
+                // 因此 finally 里比较「执行 Job 是否仍是本轮协程」可判定代际。
+                val isCurrentJob = executionJob === coroutineContext[Job]
+                // 清理必须用局部引用：覆盖启动后全局 processWriter 已属于新任务，旧任务不得动它。
+                // withContext(Dispatchers.Main)+NonCancellable：被取消协程的 finally 里不允许挂起切换，
+                // 且必须保证「清理状态」这段即使协程已取消也完整执行。
+                withContext(NonCancellable + Dispatchers.Main) {
+                    try {
+                        writer?.close()
+                    } catch (_: Exception) {}
+                    try {
+                        process?.destroy()
+                    } catch (_: Exception) {}
+                    HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
+                    if (isCurrentJob) {
+                        isTaskRunning = false
+                        currentTaskName = null
+                        currentTaskPath = null
+                        activeProcess = null
+                        processWriter = null
+                        processPid = 0
+                    }
                 }
             }
         }
@@ -288,35 +313,56 @@ object RootService {
     }
 
     fun killCurrentProcess() {
+        // 同步捕获本轮任务实体（Job/pid/进程句柄/任务名）：
+        // 之后主线程若启动新任务（覆盖启动），这些仍是旧实体，kill 只作用于它们，绝不误杀新任务。
+        val targetJob = executionJob ?: return
+        val targetPid = processPid
+        val targetProcess = activeProcess
+        val targetName = currentTaskName
+
         scope.launch(Dispatchers.IO) {
             try {
-                if (processPid > 0) {
-                    runCommandSync("kill -9 $processPid 2>/dev/null")
+                if (targetPid > 0) {
+                    runCommandSync("kill -9 $targetPid 2>/dev/null")
                 }
-                currentTaskName?.let { taskName ->
+                targetName?.let { taskName ->
                     val escapedTaskName = taskName.replace("'", "'\\''")
                     runCommandSync("pkill -9 -f '$escapedTaskName' 2>/dev/null")
                 }
-                activeProcess?.destroyForcibly()
-                activeProcess = null
-                processWriter = null
-                executionJob?.cancel()
+                targetProcess?.destroyForcibly()
+                // 本轮仍由本 kill 接管（执行 Job 未被替换）才撤销全局句柄；
+                // 若期间新任务已启动，句柄属于新任务，由新任务线条负责。
+                if (executionJob === targetJob) {
+                    activeProcess = null
+                    processWriter = null
+                }
+                // 进程已杀，任务实体已终止：显式取消执行协程并等待其 finally 收尾，
+                // 保证旧任务在 kill 写状态之前完成清理，避免交叉写 Compose 状态。
+                targetJob.cancel()
+                targetJob.join()
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    if (appSettings?.showShsoBanner != false) {
-                        appendOutputDirect("\n[shso Engine] 结束进程失败: ${e.message}\n")
+                    if (executionJob === targetJob) {
+                        if (appSettings?.showShsoBanner != false) {
+                            appendOutputDirect("\n[shso Engine] 结束进程失败: ${e.message}\n")
+                        }
                     }
                 }
             } finally {
-                HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
                 withContext(Dispatchers.Main) {
-                    isTaskRunning = false
-                    currentTaskName = null
-                    currentTaskPath = null
-                    lastExitCode = 137
-                    processPid = 0
-                    if (appSettings?.showShsoBanner != false) {
-                        appendOutputDirect("\n[shso Engine] 用户已手动结束进程\n")
+                    // 仅当本轮仍是当前执行协程时才 flush/清理/写文案：
+                    // 若期间新任务已启动（executionJob 已替换），旧任务的残留日志不应混入新任务输出，
+                    // 交由 executeFile 的 clearBatchQueue 与新的 flush loop 自行处理。
+                    if (executionJob === targetJob) {
+                        HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
+                        isTaskRunning = false
+                        currentTaskName = null
+                        currentTaskPath = null
+                        lastExitCode = 137
+                        processPid = 0
+                        if (appSettings?.showShsoBanner != false) {
+                            appendOutputDirect("\n[shso Engine] 用户已手动结束进程\n")
+                        }
                     }
                 }
             }
@@ -324,6 +370,8 @@ object RootService {
     }
 
     fun sendInterrupt() {
+        // 捕获本轮任务实体，避免探测期间新任务替换导致误判
+        val targetJob = executionJob
         scope.launch(Dispatchers.IO) {
             try {
                 if (isTaskRunning) {
@@ -337,6 +385,15 @@ object RootService {
                     if (processPid > 0) {
                         runCommandSync("kill -2 $processPid 2>/dev/null")
                     }
+
+                    // 进程未必响应 SIGINT：等待短暂窗口后仍未退出，则提示用户可用「结束进程」强制兜底，
+                    // 避免 UI 一直显示 RUNNING 却无任何说明。
+                    delay(3000)
+                    withContext(Dispatchers.Main) {
+                        if (isTaskRunning && executionJob === targetJob) {
+                            appendOutputDirect("\n[shso Engine] 进程未响应 SIGINT，可点击「结束进程」强制终止\n")
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
@@ -347,26 +404,41 @@ object RootService {
     }
 
     fun restartTerminal() {
+        // 同步捕获旧任务实体：重启只作用于旧实体，新任务启动后由新线条负责
+        val targetJob = executionJob
+        val targetPid = processPid
+        val targetProcess = activeProcess
+
         scope.launch(Dispatchers.IO) {
             try {
-                executionJob?.cancel()
-                if (processPid > 0) {
-                    runCommandSync("kill -9 $processPid 2>/dev/null")
+                targetJob?.cancel()
+                if (targetPid > 0) {
+                    runCommandSync("kill -9 $targetPid 2>/dev/null")
                 }
-                activeProcess?.destroyForcibly()
-                activeProcess = null
-                processWriter = null
+                targetProcess?.destroyForcibly()
+                // 旧任务 finally 已通过代际判断清理状态；若期间新任务启动，
+                // 不能再动全局句柄（属于新任务）
+                if (executionJob === targetJob) {
+                    activeProcess = null
+                    processWriter = null
+                }
+                // 等待旧任务的 finally 清理完成，避免与下方状态写入并发
+                targetJob?.join()
                 HyperCore.clearBatchQueue()
             } catch (_: Exception) {
             } finally {
                 withContext(Dispatchers.Main) {
-                    isTaskRunning = false
-                    currentTaskName = null
-                    currentTaskPath = null
-                    taskStartTime = 0L
-                    lastExitCode = null
-                    processPid = 0
-                    refreshPristineBanner("工作中")
+                    // 仅当本轮仍是当前执行协程时才清理状态并恢复横幅；
+                    // 若期间新任务已启动（executionJob 已替换），统一交由新任务线条处理
+                    if (executionJob === targetJob || targetJob == null) {
+                        isTaskRunning = false
+                        currentTaskName = null
+                        currentTaskPath = null
+                        taskStartTime = 0L
+                        lastExitCode = null
+                        processPid = 0
+                        refreshPristineBanner("工作中")
+                    }
                 }
             }
         }

@@ -20,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -90,13 +91,26 @@ fun MainContainer(appSettings: AppSettings) {
     // 终端 ROOT 门禁状态：null=检测中，false=未获得，true=已获得
     var rootGranted by remember { mutableStateOf<Boolean?>(null) }
 
+    // ROOT 探测防并发/节流：已有探测在跑则跳过；距上次探测 < 1.5s 不重复发起，
+    // 避免按 Home/从授权页快速往返时反复 fork su 进程、反复触发 Magisk 授权弹窗。
+    var rootProbeInFlight by remember { mutableStateOf(false) }
+    var lastRootProbeAt by remember { mutableLongStateOf(0L) }
+
     fun refreshRootGranted() {
+        val now = System.currentTimeMillis()
+        if (rootProbeInFlight || now - lastRootProbeAt < 1500L) return
+        rootProbeInFlight = true
         // PermissionChecker.hasRootAccess() 内部在 IO 线程执行带超时的 su 探测
         coroutineScope.launch {
-            val granted = PermissionChecker.hasRootAccess()
-            rootGranted = granted
-            // 同步给 RootService：终端引擎横幅的「当前权限」行据此输出 ROOT/无ROOT 真实文案
-            RootService.reportRootState(granted)
+            try {
+                val granted = PermissionChecker.hasRootAccess()
+                lastRootProbeAt = System.currentTimeMillis()
+                rootGranted = granted
+                // 同步给 RootService：终端引擎横幅的「当前权限」行据此输出 ROOT/无ROOT 真实文案
+                RootService.reportRootState(granted)
+            } finally {
+                rootProbeInFlight = false
+            }
         }
     }
 

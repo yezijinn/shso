@@ -105,7 +105,10 @@ fun SettingsPage(
         permissionBackgroundStartGranted = PermissionChecker.canStartBackgroundActivities(context)
         // su 探测为 IO 阻塞任务（带超时），放到协程中执行，避免卡 UI
         scope.launch {
-            permissionRootGranted = PermissionChecker.hasRootAccess()
+            val granted = PermissionChecker.hasRootAccess()
+            permissionRootGranted = granted
+            // 回写 RootService：统一 ROOT 状态来源，保证终端 banner 与设置页开关一致
+            RootService.reportRootState(granted)
         }
     }
 
