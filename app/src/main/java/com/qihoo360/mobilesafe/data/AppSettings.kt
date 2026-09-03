@@ -51,6 +51,9 @@ class AppSettings private constructor(context: Context) {
     var fileListFontSize by mutableFloatStateOf(prefs.getFloat(KEY_FILE_LIST_FONT_SIZE, DEFAULT_FILE_LIST_FONT_SIZE))
         private set
 
+    var terminalFontSize by mutableFloatStateOf(prefs.getFloat(KEY_TERMINAL_FONT_SIZE, DEFAULT_TERMINAL_FONT_SIZE))
+        private set
+
     var showHiddenFiles by mutableStateOf(prefs.getBoolean(KEY_SHOW_HIDDEN_FILES, false))
         private set
 
@@ -137,6 +140,12 @@ class AppSettings private constructor(context: Context) {
         prefs.edit().putFloat(KEY_FILE_LIST_FONT_SIZE, clamped).apply()
     }
 
+    fun updateTerminalFontSize(size: Float) {
+        val clamped = size.coerceIn(MIN_TERMINAL_FONT_SIZE, MAX_TERMINAL_FONT_SIZE)
+        terminalFontSize = clamped
+        prefs.edit().putFloat(KEY_TERMINAL_FONT_SIZE, clamped).apply()
+    }
+
     fun updateShowHiddenFiles(enable: Boolean) {
         showHiddenFiles = enable
         prefs.edit().putBoolean(KEY_SHOW_HIDDEN_FILES, enable).apply()
@@ -153,15 +162,20 @@ class AppSettings private constructor(context: Context) {
         const val FILE_SORT_TIME_ASC = 2
         const val FILE_SORT_TIME_DESC = 3
 
-        private const val MIN_FILE_LIST_FONT_SIZE = 12f
-        private const val MAX_FILE_LIST_FONT_SIZE = 20f
+        private const val MIN_FILE_LIST_FONT_SIZE = 5f
+        private const val MAX_FILE_LIST_FONT_SIZE = 30f
         private const val DEFAULT_FILE_LIST_FONT_SIZE = 15f
+
+        private const val MIN_TERMINAL_FONT_SIZE = 5f
+        private const val MAX_TERMINAL_FONT_SIZE = 30f
+        private const val DEFAULT_TERMINAL_FONT_SIZE = 12f
 
         private const val PREF_NAME = "shso_settings"
         private const val KEY_USE_INDEPENDENT_FOLDER = "use_independent_folder"
         private const val KEY_AUTO_DELETE_AFTER_ADDING = "auto_delete_after_adding"
         private const val KEY_AUTO_EXECUTE_AFTER_ADDING = "auto_execute_after_adding"
         private const val KEY_TERMINAL_TEXT_COLOR = "terminal_text_color"
+        private const val KEY_TERMINAL_FONT_SIZE = "terminal_font_size"
         private const val KEY_DARK_MODE = "dark_mode_option"
         private const val KEY_FILE_LIST_FONT_SIZE = "file_list_font_size"
         private const val KEY_SHOW_HIDDEN_FILES = "show_hidden_files"

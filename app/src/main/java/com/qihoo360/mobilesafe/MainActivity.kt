@@ -93,7 +93,10 @@ fun MainContainer(appSettings: AppSettings) {
     fun refreshRootGranted() {
         // PermissionChecker.hasRootAccess() 内部在 IO 线程执行带超时的 su 探测
         coroutineScope.launch {
-            rootGranted = PermissionChecker.hasRootAccess()
+            val granted = PermissionChecker.hasRootAccess()
+            rootGranted = granted
+            // 同步给 RootService：终端引擎横幅的「当前权限」行据此输出 ROOT/无ROOT 真实文案
+            RootService.reportRootState(granted)
         }
     }
 

@@ -33,9 +33,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
@@ -58,106 +55,16 @@ import androidx.compose.ui.unit.sp
 import com.qihoo360.mobilesafe.data.AppSettings
 import com.qihoo360.mobilesafe.data.FileItem
 import com.qihoo360.mobilesafe.data.RootFileManager
+import com.qihoo360.mobilesafe.ui.components.FileListSettingsDialog
+import com.qihoo360.mobilesafe.ui.components.FileShortcutButton
+import com.qihoo360.mobilesafe.ui.components.applyFileViewSettings
 import com.qihoo360.mobilesafe.ui.theme.AuroraTextStyles
 import com.qihoo360.mobilesafe.ui.theme.AuroraTokens
 import com.qihoo360.mobilesafe.ui.theme.AuroraWindowDialog
-import com.qihoo360.mobilesafe.ui.theme.auroraSwitchColors
+import com.qihoo360.mobilesafe.ui.theme.auroraFilledButton
 import com.qihoo360.mobilesafe.ui.theme.auroraTextFieldColors
-import java.util.Locale
-import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import java.io.File
-
-/**
- * Applies the FilePage list view preferences to a freshly loaded file list:
- * filters hidden files (if disabled) and sorts with directories always first.
- */
-private fun applyFileViewSettings(
-    list: List<FileItem>,
-    showHiddenFiles: Boolean,
-    sortMode: Int
-): List<FileItem> {
-    val filtered = if (showHiddenFiles) list else list.filter { !it.name.startsWith(".") }
-    val directories = filtered.filter { it.isDirectory }
-    val files = filtered.filter { !it.isDirectory }
-
-    val sortByTime = sortMode == AppSettings.FILE_SORT_TIME_ASC || sortMode == AppSettings.FILE_SORT_TIME_DESC
-    val descending = sortMode == AppSettings.FILE_SORT_NAME_DESC || sortMode == AppSettings.FILE_SORT_TIME_DESC
-
-    val baseComparator = if (sortByTime) {
-        compareBy<FileItem> { it.lastModified }
-    } else {
-        compareBy<FileItem> { it.name.lowercase(Locale.getDefault()) }
-    }
-    val comparator = if (descending) baseComparator.reversed() else baseComparator
-
-    return directories.sortedWith(comparator) + files.sortedWith(comparator)
-}
-
-@Composable
-private fun SortModePillButton(
-    text: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Button(
-        onClick = onClick,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (selected) AuroraTokens.Accent else AuroraTokens.SurfaceHover,
-            contentColor = if (selected) AuroraTokens.OnAccent else AuroraTokens.Text
-        ),
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-        modifier = modifier
-    ) {
-        Text(
-            text = text,
-            fontSize = 12.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
-        )
-    }
-}
-
-/**
- * Compact equal-width shortcut chip used in the FilePage top toolbar row.
- * data / storage / shso share the same height and visual weight as the
- * surrounding icon buttons.
- */
-@Composable
-private fun FileShortcutButton(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Box(
-        modifier = modifier
-            .height(36.dp)
-            .clip(RoundedCornerShape(0.dp))
-            .background(
-                if (selected) {
-                    AuroraTokens.Accent
-                } else {
-                    AuroraTokens.SurfaceHover
-                }
-            )
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = label,
-            fontSize = 11.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) {
-                AuroraTokens.OnAccent
-            } else {
-                AuroraTokens.Text
-            },
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
-}
 
 @Composable
 fun FilePage(
@@ -371,42 +278,25 @@ fun FilePage(
                                         .padding(horizontal = 16.dp, vertical = 0.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(38.dp)
-                                        .clip(RoundedCornerShape(0.dp))
-                                        .background(
-                                            when {
-                                                item.isDirectory -> AuroraTokens.Accent.copy(0.15f)
-                                                item.isExecutableScript -> AuroraTokens.Accent.copy(0.2f)
-                                                item.isExecutableBinary -> AuroraTokens.GlowBlue.copy(0.2f)
-                                                isFontFile -> AuroraTokens.AccentViolet.copy(0.2f)
-                                                else -> AuroraTokens.SurfaceHover
-                                            }
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = when {
-                                            item.isDirectory -> "📁"
-                                            item.isExecutableScript -> "SH"
-                                            item.isExecutableBinary -> "SO"
-                                            isFontFile -> if (item.name.endsWith(".otf", ignoreCase = true)) "OTF" else "TTF"
-                                            else -> "📄"
-                                        },
-                                        fontSize = if (item.isDirectory || (!isExecutable && !isFontFile)) 16.sp else 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = when {
-                                            item.isDirectory -> AuroraTokens.Accent
-                                            item.isExecutableScript -> AuroraTokens.Accent
-                                            item.isExecutableBinary -> AuroraTokens.GlowBlue
-                                            isFontFile -> AuroraTokens.AccentViolet
-                                            else -> AuroraTokens.TextSecondary
-                                        }
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.width(12.dp))
+                                // 类型图标：无底色方框、左右零间隙，直接裸文字
+                                Text(
+                                    text = when {
+                                        item.isDirectory -> "📁"
+                                        item.isExecutableScript -> "SH"
+                                        item.isExecutableBinary -> "SO"
+                                        isFontFile -> if (item.name.endsWith(".otf", ignoreCase = true)) "OTF" else "TTF"
+                                        else -> "📄"
+                                    },
+                                    fontSize = if (item.isDirectory || (!isExecutable && !isFontFile)) 16.sp else 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = when {
+                                        item.isDirectory -> AuroraTokens.Accent
+                                        item.isExecutableScript -> AuroraTokens.Accent
+                                        item.isExecutableBinary -> AuroraTokens.GlowBlue
+                                        isFontFile -> AuroraTokens.AccentViolet
+                                        else -> AuroraTokens.TextSecondary
+                                    }
+                                )
 
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
@@ -443,17 +333,16 @@ fun FilePage(
                                 }
 
                                 if (isExecutable) {
-                                    Button(
-                                        onClick = { onExecuteFileAndNavigate(item.path) },
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = AuroraTokens.Accent,
-                                            contentColor = AuroraTokens.OnAccent
-                                        ),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
-                                        modifier = Modifier.clip(RoundedCornerShape(0.dp))
-                                    ) {
-                                        Text("执行", fontSize = 12.sp)
-                                    }
+                                    // 「执行」按钮：去掉矩形底，直接裸文字 + 红色加粗（与终端页按钮裸文字化风格一致）
+                                    Text(
+                                        text = "执行",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = AuroraTokens.Error,
+                                        modifier = Modifier
+                                            .clickable { onExecuteFileAndNavigate(item.path) }
+                                            .padding(horizontal = 6.dp, vertical = 8.dp)
+                                    )
                                 } else if (isFontFile) {
                                     Button(
                                         onClick = {
@@ -472,11 +361,11 @@ fun FilePage(
                                 }
                                 }
 
-                                // inset 分割线：起点与文件名文本对齐（16 行内 padding + 38 图标 + 12 间距）
+                                // inset 分割线：图标已无底色方框，线从行内容起点起
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(start = 66.dp)
+                                        .padding(start = 16.dp)
                                         .height(0.7.dp)
                                         .background(AuroraTokens.SurfaceHover.copy(alpha = 0.6f))
                                 )
@@ -491,133 +380,10 @@ fun FilePage(
     }
 
     if (showFileSettingsDialog) {
-        AuroraWindowDialog(
-            show = true,
-            title = "文件列表设置",
+        FileListSettingsDialog(
+            appSettings = appSettings,
             onDismissRequest = { showFileSettingsDialog = false }
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "列表字体大小",
-                        style = AuroraTextStyles.body1,
-                        color = AuroraTokens.Text,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Text(
-                        text = "${appSettings.fileListFontSize.roundToInt()} sp",
-                        style = AuroraTextStyles.footnote1,
-                        color = AuroraTokens.Accent
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        text = "小",
-                        style = AuroraTextStyles.footnote2,
-                        color = AuroraTokens.TextSecondary
-                    )
-                    Slider(
-                        value = appSettings.fileListFontSize,
-                        onValueChange = { appSettings.updateFileListFontSize(it) },
-                        valueRange = 12f..20f,
-                        steps = 0,
-                        colors = SliderDefaults.colors(
-                            thumbColor = AuroraTokens.Accent,
-                            activeTrackColor = AuroraTokens.Accent,
-                            activeTickColor = Color.Transparent,
-                            inactiveTrackColor = AuroraTokens.ControlOff,
-                            inactiveTickColor = Color.Transparent
-                        ),
-                        modifier = Modifier.weight(1f)
-                    )
-                    Text(
-                        text = "大",
-                        style = AuroraTextStyles.footnote2,
-                        color = AuroraTokens.TextSecondary
-                    )
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "显示隐藏文件",
-                            style = AuroraTextStyles.body1,
-                            color = AuroraTokens.Text
-                        )
-                        Text(
-                            text = "关闭后将隐藏以 \".\" 开头的文件",
-                            style = AuroraTextStyles.footnote2,
-                            color = AuroraTokens.TextSecondary
-                        )
-                    }
-                    Switch(
-                        checked = appSettings.showHiddenFiles,
-                        onCheckedChange = { appSettings.updateShowHiddenFiles(it) },
-                        colors = auroraSwitchColors()
-                    )
-                }
-
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = "排序方式",
-                        style = AuroraTextStyles.body1,
-                        color = AuroraTokens.Text
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        SortModePillButton(
-                            text = "名称↑",
-                            selected = appSettings.fileSortMode == AppSettings.FILE_SORT_NAME_ASC,
-                            onClick = { appSettings.updateFileSortMode(AppSettings.FILE_SORT_NAME_ASC) },
-                            modifier = Modifier.weight(1f)
-                        )
-                        SortModePillButton(
-                            text = "名称↓",
-                            selected = appSettings.fileSortMode == AppSettings.FILE_SORT_NAME_DESC,
-                            onClick = { appSettings.updateFileSortMode(AppSettings.FILE_SORT_NAME_DESC) },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        SortModePillButton(
-                            text = "时间↑",
-                            selected = appSettings.fileSortMode == AppSettings.FILE_SORT_TIME_ASC,
-                            onClick = { appSettings.updateFileSortMode(AppSettings.FILE_SORT_TIME_ASC) },
-                            modifier = Modifier.weight(1f)
-                        )
-                        SortModePillButton(
-                            text = "时间↓",
-                            selected = appSettings.fileSortMode == AppSettings.FILE_SORT_TIME_DESC,
-                            onClick = { appSettings.updateFileSortMode(AppSettings.FILE_SORT_TIME_DESC) },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-            }
-        }
+        )
     }
 
     if (showActionDialog && selectedItem != null) {
@@ -653,7 +419,9 @@ fun FilePage(
                             }
                         }
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .auroraFilledButton(),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = AuroraTokens.Accent,
                         contentColor = AuroraTokens.OnAccent
@@ -668,7 +436,9 @@ fun FilePage(
                         renameInput = item.name
                         showRenameDialog = true
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .auroraFilledButton(),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = AuroraTokens.SurfaceHover,
                         contentColor = AuroraTokens.Text
@@ -682,7 +452,9 @@ fun FilePage(
                         showActionDialog = false
                         showDeleteDialog = true
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .auroraFilledButton(),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = AuroraTokens.Error.copy(0.15f),
                         contentColor = AuroraTokens.Error
@@ -925,7 +697,8 @@ fun FilePage(
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Button(
                         onClick = {
@@ -942,19 +715,17 @@ fun FilePage(
                         colors = ButtonDefaults.buttonColors(
                             containerColor = AuroraTokens.Accent,
                             contentColor = AuroraTokens.OnAccent
-                        ),
-                        modifier = Modifier.weight(1.2f)
+                        )
                     ) {
                         Text("应用为软件字体", fontSize = 12.sp)
                     }
-
+                    Spacer(modifier = Modifier.width(12.dp))
                     Button(
                         onClick = { showFontPreviewDialog = false },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = AuroraTokens.SurfaceHover,
                             contentColor = AuroraTokens.Text
-                        ),
-                        modifier = Modifier.weight(0.8f)
+                        )
                     ) {
                         Text("关闭", fontSize = 12.sp)
                     }
