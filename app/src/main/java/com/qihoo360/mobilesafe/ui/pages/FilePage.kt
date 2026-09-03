@@ -55,6 +55,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.qihoo360.mobilesafe.data.AppSettings
+import com.qihoo360.mobilesafe.data.ArchiveExtractor
 import com.qihoo360.mobilesafe.data.FileItem
 import com.qihoo360.mobilesafe.data.RootFileManager
 import com.qihoo360.mobilesafe.ui.components.BookmarksDialog
@@ -103,6 +104,12 @@ fun FilePage(
 
     var showFileSettingsDialog by remember { mutableStateOf(false) }
     var showBookmarksDialog by remember { mutableStateOf(false) }
+
+    // 自动解压：密码输入弹窗状态
+    var showExtractPasswordDialog by remember { mutableStateOf(false) }
+    var extractPasswordInput by remember { mutableStateOf("") }
+    var extractTargetItem by remember { mutableStateOf<FileItem?>(null) }
+    var isExtracting by remember { mutableStateOf(false) }
 
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
 
@@ -549,6 +556,50 @@ fun FilePage(
                     Text("添加到shso")
                 }
 
+                // 自动解压：仅已知压缩包显示；zip/tar/tgz/7z 可解压，rar 提示暂不支持
+                if (item.isArchive) {
+                    Button(
+                        onClick = {
+                            showActionDialog = false
+                            if (!item.isExtractableArchive) {
+                                feedbackMessage = "暂不支持解压 .rar（仅支持 zip/tar/tgz/7z）"
+                            } else {
+                                scope.launch {
+                                    isExtracting = true
+                                    val result = ArchiveExtractor.extract(
+                                        archivePath = item.path,
+                                        targetParent = currentDirectory
+                                    )
+                                    isExtracting = false
+                                    when (result) {
+                                        is ArchiveExtractor.ExtractResult.Success ->
+                                            feedbackMessage = "已解压到: ${result.targetDir}"
+                                        is ArchiveExtractor.ExtractResult.NeedPassword -> {
+                                            // 弹出密码输入框，用户输入后重试
+                                            extractTargetItem = item
+                                            extractPasswordInput = ""
+                                            showExtractPasswordDialog = true
+                                        }
+                                        is ArchiveExtractor.ExtractResult.Failure ->
+                                            feedbackMessage = result.message
+                                    }
+                                    refresh()
+                                }
+                            }
+                        },
+                        enabled = !isExtracting,
+                        modifier = Modifier
+                            .align(Alignment.CenterHorizontally)
+                            .auroraFilledButton(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AuroraTokens.Accent.copy(alpha = 0.85f),
+                            contentColor = AuroraTokens.OnAccent
+                        )
+                    ) {
+                        Text(if (isExtracting) "正在解压…" else "自动解压文件")
+                    }
+                }
+
                 Button(
                     onClick = {
                         showActionDialog = false
@@ -847,6 +898,82 @@ fun FilePage(
                         )
                     ) {
                         Text("关闭", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+    }
+
+    // 解压密码输入弹窗：压缩包检测到加密时弹出
+    if (showExtractPasswordDialog && extractTargetItem != null) {
+        val targetItem = extractTargetItem!!
+        AuroraWindowDialog(
+            show = true,
+            title = "输入解压密码",
+            summary = "压缩包「${targetItem.name}」已加密，请输入密码后继续解压：",
+            onDismissRequest = { showExtractPasswordDialog = false }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                TextField(
+                    value = extractPasswordInput,
+                    onValueChange = { extractPasswordInput = it },
+                    label = { Text("密码") },
+                    singleLine = true,
+                    colors = auroraTextFieldColors(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(0.dp))
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    Button(
+                        onClick = { showExtractPasswordDialog = false },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AuroraTokens.SurfaceHover,
+                            contentColor = AuroraTokens.Text
+                        )
+                    ) {
+                        Text("取消")
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Button(
+                        enabled = extractPasswordInput.isNotBlank(),
+                        onClick = {
+                            val pwd = extractPasswordInput
+                            showExtractPasswordDialog = false
+                            scope.launch {
+                                isExtracting = true
+                                val result = ArchiveExtractor.extract(
+                                    archivePath = targetItem.path,
+                                    targetParent = currentDirectory,
+                                    password = pwd
+                                )
+                                isExtracting = false
+                                when (result) {
+                                    is ArchiveExtractor.ExtractResult.Success ->
+                                        feedbackMessage = "已解压到: ${result.targetDir}"
+                                    is ArchiveExtractor.ExtractResult.NeedPassword ->
+                                        feedbackMessage = "该压缩包需要密码"
+                                    is ArchiveExtractor.ExtractResult.Failure ->
+                                        feedbackMessage = result.message
+                                }
+                                refresh()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AuroraTokens.Accent,
+                            contentColor = AuroraTokens.OnAccent
+                        )
+                    ) {
+                        Text("解压")
                     }
                 }
             }
