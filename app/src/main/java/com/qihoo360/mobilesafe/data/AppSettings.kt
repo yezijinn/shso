@@ -60,6 +60,17 @@ class AppSettings private constructor(context: Context) {
     var fileSortMode by mutableIntStateOf(prefs.getInt(KEY_FILE_SORT_MODE, FILE_SORT_NAME_ASC))
         private set
 
+    var rememberDirectory by mutableStateOf(prefs.getBoolean(KEY_REMEMBER_DIRECTORY, true))
+        private set
+
+    // 书签（永久存储的文件路径列表，按添加顺序）
+    private val bookmarkPaths: MutableSet<String> = LinkedHashSet(
+        prefs.getStringSet(KEY_BOOKMARKS, emptySet()) ?: emptySet()
+    )
+
+    var bookmarks by mutableStateOf(bookmarkPaths.toList())
+        private set
+
     fun setIndependentFolder(enable: Boolean) {
         useIndependentFolder = enable
         prefs.edit().putBoolean(KEY_USE_INDEPENDENT_FOLDER, enable).apply()
@@ -156,6 +167,31 @@ class AppSettings private constructor(context: Context) {
         prefs.edit().putInt(KEY_FILE_SORT_MODE, mode).apply()
     }
 
+    fun updateRememberDirectory(enable: Boolean) {
+        rememberDirectory = enable
+        prefs.edit().putBoolean(KEY_REMEMBER_DIRECTORY, enable).apply()
+    }
+
+    fun addBookmark(path: String) {
+        val normalized = path.trim().trimEnd('/').ifEmpty { "/" }
+        bookmarkPaths.add(normalized)
+        bookmarks = bookmarkPaths.toList()
+        prefs.edit().putStringSet(KEY_BOOKMARKS, bookmarkPaths).apply()
+    }
+
+    fun removeBookmark(path: String) {
+        val normalized = path.trim().trimEnd('/').ifEmpty { "/" }
+        bookmarkPaths.remove(normalized)
+        bookmarkPaths.remove(path.trim()) // 兼容旧数据或未归一化路径
+        bookmarks = bookmarkPaths.toList()
+        prefs.edit().putStringSet(KEY_BOOKMARKS, bookmarkPaths).apply()
+    }
+
+    fun isBookmarked(path: String): Boolean {
+        val normalized = path.trim().trimEnd('/').ifEmpty { "/" }
+        return bookmarks.contains(normalized) || bookmarks.contains(path.trim())
+    }
+
     companion object {
         const val FILE_SORT_NAME_ASC = 0
         const val FILE_SORT_NAME_DESC = 1
@@ -185,6 +221,8 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_CUSTOM_FONT_NAME = "custom_font_name"
         private const val KEY_SHOW_HYPERCORE_BANNER = "show_hypercore_banner"
         private const val KEY_SHOW_SHSO_BANNER = "show_shso_banner"
+        private const val KEY_REMEMBER_DIRECTORY = "remember_directory"
+        private const val KEY_BOOKMARKS = "bookmarks"
 
         private const val DEFAULT_TERMINAL_COLOR = 0xFF00E676L
 

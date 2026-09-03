@@ -214,6 +214,29 @@ internal fun FileListSettingsDialog(
                 )
             }
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "记忆操作路径",
+                        style = AuroraTextStyles.body1,
+                        color = AuroraTokens.Text
+                    )
+                    Text(
+                        text = "打开后保留上次浏览的目录，关闭则每次回到初始目录",
+                        style = AuroraTextStyles.footnote2,
+                        color = AuroraTokens.TextSecondary
+                    )
+                }
+                Switch(
+                    checked = appSettings.rememberDirectory,
+                    onCheckedChange = { appSettings.updateRememberDirectory(it) },
+                    colors = auroraSwitchColors()
+                )
+            }
+
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)

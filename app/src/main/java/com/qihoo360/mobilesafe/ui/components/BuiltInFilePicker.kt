@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -51,6 +52,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.qihoo360.mobilesafe.data.AppSettings
 import com.qihoo360.mobilesafe.data.FileItem
 import com.qihoo360.mobilesafe.data.RootFileManager
+import com.qihoo360.mobilesafe.ui.components.BookmarksDialog
 import com.qihoo360.mobilesafe.ui.theme.AuroraTextStyles
 import com.qihoo360.mobilesafe.ui.theme.AuroraTokens
 import kotlinx.coroutines.launch
@@ -82,14 +84,39 @@ fun BuiltInFilePicker(
     var selectedFile by remember { mutableStateOf<FileItem?>(null) }
     var isLoading by remember { mutableStateOf(false) }
     var showListSettings by remember { mutableStateOf(false) }
+    var showBookmarks by remember { mutableStateOf(false) }
 
     fun loadDirectory(path: String) {
         isLoading = true
         selectedFile = null
         scope.launch {
             try {
-                fileList = RootFileManager.listFiles(path)
-                currentDir = path
+                // 先探测目录是否真实存在（不可用 isEmpty 判断——合法空目录也返回空列表）
+                val exists = RootFileManager.pathExists(path)
+                fileList = if (exists) {
+                    RootFileManager.listFiles(path)
+                } else {
+                    emptyList()
+                }
+                currentDir = if (exists) {
+                    // 加载成功：开启记忆时记录为「上次浏览目录」
+                    if (appSettings.rememberDirectory) {
+                        RootFileManager.rememberedDirectory = path
+                    }
+                    path
+                } else {
+                    // 记忆目录已失效：回退初始目录
+                    val fallback = if (appSettings.rememberDirectory) {
+                        RootFileManager.rememberedDirectory?.takeIf { it != path && RootFileManager.pathExists(it) }
+                            ?: "/storage/emulated/0"
+                    } else {
+                        "/storage/emulated/0"
+                    }
+                    if (appSettings.rememberDirectory) {
+                        RootFileManager.rememberedDirectory = fallback
+                    }
+                    fallback
+                }
             } catch (_: Exception) {
                 fileList = emptyList()
             } finally {
@@ -205,6 +232,28 @@ fun BuiltInFilePicker(
                                 onClick = { loadDirectory(RootFileManager.DEFAULT_SHSO_DIR) },
                                 modifier = Modifier.weight(1f)
                             )
+
+                            // 书签：仅图标（星形），点击弹出书签管理弹窗；有书签时高亮为强调色
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(36.dp)
+                                    .clip(RoundedCornerShape(0.dp))
+                                    .background(AuroraTokens.SurfaceHover)
+                                    .clickable { showBookmarks = true },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Star,
+                                    contentDescription = "书签",
+                                    tint = if (appSettings.bookmarks.isNotEmpty()) {
+                                        AuroraTokens.Accent
+                                    } else {
+                                        AuroraTokens.Text
+                                    },
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
 
                             // 设置齿轮：打开与「文件」页完全相同的列表设置弹窗，双向同步
                             Box(
@@ -406,6 +455,18 @@ fun BuiltInFilePicker(
         FileListSettingsDialog(
             appSettings = appSettings,
             onDismissRequest = { showListSettings = false }
+        )
+    }
+
+    if (showBookmarks) {
+        BookmarksDialog(
+            appSettings = appSettings,
+            currentDirectory = currentDir,
+            onDismissRequest = { showBookmarks = false },
+            onNavigate = { path ->
+                showBookmarks = false
+                loadDirectory(path)
+            }
         )
     }
 }
