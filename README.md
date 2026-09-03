@@ -57,6 +57,22 @@ shso 简化了这一操作流程：提供现代化的图形交互界面，无需
 
 ---
 
+## 📸 应用截图
+
+| 主页 | 文件管理 |
+| :---: | :---: |
+| ![主页](docs/screenshots/主页.png) | ![文件](docs/screenshots/文件.png) |
+
+| 终端 | 设置 |
+| :---: | :---: |
+| ![终端](docs/screenshots/终端.png) | ![设置](docs/screenshots/设置.png) |
+
+| 存储占用 | 安装包 |
+| :---: | :---: |
+| ![存储占用](docs/screenshots/存储占用.png) | ![安装包](docs/screenshots/安装包.png) |
+
+---
+
 ## 🛠️ 执行流程简述
 
 ```mermaid
