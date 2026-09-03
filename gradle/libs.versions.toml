@@ -10,6 +10,7 @@ androidx-navigation3 = "1.1.4"
 androidx-navigationevent = "1.1.2"
 jetbrains-compose-multiplatform = "1.11.1"
 jetbrains-compose-window-size = "1.9.0"
+androidx-compose-bom = "2026.08.00"
 jetbrains-dokka = "2.2.0"
 jetbrains-compose-hotReload = "1.1.1"
 jetbrains-lifecycle = "2.10.0"
@@ -36,9 +37,17 @@ androidx-navigation3-runtime = { module = "androidx.navigation3:navigation3-runt
 androidx-navigationevent = { module = "androidx.navigationevent:navigationevent-compose", version.ref = "androidx-navigationevent" }
 jetbrains-compose-foundation = { module = "org.jetbrains.compose.foundation:foundation", version.ref = "jetbrains-compose-multiplatform" }
 jetbrains-compose-components-resources = { module = "org.jetbrains.compose.components:components-resources", version.ref = "jetbrains-compose-multiplatform" }
+jetbrains-compose-material3 = { module = "org.jetbrains.compose.material3:material3", version.ref = "jetbrains-compose-multiplatform" }
+jetbrains-compose-material-icons-extended = { module = "org.jetbrains.compose.material:material-icons-extended", version.ref = "jetbrains-compose-multiplatform" }
 jetbrains-compose-window-size = { module = "org.jetbrains.compose.material3:material3-window-size-class", version.ref = "jetbrains-compose-window-size" }
 jetbrains-lifecycle-runtime = { module = "org.jetbrains.androidx.lifecycle:lifecycle-runtime", version.ref = "jetbrains-lifecycle" }
 jetbrains-lifecycle-runtime-compose = { module = "org.jetbrains.androidx.lifecycle:lifecycle-runtime-compose", version.ref = "jetbrains-lifecycle" }
+# AndroidX Compose（Google Maven 可达，替代已下线的 org.jetbrains.compose.* 制品；导入命名空间不变仍为 androidx.compose.*）
+androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "androidx-compose-bom" }
+androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
+androidx-compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
+androidx-compose-foundation = { module = "androidx.compose.foundation:foundation" }
+androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version = "2.9.1" }
 materialKolor-utilities = { module = "com.materialkolor:material-color-utilities", version.ref = "materialKolor-utilities" }
 
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junit" }
@@ -48,7 +57,7 @@ androidx-benchmark-macro-junit4 = { group = "androidx.benchmark", name = "benchm
 androidx-profileinstaller = { group = "androidx.profileinstaller", name = "profileinstaller", version.ref = "profileinstaller" }
 
 [plugins]
-androidApplication = { id = "com.android.application" } # AGP
+androidApplication = { id = "com.android.application", version.ref = "agp" } # AGP
 androidKotlinMultiplatformLibrary = { id = "com.android.kotlin.multiplatform.library" } # AGP
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform" } # KGP
 kotlinSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

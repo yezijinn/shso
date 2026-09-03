@@ -4,7 +4,11 @@
 plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.composeCompiler)
-    id("module.kotlin-jvm-toolchain")
+}
+
+kotlin {
+    // 等价原 module.kotlin-jvm-toolchain 约定插件：统一 Kotlin JVM Toolchain 21
+    jvmToolchain(21)
 }
 
 android {
@@ -80,20 +84,16 @@ android {
 }
 
 dependencies {
-    implementation(projects.miuixCore)
-    implementation(projects.miuixUi)
-    implementation(projects.miuixPreference)
-    implementation(projects.miuixIcons)
-    implementation(projects.miuixBlur)
-    implementation(projects.miuixSquircle)
+    // 原生 Material 3（AndroidX Compose，Google Maven 可达；导入命名空间仍为 androidx.compose.*）
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.lifecycle.runtime.compose)
 
     implementation(libs.androidx.activity)
-    implementation(libs.jetbrains.compose.foundation)
-    implementation(libs.jetbrains.compose.components.resources)
     implementation(libs.androidx.navigationevent)
-    implementation(libs.materialKolor.utilities)
     implementation(libs.kotlinx.serialization.core)
-    implementation(libs.jetbrains.lifecycle.runtime.compose)
 
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
