@@ -478,7 +478,11 @@ fun HomePage(
         BuiltInFilePicker(
             appSettings = appSettings,
             show = true,
-            initialDirectory = "/storage/emulated/0",
+            initialDirectory = if (appSettings.rememberDirectory) {
+                RootFileManager.rememberedDirectory ?: "/storage/emulated/0"
+            } else {
+                "/storage/emulated/0"
+            },
             onDismissRequest = { showFilePicker = false },
             onFileSelected = { selectedPath ->
                 filePathInput = selectedPath

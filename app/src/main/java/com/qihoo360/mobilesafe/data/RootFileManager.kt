@@ -12,6 +12,14 @@ object RootFileManager {
 
     const val DEFAULT_SHSO_DIR = "/data/adb/shso"
 
+    /**
+     * 进程内记忆的上次浏览目录（仅 AppSettings.rememberDirectory 开启时读写）。
+     * 「文件」页与主页「从文件管理器选择」共用，APP 存活期间切页/重开选择器均保留该值；
+     * 进程被杀后自动重置，符合「临时缓存」语义。
+     */
+    @Volatile
+    var rememberedDirectory: String? = null
+
     // 目录只需建立一次，进程内去重，避免每次刷新/切目录都重复发起一次 su 调用
     @Volatile
     private var shsoDirEnsured = false
@@ -21,6 +29,13 @@ object RootFileManager {
         val cmd = "mkdir -p '$DEFAULT_SHSO_DIR' && chmod 777 '$DEFAULT_SHSO_DIR'"
         val (code, _) = RootService.runCommandSync(cmd)
         if (code == 0) shsoDirEnsured = true
+        code == 0
+    }
+
+    /** 轻量探测路径是否存在（su 下 `[ -e ]`），供记忆目录失效回退使用。 */
+    suspend fun pathExists(path: String): Boolean = withContext(Dispatchers.IO) {
+        val escaped = path.replace("'", "'\\''")
+        val (code, _) = RootService.runCommandSync("test -e '$escaped' && echo yes")
         code == 0
     }
 
