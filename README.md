@@ -25,6 +25,22 @@ shso 简化了这一操作流程：提供现代化的图形交互界面，无需
 
 ---
 
+## 📸 应用截图
+
+| 主页 | 文件管理 |
+| :---: | :---: |
+| ![主页](docs/screenshots/主页.png) | ![文件](docs/screenshots/文件.png) |
+
+| 终端 | 设置 |
+| :---: | :---: |
+| ![终端](docs/screenshots/终端.png) | ![设置](docs/screenshots/设置.png) |
+
+| 存储占用 | 安装包 |
+| :---: | :---: |
+| ![存储占用](docs/screenshots/存储占用.png) | ![安装包](docs/screenshots/安装包.png) |
+
+---
+
 ## 🌟 核心功能
 
 ### 1. 🚀 一键 ROOT 脚本与二进制执行
@@ -54,22 +70,6 @@ shso 简化了这一操作流程：提供现代化的图形交互界面，无需
 ### 6. 🔷 自适应桌面图标
 * 采用 Android **Adaptive Icon**，自动适配各厂商桌面形状（圆形 / 圆角矩形 / 水滴等），无需为不同形状单独出图。
 * 背景透明、前景为去白去黑后的彩色艺术字（缩进中心安全区），任意 OEM mask 下均完整显示，不裁切。
-
----
-
-## 📸 应用截图
-
-| 主页 | 文件管理 |
-| :---: | :---: |
-| ![主页](docs/screenshots/主页.png) | ![文件](docs/screenshots/文件.png) |
-
-| 终端 | 设置 |
-| :---: | :---: |
-| ![终端](docs/screenshots/终端.png) | ![设置](docs/screenshots/设置.png) |
-
-| 存储占用 | 安装包 |
-| :---: | :---: |
-| ![存储占用](docs/screenshots/存储占用.png) | ![安装包](docs/screenshots/安装包.png) |
 
 ---
 
