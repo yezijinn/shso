@@ -12,9 +12,15 @@ object RootFileManager {
 
     const val DEFAULT_SHSO_DIR = "/data/adb/shso"
 
+    // 目录只需建立一次，进程内去重，避免每次刷新/切目录都重复发起一次 su 调用
+    @Volatile
+    private var shsoDirEnsured = false
+
     suspend fun ensureShsoDir(): Boolean = withContext(Dispatchers.IO) {
+        if (shsoDirEnsured) return@withContext true
         val cmd = "mkdir -p '$DEFAULT_SHSO_DIR' && chmod 777 '$DEFAULT_SHSO_DIR'"
         val (code, _) = RootService.runCommandSync(cmd)
+        if (code == 0) shsoDirEnsured = true
         code == 0
     }
 
@@ -23,40 +29,21 @@ object RootFileManager {
         val items = mutableListOf<FileItem>()
 
         val escapedPath = targetPath.replace("'", "'\\''")
-        val cmd = "cd '$escapedPath' 2>/dev/null && for f in .* *; do [ -e \"\$f\" ] || continue; [ \"\$f\" = \".\" ] && continue; [ \"\$f\" = \"..\" ] && continue; [ -d \"\$f\" ] && d=1 || d=0; s=\$(stat -c %s \"\$f\" 2>/dev/null || echo 0); m=\$(stat -c %Y \"\$f\" 2>/dev/null || echo 0); echo \"\$d|\$s|\$m|\$f\"; done"
-        val (exitCode, output) = RootService.runCommandSync(cmd)
+        // 批量取全部条目：1~2 次 fork/exec 替代原先「每文件 2 次 stat」（2N 次进程创建）。
+        // find -exec + 由 find 自行分批，不受 ARG_MAX 限制；stat -L 跟随符号链接，行为同旧版 [ -d ] 判断。
+        // 输出格式：权限串|字节数|mtime|文件名，权限串首字符 'd' 即目录。
+        val primaryCmd =
+            "cd '$escapedPath' 2>/dev/null && find . -maxdepth 1 -mindepth 1 -exec stat -L -c \"%A|%s|%Y|%n\" {} + 2>/dev/null"
+        // 个别系统 find 不支持 -exec + 时退化为通配批量（仅超大目录存在 ARG_MAX 风险）
+        val fallbackCmd =
+            "cd '$escapedPath' 2>/dev/null && stat -L -c \"%A|%s|%Y|%n\" .* * 2>/dev/null"
 
-        if (exitCode == 0 && output.isNotBlank()) {
-            val lines = output.lines()
-            for (line in lines) {
-                val trimmed = line.trim()
-                if (trimmed.isEmpty()) continue
-
-                val parts = trimmed.split("|", limit = 4)
-                if (parts.size == 4) {
-                    val isDir = parts[0] == "1"
-                    val size = parts[1].toLongOrNull() ?: 0L
-                    val modified = parts[2].toLongOrNull() ?: 0L
-                    var name = parts[3]
-
-                    if (name.contains(" -> ")) {
-                        name = name.substringBefore(" -> ").trim()
-                    }
-
-                    if (name == "." || name == "..") continue
-
-                    val itemPath = if (targetPath.endsWith("/")) "$targetPath$name" else "$targetPath/$name"
-
-                    items.add(
-                        FileItem(
-                            name = name,
-                            path = itemPath,
-                            isDirectory = isDir,
-                            size = size,
-                            lastModified = modified
-                        )
-                    )
-                }
+        for (cmd in listOf(primaryCmd, fallbackCmd)) {
+            val (exitCode, output) = RootService.runCommandSync(cmd)
+            if (exitCode == 0 && output.isNotBlank()) {
+                val before = items.size
+                parseStatOutput(output, targetPath, items)
+                if (items.size > before) break
             }
         }
 
@@ -85,6 +72,42 @@ object RootFileManager {
                 compareByDescending<FileItem> { it.isDirectory }
                     .thenBy { it.name.lowercase(Locale.getDefault()) }
             )
+    }
+
+    private fun parseStatOutput(output: String, targetPath: String, items: MutableList<FileItem>) {
+        for (line in output.lineSequence()) {
+            val trimmed = line.trim()
+            if (trimmed.isEmpty()) continue
+
+            // limit=4：文件名自身可含 '|'，故只切前三段，余下整体作为文件名
+            val parts = trimmed.split("|", limit = 4)
+            if (parts.size != 4) continue
+
+            val perms = parts[0]
+            if (perms.length < 2) continue
+
+            val isDir = perms[0] == 'd'
+            val size = parts[1].toLongOrNull() ?: 0L
+            val modified = parts[2].toLongOrNull() ?: 0L
+            var name = parts[3]
+
+            // find 输出带 "./" 前缀
+            if (name.startsWith("./")) name = name.removePrefix("./")
+            if (name.contains(" -> ")) name = name.substringBefore(" -> ").trim()
+            if (name.isEmpty() || name == "." || name == "..") continue
+
+            val itemPath = if (targetPath.endsWith("/")) "$targetPath$name" else "$targetPath/$name"
+
+            items.add(
+                FileItem(
+                    name = name,
+                    path = itemPath,
+                    isDirectory = isDir,
+                    size = size,
+                    lastModified = modified
+                )
+            )
+        }
     }
 
     suspend fun addFileToShso(

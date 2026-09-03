@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 
 
@@ -109,7 +110,8 @@ fun FilePage(
     }
 
     LaunchedEffect(currentDirectory) {
-        RootFileManager.ensureShsoDir()
+        // 建目录与列目录无关，改为后台并行，不再串行阻塞列表首屏加载
+        launch { RootFileManager.ensureShsoDir() }
         refresh()
     }
 
@@ -241,7 +243,53 @@ fun FilePage(
                     .weight(1f)
                     .fillMaxWidth()
             ) {
-                if (displayFileList.isEmpty() && !isLoading) {
+                if (isLoading && displayFileList.isEmpty()) {
+                    // 骨架占位：加载期间先铺出列表轮廓，消除首屏空白观感
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        items(10) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(width = 18.dp, height = 12.dp)
+                                            .clip(RoundedCornerShape(0.dp))
+                                            .background(AuroraTokens.SurfaceHover)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth(0.55f)
+                                                .height(12.dp)
+                                                .clip(RoundedCornerShape(0.dp))
+                                                .background(AuroraTokens.SurfaceHover)
+                                        )
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth(0.28f)
+                                                .height(9.dp)
+                                                .clip(RoundedCornerShape(0.dp))
+                                                .background(AuroraTokens.SurfaceHover)
+                                        )
+                                    }
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 16.dp)
+                                        .height(0.7.dp)
+                                        .background(AuroraTokens.SurfaceHover.copy(alpha = 0.6f))
+                                )
+                            }
+                        }
+                    }
+                } else if (displayFileList.isEmpty()) {
                     Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
