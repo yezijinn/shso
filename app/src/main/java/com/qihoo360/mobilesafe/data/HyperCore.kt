@@ -33,11 +33,22 @@ object HyperCore {
         return "Linux $osVer"
     }
 
-    fun generateEngineBanner(statusText: String = "工作中"): String {
+    /**
+     * 生成引擎启动横幅。
+     *
+     * @param rootGranted ROOT 探测结果：true=已获得 / false=未获得 / null=尚未探测，
+     *   权限行据此输出对应文案（不再写死 ROOT）。
+     */
+    fun generateEngineBanner(statusText: String = "工作中", rootGranted: Boolean? = null): String {
         val env = detectEnvironmentInfo()
         val kernel = detectKernelInfo()
+        val rootLine = when (rootGranted) {
+            true -> "[HyperCore Engine] 当前权限：ROOT"
+            false -> "[HyperCore Engine] 无ROOT 请先授予ROOT权限再使用"
+            null -> "[HyperCore Engine] 当前权限：检测中…"
+        }
         return """[HyperCore Engine] 引擎初始化成功
-[HyperCore Engine] 当前权限：ROOT
+$rootLine
 [HyperCore Engine] 运行环境：$env
 [HyperCore Engine] 系统内核：$kernel
 [HyperCore Engine] 运行状态：$statusText
