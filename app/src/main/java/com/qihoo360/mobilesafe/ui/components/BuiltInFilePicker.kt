@@ -99,7 +99,8 @@ fun BuiltInFilePicker(
     }
 
     LaunchedEffect(Unit) {
-        RootFileManager.ensureShsoDir()
+        // 建目录与列目录无关，改为后台并行，不再串行阻塞列表首屏加载
+        launch { RootFileManager.ensureShsoDir() }
         loadDirectory(initialDirectory)
     }
 
