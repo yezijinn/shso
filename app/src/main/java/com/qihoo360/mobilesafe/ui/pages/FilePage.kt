@@ -30,6 +30,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -56,6 +57,7 @@ import androidx.compose.ui.unit.sp
 import com.qihoo360.mobilesafe.data.AppSettings
 import com.qihoo360.mobilesafe.data.FileItem
 import com.qihoo360.mobilesafe.data.RootFileManager
+import com.qihoo360.mobilesafe.ui.components.BookmarksDialog
 import com.qihoo360.mobilesafe.ui.components.FileListSettingsDialog
 import com.qihoo360.mobilesafe.ui.components.FileShortcutButton
 import com.qihoo360.mobilesafe.ui.components.applyFileViewSettings
@@ -75,9 +77,16 @@ fun FilePage(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var currentDirectory by remember { mutableStateOf("/storage/emulated/0") }
+    // 记忆操作路径：开启时沿用进程内记住的上次目录（无效则回退初始目录），关闭时恒为初始目录
+    val initialDirectory = if (appSettings.rememberDirectory) {
+        RootFileManager.rememberedDirectory ?: "/storage/emulated/0"
+    } else {
+        "/storage/emulated/0"
+    }
+    var currentDirectory by remember { mutableStateOf(initialDirectory) }
     var fileList by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
+    var directoryLoadFailed by remember { mutableStateOf(false) }
 
     var selectedItem by remember { mutableStateOf<FileItem?>(null) }
     var showActionDialog by remember { mutableStateOf(false) }
@@ -93,18 +102,46 @@ fun FilePage(
     var previewFontItem by remember { mutableStateOf<FileItem?>(null) }
 
     var showFileSettingsDialog by remember { mutableStateOf(false) }
+    var showBookmarksDialog by remember { mutableStateOf(false) }
 
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
 
     fun refresh() {
         isLoading = true
+        directoryLoadFailed = false
         scope.launch {
             try {
-                fileList = RootFileManager.listFiles(currentDirectory)
+                // 先探测目录是否真实存在（不可用 `fileList.isEmpty()` 判断——合法空目录也返回空列表）
+                val exists = RootFileManager.pathExists(currentDirectory)
+                fileList = if (exists) {
+                    RootFileManager.listFiles(currentDirectory)
+                } else {
+                    emptyList()
+                }
+                if (!exists) {
+                    // 记忆的目录已失效（被删除/不可达）：随后回退初始目录
+                    directoryLoadFailed = true
+                } else {
+                    // 目录加载成功（含合法空目录）：开启记忆时记录为「上次浏览目录」
+                    if (appSettings.rememberDirectory) {
+                        RootFileManager.rememberedDirectory = currentDirectory
+                    }
+                }
             } catch (_: Exception) {
                 fileList = emptyList()
             } finally {
                 isLoading = false
+            }
+        }
+    }
+
+    // 记忆目录失效时自动回退初始目录
+    LaunchedEffect(directoryLoadFailed) {
+        if (directoryLoadFailed) {
+            directoryLoadFailed = false
+            currentDirectory = "/storage/emulated/0"
+            if (appSettings.rememberDirectory) {
+                RootFileManager.rememberedDirectory = "/storage/emulated/0"
             }
         }
     }
@@ -183,6 +220,28 @@ fun FilePage(
                     onClick = { currentDirectory = RootFileManager.DEFAULT_SHSO_DIR },
                     modifier = Modifier.weight(1f)
                 )
+
+                // 书签：仅图标（星形），点击弹出书签管理弹窗；有书签时高亮为强调色
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(0.dp))
+                        .background(AuroraTokens.SurfaceHover)
+                        .clickable { showBookmarksDialog = true },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Star,
+                        contentDescription = "书签",
+                        tint = if (appSettings.bookmarks.isNotEmpty()) {
+                            AuroraTokens.Accent
+                        } else {
+                            AuroraTokens.Text
+                        },
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
 
                 Box(
                     modifier = Modifier
@@ -431,6 +490,18 @@ fun FilePage(
         FileListSettingsDialog(
             appSettings = appSettings,
             onDismissRequest = { showFileSettingsDialog = false }
+        )
+    }
+
+    if (showBookmarksDialog) {
+        BookmarksDialog(
+            appSettings = appSettings,
+            currentDirectory = currentDirectory,
+            onDismissRequest = { showBookmarksDialog = false },
+            onNavigate = { path ->
+                showBookmarksDialog = false
+                currentDirectory = path
+            }
         )
     }
 
