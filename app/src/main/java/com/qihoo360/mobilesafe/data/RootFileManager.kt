@@ -38,9 +38,13 @@ object RootFileManager {
         val fallbackCmd =
             "cd '$escapedPath' 2>/dev/null && stat -L -c \"%A|%s|%Y|%n\" .* * 2>/dev/null"
 
+        // 注意：不可用 exitCode 判断成败。只要目录内有任一条目 stat 失败（典型如
+        // /adb_keys 这类断链符号链接，stat -L 跟随不存在的目标即报错），find/stat
+        // 便返回非 0，但其余条目的输出完全有效。旧实现退出码取自循环末尾的 echo
+        // （恒为 0），故从未暴露该问题。这里只以「有无输出、能否解析出条目」为准。
         for (cmd in listOf(primaryCmd, fallbackCmd)) {
-            val (exitCode, output) = RootService.runCommandSync(cmd)
-            if (exitCode == 0 && output.isNotBlank()) {
+            val (_, output) = RootService.runCommandSync(cmd)
+            if (output.isNotBlank()) {
                 val before = items.size
                 parseStatOutput(output, targetPath, items)
                 if (items.size > before) break
