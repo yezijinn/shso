@@ -1,6 +1,6 @@
-# KernelEX — AI 开发文档
+# shso — AI 开发文档
 
-Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + Jetpack Compose + MIUIX）。
+Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + Jetpack Compose Material 3 原生控件，极光玻璃暗色主题，无外部 UI 组件库）。包名 `com.qihoo360.mobilesafe`，版本 9.0.2/283。冷启动直进主页四 Tab（主页/终端/文件/设置），无启动检测流程。
 
 ## 行为准则
 
@@ -41,12 +41,17 @@ Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + 
 | 项 | 值 |
 |---|---|
 | 语言 | Kotlin 2.4.0（JVM Toolchain 21） |
-| UI | JetBrains Compose Multiplatform 1.11.1 + MIUIX（外部模块） |
+| UI | AndroidX Compose Material 3 原生控件（compose-bom 2026.08.00，导入命名空间 `androidx.compose.*`，`ui/theme/Aurora*` 极光玻璃主题） |
 | 构建 | Gradle (KTS) + AGP 9.2.1 + Version Catalog（`gradle/libs.versions.toml`） |
-| 目标 | minSdk 26 / targetSdk 35 / compileSdk 37，applicationId `Kernel.Extend` |
+| 目标 | minSdk 26 / targetSdk 35 / compileSdk 37，applicationId `com.qihoo360.mobilesafe` |
 | 依赖注入 | 无框架，全局 `object` 单例（`RootService`、`AppSettings` 等） |
 
-**外部模块依赖（关键约束）**：`settings.gradle.kts` 通过相对路径 `../../MIUIX/*` 引入 miuix-core / miuix-ui / miuix-preference / miuix-icons / miuix-blur / miuix-squircle / miuix-shader 等模块，并 includeBuild `../../MIUIX/build-plugins`。本项目不可脱离 MIUIX 仓库独立构建；移动项目目录会直接破坏解析。一键构建脚本 `build_apk.py` 的 MIUIX 路径解析为 `PROJECT_DIR.parent.parent / "MIUIX"`，与 settings 保持一致。
+**自包含工程（关键约束）**：不依赖任何仓库外源码/模块，clone 后可直接独立构建。`settings.gradle.kts` 仅 `include(":app")`；一键构建脚本 `build_apk.py` 内含原生 Material 3 校验（禁止回退到外部 UI 组件库）。UI 样式统一走 `ui/theme/` 下的 Aurora 令牌（`AuroraTokens`/`AuroraGlass`/`AuroraComponents`），页面禁止写装饰性 `Color(0x...)` 字面量。
+
+**UI 形态铁律（改动必守）**：
+- 全工程零圆角：所有 Card/Button/TextField/弹窗/面板/状态点/DockBar 一律直角矩形。实现：① `AuroraShapes`（M3 Shapes 五槽位 `RoundedCornerShape(0.dp)`）注入 `MaterialTheme`；② 显式 `clip/shape/shadow/border` 全用 `RoundedCornerShape(0.dp)`。`foundation 1.12.0` 缓存制品 shape 包**无 `RectangleShape`/`CircleShape` 符号**，勿 import。
+- 禁止外层 Card/Container 容器包裹列表项：设置页/文件页/主页均为无容器列表，行内容（Row 图标+文本）直接置于页面 Column。
+- 页面文案按需求用字号内联（如 section 标题 14sp、preference 主标题 body2、summary 用注释色）；行高统一 `heightIn(min = 48.dp)`；分隔线用 0.7dp 细线（`SurfaceHover.copy(0.6f)`）或纯零间距。
 
 ## 场景导航
 
@@ -66,8 +71,8 @@ Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + 
 
 ## 注意事项
 
-- 代码注释/提交已有惯例：文件头带 `// Copyright 2026, KernelEX contributors` + `SPDX-License-Identifier: Apache-2.0`
-- 签名配置在 `app/build.gradle.kts`（V2+V3，debug 复用 release 签名）；`KernelEX.jks` 不在仓库内
+- 代码注释/提交已有惯例：文件头带 `// Copyright 2026, shso contributors` + `SPDX-License-Identifier: Apache-2.0`
+- 签名配置在 `app/build.gradle.kts`（V2+V3，debug 复用 release 签名）；`release.jks` 不在仓库内
 - 所有 `su -c` 路径必须单引号转义（`replace("'", "'\\''")`）；路径处理必须过滤 `..`、`\`、`\0`（防注入/穿越）——改动 RootFileManager / RootService 时强制保持
 - `allowBackup=false`，勿开启
 - Windows 下构建路径过长时使用 `\\?\` 前缀
