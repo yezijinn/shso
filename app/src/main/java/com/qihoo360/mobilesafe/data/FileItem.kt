@@ -27,7 +27,7 @@ data class FileItem(
     val isSupportedExecutable: Boolean
         get() = isExecutableScript || isExecutableBinary
 
-    /** 是否为已知压缩包（zip/7z/rar/tar/tgz）——长按菜单据此显示「自动解压文件」。 */
+    /** 是否为已知压缩包（zip/tar/tgz/7z/gz/xz/bz2/zst/lz4 等）——长按菜单据此显示「自动解压文件」。 */
     val isArchive: Boolean
         get() = !isDirectory && ArchiveExtractor.isKnownArchive(name)
 

@@ -32,11 +32,24 @@ object RootFileManager {
         code == 0
     }
 
-    /** 轻量探测路径是否存在（su 下 `[ -e ]`），供记忆目录失效回退使用。 */
+    /**
+     * 轻量探测路径是否存在，供记忆目录失效回退使用。
+     * 优先走 su（`[ -e ]`），su 不可用（无 ROOT）时退回 Java 本地 [File.exists] 判断，
+     * 保证无 ROOT 设备上文件页也能正常浏览共享存储。
+     */
     suspend fun pathExists(path: String): Boolean = withContext(Dispatchers.IO) {
         val escaped = path.replace("'", "'\\''")
-        val (code, _) = RootService.runCommandSync("test -e '$escaped' && echo yes")
-        code == 0
+        val (code, output) = RootService.runCommandSync("test -e '$escaped' && echo yes")
+        if (code == 0 && output.contains("yes")) {
+            true
+        } else {
+            // su 不可用或探测失败（无 ROOT）：本地兜底
+            try {
+                File(path).exists()
+            } catch (_: Exception) {
+                false
+            }
+        }
     }
 
     suspend fun listFiles(dirPath: String): List<FileItem> = withContext(Dispatchers.IO) {

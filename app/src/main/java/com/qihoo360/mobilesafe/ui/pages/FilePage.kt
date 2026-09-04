@@ -556,35 +556,31 @@ fun FilePage(
                     Text("添加到shso")
                 }
 
-                // 自动解压：仅已知压缩包显示；zip/tar/tgz/7z 可解压，rar 提示暂不支持
+                // 自动解压：仅已知压缩包显示；所有已知格式均可解压
                 if (item.isArchive) {
                     Button(
                         onClick = {
                             showActionDialog = false
-                            if (!item.isExtractableArchive) {
-                                feedbackMessage = "暂不支持解压 .rar（仅支持 zip/tar/tgz/7z）"
-                            } else {
-                                scope.launch {
-                                    isExtracting = true
-                                    val result = ArchiveExtractor.extract(
-                                        archivePath = item.path,
-                                        targetParent = currentDirectory
-                                    )
-                                    isExtracting = false
-                                    when (result) {
-                                        is ArchiveExtractor.ExtractResult.Success ->
-                                            feedbackMessage = "已解压到: ${result.targetDir}"
-                                        is ArchiveExtractor.ExtractResult.NeedPassword -> {
-                                            // 弹出密码输入框，用户输入后重试
-                                            extractTargetItem = item
-                                            extractPasswordInput = ""
-                                            showExtractPasswordDialog = true
-                                        }
-                                        is ArchiveExtractor.ExtractResult.Failure ->
-                                            feedbackMessage = result.message
+                            scope.launch {
+                                isExtracting = true
+                                val result = ArchiveExtractor.extract(
+                                    archivePath = item.path,
+                                    targetParent = currentDirectory
+                                )
+                                isExtracting = false
+                                when (result) {
+                                    is ArchiveExtractor.ExtractResult.Success ->
+                                        feedbackMessage = "已解压到: ${result.targetDir}"
+                                    is ArchiveExtractor.ExtractResult.NeedPassword -> {
+                                        // 弹出密码输入框，用户输入后重试
+                                        extractTargetItem = item
+                                        extractPasswordInput = ""
+                                        showExtractPasswordDialog = true
                                     }
-                                    refresh()
+                                    is ArchiveExtractor.ExtractResult.Failure ->
+                                        feedbackMessage = result.message
                                 }
+                                refresh()
                             }
                         },
                         enabled = !isExtracting,
