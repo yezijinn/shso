@@ -105,6 +105,9 @@ dependencies {
 
     // ZIP 加密解密（zip4j 支持 ZipCrypto + WinZip AES，char[] 密码天然支持中文）
     implementation("net.lingala.zip4j:zip4j:2.11.1")
+
+    // Zstd 解压（zstd-jni Android AAR 含 arm64-v8a/armeabi-v7a/x86/x86_64 原生库）
+    implementation("com.github.luben:zstd-jni:1.5.7-16@aar")
 }
 
 tasks.matching {
