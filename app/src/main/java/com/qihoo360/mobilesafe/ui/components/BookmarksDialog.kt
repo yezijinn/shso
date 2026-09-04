@@ -34,7 +34,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,12 +48,13 @@ import com.qihoo360.mobilesafe.ui.theme.auroraTextFieldColors
 /**
  * 书签管理弹窗：显示全部书签（点击跳转 / ✕ 删除），底部输入框添加路径。
  *
- * 布局规格（用户定制）：
+ * 布局规格（用户定制，三段式）：
  * - 宽度固定为 APP 宽度的 98%，水平居中，左右边距各 1%
- * - 高度随书签数量自适应增长；达到上限时等于 APP 高度的 80%，垂直居中，上下边距各 10%
- * - 书签行采用紧凑视图：路径文本直接贴紧左侧边缘，无 ★ 图标、无额外左留白
- *
- * 书签为永久存储（SharedPreferences），跨进程存活。
+ * - 高度上限 = APP 高度的 60%，垂直居中，上下边距各 20%
+ * - 三段式结构：
+ *   ① 固定标题栏（"书签" + 提示文案，不随内容滚动）
+ *   ② 可滚动的书签列表（仅此区滚动，书签多时由 verticalScroll 承载）
+ *   ③ 固定底栏（路径输入框 + 收藏当前目录/添加书签按钮，不随内容滚动）
  */
 @Composable
 fun BookmarksDialog(
@@ -65,16 +65,16 @@ fun BookmarksDialog(
 ) {
     var addInput by remember { mutableStateOf(currentDirectory) }
 
-    // 屏幕尺寸用于高度上限（APP 高度 80%）
+    // 屏幕尺寸用于高度上限（APP 高度 60%）
     val configuration = LocalConfiguration.current
     val screenHeightDp = configuration.screenHeightDp
-    val maxContentHeight = (screenHeightDp * 0.8f).dp
+    val maxContentHeight = (screenHeightDp * 0.6f).dp
 
     Dialog(
         onDismissRequest = onDismissRequest,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        // 宽度 98%（水平居中 → 左右各留 1%）；高度随内容自适应，上限为 APP 高度 80%
+        // 宽度 98%（水平居中 → 左右各留 1%）；高度上限为 APP 高度 60%
         Surface(
             color = AuroraTokens.DialogBg,
             shape = RoundedCornerShape(0.dp),
@@ -85,9 +85,12 @@ fun BookmarksDialog(
         ) {
             Column(
                 modifier = Modifier
-                    .verticalScroll(rememberScrollState())
-                    .padding(16.dp)
+                    .fillMaxWidth()
+                    .heightIn(max = maxContentHeight)
+                    .padding(horizontal = 16.dp)
             ) {
+                // ── ① 固定标题栏 ──
+                Spacer(modifier = Modifier.height(16.dp))
                 Text(
                     text = "书签",
                     style = AuroraTextStyles.title3,
@@ -101,6 +104,7 @@ fun BookmarksDialog(
                 )
                 Spacer(modifier = Modifier.height(12.dp))
 
+                // ── ② 可滚动书签列表（weight(1f) 只占剩余空间，超出滚动）──
                 if (appSettings.bookmarks.isEmpty()) {
                     Box(
                         modifier = Modifier
@@ -113,14 +117,17 @@ fun BookmarksDialog(
                     ) {
                         Text(
                             text = "暂无书签，可在下方输入路径添加",
-                            style = AuroraTextStyles.footnote2,
+                            style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
                             color = AuroraTokens.TextSecondary
                         )
                     }
                 } else {
-                    // 紧凑视图：路径文本贴紧左侧边缘，无 ★ 图标、无左留白；
-                    // 书签数量少时随内容自适应高度，多时由外层 verticalScroll 承载滚动
-                    Column(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                    ) {
                         appSettings.bookmarks.forEach { path ->
                             Row(
                                 modifier = Modifier
@@ -154,8 +161,8 @@ fun BookmarksDialog(
                     }
                 }
 
+                // ── ③ 固定底栏 ──
                 Spacer(modifier = Modifier.height(8.dp))
-
                 TextField(
                     value = addInput,
                     onValueChange = { addInput = it },
@@ -168,7 +175,9 @@ fun BookmarksDialog(
                 )
 
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 16.dp),
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
