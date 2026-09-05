@@ -61,7 +61,13 @@ import androidx.compose.ui.unit.sp
 import com.mixradio.droid.data.AnsiParser
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.RootService
+import com.mixradio.droid.data.security.CommandSource
+import com.mixradio.droid.data.security.Finding
+import com.mixradio.droid.data.security.RiskLevel
+import com.mixradio.droid.data.security.RootCommandGateway
+import com.mixradio.droid.data.security.Verdict
 import com.mixradio.droid.ui.components.ColorWheelDialog
+import com.mixradio.droid.ui.components.CommandRiskDialog
 import com.mixradio.droid.ui.theme.AuroraSwitchPreference
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraThinSlider
@@ -78,6 +84,8 @@ fun TerminalPage(
 ) {
     val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
+    var pendingCommand by remember { mutableStateOf<String?>(null) }
+    var pendingFindings by remember { mutableStateOf<List<Finding>>(emptyList()) }
     val scrollState = rememberScrollState()
 
     var showTerminalSettings by remember { mutableStateOf(false) }
@@ -109,8 +117,39 @@ fun TerminalPage(
     }
 
     fun handleSend(textToSend: String = inputText) {
-        RootService.sendInput(textToSend)
+        val text = textToSend.trim()
+        if (text.isEmpty()) {
+            inputText = ""
+            return
+        }
+        // 安全门控：先经 RootCommandGateway 判定，Block 直接拒绝；Confirm 弹风险确认框
+        when (val v = RootCommandGateway.check(text, CommandSource.USER_TERMINAL)) {
+            is Verdict.Block -> {
+                Toast.makeText(context, "命令已被安全策略拦截：${v.findings.firstOrNull()?.message ?: "见审计日志"}", Toast.LENGTH_LONG).show()
+                return
+            }
+            is Verdict.Confirm -> {
+                pendingCommand = text
+                pendingFindings = v.findings
+            }
+            Verdict.Allow -> {
+                RootService.sendInput(text, confirmed = true)
+                inputText = ""
+            }
+        }
+    }
+
+    fun onConfirmRiskSend() {
+        val cmd = pendingCommand ?: return
+        RootService.sendInput(cmd, confirmed = true)
+        pendingCommand = null
+        pendingFindings = emptyList()
         inputText = ""
+    }
+
+    fun onCancelRiskSend() {
+        pendingCommand = null
+        pendingFindings = emptyList()
     }
 
     fun copyOutput() {
@@ -451,6 +490,17 @@ fun TerminalPage(
             onColorSelected = { color ->
                 appSettings.setTerminalColor(color)
             }
+        )
+    }
+
+    // ── 安全：终端高危命令风险确认弹窗 ──
+    if (pendingCommand != null) {
+        CommandRiskDialog(
+            show = true,
+            findings = pendingFindings,
+            level = pendingFindings.maxByOrNull { it.level.ordinal }?.level ?: RiskLevel.SAFE,
+            onDismiss = { onCancelRiskSend() },
+            onConfirm = { onConfirmRiskSend() }
         )
     }
 }

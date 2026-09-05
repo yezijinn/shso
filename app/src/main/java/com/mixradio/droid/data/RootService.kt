@@ -25,6 +25,15 @@ import java.io.OutputStreamWriter
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
+import com.mixradio.droid.data.security.CommandSource
+import com.mixradio.droid.data.security.GuardModuleInstaller
+import com.mixradio.droid.data.security.PolicyEngine
+import com.mixradio.droid.data.security.RiskLevel
+import com.mixradio.droid.data.security.RootCommandGateway
+import com.mixradio.droid.data.security.ScriptAuditor
+import com.mixradio.droid.data.security.SecurityAuditLog
+import com.mixradio.droid.data.security.SecurityLevels
+import com.mixradio.droid.data.security.Verdict
 
 object RootService {
 
@@ -191,7 +200,76 @@ object RootService {
         }
     }
 
-    fun executeFile(filePath: String) {
+    /**
+     * 以 Root 把字节写入目标文件（覆盖或追加）。
+     * 统一替代各处自建 `ProcessBuilder("su","-c","cat > …")` 的旁路出口
+     * （TextCompare / TextEditorDialog / SecurityAuditLog），使 su 出口收敛。
+     * 属内部模板命令（INTERNAL_APP），不走策略判定。
+     */
+    fun writeBytesAsRoot(targetPath: String, bytes: ByteArray, append: Boolean = false, timeoutSec: Long = 60): Boolean {
+        return try {
+            val redirect = if (append) ">>" else ">"
+            val process = ProcessBuilder("su", "-c", "cat $redirect ${escapeShellArg(targetPath)}")
+                .redirectErrorStream(true).start()
+            process.outputStream.use { out ->
+                out.write(bytes)
+                out.flush()
+            }
+            val finished = process.waitFor(timeoutSec, TimeUnit.SECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                false
+            } else process.exitValue() == 0
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** 当前安全档位（AppSettings 未初始化时保守取标准防护）。 */
+    fun currentSecurityLevel(): Int = appSettings?.securityLevel ?: SecurityLevels.STANDARD
+
+    /** 档位 ≥2 且守卫模块就绪时，返回 PATH 前置片段（守卫目录优先于系统命令），否则空串。 */
+    fun guardPathPrefix(): String {
+        if (currentSecurityLevel() < SecurityLevels.STANDARD) return ""
+        return if (GuardModuleInstaller.guardBinDirReady()) {
+            "export PATH=${GuardModuleInstaller.GUARD_BIN_DIR}:/sbin:/system/sbin:/system/bin:/system/xbin:\$PATH && "
+        } else ""
+    }
+
+    /**
+     * 终端输入发送前评估（不动任何状态，主线程安全——纯字符串解析）。
+     * @return null=可直接发送；Confirm=需弹风险确认框；Block=拒绝（调用方展示原因）
+     */
+    fun evaluateUserInput(text: String): Verdict? {
+        if (text.isBlank()) return null
+        return when (val v = RootCommandGateway.check(text, CommandSource.USER_TERMINAL)) {
+            Verdict.Allow -> null
+            is Verdict.Confirm -> v
+            is Verdict.Block -> v
+        }
+    }
+
+    /** 把拦截结果落审计并在终端输出拒绝原因。 */
+    fun reportBlockedInput(block: Verdict.Block) {
+        val reasons = block.findings.joinToString("\n") { "  · [${it.ruleId}] ${it.message}" }
+        SecurityAuditLog.log(
+            CommandSource.USER_TERMINAL, "BLOCK",
+            block.findings.firstOrNull()?.ruleId, RiskLevel.CRITICAL, block.findings.firstOrNull()?.snippet ?: ""
+        )
+        appendOutputDirect("\n[shso 安全拦截] 已拒绝执行以下高危操作：\n$reasons\n")
+    }
+
+    /**
+     * 执行脚本/二进制文件。
+     *
+     * 安全改造（方案 §6.1 / §8-P4）：
+     * - [runAsRoot]：null=按档位自动（档位 3 默认非 Root，其余 Root）；true/false 显式指定（确认框勾选）；
+     * - [riskApproved]：调用方（ExecuteConfirmDialog）已展示风险项并获用户确认；false 时（自动执行链路）
+     *   档位 ≥2 下扫描脚本内容，CRITICAL 未获批直接拦截；
+     * - chmod 777 → 仅 .so/.bin 等「直接执行」形态 chmod 755；.sh 一律经 `sh` 运行，不改动用户文件权限；
+     * - 档位 ≥2 且守卫模块就绪时 PATH 前置 guard 目录（运行时拦截 rm/dd/mkfs 等）。
+     */
+    fun executeFile(filePath: String, runAsRoot: Boolean? = null, riskApproved: Boolean = false) {
         if (isTaskRunning) {
             killCurrentProcess()
         }
@@ -206,6 +284,38 @@ object RootService {
             appendOutputDirect("\n[!] 错误: 不支持的文件格式，仅支持执行 .sh 和 .so 文件\n")
             return
         }
+
+        // ── 安全门控：脚本内容扫描（自动执行等未经确认框的链路） ──
+        val level = currentSecurityLevel()
+        if (level >= SecurityLevels.STANDARD && !riskApproved && isSh) {
+            val (content, note) = ScriptAuditor.readScriptContent(filePath)
+            if (content != null) {
+                val report = ScriptAuditor.audit(content)
+                val critical = report.findings.filter { it.level == RiskLevel.CRITICAL }
+                if (critical.isNotEmpty()) {
+                    val reasons = critical.joinToString("\n") { "  · 第 ${it.line} 行 [${it.ruleId}] ${it.message}" }
+                    SecurityAuditLog.log(
+                        CommandSource.SCRIPT_FILE, "BLOCK", critical.first().ruleId,
+                        RiskLevel.CRITICAL, filePath
+                    )
+                    appendOutputDirect(
+                        "\n[shso 安全拦截] 脚本内容含高危操作，已拒绝自动执行：\n$reasons\n" +
+                            "（可在文件页手动点击「执行」并逐项确认风险后继续）\n"
+                    )
+                    return
+                }
+            } else if (note != "ok") {
+                appendOutputDirect("\n[shso 安全提示] $note，已按保守策略拒绝自动执行\n")
+                SecurityAuditLog.log(
+                    CommandSource.SCRIPT_FILE, "BLOCK", "SCRIPT_UNREADABLE",
+                    RiskLevel.DANGEROUS, filePath
+                )
+                return
+            }
+        }
+
+        // ── 执行身份：档位 3 默认非 Root；确认框可显式指定 ──
+        val useRoot = runAsRoot ?: (level < SecurityLevels.MAXIMUM)
 
         lastExecutedPath = filePath
 
@@ -223,6 +333,12 @@ object RootService {
         if (showShso) {
             appendOutputDirect(HyperCore.generateTaskHeader(fileName, filePath, parentDir, showHyperCore))
         }
+        appendOutputDirect("[shso Engine] 执行身份: ${if (useRoot) "Root" else "非 Root（档位 ${SecurityLevels.nameOf(level)}）"}\n")
+
+        SecurityAuditLog.log(
+            CommandSource.SCRIPT_FILE, "ALLOW", null, RiskLevel.SAFE,
+            "$filePath (身份=${if (useRoot) "root" else "non-root"}, 档位=$level)"
+        )
 
         HyperCore.startBatchFlushLoop(scope, { isTaskRunning }) { flushedText ->
             appendOutputDirect(flushedText)
@@ -235,10 +351,26 @@ object RootService {
             try {
                 val escapedParent = escapeShellArg(parentDir)
                 val escapedFile = escapeShellArg(filePath)
+                val guardPrefix = guardPathPrefix()
 
-                val execCmd = "export PATH=/sbin:/system/sbin:/system/bin:/system/xbin:${'$'}PATH && export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent && chmod 777 $escapedFile && ( $escapedFile || sh $escapedFile )"
+                val execCmd = if (useRoot) {
+                    if (isSh) {
+                        // .sh：一律经 sh 运行，不给用户文件加执行位
+                        "${guardPrefix}export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent && sh $escapedFile"
+                    } else {
+                        // .so：直接执行需要 +x，755 即可（不再 777）
+                        "${guardPrefix}export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent && chmod 755 $escapedFile && ( $escapedFile || sh $escapedFile )"
+                    }
+                } else {
+                    // 非 Root：普通 sh 执行（无 su 包装），改不动系统分区——档位 3 的主防线
+                    "export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent 2>/dev/null; sh $escapedFile"
+                }
 
-                process = ProcessBuilder("su", "-c", execCmd).redirectErrorStream(true).start()
+                if (useRoot) {
+                    process = ProcessBuilder("su", "-c", execCmd).redirectErrorStream(true).start()
+                } else {
+                    process = ProcessBuilder("sh", "-c", execCmd).redirectErrorStream(true).start()
+                }
                 activeProcess = process
                 writer = OutputStreamWriter(process.outputStream, Charsets.UTF_8)
                 processWriter = writer
@@ -320,20 +452,72 @@ object RootService {
         }
     }
 
-    fun sendInput(text: String) {
+    /**
+     * 发送终端输入。
+     *
+     * 安全改造（方案 §8-P1/P3）：
+     * - 一次性命令分支（无任务运行）：[confirmed]=false 时先经 RootCommandGateway 判定，
+     *   Block 拒绝并落审计；档位 ≥2 且守卫就绪时 PATH 前置守卫目录；
+     * - 交互分支（任务运行中，输入直写常驻 shell）：无法整体拦截，档位 ≥2 时仅拦
+     *   CRITICAL 硬规则（rm 系统 / dd 块设备 / mkfs / wipe 等），其余放行但落审计。
+     *
+     * @param confirmed 调用方已通过风险确认框获用户同意（CommandRiskDialog → 确认执行）
+     */
+    fun sendInput(text: String, confirmed: Boolean = false) {
         scope.launch(Dispatchers.IO) {
             try {
                 if (isTaskRunning && processWriter != null) {
+                    // ── 交互态：硬规则拦截（fail on critical），其余放行 + 审计 ──
+                    if (!confirmed) {
+                        val hard = RootCommandGateway.checkInteractiveHardRules(text)
+                        if (hard != null) {
+                            withContext(Dispatchers.Main) {
+                                reportBlockedInput(hard)
+                            }
+                            return@launch
+                        }
+                    }
                     withContext(Dispatchers.Main) {
                         appendOutputDirect(if (text.isEmpty()) "\n" else "$text\n")
                     }
+                    SecurityAuditLog.log(
+                        CommandSource.USER_TERMINAL, "ALLOW", null, RiskLevel.SAFE,
+                        "[交互态] $text"
+                    )
                     processWriter?.write(text + "\n")
                     processWriter?.flush()
                 } else if (text.isNotEmpty()) {
+                    // ── 一次性命令：完整策略判定 ──
+                    if (!confirmed) {
+                        when (val v = RootCommandGateway.check(text, CommandSource.USER_TERMINAL)) {
+                            is Verdict.Block -> {
+                                withContext(Dispatchers.Main) {
+                                    reportBlockedInput(v)
+                                }
+                                return@launch
+                            }
+                            is Verdict.Confirm -> {
+                                // 未经确认框的高危命令：拒绝（正常链路应由 TerminalPage 先弹框）
+                                withContext(Dispatchers.Main) {
+                                    SecurityAuditLog.log(
+                                        CommandSource.USER_TERMINAL, "BLOCK",
+                                        v.findings.firstOrNull()?.ruleId, v.level, text
+                                    )
+                                    appendOutputDirect("\n[shso 安全拦截] 高危命令需经风险确认（${v.findings.firstOrNull()?.message ?: ""}）\n")
+                                }
+                                return@launch
+                            }
+                            Verdict.Allow -> {}
+                        }
+                    }
                     withContext(Dispatchers.Main) {
                         appendOutputDirect("> $text\n")
                     }
-                    val (exitCode, output) = runCommandSync(text)
+                    val guardedCmd = guardPathPrefix() + text
+                    val (exitCode, output) = runCommandSync(guardedCmd)
+                    SecurityAuditLog.log(
+                        CommandSource.USER_TERMINAL, "ALLOW", null, RiskLevel.SAFE, text, exitCode = exitCode
+                    )
                     withContext(Dispatchers.Main) {
                         if (output.isNotEmpty()) {
                             appendOutputDirect(output)
