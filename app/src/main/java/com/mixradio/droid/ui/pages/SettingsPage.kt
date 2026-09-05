@@ -51,6 +51,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -62,6 +63,9 @@ import com.mixradio.droid.R
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.PermissionChecker
 import com.mixradio.droid.data.RootService
+import com.mixradio.droid.data.security.GuardModuleInstaller
+import com.mixradio.droid.data.security.SecurityAuditLog
+import com.mixradio.droid.data.security.SecurityLevels
 import com.mixradio.droid.ui.theme.AuroraAccentBar
 import com.mixradio.droid.ui.theme.AuroraArrowPreference
 import com.mixradio.droid.ui.theme.AuroraSwitchPreference
@@ -202,6 +206,11 @@ fun SettingsPage(
         }
     }
     var showAboutDialog by remember { mutableStateOf(false) }
+
+    // ===== 安全审计弹窗状态 =====
+    var showAuditDialog by remember { mutableStateOf(false) }
+    var auditDialogLines by remember { mutableStateOf<List<String>>(emptyList()) }
+    var installingGuard by remember { mutableStateOf(false) }
 
     // ===== 检查更新状态 =====
     var updateState by remember { mutableStateOf<UpdateUiState>(UpdateUiState.Idle) }
@@ -418,6 +427,7 @@ fun SettingsPage(
             )
 
             // 无空行直连：权限区后紧跟三个开关项
+            // ===== 检查更新 =====
             AuroraSwitchPreference(
                 title = "独立存储",
                 summary = "添加到 shso 时存到专用的文件夹",
@@ -458,7 +468,105 @@ fun SettingsPage(
                 }
             )
 
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // ===== 安全（指令审查 / 拦截）=====
+            // 档位 — 0=关 1=审计 2=标准 3=最高；默认 2（标准）
+            AuroraArrowPreference(
+                title = "安全档位",
+                summary = "当前：${SecurityLevels.nameOf(appSettings.securityLevel)}（0 关 1 审计 2 标准 3 最高）",
+                statusSwitch = appSettings.securityLevel > AppSettings.SECURITY_OFF,
+                statusSwitchEnabled = false,
+                onClick = {
+                    val next = (appSettings.securityLevel + 1) % 4
+                    appSettings.setSecurityLevel(next)
+                    val tip = when (next) {
+                        AppSettings.SECURITY_OFF -> "已关闭：不审查 / 不拦截 / 不审计"
+                        AppSettings.SECURITY_AUDIT_ONLY -> "审计：仅留痕，不拦截命令"
+                        AppSettings.SECURITY_STANDARD -> "标准：黑名单拦截 + 终端硬规则 + 守卫 PATH"
+                        AppSettings.SECURITY_MAXIMUM -> "最高：脚本默认非 Root 执行 + 全档收口"
+                        else -> ""
+                    }
+                    Toast.makeText(context, tip, Toast.LENGTH_SHORT).show()
+                }
+            )
+
+            AuroraArrowPreference(
+                title = "查看审计日志",
+                summary = "最近 50 条拦截 / 放行 / 脚本扫描记录",
+                statusSwitch = false,
+                statusSwitchEnabled = false,
+                onClick = {
+                    scope.launch {
+                        val tail = SecurityAuditLog.readTail(50)
+                        showAuditDialog = true
+                        auditDialogLines = tail.lines().filter { it.isNotBlank() }
+                    }
+                }
+            )
+
+            AuroraArrowPreference(
+                title = if (GuardModuleInstaller.isModuleInstalled()) "守卫模块：已安装" else "安装 shso_guard 守卫模块",
+                summary = if (GuardModuleInstaller.isModuleInstalled())
+                    "PATH 前置守卫目录，对 rm/dd/mkfs 等系统级命令做运行时拦截"
+                else
+                    "复制本 APP 内置模块到 /data/adb/modules/（需 ROOT）",
+                statusSwitch = GuardModuleInstaller.isModuleInstalled(),
+                statusSwitchEnabled = false,
+                onClick = {
+                    if (GuardModuleInstaller.isModuleInstalled()) {
+                        Toast.makeText(context, "模块已就绪", Toast.LENGTH_SHORT).show()
+                        return@AuroraArrowPreference
+                    }
+                    installingGuard = true
+                    scope.launch {
+                        val (ok, msg) = withContext(Dispatchers.IO) { GuardModuleInstaller.install(context) }
+                        installingGuard = false
+                        Toast.makeText(
+                            context,
+                            if (ok) "守卫模块已部署，PATH 已生效"
+                            else "部署失败：${msg.take(120)}",
+                            if (ok) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            )
+
             Spacer(modifier = Modifier.height(70.dp))
+        }
+    }
+
+    // ===== 审计日志弹窗 =====
+    if (showAuditDialog) {
+        AuroraWindowDialog(
+            show = true,
+            title = "审计日志（最近 50 条）",
+            onDismissRequest = { showAuditDialog = false }
+        ) {
+            if (auditDialogLines.isEmpty()) {
+                Text(
+                    text = "暂无审计记录",
+                    style = AuroraTextStyles.body2,
+                    color = AuroraTokens.TextSecondary
+                )
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(360.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    auditDialogLines.forEach { line ->
+                        Text(
+                            text = line,
+                            style = AuroraTextStyles.footnote2,
+                            fontFamily = FontFamily.Monospace,
+                            color = if (line.contains(" BLOCK ")) AuroraTokens.Error else AuroraTokens.Text
+                        )
+                    }
+                }
+            }
         }
     }
 

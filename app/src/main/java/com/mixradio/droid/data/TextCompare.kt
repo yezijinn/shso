@@ -326,17 +326,14 @@ object TextCompare {
         sb.append('\n')
     }
 
-    /** 结果一次性落盘（ROOT 走 su 管道 + mv，随后放开读权限便于 APP 再次打开）。 */
+    /** 结果一次性落盘（ROOT 走统一出口 writeBytesAsRoot + mv，随后放开读权限便于 APP 再次打开）。 */
     private fun writeResult(path: String, charset: Charset, sb: StringBuilder) {
         val bytes = sb.toString().toByteArray(charset)
         if (RootService.isRootGranted == true) {
             val tmp = "/data/local/tmp/_shso_diff_${System.currentTimeMillis()}.tmp"
-            val p = ProcessBuilder("su", "-c", "cat > ${RootService.escapeShellArg(tmp)}")
-                .redirectErrorStream(true).start()
+            val ok = RootService.writeBytesAsRoot(tmp, bytes)
             try {
-                p.outputStream.use { it.write(bytes); it.flush() }
-                val finished = p.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)
-                if (!finished) { p.destroyForcibly(); throw CompareException("写入结果超时") }
+                if (!ok) throw CompareException("写入结果失败")
                 val (code, out) = RootService.runCommandSync(
                     "mv ${RootService.escapeShellArg(tmp)} ${RootService.escapeShellArg(path)}", 60_000L
                 )
