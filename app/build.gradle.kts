@@ -15,8 +15,17 @@ android {
     namespace = "com.mixradio.droid"
     compileSdk = 37
 
+    // —— 在线编译自定义包名支持 ——
+    // 仅覆盖 applicationId（安装身份），namespace 与源码包名保持 com.mixradio.droid 不变，
+    // 以保证 R / BuildConfig 引用与所有 import 有效；FileProvider authority、跳设置页 Uri
+    // 均使用 ${applicationId} / context.packageName，自动跟随。
+    val overridePackage: String? = project.findProperty("overridePackage")?.toString()
+    // CI / 在线编译时用调试密钥兜底签名，确保产物可直接安装；本地仍用自有 release 密钥
+    val useDebugSigning = project.findProperty("useDebugSigning")?.toString()?.toBoolean() == true
+        || System.getenv("GITHUB_ACTIONS") == "true"
+
     defaultConfig {
-        applicationId = "com.mixradio.droid"
+        applicationId = overridePackage ?: "com.mixradio.droid"
         minSdk = 26
         targetSdk = 35
         versionCode = 283
@@ -41,7 +50,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (useDebugSigning) signingConfigs.getByName("debug") else signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
