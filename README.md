@@ -253,6 +253,17 @@ cd shso
 
 编译输出的 APK 默认位于 `app/build/outputs/apk/` 目录下（Release 产物默认签名为 V2+V3，签名文件 `release.jks` 不在仓库内）；仓库内一键脚本 `python build_apk.py` 已将 `buildDir` 重定向至 `shso-main/.tmp/build_out/app/outputs/apk/` 取包（规避部分环境对 `app/build` 的句柄占用）。
 
+### 🌐 在线编译（无需本地环境，自定义包名）
+
+任何人 fork / 直接使用本仓库，都能在 GitHub 网页上**一键在线编译并导出自己的 APK**，且**必须填写自己的 APP 包名**：
+
+1. 打开仓库 `Actions` → 工作流 **「在线编译 APK（自定义包名）」** → `Run workflow`。
+2. 在表单 `package_name` 中**填写你自己的包名**（例如 `com.yourname.myapp`）；**禁止填写作者原包名 `com.mixradio.droid` / `com.mixradio.*`，否则校验直接失败**。
+3. 工作流按你填的包名编译 `assembleRelease`，产物 APK 作为 Artifact 提供下载（默认保留 30 天）。
+
+> 原理：编译仅覆盖 `applicationId`（安装身份），`namespace` 与源码包名保持 `com.mixradio.droid` 不变，因此 `R` / `BuildConfig` 与全部 `import` 不受影响；FileProvider authority、跳设置页 Uri 等均基于 `${applicationId}` / `context.packageName` 自动跟随。CI 环境自动改用调试密钥签名，导出的 APK 可直接安装。
+
+
 ---
 
 ## 🛡️ 安全与防护说明

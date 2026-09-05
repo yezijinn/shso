@@ -1,0 +1,82 @@
+name: 在线编译 APK（自定义包名）
+
+# 用户在 GitHub 仓库页面：Actions → 该工作流 → Run workflow
+# 表单中必须填写自己的 APP 包名（applicationId），工作流直接按该包名编译并导出 APK。
+# 禁止填写作者原包名 com.mixradio.droid / com.mixradio.*，违者校验失败。
+on:
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: 'APP 包名（applicationId），例如 com.user.myapp。禁止填写 com.mixradio.droid 或 com.mixradio.*'
+        required: true
+        default: ''
+      artifact_retention_days:
+        description: '产物保留天数（默认 30，最长 90）'
+        required: false
+        default: '30'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 编译并导出 APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 校验包名
+        id: validate
+        run: |
+          set -euo pipefail
+          PKG="${{ github.event.inputs.package_name }}"
+          if [ -z "$PKG" ]; then
+            echo "::error::必须填写 APP 包名（package_name）"
+            exit 1
+          fi
+          # 禁止复用作者原包名
+          if [ "$PKG" = "com.mixradio.droid" ] || [[ "$PKG" == com.mixradio.* ]]; then
+            echo "::error::禁止使用作者原包名（$PKG）。请填写你自己独有的包名，例如 com.user.myapp"
+            exit 1
+          fi
+          # 合法包名：小写字母/数字/下划线，至少两段，每段以字母开头
+          if [[ ! "$PKG" =~ ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$ ]]; then
+            echo "::error::包名格式非法：$PKG（示例：com.user.myapp）"
+            exit 1
+          fi
+          echo "package=$PKG" >> "$GITHUB_OUTPUT"
+
+      - name: 配置 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 配置 Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 接受 Android SDK 许可
+        run: |
+          SDKMANAGER=$(command -v sdkmanager || true)
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+
+      - name: 赋予 gradlew 执行权限
+        run: chmod +x ./gradlew
+
+      - name: 编译 Release APK（按自定义包名）
+        # -PoverridePackage 仅覆盖 applicationId（安装身份），namespace/源码包名不变
+        # CI 环境下 build.gradle.kts 自动改用调试密钥签名，产物可直接安装
+        run: ./gradlew assembleRelease -PoverridePackage="${{ steps.validate.outputs.package }}"
+
+      - name: 上传 APK 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-${{ steps.validate.outputs.package }}
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: ${{ fromJSON(github.event.inputs.artifact_retention_days) }}
