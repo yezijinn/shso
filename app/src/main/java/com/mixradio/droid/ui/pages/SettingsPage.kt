@@ -473,12 +473,30 @@ fun SettingsPage(
                 title = "发现新版本",
                 onDismissRequest = { updateState = UpdateUiState.Idle }
             ) {
-                Text(
-                    text = "新版本标签：${s.tag}",
-                    style = AuroraTextStyles.body2,
-                    color = AuroraTokens.Text,
-                    textAlign = TextAlign.Start
-                )
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.Start,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "你目前的版本:${BuildConfig.VERSION_CODE}",
+                        style = AuroraTextStyles.body2,
+                        color = AuroraTokens.Text,
+                        textAlign = TextAlign.Start
+                    )
+                    Text(
+                        text = "在线最新版本:${s.tag}",
+                        style = AuroraTextStyles.body2,
+                        color = AuroraTokens.Text,
+                        textAlign = TextAlign.Start
+                    )
+                    Text(
+                        text = "你已落伍,尽快升级",
+                        style = AuroraTextStyles.body2,
+                        color = AuroraTokens.Text,
+                        textAlign = TextAlign.Start
+                    )
+                }
                 Spacer(modifier = Modifier.height(16.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -511,12 +529,30 @@ fun SettingsPage(
                 title = "提示",
                 onDismissRequest = { updateState = UpdateUiState.Idle }
             ) {
-                Text(
-                    text = "已是最新版本 无需更新",
-                    style = AuroraTextStyles.body2,
-                    color = AuroraTokens.Text,
-                    textAlign = TextAlign.Start
-                )
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.Start,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "你目前的版本:${BuildConfig.VERSION_CODE}",
+                        style = AuroraTextStyles.body2,
+                        color = AuroraTokens.Text,
+                        textAlign = TextAlign.Start
+                    )
+                    Text(
+                        text = "在线最新版本:${BuildConfig.VERSION_CODE}",
+                        style = AuroraTextStyles.body2,
+                        color = AuroraTokens.Text,
+                        textAlign = TextAlign.Start
+                    )
+                    Text(
+                        text = "已是最新版本 无需更新",
+                        style = AuroraTextStyles.body2,
+                        color = AuroraTokens.Text,
+                        textAlign = TextAlign.Start
+                    )
+                }
                 Spacer(modifier = Modifier.height(16.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -539,12 +575,36 @@ fun SettingsPage(
                 title = "提示",
                 onDismissRequest = { updateState = UpdateUiState.Idle }
             ) {
-                Text(
-                    text = "网络不佳 建议开启科学上网",
-                    style = AuroraTextStyles.body2,
-                    color = AuroraTokens.Text,
-                    textAlign = TextAlign.Start
-                )
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.Start,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "你目前的版本:${BuildConfig.VERSION_CODE}",
+                        style = AuroraTextStyles.body2,
+                        color = AuroraTokens.Text,
+                        textAlign = TextAlign.Start
+                    )
+                    Text(
+                        text = "在线最新版本:访问github.com失败",
+                        style = AuroraTextStyles.body2,
+                        color = AuroraTokens.Text,
+                        textAlign = TextAlign.Start
+                    )
+                    Text(
+                        text = "网络不佳",
+                        style = AuroraTextStyles.body2,
+                        color = AuroraTokens.Text,
+                        textAlign = TextAlign.Start
+                    )
+                    Text(
+                        text = "建议开启科学上网",
+                        style = AuroraTextStyles.body2,
+                        color = AuroraTokens.Text,
+                        textAlign = TextAlign.Start
+                    )
+                }
                 Spacer(modifier = Modifier.height(16.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
