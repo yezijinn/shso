@@ -17,12 +17,15 @@ on:
 
 permissions:
   contents: read
+  # upload-artifact@v4 依赖 Actions Artifacts API，必须授予 actions: write，
+  # 否则最后一步会报 "Resource not accessible by integration" 而失败。
+  actions: write
 
 jobs:
   build:
     name: 编译并导出 APK
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: 拉取代码
         uses: actions/checkout@v4
