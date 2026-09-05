@@ -55,6 +55,7 @@ import com.mixradio.droid.data.FileItem
 import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.ui.components.BuiltInFilePicker
+import com.mixradio.droid.ui.components.ExecuteConfirmDialog
 import com.mixradio.droid.ui.theme.AuroraAccentBar
 import com.mixradio.droid.ui.theme.AuroraSectionTitle
 import com.mixradio.droid.ui.theme.AuroraTextStyles
@@ -80,6 +81,9 @@ fun HomePage(
     var currentShsoDir by remember { mutableStateOf(RootFileManager.DEFAULT_SHSO_DIR) }
     var shsoFiles by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var isScanningShso by remember { mutableStateOf(false) }
+
+    // 执行确认：点击「立即执行」先暂存路径，弹窗确认后再真正执行
+    var pendingExecutePath by remember { mutableStateOf<String?>(null) }
 
     // shso 目录文件列表：字号跟随全局文件列表字号设置（与「文件」页一致）
     val listFontSize = appSettings.fileListFontSize.sp
@@ -271,7 +275,7 @@ fun HomePage(
 
             Button(
                 enabled = filePathInput.isNotBlank(),
-                onClick = { execute(filePathInput) },
+                onClick = { pendingExecutePath = filePathInput },
                 modifier = Modifier
                     .align(Alignment.CenterHorizontally)
                     .auroraFilledButton(),
@@ -491,4 +495,23 @@ fun HomePage(
             }
         )
     }
+
+    // ===== 执行确认弹窗：点击「立即执行」必须先经风险确认 =====
+    // 优先复用 shso 列表中的真实 FileItem（含正确大小/时间），否则按输入路径构造
+    val execItem = remember(pendingExecutePath) {
+        pendingExecutePath?.let { p ->
+            shsoFiles.firstOrNull { it.path == p }
+                ?: FileItem(name = File(p).name, path = p, isDirectory = false)
+        }
+    }
+    ExecuteConfirmDialog(
+        show = pendingExecutePath != null,
+        fileItem = execItem,
+        onDismiss = { pendingExecutePath = null },
+        onConfirm = {
+            val p = pendingExecutePath
+            pendingExecutePath = null
+            if (p != null) execute(p)
+        }
+    )
 }

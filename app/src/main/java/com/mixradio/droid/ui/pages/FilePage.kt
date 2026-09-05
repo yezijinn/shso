@@ -77,6 +77,7 @@ import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.displayPath
 import com.mixradio.droid.ui.components.BookmarksDialog
+import com.mixradio.droid.ui.components.ExecuteConfirmDialog
 import com.mixradio.droid.ui.components.FileListSettingsDialog
 import com.mixradio.droid.ui.components.FileShortcutButton
 import com.mixradio.droid.ui.components.ImageViewerDialog
@@ -112,6 +113,9 @@ fun FilePage(
     var fileList by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
     var directoryLoadFailed by remember { mutableStateOf(false) }
+
+    // 执行确认：点击「执行」先暂存待执行文件，弹窗确认后再真正执行
+    var pendingExecuteItem by remember { mutableStateOf<FileItem?>(null) }
 
     var selectedItem by remember { mutableStateOf<FileItem?>(null) }
     var showActionDialog by remember { mutableStateOf(false) }
@@ -556,7 +560,7 @@ fun FilePage(
                                         fontWeight = FontWeight.Bold,
                                         color = AuroraTokens.Error,
                                         modifier = Modifier
-                                            .clickable { onExecuteFileAndNavigate(item.path) }
+                                            .clickable { pendingExecuteItem = item }
                                             .padding(horizontal = 6.dp, vertical = 8.dp)
                                     )
                                 } else if (isFontFile) {
@@ -1441,6 +1445,18 @@ fun FilePage(
             }
         }
     }
+
+    // ===== 执行确认弹窗：任何「执行」点击都必须先经风险确认 =====
+    ExecuteConfirmDialog(
+        show = pendingExecuteItem != null,
+        fileItem = pendingExecuteItem,
+        onDismiss = { pendingExecuteItem = null },
+        onConfirm = {
+            val target = pendingExecuteItem?.path
+            pendingExecuteItem = null
+            if (target != null) onExecuteFileAndNavigate(target)
+        }
+    )
 }
 
 /**
