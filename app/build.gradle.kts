@@ -12,11 +12,11 @@ kotlin {
 }
 
 android {
-    namespace = "com.qihoo360.mobilesafe"
+    namespace = "com.mixradio.droid"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.qihoo360.mobilesafe"
+        applicationId = "com.mixradio.droid"
         minSdk = 26
         targetSdk = 35
         versionCode = 283
