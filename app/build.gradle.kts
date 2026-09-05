@@ -127,6 +127,10 @@ dependencies {
 
     // Zstd 解压（zstd-jni Android AAR 含 arm64-v8a/armeabi-v7a/x86/x86_64 原生库）
     implementation("com.github.luben:zstd-jni:1.5.7-16@aar")
+
+    // JVM 单元测试（JUnit 4，验证 CommandParser / PathClassifier / PolicyEngine / SecurityModels 纯逻辑拦截路径,
+    // 不依赖设备,可在无 ROOT 真机环境下覆盖 ROOT 链路清单 #7-10 项拦截规则）
+    testImplementation("junit:junit:4.13.2")
 }
 
 // 启动守卫模块 zip 需要打包进 APK
