@@ -255,15 +255,98 @@ cd shso
 
 ### 🌐 在线编译（无需本地环境，自定义包名）
 
-任何人 fork / 直接使用本仓库，都能在 GitHub 网页上**一键在线编译并导出自己的 APK**，且**必须填写自己的 APP 包名**：
+> **一句话**：不需要安装 Android Studio、不需要配置 Java / Android SDK，**只要有一个免费 GitHub 账号，全程在网页上点几下，就能生成你自己包名的 APK**。
 
-1. 打开仓库 `Actions` → 工作流 **「在线编译 APK（自定义包名）」** → `Run workflow`。
-2. 在表单 `package_name` 中**填写你自己的包名**（例如 `com.yourname.myapp`）；**禁止填写作者原包名 `com.mixradio.droid` / `com.mixradio.*`，否则校验直接失败**。
-3. 工作流按你填的包名编译 `assembleRelease`，产物 APK 作为 Artifact 提供下载（默认保留 30 天）。
+#### 📋 开始前你需要准备
 
-> 原理：编译仅覆盖 `applicationId`（安装身份），`namespace` 与源码包名保持 `com.mixradio.droid` 不变，因此 `R` / `BuildConfig` 与全部 `import` 不受影响；FileProvider authority、跳设置页 Uri 等均基于 `${applicationId}` / `context.packageName` 自动跟随。CI 环境自动改用调试密钥签名，导出的 APK 可直接安装。
+- 一个 **GitHub 账号**（免费，没有就去 https://github.com 注册一个）
+- 一台能上网的**电脑或手机**（建议用电脑，看得更清楚）
 
+#### 🪜 照着做，一共 10 步
 
+**第 1 步：打开作者的仓库页面**
+- 浏览器打开：<https://github.com/yezijinn/shso>
+- 你会看到项目主页（有文件列表、说明文字）。
+
+**第 2 步：Fork（复制）仓库到你自己的账号**
+- 在仓库页面**右上角**，找到写着 **Fork** 的按钮（带一个「分叉」图标）。
+- 点它 → 弹出小窗口 → 直接点绿色的 **Create fork**（创建分叉）按钮。
+- 等几秒，整个项目会被复制到你的账号下，网址会变成 `github.com/你的用户名/shso`。
+- ⚠️ **之后所有操作都在你自己这个 shso 仓库里做，不要再回作者的仓库。**
+
+**第 3 步：进入你仓库的 Actions（自动化）页面**
+- 在你自己的仓库页面顶部，有一排标签：`Code`  `Issues`  `Pull requests`  `Actions`  `Projects`  `...`
+- 点 **`Actions`** 这个标签。
+- 第一次进来可能看到绿色按钮「I understand my workflows, go ahead and enable them」，点它确认（只需一次，允许 GitHub 运行自动化）。
+
+**第 4 步：找到「在线编译 APK（自定义包名）」工作流**
+- 进入 Actions 后，左侧是一列工作流名字。
+- 找到并点 **「在线编译 APK（自定义包名）」**（页面在加载的话稍等一下再找）。
+
+**第 5 步：点开 Run workflow 下拉框**
+- 在「在线编译 APK（自定义包名）」页面**右侧**，有一个写着 **Run workflow** 的按钮（带向下小箭头 ▼）。
+- 点这个按钮，它会**向下展开一个表单**。
+
+**第 6 步：填写你的 APP 包名（最关键）**
+表单里有一个输入框，标签是 `package_name`（包名）。在这里填：
+
+✅ **正确写法（必须满足）**：
+- 全部**小写英文字母**（不能有中文、大写、空格）
+- 用**英文点号 `.`** 分成至少两段，例如 `com.你的名字.应用名`
+- 每一段都要**以字母开头**（不能以数字或点开头）
+- 可参考的例子（挑一个改成你自己的）：
+  - `com.zhangsan.shso`
+  - `com.myname.myapp`
+  - `com.lihua.tools`
+
+❌ **绝对不能写（会被直接拒绝）**：
+- 作者的原包名 `com.mixradio.droid`（这是作者自己用的，禁止复用）
+- 任何以 `com.mixradio` 开头的，例如 `com.mixradio.test`
+- 带大写、中文、空格的，例如 `Com.Test`、`我的应用`、`com.abc def`
+
+> 💡 包名就像这个 APP 的「身份证号」。随便写一个你独有的就行，没人检查你是否「拥有」它，只要格式对、不是作者的就可以。
+
+**第 7 步：点绿色 Run workflow 按钮开始编译**
+- 表单**下方**有一个**绿色按钮**，上面写着 **Run workflow**（注意区分：第 5 步那个是用来展开表单的，这个是表单里真正的「开始」按钮）。
+- 点它！页面会跳转，你会看到一个编译任务已经开始。
+
+**第 8 步：等待编译完成（看进度）**
+- 任务条目左边会显示一个圆点：黄色（运行中）→ 变成 ✅ 绿色对勾（成功）或 ❌ 红色叉（失败）。
+- 一般 **4～10 分钟**完成（第一次稍慢，要下载编译工具）。
+- 想看详细过程？点那个任务条目进去，能看到实时滚动的日志（看不懂没关系，只要最后变绿就行）。
+
+**第 9 步：下载编译好的 APK**
+- 编译成功后，在任务详情页面**最下方**，有一个区块叫 **Artifacts**（中文意思「产物 / 成品」）。
+- 里面有一个条目，名字类似 `app-release-com.你填的包名`（例如你填 `com.zhangsan.shso`，就显示 `app-release-com.zhangsan.shso`）。
+- **点它** → 浏览器会自动下载一个 `.zip` 压缩包。
+- 这个 zip 里就是你的 APK，默认保留 **30 天**，过期后要重新编译。
+
+**第 10 步：解压并安装到手机**
+- 在电脑上把下载的 `.zip` 解压（双击或用解压软件），得到一个文件：`app-release.apk`。
+- 把这个 `app-release.apk` 传到手机上（微信文件传输 / 数据线 / 网盘都行）。
+- 在手机上点击它安装（首次安装可能提示「允许安装未知来源应用」，按提示打开开关即可）。
+- 安装完成后，你手机上就有了一个**包名是你自己填的那个**的 shso APP。
+
+#### ❓ 常见问题（FAQ）
+
+**Q：包名填错了被拒绝（红色叉）怎么办？**
+A：回到 Actions → 点「在线编译 APK（自定义包名）」→ 再点 Run workflow → 换个合规的包名重新提交即可。失败日志最后一行会写明原因（例如「禁止使用作者原包名」）。
+
+**Q：编译失败了（红色叉）但包名没问题？**
+A：GitHub 偶尔会抽风，直接重新点一次 Run workflow 再跑一遍通常就好。若反复失败，点进任务详情页看日志最后几行的报错信息。
+
+**Q：我找不到 Actions 标签 / 没有 Run workflow 按钮？**
+A：确认你在**自己 fork 的仓库**（网址是 `github.com/你的用户名/shso`），不是作者的仓库。第一次进 Actions 需点绿色「I understand...」确认按钮。
+
+**Q：下载到的是 zip 不是 apk？**
+A：正常！GitHub 导出的就是 zip 压缩包，解压后里面的 `app-release.apk` 才是安装文件。
+
+**Q：怎么确认装上的 APP 包名真的是我填的那个？**
+A：手机「设置 → 应用管理」找到 shso，应用信息里会显示包名；或在电脑用命令 `aapt dump badging app-release.apk` 查看 `package: name=...`。我们已实测验证：填 `com.verify.demo` 导出的 APK，内部包名确实是 `com.verify.demo`。
+
+#### 🔧 原理说明（进阶，看不懂可跳过）
+
+> 编译仅覆盖 `applicationId`（安装身份），`namespace` 与源码包名保持 `com.mixradio.droid` 不变，因此 `R` / `BuildConfig` 与全部 `import` 不受影响；FileProvider authority、跳设置页 Uri 等均基于 `${applicationId}` / `context.packageName` 自动跟随。CI 环境自动改用调试密钥签名，导出的 APK 可直接安装。
 ---
 
 ## 🛡️ 安全与防护说明
