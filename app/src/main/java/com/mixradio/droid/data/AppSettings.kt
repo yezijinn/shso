@@ -75,6 +75,13 @@ class AppSettings private constructor(context: Context) {
     var editorFontSize by mutableFloatStateOf(prefs.getFloat(KEY_EDITOR_FONT_SIZE, DEFAULT_EDITOR_FONT_SIZE))
         private set
 
+    /**
+     * 安全防护档位：0 无防护 / 1 仅审计 / 2 标准防护（默认）/ 3 最强防护。
+     * 见 data/security/SecurityLevels.kt 与 docs/指令审查与拦截方案.md。
+     */
+    var securityLevel by mutableIntStateOf(prefs.getInt(KEY_SECURITY_LEVEL, SECURITY_STANDARD))
+        private set
+
     // 书签（永久存储的文件路径列表，按添加顺序）
     private val bookmarkPaths: MutableSet<String> = LinkedHashSet(
         prefs.getStringSet(KEY_BOOKMARKS, emptySet()) ?: emptySet()
@@ -201,6 +208,12 @@ class AppSettings private constructor(context: Context) {
         prefs.edit().putInt(KEY_FILE_SORT_MODE, mode).apply()
     }
 
+    fun setSecurityLevel(level: Int) {
+        val clamped = level.coerceIn(SECURITY_OFF, SECURITY_MAXIMUM)
+        securityLevel = clamped
+        prefs.edit().putInt(KEY_SECURITY_LEVEL, clamped).apply()
+    }
+
     fun addBookmark(path: String) {
         val normalized = path.trim().trimEnd('/').ifEmpty { "/" }
         bookmarkPaths.add(normalized)
@@ -226,6 +239,12 @@ class AppSettings private constructor(context: Context) {
         const val FILE_SORT_NAME_DESC = 1
         const val FILE_SORT_TIME_ASC = 2
         const val FILE_SORT_TIME_DESC = 3
+
+        /** 安全档位常量（与 data/security/SecurityLevels 对齐） */
+        const val SECURITY_OFF = 0
+        const val SECURITY_AUDIT_ONLY = 1
+        const val SECURITY_STANDARD = 2
+        const val SECURITY_MAXIMUM = 3
 
         private const val MIN_FILE_LIST_FONT_SIZE = 5f
         private const val MAX_FILE_LIST_FONT_SIZE = 30f
@@ -259,6 +278,7 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_EDITOR_AUTOSAVE_INTERVAL = "editor_autosave_interval"
         private const val KEY_EDITOR_SHOW_LINE_NUMBER = "editor_show_line_number"
         private const val KEY_EDITOR_FONT_SIZE = "editor_font_size"
+        private const val KEY_SECURITY_LEVEL = "security_level"
 
         private const val DEFAULT_TERMINAL_COLOR = 0xFF00E676L
 

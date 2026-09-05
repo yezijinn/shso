@@ -635,13 +635,8 @@ private suspend fun writeTextFile(
 
         if (RootService.isRootGranted == true) {
             val tmpFile = "/data/local/tmp/_shso_edit_${System.currentTimeMillis()}.tmp"
-            val writeProcess = ProcessBuilder("su", "-c", "cat > ${RootService.escapeShellArg(tmpFile)}")
-                .redirectErrorStream(true).start()
-            writeProcess.outputStream.use { out ->
-                out.write(bytes); out.flush()
-            }
-            val finished = writeProcess.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
-            if (!finished) { writeProcess.destroyForcibly(); return@withContext Pair(false, "写入临时文件超时") }
+            val writeOk = RootService.writeBytesAsRoot(tmpFile, bytes)
+            if (!writeOk) return@withContext Pair(false, "写入临时文件失败")
             val (mvCode, mvOut) = RootService.runCommandSync(
                 "mv ${RootService.escapeShellArg(tmpFile)} ${RootService.escapeShellArg(filePath)}",
                 60_000L
