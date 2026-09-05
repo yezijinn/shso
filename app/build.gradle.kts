@@ -1,6 +1,9 @@
 // Copyright 2026, KernelEX contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+
 plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.composeCompiler)
@@ -9,6 +12,12 @@ plugins {
 kotlin {
     // 等价原 module.kotlin-jvm-toolchain 约定插件：统一 Kotlin JVM Toolchain 21
     jvmToolchain(21)
+}
+
+// 版本号自动取「构建当日日期」纯数字（YYYYMMDD，如 20260905），
+// 既作为 versionCode（应用升级判定的唯一依据），也与 GitHub 发布标签的纯日期格式对齐。
+val buildDateVersionCode: Int = run {
+    LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE).toInt()
 }
 
 android {
@@ -28,7 +37,7 @@ android {
         applicationId = overridePackage ?: "com.mixradio.droid"
         minSdk = 26
         targetSdk = 35
-        versionCode = 283
+        versionCode = buildDateVersionCode
         versionName = "9.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -69,6 +78,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
