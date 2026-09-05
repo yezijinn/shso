@@ -12,7 +12,7 @@ import com.mixradio.droid.data.RootService
  * 1. INTERNAL_APP → Allow（内部命令全部为模板构造 + escapeShellArg，注入安全）；
  * 2. 解析超限 → Confirm(CRITICAL)（fail-closed）；
  * 3. 硬拦截黑名单（rm 系统 / dd 块设备 / mkfs / wipe / fastboot erase / chmod -R 系统 / find -delete）→ Block；
- * 4. 危险规则（rm /data、dd /dev/*、chmod 777、远程管道执行 …）→ Confirm(DANGEROUS)；
+ * 4. 危险规则（rm /data、dd /dev(星号)、chmod 777、远程管道执行 …）→ Confirm(DANGEROUS)；
  * 5. 警告规则 → Confirm(WARNING)；
  * 6. 其余 → Allow。
  *

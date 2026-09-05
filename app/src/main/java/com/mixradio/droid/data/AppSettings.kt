@@ -208,7 +208,7 @@ class AppSettings private constructor(context: Context) {
         prefs.edit().putInt(KEY_FILE_SORT_MODE, mode).apply()
     }
 
-    fun setSecurityLevel(level: Int) {
+    fun updateSecurityLevel(level: Int) {
         val clamped = level.coerceIn(SECURITY_OFF, SECURITY_MAXIMUM)
         securityLevel = clamped
         prefs.edit().putInt(KEY_SECURITY_LEVEL, clamped).apply()
