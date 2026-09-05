@@ -211,6 +211,12 @@ fun SettingsPage(
     var showAuditDialog by remember { mutableStateOf(false) }
     var auditDialogLines by remember { mutableStateOf<List<String>>(emptyList()) }
     var installingGuard by remember { mutableStateOf(false) }
+    var guardInstalled by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        scope.launch {
+            guardInstalled = GuardModuleInstaller.status() is GuardModuleInstaller.GuardStatus.Installed
+        }
+    }
 
     // ===== 检查更新状态 =====
     var updateState by remember { mutableStateOf<UpdateUiState>(UpdateUiState.Idle) }
@@ -479,7 +485,7 @@ fun SettingsPage(
                 statusSwitchEnabled = false,
                 onClick = {
                     val next = (appSettings.securityLevel + 1) % 4
-                    appSettings.setSecurityLevel(next)
+                    appSettings.updateSecurityLevel(next)
                     val tip = when (next) {
                         AppSettings.SECURITY_OFF -> "已关闭：不审查 / 不拦截 / 不审计"
                         AppSettings.SECURITY_AUDIT_ONLY -> "审计：仅留痕，不拦截命令"
@@ -506,15 +512,15 @@ fun SettingsPage(
             )
 
             AuroraArrowPreference(
-                title = if (GuardModuleInstaller.isModuleInstalled()) "守卫模块：已安装" else "安装 shso_guard 守卫模块",
-                summary = if (GuardModuleInstaller.isModuleInstalled())
+                title = if (guardInstalled) "守卫模块：已安装" else "安装 shso_guard 守卫模块",
+                summary = if (guardInstalled)
                     "PATH 前置守卫目录，对 rm/dd/mkfs 等系统级命令做运行时拦截"
                 else
                     "复制本 APP 内置模块到 /data/adb/modules/（需 ROOT）",
-                statusSwitch = GuardModuleInstaller.isModuleInstalled(),
+                statusSwitch = guardInstalled,
                 statusSwitchEnabled = false,
                 onClick = {
-                    if (GuardModuleInstaller.isModuleInstalled()) {
+                    if (guardInstalled) {
                         Toast.makeText(context, "模块已就绪", Toast.LENGTH_SHORT).show()
                         return@AuroraArrowPreference
                     }
@@ -522,6 +528,7 @@ fun SettingsPage(
                     scope.launch {
                         val (ok, msg) = withContext(Dispatchers.IO) { GuardModuleInstaller.install(context) }
                         installingGuard = false
+                        if (ok) guardInstalled = true
                         Toast.makeText(
                             context,
                             if (ok) "守卫模块已部署，PATH 已生效"

@@ -129,8 +129,9 @@ dependencies {
     implementation("com.github.luben:zstd-jni:1.5.7-16@aar")
 }
 
+// 启动守卫模块 zip 需要打包进 APK
 tasks.matching {
-    it.name.contains("ArtProfile") || (it.name.startsWith("merge") && it.name.endsWith("Assets"))
+    it.name.startsWith("merge") && it.name.endsWith("Assets")
 }.configureEach {
-    enabled = false
+    enabled = true
 }
