@@ -14,15 +14,19 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -43,19 +47,24 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mixradio.droid.data.AppSettings
@@ -78,6 +87,7 @@ import com.mixradio.droid.ui.theme.AuroraTokens
 import com.mixradio.droid.ui.theme.AuroraWindowDialog
 import com.mixradio.droid.ui.theme.auroraFilledButton
 import com.mixradio.droid.ui.theme.auroraTextFieldColors
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -615,6 +625,17 @@ fun FilePage(
                             .padding(horizontal = 10.dp, vertical = 6.dp)
                     )
                 }
+            }
+            // 文件列表右侧贴边细拖动条：拖动快速跳转（复刻文本编辑器 LineScrollBar 样式）
+            if (displayFileList.size > 1) {
+                ListScrollBar(
+                    listState = listState,
+                    itemCount = displayFileList.size,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 2.dp)
+                        .zIndex(1f)
+                )
             }
             }
         }
@@ -1418,6 +1439,92 @@ fun FilePage(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * 文件列表右侧贴边细拖动条（复刻文本编辑器 [com.mixradio.droid.ui.components.TextEditorDialog]
+ * 中 LineScrollBar 的样式）：拖动可快速跳转到目标位置。
+ * 轨道细（6dp）、半透明描边底；拇指为 48dp 高的 Accent 色块；拖动时左侧浮出「当前位置 / 总数」。
+ * 通过 [listState] 与上层列表双向绑定（不依赖系统滚动条，视觉风格统一）。
+ */
+@Composable
+private fun ListScrollBar(
+    listState: LazyListState,
+    itemCount: Int,
+    modifier: Modifier = Modifier
+) {
+    if (itemCount <= 1) return
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val thumbHPx = with(density) { 48.dp.toPx() }
+    var trackHeight by remember { mutableStateOf(0) }
+    var dragging by remember { mutableStateOf(false) }
+    var dragFrac by remember { mutableStateOf(0f) }
+    val itemCountState = rememberUpdatedState(itemCount)
+
+    val frac = if (dragging) dragFrac else (
+        if (itemCount <= 1) 0f
+        else listState.firstVisibleItemIndex.toFloat() / (itemCount - 1).coerceAtLeast(1)
+    ).coerceIn(0f, 1f)
+    val maxTop = (trackHeight - thumbHPx).coerceAtLeast(0f)
+    val topPx = (frac * maxTop).coerceIn(0f, maxTop)
+
+    Box(
+        modifier = modifier
+            .width(6.dp)
+            .fillMaxHeight()
+            .background(AuroraTokens.Stroke.copy(alpha = 0.35f))
+            .onGloballyPositioned { trackHeight = it.size.height }
+            .pointerInput(trackHeight) {
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        dragging = true
+                        val f = ((offset.y - thumbHPx / 2f).coerceIn(0f, maxTop)) / maxTop.coerceAtLeast(1f)
+                        dragFrac = f
+                        scope.launch {
+                            listState.scrollToItem((f * (itemCount - 1)).toInt().coerceAtLeast(0))
+                        }
+                    },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        val f = ((change.position.y - thumbHPx / 2f).coerceIn(0f, maxTop)) / maxTop.coerceAtLeast(1f)
+                        dragFrac = f
+                        scope.launch {
+                            listState.scrollToItem((f * (itemCount - 1)).toInt().coerceAtLeast(0))
+                        }
+                    },
+                    onDragEnd = { dragging = false }
+                )
+            }
+    ) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .offset { IntOffset(0, topPx.roundToInt()) }
+                .width(6.dp)
+                .height(48.dp)
+                .background(AuroraTokens.Accent.copy(alpha = 0.9f))
+        )
+        if (dragging) {
+            val pos = ((dragFrac * (itemCountState.value - 1)) + 1).roundToInt()
+                .coerceIn(1, itemCountState.value)
+            Text(
+                text = "$pos / ${itemCountState.value}",
+                style = AuroraTextStyles.footnote2,
+                color = AuroraTokens.Text,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset {
+                        IntOffset(
+                            with(density) { (-56).dp.toPx() }.roundToInt(),
+                            topPx.roundToInt()
+                        )
+                    }
+                    .background(AuroraTokens.PillBg)
+                    .padding(horizontal = 4.dp, vertical = 1.dp)
+            )
         }
     }
 }
