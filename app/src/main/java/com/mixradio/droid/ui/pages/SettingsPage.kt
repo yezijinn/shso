@@ -71,6 +71,7 @@ import com.mixradio.droid.ui.theme.AuroraWindowDialog
 import com.mixradio.droid.ui.theme.auroraFilledButton
 import com.mixradio.droid.ui.theme.auroraPrimaryButtonColors
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
@@ -204,6 +205,8 @@ fun SettingsPage(
 
     // ===== 检查更新状态 =====
     var updateState by remember { mutableStateOf<UpdateUiState>(UpdateUiState.Idle) }
+    // 胶囊视觉开关：点击「检查更新」后置为 true（亮起），3 秒后自动回关
+    var updateChecking by remember { mutableStateOf(false) }
 
     fun checkForUpdate() {
         if (updateState == UpdateUiState.Checking) return
@@ -437,12 +440,22 @@ fun SettingsPage(
             )
 
             // ===== 检查更新 =====
-            // 右侧胶囊与权限行一致；「检查更新」为动作项不可开启，固定「未开启」(off) 且禁用切换，点击整行触发检查
+            // 右侧胶囊与权限行一致；点击胶囊/整行触发检查，亮起 3 秒后自动回关
             AuroraArrowPreference(
-                title = "检查 github 是否发布了新的版本",
-                statusSwitch = false,
-                statusSwitchEnabled = false,
-                onClick = { checkForUpdate() }
+                title = "检查更新",
+                summary = "检查 github 是否发布了新的版本",
+                statusSwitch = updateChecking,
+                statusSwitchEnabled = true,
+                onClick = {
+                    if (!updateChecking) {
+                        updateChecking = true
+                        checkForUpdate()
+                        scope.launch {
+                            delay(3000)
+                            updateChecking = false
+                        }
+                    }
+                }
             )
 
             Spacer(modifier = Modifier.height(70.dp))
