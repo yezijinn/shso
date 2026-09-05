@@ -20,7 +20,7 @@ import com.mixradio.droid.data.RootService
  */
 object PolicyEngine {
 
-    private val RM_LIKE = setOf("rm", "rmdir", "shred", "wipe", "unlink")
+    private val RM_LIKE = setOf("rm", "rmdir", "shred", "unlink")
     private val MKFS_LIKE = setOf("mkfs", "mke2fs", "make_f2fs", "mkfs.ext2", "mkfs.ext3", "mkfs.ext4", "mkfs.f2fs", "mkfs.vfat", "mkfs.exfat", "mkfs.ntfs")
     private val FETCHERS = setOf("curl", "wget")
     private val DECODERS = setOf("base64", "openssl")
