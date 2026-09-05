@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-Android ROOT 环境下的图形化执行工具：一键运行 `.sh` 脚本与 `.so`/ELF 原生程序，带 ANSI 高亮终端、stdin 交互、ROOT 全盘文件管理。包名 `com.qihoo360.mobilesafe`，版本 9.0.2/283，默认工作目录 `/data/adb/shso`。
+Android ROOT 环境下的图形化执行工具：一键运行 `.sh` 脚本与 `.so`/ELF 原生程序，带 ANSI 高亮终端、stdin 交互、ROOT 全盘文件管理。包名 `com.mixradio.droid`，版本 9.0.2/283，默认工作目录 `/data/adb/shso`。
 
 ## 技术栈
 
@@ -26,7 +26,7 @@ shso-main/
 └── app/
     └── src/main/
         ├── AndroidManifest.xml   # MANAGE_EXTERNAL_STORAGE、allowBackup=false
-        └── java/com/qihoo360/mobilesafe/
+        └── java/com/mixradio/droid/
             ├── ShsoApplication.kt
             ├── MainActivity.kt
             ├── data/             # 核心逻辑层
@@ -63,7 +63,7 @@ shso-main/
 ### UI 形态铁律（改动必守）
 
 - **全工程零圆角**：`AuroraShapes` 五槽位全 `RoundedCornerShape(0.dp)` 注入 MaterialTheme；显式 clip/shape/border/shadow 一律 `RoundedCornerShape(0.dp)`。注意 foundation 1.12.0 缓存制品无 `RectangleShape`/`CircleShape` 符号。
-- **无外层 Card/Container 容器**：列表项（图标+文本 Row）直接平铺在页面 Column，行间用细分割线或零间距分隔；设置页为单列无分组（权限 4 项 + 行为 3 项），间距全部归零、行高统一 `heightIn(min = 48.dp)`。
+- **无外层 Card/Container 容器**：列表项（图标+文本 Row）直接平铺在页面 Column，行间用细分割线或零间距分隔；设置页为单列无分组（权限 5 项 + 行为 3 项），间距全部归零、行高统一 `heightIn(min = 48.dp)`。
 - **行距/字号约定**：preference 主标题 body2、summary 注释色不动；section 标题与页面主文本按要求内联 `fontSize`（非注释文本遵循 -2sp 惯例时以最近指令为准）。
 - 列表项状态点/强调条等一律矩形。
 
@@ -99,8 +99,8 @@ UI 层 100% 采用 AndroidX Compose Material 3 原生控件（`androidx.compose.
 |---|---|
 | 主页 | 执行目标输入框 + 居中「立即执行」「从文件管理器选择」（无框/自适应宽度）+ 当前任务状态区 + `/data/adb/shso` 目录文件列表 |
 | 终端 | 顶栏（左 IDLE/RUNNING 状态灯，右 复制输出/结束进程/重启终端/设置）；内容区为 ANSI 着色滚动日志；底部输入行 + 中断/清屏/Enter/发送；「设置」弹窗含 终端文字颜色/HyperCore 终端提示/shso 终端提示 |
-| 文件 | ROOT 全盘浏览（/、/storage/emulated/0 快捷入口）、排序（名称/时间升降序）、隐藏文件开关、列表字号滑块（5–30sp，默认 15sp）、长按「添加到shso」、.ttf/.otf 预览并应用为软件字体、刷新/删除 |
-| 设置 | 单列扁平列表：存储空间/省电策略/后台弹出/超级用户（权限状态 + 授权跳转）+ 独立存储/自动删除/自动执行开关；右上角「关于」按钮弹窗（图标/版本/Github） |
+| 文件 | ROOT 全文盘浏览（/、/storage/emulated/0、/data/adb/shso 快捷入口）、排序（名称/时间升降序）、隐藏文件开关、列表字号滑块（5–30sp，默认 15sp）、记忆路径、书签、长按单文件动作（添加到shso/安装APK·XAPK/浏览图片/编辑文本/重命名/拷贝/删除）、多选批量删除·拷贝·重命名、三悬浮导航按钮（回顶/到底/刷新）、APK·XAPK 安装（ROOT 静默 / 无 ROOT 系统安装器）、图片浏览、.ttf/.otf 字体预览并应用、设置菜单内「新建文件」、刷新 |
+| 设置 | 单列扁平列表：存储空间/省电策略/后台弹出/超级用户/安装应用（权限状态 + 授权跳转）+ 独立存储/自动删除/自动执行开关；右上角「关于」按钮弹窗（图标/版本/Github） |
 
 ## 已知注意点
 
