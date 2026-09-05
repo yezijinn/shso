@@ -50,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -147,7 +148,7 @@ fun FilePage(
     var newFileName by remember { mutableStateOf("") }
     var newFileExt by remember { mutableStateOf("") }
 
-    fun refresh() {
+    fun refresh(showToast: Boolean = false) {
         isLoading = true
         directoryLoadFailed = false
         scope.launch {
@@ -172,6 +173,8 @@ fun FilePage(
                 fileList = emptyList()
             } finally {
                 isLoading = false
+                // 用户手动点击「⟳」时给出明确反馈，避免「点了没反应」的错觉
+                if (showToast) feedbackMessage = "已刷新"
             }
         }
     }
@@ -353,7 +356,7 @@ fun FilePage(
                 Box(modifier = Modifier.fillMaxSize()) {
                 if (isLoading && displayFileList.isEmpty()) {
                     // 骨架占位：加载期间先铺出列表轮廓，消除首屏空白观感
-                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                         items(10) {
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 Row(
@@ -410,6 +413,7 @@ fun FilePage(
                     }
                 } else {
                     LazyColumn(
+                        state = listState,
                         modifier = Modifier.fillMaxSize()
                     ) {
                         itemsIndexed(displayFileList, key = { index, item -> "${item.path}_$index" }) { _, item ->
@@ -591,6 +595,7 @@ fun FilePage(
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
+                    .zIndex(1f)
                     .padding(bottom = 8.dp, end = 50.dp)
                     .height(60.dp),
                 horizontalArrangement = Arrangement.End,
@@ -599,7 +604,7 @@ fun FilePage(
                 val navActions: List<Pair<String, () -> Unit>> = listOf(
                     "⤒" to { scope.launch { if (displayFileList.isNotEmpty()) listState.scrollToItem(0) } },
                     "⤓" to { scope.launch { if (displayFileList.isNotEmpty()) listState.scrollToItem(displayFileList.lastIndex) } },
-                    "⟳" to { refresh() }
+                    "⟳" to { refresh(showToast = true) }
                 )
                 navActions.forEach { (sym, action) ->
                     Text(
