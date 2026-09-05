@@ -437,74 +437,113 @@ fun SettingsPage(
             )
 
             // ===== 检查更新 =====
+            // 右侧胶囊与权限行一致；「检查更新」为动作项不可开启，固定「未开启」(off) 且禁用切换，点击整行触发检查
             AuroraArrowPreference(
                 title = "检查 github 是否发布了新的版本",
+                statusSwitch = false,
+                statusSwitchEnabled = false,
                 onClick = { checkForUpdate() }
             )
-            when (val s = updateState) {
-                UpdateUiState.Idle -> {}
-                UpdateUiState.Checking -> {
-                    Text(
-                        text = "检查中…",
-                        style = AuroraTextStyles.footnote2,
-                        color = AuroraTokens.TextSecondary,
-                        modifier = Modifier.padding(start = 4.dp, top = 2.dp, bottom = 4.dp)
-                    )
-                }
-                UpdateUiState.UpToDate -> {
-                    Text(
-                        text = "已是最新版本 无需更新",
-                        style = AuroraTextStyles.footnote2,
-                        color = AuroraTokens.TextSecondary,
-                        modifier = Modifier.padding(start = 4.dp, top = 2.dp, bottom = 4.dp)
-                    )
-                }
-                is UpdateUiState.Available -> {
-                    Text(
-                        text = "发现新版本：${s.tag}",
-                        style = AuroraTextStyles.footnote2,
-                        color = AuroraTokens.Text,
-                        modifier = Modifier.padding(start = 4.dp, top = 2.dp)
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
+
+            Spacer(modifier = Modifier.height(70.dp))
+        }
+    }
+
+    // ===== 检查更新结果弹窗（三种结果统一以弹窗呈现）=====
+    when (val s = updateState) {
+        UpdateUiState.Idle,
+        UpdateUiState.Checking -> {}
+
+        is UpdateUiState.Available -> {
+            AuroraWindowDialog(
+                show = true,
+                title = "发现新版本",
+                onDismissRequest = { updateState = UpdateUiState.Idle }
+            ) {
+                Text(
+                    text = "新版本标签：${s.tag}",
+                    style = AuroraTextStyles.body2,
+                    color = AuroraTokens.Text,
+                    textAlign = TextAlign.Start
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
+                ) {
                     Button(
-                        onClick = { openInBrowserOnly("https://github.com/yezijinn/shso/releases") },
+                        onClick = { updateState = UpdateUiState.Idle },
+                        colors = auroraPrimaryButtonColors(),
+                        modifier = Modifier.auroraFilledButton()
+                    ) {
+                        Text(text = "稍后", fontWeight = FontWeight.Bold)
+                    }
+                    Button(
+                        onClick = {
+                            openInBrowserOnly("https://github.com/yezijinn/shso/releases")
+                            updateState = UpdateUiState.Idle
+                        },
                         colors = auroraPrimaryButtonColors(),
                         modifier = Modifier.auroraFilledButton()
                     ) {
                         Text(text = "去更新", fontWeight = FontWeight.Bold)
                     }
                 }
-                UpdateUiState.NetworkError -> {}
             }
-
-            Spacer(modifier = Modifier.height(70.dp))
         }
-    }
 
-    if (updateState == UpdateUiState.NetworkError) {
-        AuroraWindowDialog(
-            show = true,
-            title = "提示",
-            onDismissRequest = { updateState = UpdateUiState.Idle }
-        ) {
-            Text(
-                text = "网络不佳 建议开启科学上网",
-                style = AuroraTextStyles.body2,
-                color = AuroraTokens.Text,
-                textAlign = TextAlign.Start
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
+        UpdateUiState.UpToDate -> {
+            AuroraWindowDialog(
+                show = true,
+                title = "提示",
+                onDismissRequest = { updateState = UpdateUiState.Idle }
             ) {
-                Button(
-                    onClick = { updateState = UpdateUiState.Idle },
-                    colors = auroraPrimaryButtonColors(),
-                    modifier = Modifier.auroraFilledButton()
+                Text(
+                    text = "已是最新版本 无需更新",
+                    style = AuroraTextStyles.body2,
+                    color = AuroraTokens.Text,
+                    textAlign = TextAlign.Start
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
                 ) {
-                    Text(text = "知道了", fontWeight = FontWeight.Bold)
+                    Button(
+                        onClick = { updateState = UpdateUiState.Idle },
+                        colors = auroraPrimaryButtonColors(),
+                        modifier = Modifier.auroraFilledButton()
+                    ) {
+                        Text(text = "知道了", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        UpdateUiState.NetworkError -> {
+            AuroraWindowDialog(
+                show = true,
+                title = "提示",
+                onDismissRequest = { updateState = UpdateUiState.Idle }
+            ) {
+                Text(
+                    text = "网络不佳 建议开启科学上网",
+                    style = AuroraTextStyles.body2,
+                    color = AuroraTokens.Text,
+                    textAlign = TextAlign.Start
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Button(
+                        onClick = { updateState = UpdateUiState.Idle },
+                        colors = auroraPrimaryButtonColors(),
+                        modifier = Modifier.auroraFilledButton()
+                    ) {
+                        Text(text = "知道了", fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
