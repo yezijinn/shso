@@ -1,6 +1,8 @@
+> 语言 / Language: [English](AGENTS.en.md)
+
 # shso — AI 开发文档
 
-Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + Jetpack Compose Material 3 原生控件，极光玻璃暗色主题，无外部 UI 组件库）。包名 `com.qihoo360.mobilesafe`，版本 9.0.2/283。冷启动直进主页四 Tab（主页/终端/文件/设置），无启动检测流程。
+Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + Jetpack Compose Material 3 原生控件，极光玻璃暗色主题，无外部 UI 组件库）。包名 `com.mixradio.droid`，版本 9.0.2/283。冷启动直进主页四 Tab（主页/终端/文件/设置），无启动检测流程。
 
 ## 行为准则
 
@@ -43,7 +45,7 @@ Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + 
 | 语言 | Kotlin 2.4.0（JVM Toolchain 21） |
 | UI | AndroidX Compose Material 3 原生控件（compose-bom 2026.08.00，导入命名空间 `androidx.compose.*`，`ui/theme/Aurora*` 极光玻璃主题） |
 | 构建 | Gradle (KTS) + AGP 9.2.1 + Version Catalog（`gradle/libs.versions.toml`） |
-| 目标 | minSdk 26 / targetSdk 35 / compileSdk 37，applicationId `com.qihoo360.mobilesafe` |
+| 目标 | minSdk 26 / targetSdk 35 / compileSdk 37，applicationId `com.mixradio.droid` |
 | 依赖注入 | 无框架，全局 `object` 单例（`RootService`、`AppSettings` 等） |
 
 **自包含工程（关键约束）**：不依赖任何仓库外源码/模块，clone 后可直接独立构建。`settings.gradle.kts` 仅 `include(":app")`；一键构建脚本 `build_apk.py` 内含原生 Material 3 校验（禁止回退到外部 UI 组件库）。UI 样式统一走 `ui/theme/` 下的 Aurora 令牌（`AuroraTokens`/`AuroraGlass`/`AuroraComponents`），页面禁止写装饰性 `Color(0x...)` 字面量。

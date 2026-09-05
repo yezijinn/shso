@@ -362,12 +362,20 @@ def gradle_build(variant: str, clean: bool, extra_args: Sequence[str]) -> int:
             return code
         log(OK, "clean 完成")
 
+    # 强制重定向 buildDir，避开被本环境文件监视器占用句柄（WinError 32）的
+    # 旧 app/build 输出目录，使 Gradle 可正常清理/写入并产出可定位的 APK。
+    init_script = PROJECT_DIR / ".tmp" / "init_builddir.gradle"
+    init_arg: List[str] = (
+        ["-I", str(init_script)] if init_script.is_file() else []
+    )
+
     cmd: List[str] = [
         str(GRADLEW_BAT),
         f":app:assemble{variant}",
         "--console=plain",
         "--stacktrace",
         "--no-configuration-cache",
+        *init_arg,
         *extra_args,
     ]
     log(INFO, "执行命令：" + " ".join(cmd))
@@ -388,9 +396,14 @@ def gradle_build(variant: str, clean: bool, extra_args: Sequence[str]) -> int:
 def locate_apk(variant: str) -> Optional[Path]:
     """定位构建产物 APK。"""
     section("阶段 4 / 5：产物定位与签名校验")
-    apk_dir = PROJECT_DIR / "app" / "build" / "outputs" / "apk" / variant.lower()
-    if not apk_dir.is_dir():
-        log(FAIL, f"产物目录不存在：{apk_dir}")
+    # 兼容两种输出位置：默认 app/build，以及被重定向后的 .tmp/build_out/app
+    search_dirs = [
+        PROJECT_DIR / "app" / "build" / "outputs" / "apk" / variant.lower(),
+        PROJECT_DIR / ".tmp" / "build_out" / "app" / "outputs" / "apk" / variant.lower(),
+    ]
+    apk_dir = next((d for d in search_dirs if d.is_dir()), None)
+    if apk_dir is None:
+        log(FAIL, f"产物目录不存在：{search_dirs}")
         return None
 
     candidates = sorted(apk_dir.glob("*.apk"), key=lambda p: p.stat().st_mtime, reverse=True)

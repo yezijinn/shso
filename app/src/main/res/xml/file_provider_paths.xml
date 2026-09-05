@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 共享外部存储（/sdcard 等），普通用户可读取的 APK 经此暴露给系统安装器 -->
+    <external-path name="external" path="." />
+    <!-- 应用私有目录（cache/files），兜底共享 -->
+    <files-path name="internal" path="." />
+    <cache-path name="cache" path="." />
+</paths>
