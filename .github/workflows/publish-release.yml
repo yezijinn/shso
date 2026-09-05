@@ -1,0 +1,78 @@
+name: 发布 Release（纯日期标签）
+
+# 作者在自己的仓库：Actions → 该工作流 → Run workflow
+# 标签强制为纯日期格式（YYYYMMDD，如 20260905），与 APP 内部 versionCode 对齐；
+# 「检查更新」功能据此对比本地 versionCode 判断是否需要升级。
+# 留空则自动取构建当日日期。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '发布标签（纯日期 YYYYMMDD，如 20260905）。留空则自动取构建当日日期'
+        required: false
+        default: ''
+
+permissions:
+  contents: write   # 需要推送 tag 并创建 Release
+
+jobs:
+  release:
+    name: 构建并发布
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v7.0.1
+
+      - name: 计算发布标签
+        id: tag
+        run: |
+          set -euo pipefail
+          T="${{ github.event.inputs.tag }}"
+          if [ -z "$T" ]; then T="$(date +%Y%m%d)"; fi
+          if [[ ! "$T" =~ ^[0-9]{6,8}$ ]]; then
+            echo "::error::标签格式非法：$T（必须为纯数字 YYYYMMDD）"
+            exit 1
+          fi
+          echo "tag=$T" >> "$GITHUB_OUTPUT"
+
+      - name: 配置 JDK 17
+        uses: actions/setup-java@v6.0.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 配置 Android SDK
+        uses: android-actions/setup-android@v4.0.1
+
+      - name: 接受 Android SDK 许可
+        run: |
+          SDKMANAGER=$(command -v sdkmanager || true)
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+
+      # 兼容 setup-android 各版本的环境变量命名，显式把 SDK 路径写入 local.properties
+      - name: 固定 Android SDK 路径
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          echo "使用 Android SDK: $SDK"
+          printf 'sdk.dir=%s\n' "$SDK" > local.properties
+
+      - name: 赋予 gradlew 执行权限
+        run: chmod +x ./gradlew
+
+      # 不带 -PoverridePackage → applicationId 保持作者原包名 com.mixradio.droid
+      - name: 编译 Release APK（作者原包名）
+        run: ./gradlew assembleRelease
+
+      - name: 创建 GitHub Release（纯日期标签）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "shso 自动发布版本 $TAG" \
+            app/build/outputs/apk/release/*.apk
