@@ -139,16 +139,17 @@ class SecurityCoreTest {
     }
 
     @Test fun `classify wildcard bumps one level`() {
-        // DEBUG: 暴露真实值
-        val a = PathClassifier.classify("/data/media")
-        val b = PathClassifier.classify("/data/media/*")
-        val c = PathClassifier.classify("/system/*")
-        println("DBG wildcard: /data/media=$a /data/media/*=$b /system/*=$c")
-        // 不带通配符是 SAFE
+        // 不带通配符是 SAFE,带通配符必须至少提一级 → WARNING
         assertEquals(PathClassifier.PathClass.SAFE, PathClassifier.classify("/data/media"))
-        // 代码注释说"通配符至少提一级",但实际 classify 实现并没有做提一级,这是 KNOWN GAP:
-        // 后续 ROOT 真机补测时,同步修代码(在 SAFE/WARNING 命中后再用 hasGlob 提一级)
-        assertEquals(PathClassifier.PathClass.SAFE, PathClassifier.classify("/data/media/*"))
+        assertEquals(PathClassifier.PathClass.WARNING, PathClassifier.classify("/data/media/*"))
+        // CRITICAL 已达上限,通配符仍是 CRITICAL
+        assertEquals(PathClassifier.PathClass.CRITICAL, PathClassifier.classify("/system"))
+        assertEquals(PathClassifier.PathClass.CRITICAL, PathClassifier.classify("/system/*"))
+        // ? 单字符通配同样触发提级
+        assertEquals(PathClassifier.PathClass.WARNING, PathClassifier.classify("/data/media/?"))
+        // WARNING 基路径 → DANGEROUS
+        assertEquals(PathClassifier.PathClass.WARNING, PathClassifier.classify("/data/local"))
+        assertEquals(PathClassifier.PathClass.DANGEROUS, PathClassifier.classify("/data/local/*"))
     }
 
     @Test fun `classify relative path or empty falls to WARNING`() {
@@ -186,11 +187,16 @@ class SecurityCoreTest {
     }
 
     @Test fun `parse strips env prefix`() {
-        // 现有 CommandParser.WRAPPER_PREFIXES 不含 env,rm 命令被 env 包一层时不被识别为 rm。
-        // 这是 KNOWN GAP:env/sudo/timeout 等包装器未加入前缀剥离,
-        // 后续 ROOT 真机补测时若发现需要扩展,同 PR 内补 CommandParser.kt
+        // env PATH=x rm ...  → 实际命令是 rm,env 只传递环境变量
         val r = CommandParser.parse("env PATH=/x rm /tmp/foo")
-        assertEquals("env", r.atoms.single().program)
+        assertEquals("rm", r.atoms.single().program)
+    }
+
+    @Test fun `parse strips env with multiple VAR=value args`() {
+        // env VAR1=x VAR2=y rm /tmp/foo
+        val r = CommandParser.parse("env A=1 B=2 C=3 rm /tmp/foo")
+        assertEquals("rm", r.atoms.single().program)
+        assertTrue(r.atoms.single().operands.contains("/tmp/foo"))
     }
 
     @Test fun `parse strips nohup prefix`() {
