@@ -47,7 +47,7 @@ object CommandParser {
 
     private class Overflow : Exception()
 
-    private val WRAPPER_PREFIXES = setOf("busybox", "toybox", "magisk", "nohup", "timeout", "stdbuf", "sudo")
+    private val WRAPPER_PREFIXES = setOf("busybox", "toybox", "magisk", "nohup", "timeout", "stdbuf", "sudo", "env")
     private val SHELL_PROGRAMS = setOf("sh", "bash", "ash", "dash", "mksh")
 
     /** 解析主入口。任何内部异常都归一为 truncated=true，绝不抛出。 */
@@ -250,16 +250,19 @@ object CommandParser {
         val words = tokens.toList()
 
         // 1) 程序名 basename + 前缀剥离（busybox/toybox/env/nohup/timeout/stdbuf/sudo）
+        // 路径类参数（PATH=/x、/usr/bin/env 等）含斜杠,要兼顾 basename 和赋值形态：
+        //  - 含 '='：原样保留(不让 /x 这种尾巴被 basename 误吞)
+        //  - 否则 basename
         var program = words.first().substringAfterLast('/')
         var consumed = 1
         var guardCount = 0
         while (program in WRAPPER_PREFIXES && consumed < words.size && guardCount++ < 8) {
-            var next = words[consumed].substringAfterLast('/')
+            var next = stripToName(words[consumed])
             consumed++
             // env 可能带 VAR=value 前缀参数：跳过赋值形态
             var assignGuard = 0
             while (next.indexOf('=') > 0 && consumed < words.size && assignGuard++ < 16) {
-                next = words[consumed].substringAfterLast('/')
+                next = stripToName(words[consumed])
                 consumed++
             }
             program = next
@@ -295,4 +298,12 @@ object CommandParser {
             )
         )
     }
+
+    /**
+     * 把一段 arg word 切到 basename 以便前缀剥离比对；
+     * 含 `=` 的赋值形态（如 env PATH=/x）原样保留——否则 PATH=/x 的尾巴 /x
+     * 会被 afterLast('/') 误切为 x,导致 env 程序名错位 + rm 命令丢失。
+     */
+    private fun stripToName(word: String): String =
+        if (word.indexOf('=') > 0) word else word.substringAfterLast('/')
 }
