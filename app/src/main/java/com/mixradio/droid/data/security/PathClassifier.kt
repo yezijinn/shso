@@ -37,7 +37,12 @@ object PathClassifier {
         return "/" + parts.joinToString("/")
     }
 
-    /** 分级：先精确豁免（SAFE 前缀）→ 警告前缀 → 危急前缀 → /data 兜底。 */
+    /**
+     * 分级：先精确豁免（SAFE 前缀）→ 警告前缀 → 危急前缀 → /data 兜底；
+     * 最后通配符基路径再**至少**提一级（批量操作比单文件危险得多）。
+     *
+     * 升级映射:SAFE→WARNING,WARNING→DANGEROUS,DANGEROUS/CRITICAL→CRITICAL（已达上限）。
+     */
     fun classify(rawPath: String): PathClass {
         val p = rawPath.trim()
         if (p.isEmpty()) return PathClass.WARNING
@@ -49,29 +54,25 @@ object PathClassifier {
         val n = normalize(p)
         if (n == "/") return PathClass.CRITICAL
 
-        // 通配符本身意味着批量操作：按基路径分级后至少提一级
+        // 通配符本身意味着批量操作：先按基路径分级，再统一提一级
         val hasGlob = p.contains('*') || p.contains('?')
 
-        // SAFE：用户存储 / App 工作区 / 临时目录
-        if (matchesPrefix(n, SAFE_PREFIXES)) return PathClass.SAFE
-
-        // WARNING：应用数据（删了丢数据但不破坏系统）
-        if (matchesPrefix(n, WARNING_PREFIXES)) return PathClass.WARNING
-
-        // CRITICAL：系统分区与虚拟文件系统
-        if (matchesPrefix(n, CRITICAL_PREFIXES) || n == "/init" || n.startsWith("/init.")) {
-            return PathClass.CRITICAL
+        val base = when {
+            matchesPrefix(n, SAFE_PREFIXES) -> PathClass.SAFE
+            matchesPrefix(n, WARNING_PREFIXES) -> PathClass.WARNING
+            matchesPrefix(n, CRITICAL_PREFIXES) || n == "/init" || n.startsWith("/init.") -> PathClass.CRITICAL
+            n == "/data" || n.startsWith("/data/") || matchesPrefix(n, DANGEROUS_PREFIXES) -> PathClass.DANGEROUS
+            else -> PathClass.WARNING
         }
 
-        // DANGEROUS：/data 整体（含 /data/adb 模块区）、持久配置分区
-        if (n == "/data" || n.startsWith("/data/") ||
-            matchesPrefix(n, DANGEROUS_PREFIXES)
-        ) {
-            return if (hasGlob) PathClass.CRITICAL else PathClass.DANGEROUS
-        }
+        return if (hasGlob) base.upgrade() else base
+    }
 
-        // 未知顶级路径
-        return PathClass.WARNING
+    /** 升级:SAFE→WARNING,WARNING→DANGEROUS,DANGEROUS/CRITICAL→CRITICAL。 */
+    private fun PathClass.upgrade(): PathClass = when (this) {
+        PathClass.SAFE -> PathClass.WARNING
+        PathClass.WARNING -> PathClass.DANGEROUS
+        PathClass.DANGEROUS, PathClass.CRITICAL -> PathClass.CRITICAL
     }
 
     private fun matchesPrefix(path: String, prefixes: Array<String>): Boolean =
