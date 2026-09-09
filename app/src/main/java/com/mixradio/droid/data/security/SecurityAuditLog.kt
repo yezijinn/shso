@@ -29,6 +29,7 @@ object SecurityAuditLog {
     private const val MAX_BYTES = 512 * 1024
     private const val KEEP_BYTES = 256 * 1024
     private const val TRIM_CHECK_EVERY = 24
+    const val MAX_TAIL_LINES = 2_000
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
@@ -126,19 +127,22 @@ object SecurityAuditLog {
 
     /** 读取日志尾部（用于设置页查看）。 */
     suspend fun readTail(maxLines: Int = 200): String = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        val safeMaxLines = boundedTailLines(maxLines)
         try {
             if (useRootLog()) {
-                val (code, out) = RootService.runCommandSync("tail -n $maxLines $ROOT_LOG_PATH", 10_000L)
+                val (code, out) = RootService.runCommandSync("tail -n $safeMaxLines $ROOT_LOG_PATH", 10_000L)
                 if (code == 0) out else "(读取失败 exit=$code)"
             } else {
                 val f = logFile()
                 if (!f.exists()) "(暂无审计记录)"
-                else f.readLines().takeLast(maxLines).joinToString("\n")
+                else f.readLines().takeLast(safeMaxLines).joinToString("\n")
             }
         } catch (e: Exception) {
             "(读取失败: ${e.message})"
         }
     }
+
+    fun boundedTailLines(maxLines: Int): Int = maxLines.coerceIn(1, MAX_TAIL_LINES)
 
     /** 清空审计日志。 */
     suspend fun clear(): Boolean = kotlinx.coroutines.withContext(Dispatchers.IO) {

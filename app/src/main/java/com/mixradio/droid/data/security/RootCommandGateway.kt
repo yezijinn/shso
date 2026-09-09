@@ -45,13 +45,27 @@ object RootCommandGateway {
     fun checkInteractiveHardRules(text: String): Verdict.Block? {
         val level = PolicyEngine.currentLevel()
         if (level <= SecurityLevels.AUDIT_ONLY) return null
-        return try {
-            when (val v = PolicyEngine.evaluate(text, CommandSource.USER_TERMINAL)) {
-                is Verdict.Block -> v
-                else -> null
-            }
-        } catch (_: Exception) {
-            null
+        return checkInteractiveHardRulesWith(text, PolicyEngine::evaluate)
+    }
+
+    fun checkInteractiveHardRulesWith(
+        text: String,
+        evaluate: (String, CommandSource) -> Verdict
+    ): Verdict.Block? = try {
+        when (val verdict = evaluate(text, CommandSource.USER_TERMINAL)) {
+            is Verdict.Block -> verdict
+            else -> null
         }
+    } catch (_: Exception) {
+        Verdict.Block(
+            listOf(
+                Finding(
+                    ruleId = "POLICY_ERROR",
+                    level = RiskLevel.CRITICAL,
+                    message = "策略引擎内部异常，已阻止交互输入（fail-closed）",
+                    snippet = text.take(200)
+                )
+            )
+        )
     }
 }

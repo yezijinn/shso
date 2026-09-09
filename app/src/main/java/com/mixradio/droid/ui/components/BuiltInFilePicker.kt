@@ -89,6 +89,10 @@ fun BuiltInFilePicker(
     emptyHint: String = "当前目录为空",
     /** 文件条目过滤（在列表生成阶段生效）；目录始终显示。为 null 时不过滤。 */
     fileFilter: ((FileItem) -> Boolean)? = null,
+    /** 仅目录模式：列表只显示文件夹、目录点击进入，不选择文件。用于「移动文件」目标选择。 */
+    directoryOnly: Boolean = false,
+    /** 仅目录模式下的确认回调，接收当前显示的目录路径；非仅目录模式为 null。 */
+    onDirectorySelected: ((String) -> Unit)? = null,
     onDismissRequest: () -> Unit,
     onFileSelected: (String) -> Unit
 ) {
@@ -144,23 +148,29 @@ fun BuiltInFilePicker(
         }
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(show, initialDirectory) {
+        if (!show) return@LaunchedEffect
         // 建目录与列目录无关，改为后台并行，不再串行阻塞列表首屏加载
         launch { RootFileManager.ensureShsoDir() }
+        currentDir = initialDirectory
         loadDirectory(initialDirectory)
     }
 
     // 与「文件」页共用同一过滤/排序逻辑与同一份偏好；
     // 额外的 fileFilter（如文本对比的「同后缀 + 排除自身」）在列表生成阶段直接剔除，
     // 不依赖后续回调，列表与计数天然一致。
-    val displayFileList = remember(fileList, appSettings.showHiddenFiles, appSettings.fileSortMode, fileFilter) {
+    val displayFileList = remember(fileList, appSettings.showHiddenFiles, appSettings.fileSortMode, fileFilter, directoryOnly) {
         val base = applyFileViewSettings(fileList, appSettings.showHiddenFiles, appSettings.fileSortMode)
-        if (fileFilter == null) base else base.filter { it.isDirectory || fileFilter.invoke(it) }
+        when {
+            directoryOnly -> base.filter { it.isDirectory }
+            fileFilter == null -> base
+            else -> base.filter { it.isDirectory || fileFilter.invoke(it) }
+        }
     }
     val listFontSize = appSettings.fileListFontSize.sp
     val listSecondaryFontSize = (appSettings.fileListFontSize - 5f).coerceAtLeast(8f).sp
 
-    val canConfirm = selectedFile != null
+    val canConfirm = if (directoryOnly) !isLoading else selectedFile != null
 
     Dialog(
         onDismissRequest = onDismissRequest,
@@ -340,9 +350,9 @@ fun BuiltInFilePicker(
                             } else {
                                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                                     itemsIndexed(displayFileList, key = { index, item -> "${item.path}_$index" }) { _, item ->
-                                        val isSelected = selectedFile?.path == item.path
+                                        val isSelected = !directoryOnly && selectedFile?.path == item.path
                                         // 注入了 fileFilter 时，可选项以过滤器为准（如对比只允许同后缀文件）
-                                        val isSupported = fileFilter?.invoke(item) ?: item.isSupportedExecutable
+                                        val isSupported = directoryOnly || (fileFilter?.invoke(item) ?: item.isSupportedExecutable)
 
                                         Column(modifier = Modifier.fillMaxWidth()) {
                                             Row(
@@ -355,7 +365,7 @@ fun BuiltInFilePicker(
                                                     .clickable {
                                                         if (item.isDirectory) {
                                                             loadDirectory(item.path)
-                                                        } else if (isSupported) {
+                                                        } else if (!directoryOnly && isSupported) {
                                                             selectedFile = if (isSelected) null else item
                                                         }
                                                     }
@@ -455,14 +465,18 @@ fun BuiltInFilePicker(
                             Spacer(modifier = Modifier.width(20.dp))
 
                             Text(
-                                text = "选定该文件",
+                                text = if (directoryOnly) "放在此处" else "选定该文件",
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (canConfirm) AuroraTokens.Accent else AuroraTokens.TextDisabled,
                                 modifier = Modifier
                                     .clickable(enabled = canConfirm) {
-                                        selectedFile?.let {
-                                            onFileSelected(it.path)
+if (directoryOnly) {
+                                            onDirectorySelected?.invoke(currentDir)
+                                        } else {
+                                            selectedFile?.let {
+                                                onFileSelected(it.path)
+                                            }
                                         }
                                     }
                                     .padding(horizontal = 6.dp, vertical = 8.dp)

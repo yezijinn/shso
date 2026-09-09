@@ -9,6 +9,28 @@ plugins {
     alias(libs.plugins.composeCompiler)
 }
 
+/**
+ * 签名密码读取优先级：
+ * 1. 环境变量：KEYSTORE_PASSWORD / KEY_ALIAS_PASSWORD（CI/CD / 生产构建推荐）
+ * 2. local.properties：signing.storePassword / signing.keyPassword（本地开发兜底，该文件已 .gitignore）
+ *
+ * 两处均未配置时主动抛异常，禁止静默降级到硬编码默认值。
+ */
+fun getSigningPassword(envKey: String, propKey: String): String =
+    System.getenv(envKey) ?: readLocalPropertiesProperty(propKey)
+        ?: error("签名密码未配置：请设置环境变量 $envKey 或在 local.properties 中配置 $propKey")
+
+fun readLocalPropertiesProperty(propKey: String): String? =
+    try {
+        val propFile = rootProject.file("local.properties")
+        if (!propFile.exists()) null
+        else propFile.readText().lines()
+            .filter { it.startsWith("$propKey=") }
+            .mapNotNull { it.substringAfter('=').trim() }
+            .firstOrNull()
+    } catch (_: Exception) { null }
+
+
 kotlin {
     // 等价原 module.kotlin-jvm-toolchain 约定插件：统一 Kotlin JVM Toolchain 21
     jvmToolchain(21)
@@ -45,11 +67,12 @@ android {
 
     signingConfigs {
         create("release") {
-            // 真实签名密钥位于本机 E 盘（与 build_apk.py 的 SIGNING 配置保持一致）
-            storeFile = file("E:/JinnKeyStores/Kernel.Extend/release.jks")
-            storePassword = "WE1A1xus0n9."
-            keyAlias = "kernel.extend"
-            keyPassword = "WE1A1xus0n9."
+            // 真实签名密钥位于全局凭据目录（与 GLOBAL/credentials/JinnKeyStores 保持一致）
+            storeFile = file("C:/AI_WORKSPACE/GLOBAL/credentials/JinnKeyStores/com.mixradio.droid/release.jks")
+            // 密码通过环境变量或 local.properties 读取，不再硬编码
+            storePassword = getSigningPassword("KEYSTORE_PASSWORD", "signing.storePassword")
+            keyAlias = "com.mixradio.droid"
+            keyPassword = getSigningPassword("KEY_ALIAS_PASSWORD", "signing.keyPassword")
             enableV1Signing = false
             enableV2Signing = true
             enableV3Signing = true

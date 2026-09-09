@@ -89,7 +89,7 @@ UI 层 100% 采用 AndroidX Compose Material 3 原生控件（`androidx.compose.
 ```
 
 - Windows 下推荐仓库内一键脚本：`python build_apk.py --skip-check`
-- Release 签名：本地 keystore（仓库外，V2+V3，alias=kernel.extend），debug buildType 复用 release 签名
+ - Release 签名：本地 keystore（仓库外，V2+V3，alias=com.mixradio.droid），debug buildType 复用 release 签名
 - `isMinifyEnabled=false`（当前未混淆）
 - packaging excludes 清理了 META-INF/kotlin/assets 冗余；ArtProfile 与 mergeAssets 任务被禁用
 
