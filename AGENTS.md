@@ -56,6 +56,8 @@ Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + 
 - 页面文案按需求用字号内联（如 section 标题 14sp、preference 主标题 body2、summary 用注释色）；行高统一 `heightIn(min = 48.dp)`；分隔线用 0.7dp 细线（`SurfaceHover.copy(0.6f)`）或纯零间距。
 - **自适应图标（Adaptive Icon）**：`AndroidManifest.xml` 的 `icon`/`roundIcon` 指向 `@mipmap/ic_launcher`（background + foreground 两层）；背景透明、前景为去白去黑后的彩色 PNG，缩进中心安全区（≤72dp）确保圆形/圆角矩形/水滴等 OEM mask 下完整显示，无需为不同形状单独出图。
 
+**后台长任务约束**：执行脚本、下载或编译等长任务时，`RootService.executeFile()` 启动 `ExecutionForegroundService`（`foregroundServiceType="dataSync"`）作为前台服务哨兵。实际 Process、stdin、日志、取消和状态仍由 `RootService` 管理；服务只负责持续通知、结束进程入口和任务结束后的自动停止。修改该链路时必须保持 `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_DATA_SYNC` 权限、非导出 Service 声明和低重要性通知渠道的一致性。
+
 ## 场景导航
 
 | 场景 | 阅读文档 |
@@ -70,7 +72,10 @@ Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + 
 ```bash
 ./gradlew :app:assembleDebug     # Debug APK
 ./gradlew :app:assembleRelease   # Release APK（输出在 app/build/outputs/apk/）
+./gradlew :app:testDebugUnitTest # Debug 单元测试
 ```
+
+**底部 DockBar 布局约束**：FilePage 与 SettingsPage 的 `Scaffold` 内容由 `innerPadding` 负责系统 inset；页面内容额外仅预留 `56.dp` 给底部 DockBar。禁止在这两个页面为此目的增加 `navigationBarsPadding()`，也不要删除 `FilePage` 列表外层 `weight(1f).fillMaxWidth().padding(bottom = 56.dp)` 的预留。
 
 ## 注意事项
 
