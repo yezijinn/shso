@@ -11,6 +11,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.time.Duration.Companion.milliseconds
 import java.util.concurrent.ConcurrentLinkedQueue
 
 object HyperCore {
@@ -84,7 +85,8 @@ $rootLine
         batchFlushJob?.cancel()
         batchFlushJob = scope.launch(Dispatchers.Main) {
             while (isActive && isTaskRunningProvider()) {
-                delay(16)
+                // 2026-09-09: delay(Long) → kotlin.time.Duration
+                delay(16.milliseconds)
                 if (logBatchQueue.isNotEmpty()) {
                     val sb = StringBuilder()
                     while (true) {
