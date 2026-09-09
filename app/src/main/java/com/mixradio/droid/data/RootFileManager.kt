@@ -8,6 +8,16 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 
+/** 移动文件时遇到目标同名项目时的处理策略 */
+enum class MoveDestinationConflict {
+    /** 覆盖替换：删除目标同名项后移动 */
+    OVERWRITE,
+    /** 自动改名：保留原目标，被移动文件改名为 name_new（保留扩展名前的原名） */
+    RENAME,
+    /** 同名不动：跳过该源，不移动此源（源留在原地） */
+    SKIP
+}
+
 object RootFileManager {
 
     const val DEFAULT_SHSO_DIR = "/data/adb/shso"
@@ -225,7 +235,11 @@ object RootFileManager {
         Pair(false, "重命名失败")
     }
 
-    suspend fun moveFile(sourcePath: String, destinationDirectory: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+suspend fun moveFile(
+        sourcePath: String,
+        destinationDirectory: String,
+        onConflict: MoveDestinationConflict = MoveDestinationConflict.OVERWRITE
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         fun invalidPath(path: String): Boolean = path.isEmpty() || path.contains("\\") ||
             path.contains("\n") || path.contains("\r") || path.contains("\u0000") ||
             path.split('/').any { it == ".." }
@@ -286,16 +300,48 @@ object RootFileManager {
         if (destinationType != 2) return@withContext Pair(false, "目标路径不是文件夹或不可访问")
 
         val destinationPath = if (destinationNormalized == "/") "/$sourceName" else "$destinationNormalized/$sourceName"
-        val destinationExists = localType(destinationPath) != 0 ||
-            (RootService.isRootGranted == true && rootType(destinationPath) != 0)
-        if (destinationExists) {
-            return@withContext Pair(false, "目标文件夹中已存在同名项目")
+
+        fun destExists(): Boolean =
+            localType(destinationPath) != 0 ||
+                (RootService.isRootGranted == true && rootType(destinationPath) != 0)
+
+        // 自动改名：在扩展名前插入 _new（file.txt → file_new.txt，无扩展名 → name_new）
+        fun renamedDestPath(): String {
+            val dot = sourceName.lastIndexOf('.')
+            val newName = if (dot > 0) "${sourceName.substring(0, dot)}_new${sourceName.substring(dot)}" else "${sourceName}_new"
+            return if (destinationNormalized == "/") "/$newName" else "$destinationNormalized/$newName"
         }
 
+        if (destExists()) {
+            when (onConflict) {
+                MoveDestinationConflict.OVERWRITE -> {
+                    // 先删除目标同名项（文件或目录树），再移动
+                    if (!delete(destinationPath).first) {
+                        return@withContext Pair(false, "无法覆盖目标同名项")
+                    }
+                }
+                MoveDestinationConflict.RENAME -> {
+                    // 原目标保留；换成 _new 路径。若 _new 也重名则失败。
+                    val renamed = renamedDestPath()
+                    val renamedExists = localType(renamed) != 0 ||
+                        (RootService.isRootGranted == true && rootType(renamed) != 0)
+                    if (renamedExists) {
+                        return@withContext Pair(false, "自动改名后的目标也已存在")
+                    }
+                }
+                MoveDestinationConflict.SKIP -> {
+                    return@withContext Pair(false, "目标文件夹中已存在同名项目（跳过）")
+                }
+            }
+        }
+
+        // 实际目标路径：OVERWRITE 用原名；RENAME 冲突时用 _new 名
+        val finalPath = if (destExists() && onConflict == MoveDestinationConflict.RENAME) renamedDestPath() else destinationPath
+
         try {
-            val destination = File(destinationPath)
-            if (source.renameTo(destination) &&
-                localType(sourcePath) == 0 && localType(destinationPath) == sourceType
+            val dest = File(finalPath)
+            if (source.renameTo(dest) &&
+                localType(sourcePath) == 0 && localType(finalPath) == sourceType
             ) {
                 return@withContext Pair(true, "移动成功")
             }
@@ -304,7 +350,7 @@ object RootFileManager {
 
         if (RootService.isRootGranted == true) {
             val escapedSource = RootService.escapeShellArg(sourcePath)
-            val escapedDestination = RootService.escapeShellArg(destinationPath)
+            val escapedDestination = RootService.escapeShellArg(finalPath)
             val (code, output) = RootService.runCommandSync(
                 "mv $escapedSource $escapedDestination && test ! -e $escapedSource && " +
                     if (sourceType == 2) "test -d $escapedDestination" else "test -f $escapedDestination"
@@ -314,6 +360,24 @@ object RootFileManager {
         }
 
         Pair(false, "移动失败")
+    }
+
+    /**
+     * 探测目标目录中是否已存在与源同名的项目（供 UI 在移动前弹出冲突决策）。
+     */
+    suspend fun moveDestinationCollides(sourcePath: String, destinationDirectory: String): Boolean = withContext(Dispatchers.IO) {
+        fun localExists(path: String): Boolean = try { File(path).exists() } catch (_: Exception) { false }
+        fun rootExists(path: String): Boolean {
+            val escaped = RootService.escapeShellArg(path)
+            val (code, output) = RootService.runCommandSync("test -e $escaped && echo yes")
+            return code == 0 && output.contains("yes")
+        }
+
+        val sourceName = File(sourcePath).name
+        if (sourceName.isEmpty() || sourceName == "." || sourceName == "..") return@withContext false
+        val destNorm = destinationDirectory.trimEnd('/').ifEmpty { "/" }
+        val destPath = if (destNorm == "/") "/$sourceName" else "$destNorm/$sourceName"
+        localExists(destPath) || (RootService.isRootGranted == true && rootExists(destPath))
     }
 
     suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {

@@ -73,6 +73,7 @@ import com.mixradio.droid.data.ArchiveExtractor
 import com.mixradio.droid.data.FileItem
 import com.mixradio.droid.data.INTERNAL_STORAGE_LABEL
 import com.mixradio.droid.data.INTERNAL_STORAGE_PATH
+import com.mixradio.droid.data.MoveDestinationConflict
 import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.displayPath
@@ -147,7 +148,10 @@ fun FilePage(
     var isExtracting by remember { mutableStateOf(false) }
     var isCopying by remember { mutableStateOf(false) }
     var showMoveDialog by remember { mutableStateOf(false) }
-    var moveSourcePath by remember { mutableStateOf<String?>(null) }
+    var moveFiles by remember { mutableStateOf<List<String>?>(null) }
+    var showConflictDialog by remember { mutableStateOf(false) }
+    var conflictTargets by remember { mutableStateOf<List<String>>(emptyList()) }
+    var conflictDestination by remember { mutableStateOf("") }
     var isMoving by remember { mutableStateOf(false) }
 
     // 多选模式状态：进入后单击文件=切换选中（仅文件，文件夹不参与）；长按文件弹批量菜单
@@ -194,6 +198,29 @@ fun FilePage(
                 // 用户手动点击「⟳」时给出明确反馈，避免「点了没反应」的错觉
                 if (showToast) feedbackMessage = "已刷新"
             }
+        }
+    }
+
+    // 按指定冲突策略执行冲突目标集移动，完成后退出多选态回到普通浏览
+    fun runMoveWithConflict(conflict: MoveDestinationConflict) {
+        val targets = conflictTargets
+        val destination = conflictDestination
+        if (targets.isEmpty() || destination.isEmpty()) return
+        conflictTargets = emptyList()
+        conflictDestination = ""
+        scope.launch {
+            isMoving = true
+            var ok = 0
+            var fail = 0
+            targets.forEach { sourcePath ->
+                val (success) = RootFileManager.moveFile(sourcePath, destination, onConflict = conflict)
+                if (success) ok++ else fail++
+            }
+            isMoving = false
+            feedbackMessage = if (fail == 0) "已移动 $ok 项" else "移动完成：$ok 成功 / $fail 失败"
+            selectedPaths.clear()
+            multiSelectMode = false
+            refresh()
         }
     }
 
@@ -829,7 +856,7 @@ fun FilePage(
 
                 // 拷贝：仅文件（文件夹不显示），复制为同级 _n 递增序号副本
                 if (!item.isDirectory) {
-                    ActionTextRow(if (isCopying) "正在拷贝…" else "拷贝", AuroraTokens.Text, enabled = !isCopying) {
+                    ActionTextRow(if (isCopying) "正在拷贝…" else "原地拷贝", AuroraTokens.Text, enabled = !isCopying) {
                         showActionDialog = false
                         scope.launch {
                             isCopying = true
@@ -847,7 +874,7 @@ fun FilePage(
 
                 ActionTextRow("移动文件", AuroraTokens.Accent) {
                     showActionDialog = false
-                    moveSourcePath = item.path
+                    moveFiles = listOf(item.path)
                     showMoveDialog = true
                 }
 
@@ -859,7 +886,7 @@ fun FilePage(
         }
     }
 
-    if (showMoveDialog && moveSourcePath != null) {
+    if (showMoveDialog && moveFiles != null) {
         BuiltInFilePicker(
             appSettings = appSettings,
             show = true,
@@ -871,24 +898,80 @@ fun FilePage(
             onDismissRequest = {
                 if (!isMoving) {
                     showMoveDialog = false
-                    moveSourcePath = null
+                    moveFiles = null
                 }
             },
             onFileSelected = {},
             onDirectorySelected = { destinationDirectory ->
-                moveSourcePath?.let { sourcePath ->
-                    showMoveDialog = false
-                    moveSourcePath = null
-                    scope.launch {
-                        isMoving = true
-                        val (success, message) = RootFileManager.moveFile(sourcePath, destinationDirectory)
+                val targets = moveFiles
+                if (targets.isNullOrEmpty()) return@BuiltInFilePicker
+                showMoveDialog = false
+                moveFiles = null
+                scope.launch {
+                    isMoving = true
+                    // 先探测是否存在同名冲突，有冲突则弹出决策框
+                    val conflicted = targets.any {
+                        RootFileManager.moveDestinationCollides(it, destinationDirectory)
+                    }
+                    if (conflicted) {
+                        conflictTargets = targets
+                        conflictDestination = destinationDirectory
                         isMoving = false
-                        feedbackMessage = message
-                        if (success) refresh()
+                        showConflictDialog = true
+                    } else {
+                        var ok = 0
+                        var fail = 0
+                        targets.forEach { sourcePath ->
+                            val (success) = RootFileManager.moveFile(sourcePath, destinationDirectory)
+                            if (success) ok++ else fail++
+                        }
+                        isMoving = false
+                        feedbackMessage = if (fail == 0) "已移动 $ok 项" else "移动完成：$ok 成功 / $fail 失败"
+                        // 移动完成后退出多选态并回到普通浏览
+                        selectedPaths.clear()
+                        multiSelectMode = false
+                        refresh()
                     }
                 }
             }
         )
+    }
+
+    if (showConflictDialog) {
+        AuroraWindowDialog(
+            show = true,
+            title = "目标存在同名项",
+            summary = "目标文件夹中存在同名文件或文件夹，请选择处理方式",
+            onDismissRequest = { showConflictDialog = false }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                ActionTextRow("覆盖替换", AuroraTokens.Error) {
+                    showConflictDialog = false
+                    runMoveWithConflict(MoveDestinationConflict.OVERWRITE)
+                }
+                ActionTextRow("自动改名", AuroraTokens.Accent) {
+                    showConflictDialog = false
+                    runMoveWithConflict(MoveDestinationConflict.RENAME)
+                }
+                ActionTextRow("同名不动", AuroraTokens.Text) {
+                    showConflictDialog = false
+                    runMoveWithConflict(MoveDestinationConflict.SKIP)
+                }
+                ActionTextRow("直接退出", AuroraTokens.TextDisabled) {
+                    showConflictDialog = false
+                    // 放弃移动，只退出多选态回到普通浏览
+                    conflictTargets = emptyList()
+                    conflictDestination = ""
+                    selectedPaths.clear()
+                    multiSelectMode = false
+                    feedbackMessage = "已放弃移动"
+                }
+            }
+        }
     }
 
     if (showRenameDialog && selectedItem != null) {
@@ -1334,6 +1417,19 @@ fun FilePage(
                     showBatchDialog = false
                     batchRenameInput = ""
                     showBatchRenameDialog = true
+                }
+
+                ActionTextRow("移动文件", AuroraTokens.Accent) {
+                    showBatchDialog = false
+                    moveFiles = selectedPaths.toList()
+                    showMoveDialog = true
+                }
+
+                ActionTextRow("退出多选模式", AuroraTokens.Text) {
+                    showBatchDialog = false
+                    selectedPaths.clear()
+                    multiSelectMode = false
+                    refresh()
                 }
             }
         }
