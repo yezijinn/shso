@@ -499,7 +499,7 @@ fun SettingsPage(
 
             AuroraArrowPreference(
                 title = "查看审计日志",
-                summary = "最近 50 条拦截 / 放行 / 脚本扫描记录",
+                summary = "最近50条拦截/放行/脚本扫描记录",
                 statusSwitch = false,
                 statusSwitchEnabled = false,
                 onClick = {
@@ -514,9 +514,9 @@ fun SettingsPage(
             AuroraArrowPreference(
                 title = if (guardInstalled) "守卫模块：已安装" else "安装 shso_guard 守卫模块",
                 summary = if (guardInstalled)
-                    "PATH 前置守卫目录，对 rm/dd/mkfs 等系统级命令做运行时拦截"
+                    "拦截 rm/dd/mkfs 等命令运行"
                 else
-                    "复制本 APP 内置模块到 /data/adb/modules/（需 ROOT）",
+                    "复制本 APP 内置模块到 /data/adb/modules/",
                 statusSwitch = guardInstalled,
                 statusSwitchEnabled = false,
                 onClick = {

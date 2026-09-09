@@ -77,6 +77,7 @@ import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.displayPath
 import com.mixradio.droid.ui.components.BookmarksDialog
+import com.mixradio.droid.ui.components.BuiltInFilePicker
 import com.mixradio.droid.ui.components.ExecuteConfirmDialog
 import com.mixradio.droid.ui.components.FileListSettingsDialog
 import com.mixradio.droid.ui.components.FileShortcutButton
@@ -145,6 +146,9 @@ fun FilePage(
     var extractTargetItem by remember { mutableStateOf<FileItem?>(null) }
     var isExtracting by remember { mutableStateOf(false) }
     var isCopying by remember { mutableStateOf(false) }
+    var showMoveDialog by remember { mutableStateOf(false) }
+    var moveSourcePath by remember { mutableStateOf<String?>(null) }
+    var isMoving by remember { mutableStateOf(false) }
 
     // 多选模式状态：进入后单击文件=切换选中（仅文件，文件夹不参与）；长按文件弹批量菜单
     var multiSelectMode by remember { mutableStateOf(false) }
@@ -841,12 +845,50 @@ fun FilePage(
                     }
                 }
 
+                ActionTextRow("移动文件", AuroraTokens.Accent) {
+                    showActionDialog = false
+                    moveSourcePath = item.path
+                    showMoveDialog = true
+                }
+
                 ActionTextRow("删除", AuroraTokens.Error) {
                     showActionDialog = false
                     showDeleteDialog = true
                 }
             }
         }
+    }
+
+    if (showMoveDialog && moveSourcePath != null) {
+        BuiltInFilePicker(
+            appSettings = appSettings,
+            show = true,
+            initialDirectory = currentDirectory,
+            titleText = "移动文件",
+            subtitleText = "选择目标文件夹",
+            emptyHint = "当前目录没有子文件夹",
+            directoryOnly = true,
+            onDismissRequest = {
+                if (!isMoving) {
+                    showMoveDialog = false
+                    moveSourcePath = null
+                }
+            },
+            onFileSelected = {},
+            onDirectorySelected = { destinationDirectory ->
+                moveSourcePath?.let { sourcePath ->
+                    showMoveDialog = false
+                    moveSourcePath = null
+                    scope.launch {
+                        isMoving = true
+                        val (success, message) = RootFileManager.moveFile(sourcePath, destinationDirectory)
+                        isMoving = false
+                        feedbackMessage = message
+                        if (success) refresh()
+                    }
+                }
+            }
+        )
     }
 
     if (showRenameDialog && selectedItem != null) {
@@ -1272,7 +1314,7 @@ fun FilePage(
                     }
                 }
 
-                ActionTextRow("拷贝", AuroraTokens.Text) {
+                ActionTextRow("原地拷贝", AuroraTokens.Text) {
                     showBatchDialog = false
                     scope.launch {
                         var ok = 0
@@ -1450,6 +1492,8 @@ fun FilePage(
     ExecuteConfirmDialog(
         show = pendingExecuteItem != null,
         fileItem = pendingExecuteItem,
+        // 批次6 修复：实参传当前档位，之前默认 STANDARD=2 导致档位 0/1 仍扫描 + 档位 3 不显示默认非 Root
+        securityLevel = RootService.currentSecurityLevel(),
         onDismiss = { pendingExecuteItem = null },
         onConfirm = {
             val target = pendingExecuteItem?.path

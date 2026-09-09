@@ -27,6 +27,7 @@ import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 import com.mixradio.droid.data.security.CommandSource
 import com.mixradio.droid.data.security.GuardModuleInstaller
+import com.mixradio.droid.data.security.GuardPathPolicy
 import com.mixradio.droid.data.security.PolicyEngine
 import com.mixradio.droid.data.security.RiskLevel
 import com.mixradio.droid.data.security.RootCommandGateway
@@ -228,12 +229,13 @@ object RootService {
     /** 当前安全档位（AppSettings 未初始化时保守取标准防护）。 */
     fun currentSecurityLevel(): Int = appSettings?.securityLevel ?: SecurityLevels.STANDARD
 
-    /** 档位 ≥2 且守卫模块就绪时，返回 PATH 前置片段（守卫目录优先于系统命令），否则空串。 */
-    fun guardPathPrefix(): String {
-        if (currentSecurityLevel() < SecurityLevels.STANDARD) return ""
-        return if (GuardModuleInstaller.guardBinDirReady()) {
-            "export PATH=${GuardModuleInstaller.GUARD_BIN_DIR}:/sbin:/system/sbin:/system/bin:/system/xbin:\$PATH && "
-        } else ""
+    /** 返回 Root 执行的守卫 PATH；受保护档位下守卫不可用时返回 null。 */
+    fun guardPathPrefix(): String? {
+        val level = currentSecurityLevel()
+        return GuardPathPolicy.prefixOrNull(
+            securityLevel = level,
+            guardReady = level < SecurityLevels.STANDARD || GuardModuleInstaller.guardBinDirReady()
+        )
     }
 
     /**
@@ -270,10 +272,6 @@ object RootService {
      * - 档位 ≥2 且守卫模块就绪时 PATH 前置 guard 目录（运行时拦截 rm/dd/mkfs 等）。
      */
     fun executeFile(filePath: String, runAsRoot: Boolean? = null, riskApproved: Boolean = false) {
-        if (isTaskRunning) {
-            killCurrentProcess()
-        }
-
         val file = File(filePath)
         val fileName = file.name
         val parentDir = file.parent ?: "/data/adb/shso"
@@ -285,8 +283,23 @@ object RootService {
             return
         }
 
-        // ── 安全门控：脚本内容扫描（自动执行等未经确认框的链路） ──
         val level = currentSecurityLevel()
+        val useRoot = runAsRoot ?: (level < SecurityLevels.MAXIMUM)
+        val guardPrefix = if (useRoot) guardPathPrefix() else ""
+        if (guardPrefix == null) {
+            SecurityAuditLog.log(
+                CommandSource.SCRIPT_FILE, "BLOCK", "GUARD_UNAVAILABLE",
+                RiskLevel.CRITICAL, filePath
+            )
+            appendOutputDirect("\n[shso 安全拦截] 守卫模块不可用，已拒绝 Root 执行\n")
+            return
+        }
+
+        if (isTaskRunning) {
+            killCurrentProcess()
+        }
+
+        // ── 安全门控：脚本内容扫描（自动执行等未经确认框的链路） ──
         if (level >= SecurityLevels.STANDARD && !riskApproved && isSh) {
             val (content, note) = ScriptAuditor.readScriptContent(filePath)
             if (content != null) {
@@ -313,9 +326,6 @@ object RootService {
                 return
             }
         }
-
-        // ── 执行身份：档位 3 默认非 Root；确认框可显式指定 ──
-        val useRoot = runAsRoot ?: (level < SecurityLevels.MAXIMUM)
 
         lastExecutedPath = filePath
 
@@ -351,8 +361,6 @@ object RootService {
             try {
                 val escapedParent = escapeShellArg(parentDir)
                 val escapedFile = escapeShellArg(filePath)
-                val guardPrefix = guardPathPrefix()
-
                 val execCmd = if (useRoot) {
                     if (isSh) {
                         // .sh：一律经 sh 运行，不给用户文件加执行位
@@ -513,7 +521,18 @@ object RootService {
                     withContext(Dispatchers.Main) {
                         appendOutputDirect("> $text\n")
                     }
-                    val guardedCmd = guardPathPrefix() + text
+                    val guardPrefix = guardPathPrefix()
+                    if (guardPrefix == null) {
+                        SecurityAuditLog.log(
+                            CommandSource.USER_TERMINAL, "BLOCK", "GUARD_UNAVAILABLE",
+                            RiskLevel.CRITICAL, text
+                        )
+                        withContext(Dispatchers.Main) {
+                            appendOutputDirect("\n[shso 安全拦截] 守卫模块不可用，已拒绝 Root 命令\n")
+                        }
+                        return@launch
+                    }
+                    val guardedCmd = guardPrefix + text
                     val (exitCode, output) = runCommandSync(guardedCmd)
                     SecurityAuditLog.log(
                         CommandSource.USER_TERMINAL, "ALLOW", null, RiskLevel.SAFE, text, exitCode = exitCode
