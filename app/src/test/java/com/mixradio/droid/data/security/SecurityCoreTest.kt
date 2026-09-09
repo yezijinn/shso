@@ -9,6 +9,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 /**
  * JVM 单元测试覆盖安全核心纯逻辑（不依赖 Android Context/ROOT），用于在无 ROOT 真机环境下
@@ -17,6 +18,74 @@ import org.junit.Test
  * 配套补救：docs/安全改造任务清单.md 「ROOT 链路 / 拦截逻辑」区域说明。
  */
 class SecurityCoreTest {
+
+    // ============================================================================
+    // GuardPathPolicy: deterministic Root PATH policy
+    // ============================================================================
+
+    @Test fun `guard path is empty below standard`() {
+        assertEquals("", GuardPathPolicy.prefixOrNull(SecurityLevels.AUDIT_ONLY, guardReady = false))
+    }
+
+    @Test fun `guard path is unavailable at standard when guard is not ready`() {
+        assertNull(GuardPathPolicy.prefixOrNull(SecurityLevels.STANDARD, guardReady = false))
+        assertNull(GuardPathPolicy.prefixOrNull(SecurityLevels.MAXIMUM, guardReady = false))
+    }
+
+    @Test fun `guard path uses only guard and fixed trusted system directories`() {
+        val prefix = GuardPathPolicy.prefixOrNull(SecurityLevels.STANDARD, guardReady = true)
+
+        assertEquals(
+            "export PATH=/data/adb/modules/shso_guard/guard:/sbin:/system/sbin:/system/bin:/system/xbin && ",
+            prefix
+        )
+        assertFalse(prefix!!.contains("\$PATH"))
+    }
+
+    // ============================================================================
+    // GuardModuleInstaller: archive safety
+    // ============================================================================
+
+    @Test fun `archive entry validation rejects escaping and malformed names`() {
+        val staging = File("build/test-guard-staging").canonicalFile
+        assertNotNull(GuardModuleInstaller.validateArchiveEntry(staging, "guard/rm"))
+        for (name in listOf("/module.prop", "../outside", "guard/../../outside", "guard\\rm", "", "guard//rm", "guard/./rm")) {
+            assertNull("expected rejection for $name", GuardModuleInstaller.validateArchiveEntry(staging, name))
+        }
+    }
+
+    @Test fun `archive contract requires entries present in shso guard asset`() {
+        val names = listOf(
+            "module.prop", "policy.conf", "guard/common.sh", "guard/rm", "guard/rmdir",
+            "guard/wipe", "guard/dd", "guard/fastboot", "guard/truncate", "guard/shred",
+            "guard/make_f2fs", "guard/mke2fs", "guard/mkfs.ext4", "guard/mkfs.f2fs", "guard/mkfs.vfat"
+        )
+        assertTrue(GuardModuleInstaller.hasRequiredArchiveEntries(names))
+        assertFalse(GuardModuleInstaller.hasRequiredArchiveEntries(names - "guard/mkfs.vfat"))
+    }
+
+    // ============================================================================
+    // SecurityAuditLog: bounded tail input
+    // ============================================================================
+
+    @Test fun `tail line limit is always positive and finite`() {
+        assertEquals(1, SecurityAuditLog.boundedTailLines(0))
+        assertEquals(1, SecurityAuditLog.boundedTailLines(-100))
+        assertEquals(SecurityAuditLog.MAX_TAIL_LINES, SecurityAuditLog.boundedTailLines(Int.MAX_VALUE))
+    }
+
+    // ============================================================================
+    // RootCommandGateway: fail closed on policy exceptions
+    // ============================================================================
+
+    @Test fun `interactive hard rule policy exception blocks critically`() {
+        val verdict = RootCommandGateway.checkInteractiveHardRulesWith("echo test") { _, _ ->
+            error("policy unavailable")
+        }
+        assertNotNull(verdict)
+        assertTrue(verdict!!.findings.any { it.ruleId == "POLICY_ERROR" })
+        assertEquals(RiskLevel.CRITICAL, verdict.findings.single().level)
+    }
 
     // ============================================================================
     // SecurityModels

@@ -17,7 +17,7 @@ shso 一键编译脚本
     - JDK 17      : C:\\Program Files\\Eclipse Adoptium\\jdk-17.0.20+8   （运行 Gradle）
     - Android SDK : C:\\Android\\sdk                                     （platforms;android-37.0 / build-tools;37.0.0）
     - 原生控件    : 100% 采用 AndroidX Compose Material 3 原生控件（自包含工程，无仓库外 UI 组件库）
-    - 签名密钥    : 本地 keystore（仓库外，alias: kernel.extend，V2+V3）
+     - 签名密钥    : 本地 keystore（仓库外，alias: com.mixradio.droid，V2+V3）
 
 作者：Jinn
 """
@@ -57,8 +57,8 @@ ANDROID_SDK = Path(r"C:\Android\sdk")
 
 # 签名配置（与 app/build.gradle.kts 保持一致）
 SIGNING = {
-    "keystore": Path(r"E:\JinnKeyStores\Kernel.Extend\release.jks"),
-    "alias": "kernel.extend",
+    "keystore": Path(r"C:\AI_WORKSPACE\GLOBAL\credentials\JinnKeyStores\com.mixradio.droid\release.jks"),
+    "alias": "com.mixradio.droid",
     "storepass": "WE1A1xus0n9.",
     "keypass": "WE1A1xus0n9.",
 }

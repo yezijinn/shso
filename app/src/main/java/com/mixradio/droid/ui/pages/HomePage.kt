@@ -507,6 +507,8 @@ fun HomePage(
     ExecuteConfirmDialog(
         show = pendingExecutePath != null,
         fileItem = execItem,
+        // 批次6 修复：实参传当前档位，与 FilePage 一致（避免默认值 STANDARD=2 覆盖用户实际档位）
+        securityLevel = RootService.currentSecurityLevel(),
         onDismiss = { pendingExecutePath = null },
         onConfirm = {
             val p = pendingExecutePath

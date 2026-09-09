@@ -27,6 +27,38 @@ object GuardModuleInstaller {
     const val MODULE_DIR = "/data/adb/modules/shso_guard"
     const val GUARD_BIN_DIR = "$MODULE_DIR/guard"
     private const val ASSET_ZIP = "shso_guard.zip"
+    private val REQUIRED_ARCHIVE_ENTRIES = setOf(
+        "module.prop",
+        "policy.conf",
+        "guard/common.sh",
+        "guard/rm",
+        "guard/rmdir",
+        "guard/wipe",
+        "guard/dd",
+        "guard/fastboot",
+        "guard/truncate",
+        "guard/shred",
+        "guard/make_f2fs",
+        "guard/mke2fs",
+        "guard/mkfs.ext4",
+        "guard/mkfs.f2fs",
+        "guard/mkfs.vfat"
+    )
+
+    fun validateArchiveEntry(stagingDir: File, entryName: String): File? {
+        if (entryName.isEmpty() || entryName.contains('\\') || entryName.contains('\u0000') ||
+            entryName.startsWith('/') || entryName.matches(Regex("^[A-Za-z]:.*"))
+        ) return null
+        val components = entryName.split('/')
+        if (components.any { it.isEmpty() || it == "." || it == ".." }) return null
+        val staging = stagingDir.canonicalFile
+        val target = File(staging, entryName).canonicalFile
+        val stagingPath = staging.path + File.separator
+        return if (target.path.startsWith(stagingPath)) target else null
+    }
+
+    fun hasRequiredArchiveEntries(entryNames: Collection<String>): Boolean =
+        entryNames.containsAll(REQUIRED_ARCHIVE_ENTRIES)
 
     sealed class GuardStatus {
         data object NotInstalled : GuardStatus()
@@ -93,19 +125,22 @@ object GuardModuleInstaller {
 
             context.assets.open(ASSET_ZIP).use { asset ->
                 ZipInputStream(asset.buffered()).use { zis ->
+                    val archiveEntries = mutableSetOf<String>()
                     while (true) {
                         val entry = zis.nextEntry ?: break
                         if (entry.isDirectory) continue
-                        val name = entry.name.removePrefix("./").removePrefix("/")
-                        val target = File(moduleDir, name)
+                        val target = validateArchiveEntry(moduleDir, entry.name)
+                            ?: return@withContext Pair(false, "安装包含非法路径: ${entry.name.take(120)}")
+                        val name = target.relativeTo(moduleDir.canonicalFile).path.replace(File.separatorChar, '/')
+                        archiveEntries += name
                         target.parentFile?.mkdirs()
                         target.outputStream().use { zis.copyTo(it) }
                         zis.closeEntry()
                     }
+                    if (!hasRequiredArchiveEntries(archiveEntries)) {
+                        return@withContext Pair(false, "安装包缺少守卫模块必需文件（打包异常）")
+                    }
                 }
-            }
-            if (!File(moduleDir, "module.prop").exists()) {
-                return@withContext Pair(false, "安装包内缺少 module.prop（打包异常）")
             }
 
             // 2) root 复制安装（覆盖旧安装用绝对路径 rm 绕过守卫自保护）

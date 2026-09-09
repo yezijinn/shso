@@ -1,9 +1,7 @@
-// Copyright 2026, KernelEX contributors
-// SPDX-License-Identifier: Apache-2.0
 
 @file:Suppress("UnstableApiUsage")
 
-rootProject.name = "KernelEX"
+rootProject.name = "shso"
 
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
