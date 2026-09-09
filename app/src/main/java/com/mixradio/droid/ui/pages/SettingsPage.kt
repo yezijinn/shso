@@ -314,15 +314,20 @@ fun SettingsPage(
         }
     ) { innerPadding ->
         // 全部条目单列表直排：不分组、无分割线、无空行
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(0.dp),
-            horizontalAlignment = Alignment.Start
+                .padding(bottom = 56.dp)
         ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
+                horizontalAlignment = Alignment.Start
+            ) {
             AuroraArrowPreference(
                 title = "存储空间",
                 summary = "允许读取外部存储,所有文件访问权限",
@@ -539,7 +544,7 @@ fun SettingsPage(
                 }
             )
 
-            Spacer(modifier = Modifier.height(70.dp))
+            }
         }
     }
 

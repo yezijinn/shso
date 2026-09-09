@@ -10,6 +10,8 @@
         tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:name="com.mixradio.droid.ShsoApplication"
@@ -32,6 +34,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 命令执行的前台保活服务：切后台后维持进程前台优先级，长脚本/下载/编译可持续运行 -->
+        <service
+            android:name="com.mixradio.droid.data.ExecutionForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- 非 ROOT 安装 APK 用：向系统安装器以内容 URI 共享 APK 文件 -->
         <provider
