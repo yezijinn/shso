@@ -56,6 +56,8 @@ A graphical execution tool for scripts / native binaries running in the Android 
 - Page text uses inline font sizes per requirement (e.g. section title 14sp, preference main title body2, summary in comment color); uniform row height `heightIn(min = 48.dp)`; dividers are 0.7dp thin lines (`SurfaceHover.copy(0.6f)`) or pure zero-gap.
 - **Adaptive Icon**: `AndroidManifest.xml` `icon` / `roundIcon` point to `@mipmap/ic_launcher` (background + foreground layers); transparent background, foreground is a de-white / de-black colored PNG indented into the center safe zone (≤72dp) to display fully under circular / rounded-rect / teardrop OEM masks; no need to produce separate images per shape.
 
+**Background task constraint**: Long-running scripts, downloads, and builds start `ExecutionForegroundService` (`foregroundServiceType="dataSync"`) from `RootService.executeFile()` as a foreground-service sentinel. `RootService` still owns the actual Process, stdin, logs, cancellation, and task state; the service only owns the ongoing notification, the kill-process action, and self-stopping after completion. Changes to this path must preserve the `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_DATA_SYNC` permissions, the non-exported service declaration, and the low-importance notification channel.
+
 ## Scenario Navigation
 
 | Scenario | Read doc |
@@ -70,7 +72,10 @@ A graphical execution tool for scripts / native binaries running in the Android 
 ```bash
 ./gradlew :app:assembleDebug     # Debug APK
 ./gradlew :app:assembleRelease   # Release APK (output in app/build/outputs/apk/)
+./gradlew :app:testDebugUnitTest # Debug unit tests
 ```
+
+**Bottom DockBar layout constraint**: `innerPadding` on the `Scaffold` content of FilePage and SettingsPage owns system insets; page content reserves only an additional `56.dp` for the bottom DockBar. Do not add `navigationBarsPadding()` for this purpose, and do not remove the FilePage list wrapper's `weight(1f).fillMaxWidth().padding(bottom = 56.dp)` reservation.
 
 ## Notes
 

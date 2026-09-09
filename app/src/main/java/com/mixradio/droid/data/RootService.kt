@@ -340,6 +340,15 @@ object RootService {
         taskStartTime = System.currentTimeMillis()
         lastExitCode = null
 
+        // 拉起前台保活服务：切到后台后维持进程前台优先级，长脚本/下载/编译可持续运行。
+        // 服务自行轮询 isTaskRunning，任务结束（完成/结束/重启）后自动 stopForeground+stopSelf。
+        try {
+            com.mixradio.droid.ShsoApplication.appContext.let { ctx ->
+                ExecutionForegroundService.start(ctx)
+            }
+        } catch (_: Exception) {
+        }
+
         if (showShso) {
             appendOutputDirect(HyperCore.generateTaskHeader(fileName, filePath, parentDir, showHyperCore))
         }
