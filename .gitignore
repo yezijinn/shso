@@ -16,9 +16,9 @@ local.properties
 build/
 app/build/
 *.apk
+# Keystore files (all variants)
 *.jks
 *.keystore
-KernelEX.jks
 .tmp/
 __pycache__/
 .kotlin/
