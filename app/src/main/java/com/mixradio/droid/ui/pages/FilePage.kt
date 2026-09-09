@@ -27,7 +27,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 
@@ -47,6 +46,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -88,7 +88,6 @@ import com.mixradio.droid.ui.components.applyFileViewSettings
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraTokens
 import com.mixradio.droid.ui.theme.AuroraWindowDialog
-import com.mixradio.droid.ui.theme.auroraFilledButton
 import com.mixradio.droid.ui.theme.auroraTextFieldColors
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
@@ -1620,9 +1619,13 @@ private fun ListScrollBar(
     var dragFrac by remember { mutableStateOf(0f) }
     val itemCountState = rememberUpdatedState(itemCount)
 
+    // 首可见项下标随滚动高频变化，用 derivedStateOf 隔离组合主体读取
+    val firstVisibleIndex by remember(listState) {
+        derivedStateOf { listState.firstVisibleItemIndex }
+    }
+
     val frac = if (dragging) dragFrac else (
-        if (itemCount <= 1) 0f
-        else listState.firstVisibleItemIndex.toFloat() / (itemCount - 1).coerceAtLeast(1)
+        firstVisibleIndex.toFloat() / (itemCount - 1).coerceAtLeast(1)
     ).coerceIn(0f, 1f)
     val maxTop = (trackHeight - thumbHPx).coerceAtLeast(0f)
     val topPx = (frac * maxTop).coerceIn(0f, maxTop)
