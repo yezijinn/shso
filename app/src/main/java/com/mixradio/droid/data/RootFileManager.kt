@@ -225,6 +225,97 @@ object RootFileManager {
         Pair(false, "重命名失败")
     }
 
+    suspend fun moveFile(sourcePath: String, destinationDirectory: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        fun invalidPath(path: String): Boolean = path.isEmpty() || path.contains("\\") ||
+            path.contains("\n") || path.contains("\r") || path.contains("\u0000") ||
+            path.split('/').any { it == ".." }
+
+        if (invalidPath(sourcePath) || invalidPath(destinationDirectory)) {
+            return@withContext Pair(false, "路径包含非法字符")
+        }
+
+        val source = File(sourcePath)
+        val sourceName = source.name
+        if (sourceName.isEmpty() || sourceName == "." || sourceName == "..") {
+            return@withContext Pair(false, "源文件名无效")
+        }
+
+        val sourceNormalized = sourcePath.trimEnd('/').ifEmpty { "/" }
+        val destinationNormalized = destinationDirectory.trimEnd('/').ifEmpty { "/" }
+        if (sourceNormalized == destinationNormalized) {
+            return@withContext Pair(false, "目标目录不能与源路径相同")
+        }
+        fun localType(path: String): Int = try {
+            val file = File(path)
+            when {
+                file.isDirectory -> 2
+                file.isFile -> 1
+                file.exists() -> 3
+                else -> 0
+            }
+        } catch (_: Exception) {
+            0
+        }
+
+        fun rootType(path: String): Int {
+            val escaped = RootService.escapeShellArg(path)
+            val (code, output) = RootService.runCommandSync(
+                "if [ -d $escaped ]; then echo dir; elif [ -f $escaped ]; then echo file; elif [ -e $escaped ]; then echo other; fi"
+            )
+            if (code != 0) return 0
+            return when (output.trim()) {
+                "dir" -> 2
+                "file" -> 1
+                "other" -> 3
+                else -> 0
+            }
+        }
+
+        val sourceType = localType(sourcePath).let { local ->
+            if (local != 0) local else if (RootService.isRootGranted == true) rootType(sourcePath) else 0
+        }
+        if (sourceType == 0) return@withContext Pair(false, "源文件不存在或不可访问")
+        if (sourceType == 3) return@withContext Pair(false, "源路径不是普通文件或文件夹")
+        if (sourceType == 2 && destinationNormalized.startsWith("$sourceNormalized/")) {
+            return@withContext Pair(false, "不能将文件夹移动到自身或其子目录")
+        }
+
+        val destinationType = localType(destinationDirectory).let { local ->
+            if (local != 0) local else if (RootService.isRootGranted == true) rootType(destinationDirectory) else 0
+        }
+        if (destinationType != 2) return@withContext Pair(false, "目标路径不是文件夹或不可访问")
+
+        val destinationPath = if (destinationNormalized == "/") "/$sourceName" else "$destinationNormalized/$sourceName"
+        val destinationExists = localType(destinationPath) != 0 ||
+            (RootService.isRootGranted == true && rootType(destinationPath) != 0)
+        if (destinationExists) {
+            return@withContext Pair(false, "目标文件夹中已存在同名项目")
+        }
+
+        try {
+            val destination = File(destinationPath)
+            if (source.renameTo(destination) &&
+                localType(sourcePath) == 0 && localType(destinationPath) == sourceType
+            ) {
+                return@withContext Pair(true, "移动成功")
+            }
+        } catch (_: Exception) {
+        }
+
+        if (RootService.isRootGranted == true) {
+            val escapedSource = RootService.escapeShellArg(sourcePath)
+            val escapedDestination = RootService.escapeShellArg(destinationPath)
+            val (code, output) = RootService.runCommandSync(
+                "mv $escapedSource $escapedDestination && test ! -e $escapedSource && " +
+                    if (sourceType == 2) "test -d $escapedDestination" else "test -f $escapedDestination"
+            )
+            if (code == 0) return@withContext Pair(true, "移动成功")
+            if (output.isNotBlank()) return@withContext Pair(false, "移动失败: ${output.trim()}")
+        }
+
+        Pair(false, "移动失败")
+    }
+
     suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         // ROOT 已授权时优先用 su 删除（可操作受保护/系统路径）；
         // 未授权或 su 失败时回退标准 File API（授予「所有文件访问」后可操作 /sdcard）。
