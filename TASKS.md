@@ -25,8 +25,15 @@
   - 验证：`./gradlew.bat :app:testDebugUnitTest` 与 `./gradlew.bat :app:assembleDebug` 均 `BUILD SUCCESSFUL`；Kotlin LSP 不可用，未操作设备。
 
 ### 3. 文件浏览与列表渲染
-- [/] 优化目录加载、排序过滤与文件列表渲染成本
+- [x] 优化目录加载、排序过滤与文件列表渲染成本
   - 前置条件：完成性能基线审计并只处理确认的 I/O、分配或重组热点。
+  - 变更（均为已确认热点，未引入分页/缓存等推测性架构）：
+    - `FileListViewSettings.kt`：`applyFileViewSettings` 的名称排序键改为排序前一次性预计算（O(N) 次 `lowercase`），替代比较器内逐次求值（原实现每次比较都新建临时字符串，总分配量 O(N log N)）；目录/文件分组排序抽为私有助手 `sortedForView`。
+    - `FilePage.kt`：`displayFileList` 从 `remember` 组合期同步计算改为状态 + `Dispatchers.Default` 后台计算，组合期不再做 O(N log N) 排序；`refresh()` 改为先算完再连续写 `fileList`/`displayFileList`（两次写入之间无挂起点，不产生「新目录列表 + 旧排序结果」的中间帧）；新增视图偏好（隐藏文件/排序）变更时的后台重算 effect。
+    - `RootFileManager.kt`：`listFiles` 移除「目录在前 + 名称升序」的重复排序——其结果必被 UI 层 `applyFileViewSettings` 覆盖，且比较器内同样存在逐次 `lowercase`；仅保留 `distinctBy` 去重，并删除因此不再使用的 `Locale` 导入。
+  - 新增测试：`app/src/test/java/com/mixradio/droid/ui/components/FileListViewSettingsTest.kt`（6 例）锁定「目录恒在前、名称/时间升/降序、隐藏文件过滤、空输入」契约，防止本次重构改变行为。
+  - 验证：`./gradlew.bat :app:testDebugUnitTest` → **90 tests / 0 failures**；`./gradlew.bat :app:assembleDebug` → `BUILD SUCCESSFUL`；Debug APK 已安装至 BIYLBAFQQSS8DA69，uiautomator 核验文件页列表正常渲染（目录在前、名称不区分大小写升序）、进入 `Download` 子目录刷新正常、进程存活无异常。启动未受影响（`HorizontalPager` 无 `beyondViewportPageCount`，启动不组合文件页）。
+  - 契约说明：`RootFileManager.listFiles` 现返回「去重、无序」结果，展示顺序一律由 UI 层决定；4 处调用方或自行排序、或仅取名称集合，行为不变。
 
 ### 4. 终端输出与长任务界面
 - [ ] 优化终端日志吞吐、批量刷新与长任务 UI 更新频率
