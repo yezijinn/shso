@@ -495,6 +495,18 @@ fun SettingsPage(
                 onClick = {
                     val next = (appSettings.securityLevel + 1) % 4
                     appSettings.updateSecurityLevel(next)
+                    // ── 档位即时生效 ──
+                    // ① 失效「守卫就绪」缓存，避免 60s TTL 内仍用旧判定；
+                    // ② 切到受保护档位（≥2）时确保守卫已安装（未装则用内置 zip 静默安装）；
+                    // ③ 把档位同步为守卫 policy.conf 的 mode（0→off / 1→log / 2,3→enforce），
+                    //    否则会出现「App 说标准防护、模块实际 mode=off」的口径不一致。
+                    GuardModuleInstaller.invalidateReadyCache()
+                    scope.launch {
+                        if (GuardModuleInstaller.requiresRuntimeGuard(next)) {
+                            if (GuardModuleInstaller.ensureInstalled(context)) guardInstalled = true
+                        }
+                        GuardModuleInstaller.syncPolicyMode(next)
+                    }
                     val tip = when (next) {
                         AppSettings.SECURITY_OFF -> "已关闭：不审查 / 不拦截 / 不审计"
                         AppSettings.SECURITY_AUDIT_ONLY -> "审计：仅留痕，不拦截命令"
