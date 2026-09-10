@@ -166,6 +166,13 @@ private fun TextEditorDialogContent(
 
     val stats by remember { derivedStateOf { TextStatistics.compute(contentValue.text) } }
 
+    fun replaceEditorText(newText: String) {
+        if (newText != contentValue.text) {
+            contentValue = TextFieldValue(newText, TextRange(newText.length))
+            dirty = true
+        }
+    }
+
     // 加载文件
     LaunchedEffect(initialFilePath, isNewFile, overrideCharset) {
         if (isNewFile) { isLoading = false; return@LaunchedEffect }
@@ -386,6 +393,7 @@ private fun TextEditorDialogContent(
     // 子弹窗
     if (showSettingsDialog) EditorSettingsDialog(
         text = contentValue.text,
+        onTextChange = ::replaceEditorText,
         showLineNumber = showLineNumber,
         onShowLineNumberChange = { showLineNumber = it; appSettings.updateEditorShowLineNumber(it) },
         fontSize = fontSize, onFontSizeChange = { fontSize = it; appSettings.updateEditorFontSize(it) },
@@ -1303,6 +1311,7 @@ private fun FindReplaceDialog(
 @Composable
 private fun EditorSettingsDialog(
     text: String,
+    onTextChange: (String) -> Unit,
     showLineNumber: Boolean, onShowLineNumberChange: (Boolean) -> Unit,
     fontSize: Float, onFontSizeChange: (Float) -> Unit,
     autoSaveSeconds: Int, onAutoSaveChange: (Int) -> Unit,
@@ -1313,6 +1322,23 @@ private fun EditorSettingsDialog(
     var page by remember { mutableStateOf("root") }          // root | charset | lineEnding
     var statResult by remember { mutableStateOf<TextStatistics.Stats?>(null) }
     var statBusy by remember { mutableStateOf(false) }
+    var isTransforming by remember { mutableStateOf(false) }
+    val transformScope = rememberCoroutineScope()
+
+    fun runTextTransform(transform: (String) -> String) {
+        if (isTransforming) return
+        isTransforming = true
+        transformScope.launch {
+            try {
+                val transformed = withContext(Dispatchers.Default) { transform(text) }
+                onTextChange(transformed)
+                isTransforming = false
+                onDismiss()
+            } finally {
+                isTransforming = false
+            }
+        }
+    }
 
     // 打开设置面板时统计一次（点击「设置」即触发），此后不随文本变化重算
     LaunchedEffect(Unit) {
@@ -1381,6 +1407,15 @@ private fun EditorSettingsDialog(
                         CompactSettingRow("另存为", "›") { onSaveAsClick(); onDismiss() }
                         CompactSettingRow("显示行号", if (showLineNumber) "开" else "关") {
                             onShowLineNumberChange(!showLineNumber)
+                        }
+                        CompactSettingRow("删除所有空行", if (isTransforming) "处理中…" else "执行", enabled = !isTransforming) {
+                            runTextTransform(::removeEmptyLines)
+                        }
+                        CompactSettingRow("整体缩进两格", if (isTransforming) "处理中…" else "执行", enabled = !isTransforming) {
+                            runTextTransform { indentAllLines(it, 2) }
+                        }
+                        CompactSettingRow("删除所有换行", if (isTransforming) "处理中…" else "执行", enabled = !isTransforming) {
+                            runTextTransform(::removeAllLineBreaks)
                         }
                         // 字号：纯文本档位
                         Row(
@@ -1533,19 +1568,44 @@ private fun DiffProgressDialog(progressLines: Long, onCancel: () -> Unit) {
 
 /** 紧凑设置行：左侧标签、右侧值，无矩形背景。 */
 @Composable
-private fun CompactSettingRow(label: String, value: String, onClick: () -> Unit) {
+private fun CompactSettingRow(
+    label: String,
+    value: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 7.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(vertical = 7.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text = label, style = AuroraTextStyles.body2, color = AuroraTokens.Text)
+        Text(
+            text = label,
+            style = AuroraTextStyles.body2,
+            color = if (enabled) AuroraTokens.Text else AuroraTokens.TextDisabled
+        )
         Text(
             text = value, style = AuroraTextStyles.footnote1,
-            color = AuroraTokens.TextSecondary, fontFamily = FontFamily.Monospace
+            color = if (enabled) AuroraTokens.TextSecondary else AuroraTokens.TextDisabled,
+            fontFamily = FontFamily.Monospace
         )
     }
 }
+
+internal fun removeEmptyLines(text: String): String =
+    text.split('\n').filterNot { it.trim('\r', ' ', '\t').isEmpty() }.joinToString("\n")
+
+internal fun indentAllLines(text: String, spaces: Int = 2): String {
+    if (text.isEmpty() || spaces <= 0) return text
+    val prefix = " ".repeat(spaces)
+    return text.split('\n').joinToString("\n") { "$prefix$it" }
+}
+
+internal fun removeAllLineBreaks(text: String): String =
+    text.replace("\r\n", "").replace("\n", "").replace("\r", "")
 
 /** 紧凑选项行：选中项右侧 ✓，无矩形背景。 */
 @Composable

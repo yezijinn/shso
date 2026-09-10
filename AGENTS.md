@@ -6,7 +6,22 @@ Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + 
 
 ## 行为准则
 
-### 1. Think Before Coding
+### 1. Task-Driven Autonomous Loop (任务驱动闭环)
+**严格遵守 `TASKS.md` 状态机，杜绝无序跨步骤修改。**
+- **单一事实凭据**：`TASKS.md` 是任务进度的唯一依据。执行前必须先读 `TASKS.md`，只推进当前任务，不脑补未规划的功能。
+- **状态流转规范**：
+  - `- [ ]`：待处理 (TODO)
+  - `- [/]`：进行中 (IN_PROGRESS)
+  - `- [x]`：已完成并自测通过 (DONE)
+  - `- [!]`：执行受阻/连续报错/需人工确认 (BLOCKED)
+- **四步执行生命周期**：
+  1. **Read & Lock**：检查 `TASKS.md`，优先恢复处于 `[/]` 的任务；若无，按顺序选取第一个 `[ ]`，并将其就地修改为 `[/]` 锁定任务。
+  2. **Execute**：只改动该子任务关联的文件。若发现该任务涉及 >3 个核心文件，必须在当前节点下先追加二级子任务清单（`- [ ]`）拆细再做。
+  3. **Verify**：执行针对性验证（编译、单元测试或语法检查）。
+  4. **Write Back**：验证通过后将标记更新为 `[x]` 并缩进 2 格简要记录变更文件与产物；禁止全量重写 `TASKS.md`，必须局部增量修改。
+- **两轮熔断机制**：同一报错连续修复 2 次未果，禁止继续盲目尝试。必须将状态置为 `[!]`，在任务项下方记录核心异常与排查推论，停机等待指示。
+
+### 2. Think Before Coding
 **不假设、不隐藏困惑、展示权衡。**
 - 开发前先读项目文档，了解结构、规范和约束
 - 按场景导航表按需定位文档，只读任务相关的，不一次性读完
@@ -16,7 +31,7 @@ Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + 
 - 有更简单的方案就提出来
 - 搞不明白就停下来，说清楚哪里不明白
 
-### 2. Simplicity First
+### 3. Simplicity First
 **最小代码解决问题，不做推测性设计。**
 - 不做需求范围外的功能
 - 单次使用的代码不做抽象
@@ -24,14 +39,14 @@ Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + 
 - 不为不可能的场景写错误处理
 - 避免重复：相同逻辑出现 2+ 次时考虑抽象，说明取舍
 
-### 3. Surgical Changes
+### 4. Surgical Changes
 **只改必须改的，清理自己制造的混乱。**
 - 不"顺手优化"周边无关代码
 - 不重构没坏的东西
 - 遵循现有风格，即使你不认同
 - 发现无关死代码提出来，不删
 
-### 4. Goal-Driven Execution
+### 5. Goal-Driven Execution
 **定义成功标准，循环验证。**
 - "加验证" → "先想清楚什么叫通过，再实现"
 - "修bug" → "先找到最小复现路径，再修复"
@@ -62,6 +77,7 @@ Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + 
 
 | 场景 | 阅读文档 |
 |---|---|
+| 查看/更新开发计划与状态 | `TASKS.md`（按自治协议实时推进与写回） |
 | 了解技术栈、目录结构、架构 | `docs/PROJECT.md` |
 | 改执行引擎/ROOT 逻辑 | `docs/PROJECT.md` § 核心模块 |
 | 改 UI 页面/组件 | `docs/PROJECT.md` § UI 层 |
@@ -70,17 +86,19 @@ Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + 
 ## 常用命令
 
 ```bash
-./gradlew :app:assembleDebug     # Debug APK
+./gradlew :app:assembleDebug     # Debug APK 编译验证
 ./gradlew :app:assembleRelease   # Release APK（输出在 app/build/outputs/apk/）
-./gradlew :app:testDebugUnitTest # Debug 单元测试
+./gradlew :app:testDebugUnitTest # Debug 单元测试验证
+python3 build_apk.py             # 一键构建并触发原生 M3 规范校验
+
 ```
 
 **底部 DockBar 布局约束**：FilePage 与 SettingsPage 的 `Scaffold` 内容由 `innerPadding` 负责系统 inset；页面内容额外仅预留 `56.dp` 给底部 DockBar。禁止在这两个页面为此目的增加 `navigationBarsPadding()`，也不要删除 `FilePage` 列表外层 `weight(1f).fillMaxWidth().padding(bottom = 56.dp)` 的预留。
 
 ## 注意事项
 
-- 代码注释/提交已有惯例：文件头带 `// Copyright 2026, shso contributors` + `SPDX-License-Identifier: Apache-2.0`
-- 签名配置在 `app/build.gradle.kts`（V2+V3，debug 复用 release 签名）；`release.jks` 不在仓库内
-- 所有 `su -c` 路径必须单引号转义（`replace("'", "'\\''")`）；路径处理必须过滤 `..`、`\`、`\0`（防注入/穿越）——改动 RootFileManager / RootService 时强制保持
-- `allowBackup=false`，勿开启
-- Windows 下构建路径过长时使用 `\\?\` 前缀
+* 代码注释/提交已有惯例：文件头带 `// Copyright 2026, shso contributors` + `SPDX-License-Identifier: Apache-2.0`
+* 签名配置在 `app/build.gradle.kts`（V2+V3，debug 复用 release 签名）；`release.jks` 不在仓库内
+* 所有 `su -c` 路径必须单引号转义（`replace("'", "'\\''")`）；路径处理必须过滤 `..`、`\`、`\0`（防注入/穿越）——改动 RootFileManager / RootService 时强制保持
+* `allowBackup=false`，勿开启
+* Windows 下构建路径过长时使用 `\\?\` 前缀
