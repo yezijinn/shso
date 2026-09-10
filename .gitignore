@@ -36,3 +36,7 @@ app/release/
 artifacts/
 .omo/
 .opencode/
+
+# 根目录 QA 截图 / UI dump（adb 测试临时产物，勿入库）
+/*.png
+/ui_*.xml
