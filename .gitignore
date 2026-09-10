@@ -7,6 +7,8 @@
 /.idea/workspace.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
+/.idea/deviceManager.xml
+/.idea/inspectionProfiles/
 .DS_Store
 /build
 /captures
@@ -22,3 +24,15 @@ app/build/
 .tmp/
 __pycache__/
 .kotlin/
+
+# Local environment files may contain signing or service credentials.
+.env
+.env.*
+!.env.example
+
+# Local build outputs, tool caches and QA run artifacts (must not enter VCS).
+app/debug/
+app/release/
+artifacts/
+.omo/
+.opencode/

@@ -39,6 +39,7 @@ import com.mixradio.droid.data.security.Verdict
 object RootService {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile
     var appSettings: AppSettings? = null
 
     /**
@@ -89,8 +90,11 @@ object RootService {
     var processPid by mutableIntStateOf(0)
         private set
 
+    @Volatile
     private var activeProcess: Process? = null
+    @Volatile
     private var processWriter: OutputStreamWriter? = null
+    @Volatile
     private var executionJob: Job? = null
 
     fun initSettings(settings: AppSettings) {
@@ -564,6 +568,8 @@ object RootService {
     }
 
     fun killCurrentProcess() {
+        // 已完成/无任务运行时不执行任何终止动作，避免对残留句柄误操作。
+        if (!isTaskRunning) return
         // 同步捕获本轮任务实体（Job/pid/进程句柄/任务名）：
         // 之后主线程若启动新任务（覆盖启动），这些仍是旧实体，kill 只作用于它们，绝不误杀新任务。
         val targetJob = executionJob ?: return
@@ -582,6 +588,7 @@ object RootService {
                     runCommandSync("pkill -9 -f ${escapeShellArg(taskName)} 2>/dev/null")
                 }
                 targetProcess?.destroyForcibly()
+                forceCloseProcess(targetProcess)
                 // 本轮仍由本 kill 接管（执行 Job 未被替换）才撤销全局句柄；
                 // 若期间新任务已启动，句柄属于新任务，由新任务线条负责。
                 if (executionJob === targetJob) {
@@ -590,8 +597,9 @@ object RootService {
                 }
                 // 进程已杀，任务实体已终止：显式取消执行协程并等待其 finally 收尾，
                 // 保证旧任务在 kill 写状态之前完成清理，避免交叉写 Compose 状态。
+                // 有界等待，避免轮询线程被不响应的 finally 永久挂起。
                 targetJob.cancel()
-                targetJob.join()
+                withTimeoutOrNull(2000L) { targetJob.join() }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     if (executionJob === targetJob) {
@@ -621,21 +629,36 @@ object RootService {
         }
     }
 
+    /**
+     * destroyForcibly 后强制关闭进程管道三件套（stdin/stdout/stderr），
+     * 使阻塞在 inputStream 读取上的执行协程立即收到 EOF 退出，彻底释放管道缓冲，消除僵尸句柄。
+     * 各流关闭均捕获异常，单流失败不影响其余流。
+     */
+    private fun forceCloseProcess(targetProcess: Process?) {
+        if (targetProcess == null) return
+        try { targetProcess.inputStream.close() } catch (_: Exception) {}
+        try { targetProcess.errorStream.close() } catch (_: Exception) {}
+        try { targetProcess.outputStream.close() } catch (_: Exception) {}
+    }
+
     fun sendInterrupt() {
-        // 捕获本轮任务实体，避免探测期间新任务替换导致误判
+        // 同步捕获本轮任务实体（Job/进程 writer/pid）：
+        // 之后主线程若启动新任务（覆盖启动），这些仍是旧实体，中断只作用于它们，绝不误伤新任务。
         val targetJob = executionJob
+        val targetWriter = processWriter
+        val targetPid = processPid
         scope.launch(Dispatchers.IO) {
             try {
                 if (isTaskRunning) {
                     withContext(Dispatchers.Main) {
                         appendOutputDirect("^C\n")
                     }
-                    processWriter?.write(3)
-                    processWriter?.write("\n")
-                    processWriter?.flush()
+                    targetWriter?.write(3)
+                    targetWriter?.write("\n")
+                    targetWriter?.flush()
 
-                    if (processPid > 0) {
-                        runCommandSync("kill -2 $processPid 2>/dev/null")
+                    if (targetPid > 0) {
+                        runCommandSync("kill -2 $targetPid 2>/dev/null")
                     }
 
                     // 进程未必响应 SIGINT：等待短暂窗口后仍未退出，则提示用户可用「结束进程」强制兜底，
@@ -668,14 +691,16 @@ object RootService {
                     runCommandSync("kill -9 $targetPid 2>/dev/null")
                 }
                 targetProcess?.destroyForcibly()
+                forceCloseProcess(targetProcess)
                 // 旧任务 finally 已通过代际判断清理状态；若期间新任务启动，
                 // 不能再动全局句柄（属于新任务）
                 if (executionJob === targetJob) {
                     activeProcess = null
                     processWriter = null
                 }
-                // 等待旧任务的 finally 清理完成，避免与下方状态写入并发
-                targetJob?.join()
+                // 等待旧任务的 finally 清理完成，避免与下方状态写入并发；
+                // 有界等待，避免被不响应的 finally 永久挂起。
+                withTimeoutOrNull(2000L) { targetJob?.join() }
                 HyperCore.clearBatchQueue()
             } catch (_: Exception) {
             } finally {

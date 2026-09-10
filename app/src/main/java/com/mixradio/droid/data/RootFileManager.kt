@@ -18,9 +18,18 @@ enum class MoveDestinationConflict {
     SKIP
 }
 
+data class FilePermissionMetadata(
+    val mode: String,
+    val owner: String,
+    val group: String,
+)
+
 object RootFileManager {
 
     const val DEFAULT_SHSO_DIR = "/data/adb/shso"
+
+    private val PERMISSION_MODE_PATTERN = Regex("^[0-7]{3,4}$")
+    private val OWNER_OR_GROUP_PATTERN = Regex("^[a-zA-Z0-9._-]+$")
 
     /**
      * 进程内记忆的上次浏览目录（仅 AppSettings.rememberDirectory 开启时读写）。
@@ -42,6 +51,126 @@ object RootFileManager {
      */
     private fun preferRoot(): Boolean = RootService.isRootGranted == true
 
+    /**
+     * 路径级非法校验：拒绝空路径、反斜杠、NUL、换行、回车，以及含 `..` 的路径段（防路径穿越）。
+     * 用于所有把路径拼进 shell 命令或 java.io.File 前的统一拦截。
+     */
+    internal fun isUnsafePath(path: String): Boolean =
+        path.isEmpty() ||
+            path.contains("\\") ||
+            path.contains("\n") ||
+            path.contains("\r") ||
+            path.contains("\u0000") ||
+            path.split('/').any { it == ".." }
+
+    /**
+     * 文件名级非法校验：拒绝路径分隔符（/ 与 \）、`..`、NUL、换行、回车，防止越目录写入或命令分隔。
+     */
+    internal fun isUnsafeFileName(name: String): Boolean =
+        name.isEmpty() ||
+            name.contains("/") ||
+            name.contains("\\") ||
+            name.contains("..") ||
+            name.contains("\n") ||
+            name.contains("\r") ||
+            name.contains("\u0000")
+
+    /** 仅允许修改 /data 本身或其后代，避免权限操作越权到其他文件系统路径。 */
+    internal fun isAllowedDataPath(path: String): Boolean =
+        !isUnsafePath(path) && (path == "/data" || path.startsWith("/data/"))
+
+    internal fun isValidPermissionMode(mode: String): Boolean =
+        PERMISSION_MODE_PATTERN.matches(mode)
+
+    internal fun isValidOwnerOrGroup(value: String): Boolean =
+        OWNER_OR_GROUP_PATTERN.matches(value)
+
+    internal fun permissionStringToOctal(permissionString: String): String? {
+        if (permissionString.length != 10) return null
+        if (permissionString[0] !in "-bcdlps") return null
+        val expected = listOf(
+            setOf('r', '-'), setOf('w', '-'), setOf('x', 's', 'S', '-'),
+            setOf('r', '-'), setOf('w', '-'), setOf('x', 's', 'S', '-'),
+            setOf('r', '-'), setOf('w', '-'), setOf('x', 't', 'T', '-')
+        )
+        if (permissionString.drop(1).toList().zip(expected).any { (value, allowed) -> value !in allowed }) return null
+        val bits = permissionString.substring(1).mapIndexed { index, value ->
+            when (index % 3) {
+                0 -> if (value == 'r') 4 else 0
+                1 -> if (value == 'w') 2 else 0
+                else -> if (value == 'x' || value in "st") 1 else 0
+            }
+        }
+        if (bits.size != 9) return null
+        val specialBits = (if (permissionString[3] in "sS") 4 else 0) +
+            (if (permissionString[6] in "sS") 2 else 0) +
+            (if (permissionString[9] in "tT") 1 else 0)
+        return (if (specialBits == 0) "" else specialBits.toString()) +
+            bits.chunked(3).joinToString("") { it.sum().toString() }
+    }
+
+    suspend fun readPermissionMetadata(path: String): Pair<FilePermissionMetadata?, String> = withContext(Dispatchers.IO) {
+        if (!isAllowedDataPath(path)) {
+            return@withContext Pair(null, "仅允许读取 /data 下的路径")
+        }
+        if (!preferRoot()) {
+            return@withContext Pair(null, "读取 /data 权限需要 ROOT")
+        }
+
+        val escapedPath = RootService.escapeShellArg(path)
+        val (code, output) = RootService.runCommandSync("stat -c \"%A|%U|%G\" $escapedPath")
+        if (code != 0) return@withContext Pair(null, "读取文件属性失败")
+
+        val parts = output.trim().lineSequence().firstOrNull()?.split('|', limit = 3).orEmpty()
+        if (parts.size != 3) return@withContext Pair(null, "读取文件属性失败")
+        val mode = permissionStringToOctal(parts[0])
+        if (mode == null || !isValidOwnerOrGroup(parts[1]) || !isValidOwnerOrGroup(parts[2])) {
+            return@withContext Pair(null, "读取文件属性失败")
+        }
+        Pair(FilePermissionMetadata(mode, parts[1], parts[2]), "")
+    }
+
+    suspend fun changePermissions(path: String, mode: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (!isAllowedDataPath(path)) {
+            return@withContext Pair(false, "仅允许修改 /data 下的路径")
+        }
+        if (!isValidPermissionMode(mode)) {
+            return@withContext Pair(false, "权限模式必须是 3 或 4 位八进制数字")
+        }
+
+        val escapedPath = RootService.escapeShellArg(path)
+        val (code, output) = RootService.runCommandSync("chmod $mode $escapedPath")
+        if (code == 0) Pair(true, "权限修改成功") else Pair(false, "权限修改失败: $output")
+    }
+
+    suspend fun changeOwner(path: String, owner: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (!isAllowedDataPath(path)) {
+            return@withContext Pair(false, "仅允许修改 /data 下的路径")
+        }
+        if (!isValidOwnerOrGroup(owner)) {
+            return@withContext Pair(false, "所有者包含非法字符")
+        }
+
+        val escapedOwner = RootService.escapeShellArg(owner)
+        val escapedPath = RootService.escapeShellArg(path)
+        val (code, output) = RootService.runCommandSync("chown $escapedOwner $escapedPath")
+        if (code == 0) Pair(true, "所有者修改成功") else Pair(false, "所有者修改失败: $output")
+    }
+
+    suspend fun changeGroup(path: String, group: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (!isAllowedDataPath(path)) {
+            return@withContext Pair(false, "仅允许修改 /data 下的路径")
+        }
+        if (!isValidOwnerOrGroup(group)) {
+            return@withContext Pair(false, "用户组包含非法字符")
+        }
+
+        val escapedGroup = RootService.escapeShellArg(group)
+        val escapedPath = RootService.escapeShellArg(path)
+        val (code, output) = RootService.runCommandSync("chown :$escapedGroup $escapedPath")
+        if (code == 0) Pair(true, "用户组修改成功") else Pair(false, "用户组修改失败: $output")
+    }
+
     suspend fun ensureShsoDir(): Boolean = withContext(Dispatchers.IO) {
         if (shsoDirEnsured) return@withContext true
         val cmd = "mkdir -p ${RootService.escapeShellArg(DEFAULT_SHSO_DIR)} && chmod 777 ${RootService.escapeShellArg(DEFAULT_SHSO_DIR)}"
@@ -56,6 +185,7 @@ object RootFileManager {
      * 保证无 ROOT 设备上文件页也能正常浏览共享存储。
      */
     suspend fun pathExists(path: String): Boolean = withContext(Dispatchers.IO) {
+        if (isUnsafePath(path)) return@withContext false
         // ROOT 已授权时优先用 su 探测（可访问受保护/系统路径）；
         // 未授权则跳过 su，直接本地判断，保证无 ROOT 设备正常浏览共享存储。
         if (preferRoot()) {
@@ -72,6 +202,7 @@ object RootFileManager {
 
     suspend fun listFiles(dirPath: String): List<FileItem> = withContext(Dispatchers.IO) {
         val targetPath = if (dirPath.isEmpty()) "/" else dirPath
+        if (isUnsafePath(targetPath)) return@withContext emptyList()
         val items = mutableListOf<FileItem>()
 
         // ROOT 已授权时优先走 su 批量取条目（1~2 次 fork/exec，可访问受保护/系统路径）；
@@ -169,6 +300,9 @@ object RootFileManager {
         useIndependentFolder: Boolean,
         autoDeleteSource: Boolean
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (isUnsafePath(sourcePath)) {
+            return@withContext Pair(false, "源路径包含非法字符")
+        }
         ensureShsoDir()
 
         val sourceFile = File(sourcePath)
@@ -205,15 +339,16 @@ object RootFileManager {
         Pair(true, destinationPath)
     }
 
-    suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (isUnsafePath(oldPath)) {
+            return@withContext Pair(false, "路径包含非法字符")
+        }
         val sanitized = newName.trim()
         if (sanitized.isEmpty()) {
             return@withContext Pair(false, "文件名不能为空")
         }
         // 换行/回车可被 shell 解释为命令分隔，必须一并拒绝（与 /、\、..、\0 同级）
-        if (sanitized.contains("/") || sanitized.contains("\\") || sanitized.contains("..") ||
-            sanitized.contains("\n") || sanitized.contains("\r") || sanitized.contains("\u0000")
-        ) {
+        if (isUnsafeFileName(sanitized)) {
             return@withContext Pair(false, "文件名不能包含路径分隔符或非法字符")
         }
 
@@ -240,11 +375,7 @@ suspend fun moveFile(
         destinationDirectory: String,
         onConflict: MoveDestinationConflict = MoveDestinationConflict.OVERWRITE
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
-        fun invalidPath(path: String): Boolean = path.isEmpty() || path.contains("\\") ||
-            path.contains("\n") || path.contains("\r") || path.contains("\u0000") ||
-            path.split('/').any { it == ".." }
-
-        if (invalidPath(sourcePath) || invalidPath(destinationDirectory)) {
+        if (isUnsafePath(sourcePath) || isUnsafePath(destinationDirectory)) {
             return@withContext Pair(false, "路径包含非法字符")
         }
 
@@ -366,6 +497,8 @@ suspend fun moveFile(
      * 探测目标目录中是否已存在与源同名的项目（供 UI 在移动前弹出冲突决策）。
      */
     suspend fun moveDestinationCollides(sourcePath: String, destinationDirectory: String): Boolean = withContext(Dispatchers.IO) {
+        if (isUnsafePath(sourcePath)) return@withContext false
+
         fun localExists(path: String): Boolean = try { File(path).exists() } catch (_: Exception) { false }
         fun rootExists(path: String): Boolean {
             val escaped = RootService.escapeShellArg(path)
@@ -376,11 +509,15 @@ suspend fun moveFile(
         val sourceName = File(sourcePath).name
         if (sourceName.isEmpty() || sourceName == "." || sourceName == "..") return@withContext false
         val destNorm = destinationDirectory.trimEnd('/').ifEmpty { "/" }
+        if (isUnsafePath(destNorm)) return@withContext false
         val destPath = if (destNorm == "/") "/$sourceName" else "$destNorm/$sourceName"
         localExists(destPath) || (RootService.isRootGranted == true && rootExists(destPath))
     }
 
-    suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (isUnsafePath(path)) {
+            return@withContext Pair(false, "路径包含非法字符")
+        }
         // ROOT 已授权时优先用 su 删除（可操作受保护/系统路径）；
         // 未授权或 su 失败时回退标准 File API（授予「所有文件访问」后可操作 /sdcard）。
         if (preferRoot()) {
@@ -402,6 +539,9 @@ suspend fun moveFile(
      * 序号插入在扩展名之前（无扩展名则直接加在末尾）。仅用于文件（文件夹不调用）。
      */
     suspend fun copyFile(sourcePath: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (isUnsafePath(sourcePath)) {
+            return@withContext Pair(false, "源路径包含非法字符")
+        }
         val srcFile = File(sourcePath)
         val parent = srcFile.parent ?: "/"
         val base = srcFile.nameWithoutExtension
@@ -446,14 +586,15 @@ suspend fun moveFile(
      * @return Pair(成功, 消息/最终路径)
      */
     suspend fun createEmptyFile(dirPath: String, fileName: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (isUnsafePath(dirPath)) {
+            return@withContext Pair(false, "路径包含非法字符")
+        }
         val name = fileName.trim()
         if (name.isEmpty()) {
             return@withContext Pair(false, "文件名不能为空")
         }
         // 拒绝路径分隔符与非法字符（与 rename 同级校验，防止越目录写入）
-        if (name.contains("/") || name.contains("\\") || name.contains("..") ||
-            name.contains("\n") || name.contains("\r") || name.contains("\u0000")
-        ) {
+        if (isUnsafeFileName(name)) {
             return@withContext Pair(false, "文件名不能包含路径分隔符或非法字符")
         }
 
