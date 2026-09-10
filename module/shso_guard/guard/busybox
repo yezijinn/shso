@@ -1,0 +1,49 @@
+#!/system/bin/sh
+###############################################################################
+# shso_guard 守卫：busybox（多二进制派发）
+#
+# 本文件【不】由 guard-template.sh 生成——结构不同于模板（见 README / 报告）：
+# toybox/busybox 是多二进制入口，命令行里没有 rm/find/... 这样的 PATH 入口，
+# 因此必须在「多二进制」这一层拦截。决策/审计/防递归逻辑全部复用 common.sh，
+# 严禁在此复制决策代码。
+#
+# 逻辑：
+#   1) 第一个操作数是子命令（rm/dd/find/sed/mv/cp/fastboot/wipe/mkfs* …）。
+#   2) 若该子命令受守卫（guard_operand_mode 非空），则 shift 后交给 run_guard()
+#      复用同一套决策逻辑；命中受保护路径则在 enforce 下拒绝。
+#   3) 否则（非守卫子命令，如 busybox ls / busybox sh）直接 exec 真实 busybox，零干预。
+#   4) 找不到真实二进制时失败关闭（清晰报错 + 退出码 127）。
+###############################################################################
+
+GUARD_SELF="$0"
+GUARD_DIR="${GUARD_SELF%/*}"
+REAL_NAME="busybox"
+CMD_NAME="busybox"
+
+# fail-closed：缺少公共库时直接拒绝，而不是退化成放行
+if [ ! -f "$GUARD_DIR/common.sh" ]; then
+    echo "shso_guard: common.sh 缺失，拒绝执行 ${CMD_NAME}（fail-closed）" >&2
+    exit 1
+fi
+
+# shellcheck source=./common.sh
+. "$GUARD_DIR/common.sh"
+guard_enter
+load_policy
+
+# mode=off：完全放行（仅用于排障，不建议长期开启）
+if [ "$SHSO_MODE" = "off" ]; then
+    exec_real "$REAL_NAME" "$@"
+fi
+
+_sub="$1"
+if [ -n "$_sub" ]; then
+    guard_operand_mode "$_sub"
+    if [ -n "$_GUARD_OPERAND_MODE" ]; then
+        shift
+        # run_guard 在 enforce 命中时直接 exit 1，无需在此判断
+        run_guard "$_sub" "$_GUARD_OPERAND_MODE" "$@" || exit $?
+    fi
+fi
+
+exec_real "$REAL_NAME" "$@"
