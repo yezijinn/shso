@@ -79,9 +79,30 @@ jobs:
       - name: 赋予 gradlew 执行权限
         run: chmod +x ./gradlew
 
+      - name: 写入 Release 签名密钥
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::缺少 KEYSTORE_BASE64 Secret，请上传 Release JKS 的 Base64 内容"
+            exit 1
+          fi
+          if [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::缺少 KEYSTORE_PASSWORD Secret"
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          chmod 600 "$RUNNER_TEMP/release.jks"
+
       - name: 编译 Release APK（按自定义包名）
         # -PoverridePackage 仅覆盖 applicationId（安装身份），namespace/源码包名不变
-        # CI 环境下 build.gradle.kts 自动改用调试密钥签名，产物可直接安装
+        # 使用 GitHub Secret 还原的用户 Release JKS 签名
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: ./gradlew assembleRelease -PoverridePackage="${{ steps.validate.outputs.package }}"
 
       - name: 上传 APK 产物
