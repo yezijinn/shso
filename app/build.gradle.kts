@@ -30,6 +30,12 @@ fun readLocalPropertiesProperty(propKey: String): String? =
             .firstOrNull()
     } catch (_: Exception) { null }
 
+fun getSigningFile(): File = rootProject.file(
+        System.getenv("KEYSTORE_FILE")
+            ?: readLocalPropertiesProperty("signing.storeFile")
+            ?: "C:/AI_WORKSPACE/GLOBAL/credentials/JinnKeyStores/com.mixradio.droid/release.jks"
+    )
+
 
 kotlin {
     // 等价原 module.kotlin-jvm-toolchain 约定插件：统一 Kotlin JVM Toolchain 21
@@ -51,9 +57,8 @@ android {
     // 以保证 R / BuildConfig 引用与所有 import 有效；FileProvider authority、跳设置页 Uri
     // 均使用 ${applicationId} / context.packageName，自动跟随。
     val overridePackage: String? = project.findProperty("overridePackage")?.toString()
-    // CI / 在线编译时用调试密钥兜底签名，确保产物可直接安装；本地仍用自有 release 密钥
+    // 仅显式传入 -PuseDebugSigning=true 时使用调试密钥；Release CI 默认使用外部 release 密钥。
     val useDebugSigning = project.findProperty("useDebugSigning")?.toString()?.toBoolean() == true
-        || System.getenv("GITHUB_ACTIONS") == "true"
 
     defaultConfig {
         applicationId = overridePackage ?: "com.mixradio.droid"
@@ -68,7 +73,7 @@ android {
     signingConfigs {
         create("release") {
             // 真实签名密钥位于全局凭据目录（与 GLOBAL/credentials/JinnKeyStores 保持一致）
-            storeFile = file("C:/AI_WORKSPACE/GLOBAL/credentials/JinnKeyStores/com.mixradio.droid/release.jks")
+            storeFile = getSigningFile()
             // 密码通过环境变量或 local.properties 读取，不再硬编码
             storePassword = getSigningPassword("KEYSTORE_PASSWORD", "signing.storePassword")
             keyAlias = "com.mixradio.droid"
