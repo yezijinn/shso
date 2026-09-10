@@ -71,6 +71,7 @@ import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.ApkInstaller
 import com.mixradio.droid.data.ArchiveExtractor
 import com.mixradio.droid.data.FileItem
+import com.mixradio.droid.data.FilePermissionMetadata
 import com.mixradio.droid.data.INTERNAL_STORAGE_LABEL
 import com.mixradio.droid.data.INTERNAL_STORAGE_PATH
 import com.mixradio.droid.data.MoveDestinationConflict
@@ -81,6 +82,7 @@ import com.mixradio.droid.ui.components.BookmarksDialog
 import com.mixradio.droid.ui.components.BuiltInFilePicker
 import com.mixradio.droid.ui.components.ExecuteConfirmDialog
 import com.mixradio.droid.ui.components.FileListSettingsDialog
+import com.mixradio.droid.ui.components.FilePermissionDialog
 import com.mixradio.droid.ui.components.FileShortcutButton
 import com.mixradio.droid.ui.components.ImageViewerDialog
 import com.mixradio.droid.ui.components.TextEditorDialog
@@ -90,6 +92,7 @@ import com.mixradio.droid.ui.theme.AuroraTokens
 import com.mixradio.droid.ui.theme.AuroraWindowDialog
 import com.mixradio.droid.ui.theme.auroraTextFieldColors
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -164,10 +167,14 @@ fun FilePage(
     val listState = rememberLazyListState()
 
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
+    var installStatusMessage by remember { mutableStateOf<String?>(null) }
+    var installAlertMessage by remember { mutableStateOf<String?>(null) }
 
     var showNewFileDialog by remember { mutableStateOf(false) }
     var newFileName by remember { mutableStateOf("") }
     var newFileExt by remember { mutableStateOf("") }
+    var showPermissionDialog by remember { mutableStateOf(false) }
+    var permissionMetadata by remember { mutableStateOf<FilePermissionMetadata?>(null) }
 
     fun refresh(showToast: Boolean = false) {
         isLoading = true
@@ -244,6 +251,13 @@ fun FilePage(
         feedbackMessage?.let {
             Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
             feedbackMessage = null
+        }
+    }
+
+    LaunchedEffect(installAlertMessage) {
+        if (installAlertMessage != null) {
+            delay(3000)
+            installAlertMessage = null
         }
     }
 
@@ -384,6 +398,48 @@ fun FilePage(
                     .height(0.7.dp)
                     .background(AuroraTokens.SurfaceHover.copy(alpha = 0.6f))
             )
+
+            if (isInstalling) {
+                installStatusMessage?.let { message ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(0.dp))
+                            .background(AuroraTokens.Accent.copy(alpha = 0.16f))
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                    ) {
+                        Text(
+                            text = message,
+                            style = AuroraTextStyles.footnote1,
+                            color = AuroraTokens.Accent,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+
+            installAlertMessage?.let { message ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(0.dp))
+                        .background(AuroraTokens.SurfaceHover)
+                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                ) {
+                    Text(
+                        text = message,
+                        style = AuroraTextStyles.footnote1,
+                        color = if (message.startsWith("安装失败")) {
+                            AuroraTokens.Error
+                        } else {
+                            AuroraTokens.Text
+                        },
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
 
             // 文件列表区（占满）+ 悬浮三按钮：外层 Box 包裹，列表 fillMaxSize 占满。
             // 列表底端必须恰好止于 DockBar 上沿：DockBar 是透明玻璃叠层，若列表继续延伸
@@ -801,24 +857,35 @@ fun FilePage(
                         showActionDialog = false
                         scope.launch {
                             isInstalling = true
-                            val result = if (rootGranted) {
-                                if (item.realExtension == "apk") {
-                                    ApkInstaller.installApk(item.path)
+                            installAlertMessage = null
+                            installStatusMessage = "正在安装 ${item.name}，请勿重复操作"
+                            val result = try {
+                                if (rootGranted) {
+                                    if (item.realExtension == "apk") {
+                                        ApkInstaller.installApk(item.path)
+                                    } else {
+                                        ApkInstaller.installXapk(item.path)
+                                    }
                                 } else {
-                                    ApkInstaller.installXapk(item.path)
+                                    if (item.realExtension == "apk") {
+                                        ApkInstaller.installApkViaSystem(context, item.path)
+                                    } else {
+                                        ApkInstaller.InstallResult.Failure("XAPK 分片安装需 ROOT 静默权限，请先授权 ROOT")
+                                    }
                                 }
-                            } else {
-                                if (item.realExtension == "apk") {
-                                    ApkInstaller.installApkViaSystem(context, item.path)
-                                } else {
-                                    ApkInstaller.InstallResult.Failure("XAPK 分片安装需 ROOT 静默权限，请先授权 ROOT")
-                                }
+                            } catch (e: Exception) {
+                                ApkInstaller.InstallResult.Failure("安装失败: ${e.message ?: "未知错误"}")
                             }
                             isInstalling = false
-                            feedbackMessage = when (result) {
+                            val resultMessage = when (result) {
                                 is ApkInstaller.InstallResult.Success -> result.message
                                 is ApkInstaller.InstallResult.Failure -> result.message
                             }
+                            installAlertMessage = when (result) {
+                                is ApkInstaller.InstallResult.Success -> "安装完成：$resultMessage"
+                                is ApkInstaller.InstallResult.Failure -> "安装失败：$resultMessage"
+                            }
+                            feedbackMessage = resultMessage
                         }
                     }
                 }
@@ -844,6 +911,21 @@ fun FilePage(
                         showActionDialog = false
                         viewerTargetItem = item
                         showTextEditorDialog = true
+                    }
+                }
+
+                if (RootFileManager.isAllowedDataPath(item.path)) {
+                    ActionTextRow("权限/属性", AuroraTokens.Accent) {
+                        showActionDialog = false
+                        scope.launch {
+                            val (metadata, message) = RootFileManager.readPermissionMetadata(item.path)
+                            if (metadata == null) {
+                                feedbackMessage = message
+                            } else {
+                                permissionMetadata = metadata
+                                showPermissionDialog = true
+                            }
+                        }
                     }
                 }
 
@@ -1076,6 +1158,38 @@ fun FilePage(
                 }
             }
         }
+    }
+
+    if (showPermissionDialog && selectedItem != null && permissionMetadata != null) {
+        val item = selectedItem!!
+        val metadata = permissionMetadata!!
+        FilePermissionDialog(
+            show = true,
+            path = item.path,
+            initialMode = metadata.mode,
+            initialOwner = metadata.owner,
+            initialGroup = metadata.group,
+            onDismiss = {
+                showPermissionDialog = false
+                permissionMetadata = null
+            },
+            onSubmitSuccess = {
+                feedbackMessage = "文件属性已更新"
+                refresh()
+            },
+            onSubmit = { mode, owner, group ->
+                val result = RootFileManager.changePermissions(item.path, mode).let { permissionResult ->
+                    if (!permissionResult.first) {
+                        permissionResult
+                    } else {
+                        val ownerResult = RootFileManager.changeOwner(item.path, owner)
+                        if (!ownerResult.first) ownerResult
+                        else RootFileManager.changeGroup(item.path, group)
+                    }
+                }
+                result
+            }
+        )
     }
 
     if (showJumpPathDialog) {

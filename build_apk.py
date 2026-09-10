@@ -13,6 +13,15 @@ shso 一键编译脚本
     python build_apk.py --clean         # 先 clean 再编译
     python build_apk.py --skip-check    # 跳过环境预检直接构建
 
+可选环境变量：
+    JAVA_HOME         # 优先选择的 JDK；未设置时自动发现 JDK 17
+    ANDROID_SDK_ROOT  # Android SDK 路径（优先级高于 ANDROID_HOME）
+    ANDROID_HOME      # Android SDK 路径
+    KEYSTORE_FILE     # Release keystore 路径
+
+签名密码由 app/build.gradle.kts 从 KEYSTORE_PASSWORD / KEY_ALIAS_PASSWORD
+或被 Git 忽略的 local.properties 读取；本脚本不保存签名密码。
+
 依赖（本机环境，见 C:\\ENVIRONMENT.md）：
     - JDK 17      : C:\\Program Files\\Eclipse Adoptium\\jdk-17.0.20+8   （运行 Gradle）
     - Android SDK : C:\\Android\\sdk                                     （platforms;android-37.0 / build-tools;37.0.0）
@@ -27,6 +36,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -52,15 +62,13 @@ for _stream in (sys.stdout, sys.stderr):
 PROJECT_DIR: Path = Path(__file__).resolve().parent
 PROJECT_NAME: str = "shso"
 
-JAVA_HOME = Path(r"C:\Program Files\Eclipse Adoptium\jdk-17.0.20+8")
-ANDROID_SDK = Path(r"C:\Android\sdk")
+DEFAULT_JAVA_HOME = Path(r"C:\Program Files\Eclipse Adoptium\jdk-17.0.20+8")
+ANDROID_SDK = Path(os.environ.get("ANDROID_SDK_ROOT", os.environ.get("ANDROID_HOME", r"C:\Android\sdk")))
 
 # 签名配置（与 app/build.gradle.kts 保持一致）
 SIGNING = {
-    "keystore": Path(r"C:\AI_WORKSPACE\GLOBAL\credentials\JinnKeyStores\com.mixradio.droid\release.jks"),
+    "keystore": Path(os.environ.get("KEYSTORE_FILE", r"C:\AI_WORKSPACE\GLOBAL\credentials\JinnKeyStores\com.mixradio.droid\release.jks")),
     "alias": "com.mixradio.droid",
-    "storepass": "WE1A1xus0n9.",
-    "keypass": "WE1A1xus0n9.",
 }
 
 BUILD_TOOLS_VERSION = "37.0.0"
@@ -98,6 +106,31 @@ def section(title: str) -> None:
     print("=" * 68)
     print(f"  {title}")
     print("=" * 68, flush=True)
+
+
+def discover_java_home() -> Path:
+    """Find a usable JDK home without hiding a missing-tool failure."""
+    candidates: List[Path] = [DEFAULT_JAVA_HOME]
+
+    adoptium_root = Path(r"C:\Program Files\Eclipse Adoptium")
+    if adoptium_root.is_dir():
+        candidates.extend(sorted(adoptium_root.glob("jdk-17*"), reverse=True))
+
+    configured = os.environ.get("JAVA_HOME")
+    if configured:
+        candidates.append(Path(configured))
+
+    java_on_path = shutil.which("java")
+    if java_on_path:
+        candidates.append(Path(java_on_path).resolve().parent.parent)
+
+    for candidate in candidates:
+        if (candidate / "bin" / "java.exe").is_file() or (candidate / "bin" / "java").is_file():
+            return candidate
+    return DEFAULT_JAVA_HOME
+
+
+JAVA_HOME = discover_java_home()
 
 
 def run_cmd(
