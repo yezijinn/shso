@@ -92,8 +92,10 @@ import com.mixradio.droid.ui.theme.AuroraTokens
 import com.mixradio.droid.ui.theme.AuroraWindowDialog
 import com.mixradio.droid.ui.theme.auroraTextFieldColors
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -115,6 +117,8 @@ fun FilePage(
     }
     var currentDirectory by remember { mutableStateOf(initialDirectory) }
     var fileList by remember { mutableStateOf<List<FileItem>>(emptyList()) }
+    // 过滤+排序后的展示列表：在 Dispatchers.Default 计算后写入，组合期不再做 O(N log N) 排序
+    var displayFileList by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
     var directoryLoadFailed by remember { mutableStateOf(false) }
 
@@ -183,11 +187,20 @@ fun FilePage(
             try {
                 // 先探测目录是否真实存在（不可用 `fileList.isEmpty()` 判断——合法空目录也返回空列表）
                 val exists = RootFileManager.pathExists(currentDirectory)
-                fileList = if (exists) {
+                val loaded = if (exists) {
                     RootFileManager.listFiles(currentDirectory)
                 } else {
                     emptyList()
                 }
+                // 过滤 + 排序放在后台线程，避免组合期在主线程做 O(N log N) 排序
+                val showHidden = appSettings.showHiddenFiles
+                val sortMode = appSettings.fileSortMode
+                val display = withContext(Dispatchers.Default) {
+                    applyFileViewSettings(loaded, showHidden, sortMode)
+                }
+                // 两个状态之间没有挂起点：只产生一次重组，不会出现「新目录列表 + 旧排序结果」的中间帧
+                fileList = loaded
+                displayFileList = display
                 if (!exists) {
                     // 记忆的目录已失效（被删除/不可达）：随后回退初始目录
                     directoryLoadFailed = true
@@ -199,6 +212,7 @@ fun FilePage(
                 }
             } catch (_: Exception) {
                 fileList = emptyList()
+                displayFileList = emptyList()
             } finally {
                 isLoading = false
                 // 用户手动点击「⟳」时给出明确反馈，避免「点了没反应」的错觉
@@ -261,9 +275,16 @@ fun FilePage(
         }
     }
 
-    val displayFileList = remember(fileList, appSettings.showHiddenFiles, appSettings.fileSortMode) {
-        applyFileViewSettings(fileList, appSettings.showHiddenFiles, appSettings.fileSortMode)
+    // 隐藏文件 / 排序偏好变化时后台重算展示列表，无需重新列目录
+    LaunchedEffect(appSettings.showHiddenFiles, appSettings.fileSortMode) {
+        val source = fileList
+        val showHidden = appSettings.showHiddenFiles
+        val sortMode = appSettings.fileSortMode
+        displayFileList = withContext(Dispatchers.Default) {
+            applyFileViewSettings(source, showHidden, sortMode)
+        }
     }
+
     val listFontSize = appSettings.fileListFontSize.sp
     val listSecondaryFontSize = (appSettings.fileListFontSize - 5f).coerceAtLeast(8f).sp
 
