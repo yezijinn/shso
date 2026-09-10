@@ -6,7 +6,6 @@ package com.mixradio.droid.data
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.Locale
 
 /** 移动文件时遇到目标同名项目时的处理策略 */
 enum class MoveDestinationConflict {
@@ -252,11 +251,11 @@ object RootFileManager {
             }
         }
 
+        // 仅去重后返回：展示顺序统一由 UI 层按用户偏好决定（applyFileViewSettings：
+        // 目录恒在前 + 名称/时间升/降序）。此处原先额外做一次「目录在前 + 名称升序」排序，
+        // 结果会被 UI 层立即覆盖，而其比较器内逐次 name.lowercase() 会带来
+        // O(N log N) 次临时字符串分配，属可安全移除的重复计算。
         items.distinctBy { it.path }
-            .sortedWith(
-                compareByDescending<FileItem> { it.isDirectory }
-                    .thenBy { it.name.lowercase(Locale.getDefault()) }
-            )
     }
 
     private fun parseStatOutput(output: String, targetPath: String, items: MutableList<FileItem>) {

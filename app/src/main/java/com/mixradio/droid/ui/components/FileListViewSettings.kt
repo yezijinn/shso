@@ -43,27 +43,44 @@ import kotlin.math.roundToInt
 
 /**
  * 对刚加载的文件列表应用视图偏好：按需过滤隐藏文件，目录恒在最前，按名称/时间升/降序。
+ *
+ * 名称排序键在排序前一次性预计算（O(N) 次 `lowercase`）。若写成
+ * `compareBy { it.name.lowercase(...) }`，比较器每次比较都要新建临时字符串，
+ * 总分配量是 O(N log N)。
  */
 internal fun applyFileViewSettings(
     list: List<FileItem>,
     showHiddenFiles: Boolean,
     sortMode: Int
 ): List<FileItem> {
-    val filtered = if (showHiddenFiles) list else list.filter { !it.name.startsWith(".") }
+    val filtered = if (showHiddenFiles) list else list.filterNot { it.name.startsWith(".") }
     val directories = filtered.filter { it.isDirectory }
-    val files = filtered.filter { !it.isDirectory }
+    val files = filtered.filterNot { it.isDirectory }
 
-    val sortByTime = sortMode == AppSettings.FILE_SORT_TIME_ASC || sortMode == AppSettings.FILE_SORT_TIME_DESC
+    return sortedForView(directories, sortMode) + sortedForView(files, sortMode)
+}
+
+/** 按当前排序模式返回升/降序副本；目录与文件分组后分别调用。 */
+private fun sortedForView(items: List<FileItem>, sortMode: Int): List<FileItem> {
+    if (items.isEmpty()) return items
+
     val descending = sortMode == AppSettings.FILE_SORT_NAME_DESC || sortMode == AppSettings.FILE_SORT_TIME_DESC
-
-    val baseComparator = if (sortByTime) {
-        compareBy<FileItem> { it.lastModified }
-    } else {
-        compareBy<FileItem> { it.name.lowercase(Locale.getDefault()) }
+    return when (sortMode) {
+        AppSettings.FILE_SORT_TIME_ASC, AppSettings.FILE_SORT_TIME_DESC -> {
+            val byTime = compareBy<FileItem> { it.lastModified }
+            items.sortedWith(if (descending) byTime.reversed() else byTime)
+        }
+        else -> {
+            val locale = Locale.getDefault()
+            val decorated = items.map { it.name.lowercase(locale) to it }
+            val ordered = if (descending) {
+                decorated.sortedWith(compareByDescending { it.first })
+            } else {
+                decorated.sortedWith(compareBy { it.first })
+            }
+            ordered.map { it.second }
+        }
     }
-    val comparator = if (descending) baseComparator.reversed() else baseComparator
-
-    return directories.sortedWith(comparator) + files.sortedWith(comparator)
 }
 
 /**
