@@ -161,7 +161,31 @@
 
 ---
 
-### 已完成：文本编辑器批量文本处理
+### 12. 新一轮热点排查 + SettingsPage 拆分（2026-09-11）
+- [/] SettingsPage 抽子 Composable + AppSettings 加 @Stable（**结构改善，CPU 实测持平，无量化收益**）
+  - 排查背景：前 11 项任务已全部 [x]，新一轮按"只做有证据的热点"原则排查未审过的范围。
+    未审过 + 体积大：SettingsPage 815 行单 Composable + 9 state + 13 Dialog + 18 内联 Aurora* 项；
+    FilePage 1746 行（文件列表已审，剩余 51 state 主要为多选/弹窗）；其余页面/组件已审。
+  - 实测基线（BIYLBAFQQSS8DA69 真机，进入设置页后 5 次切档位 × 3 轮取均值）：
+    重构前 ≈ 1040 jiffies / 5 = 208 jiffies 每次；重构后 ≈ 1051 jiffies / 5 = 210 jiffies 每次（**+1%，噪音内**）。
+    帧 50th ≈ 36-48ms（重构前后相当）。**未拿到可量化的性能收益**。
+  - 决策：保留改动并作为「结构改善」提交。**理由**：
+    ① 815 行单 Composable → 拆为 SettingsPermissionsGroup / SettingsFileBehaviorGroup /
+       SettingsSecurityGroup + 共享 Intent 工具 SettingsPermissionIntents，单 Composable 复杂度下降
+       （重构后 SettingsPage.kt 815 → 692 行，新增 SettingsPagePartials.kt 264 行，但职责清晰）。
+    ② AppSettings 加 @Stable：所有 var 都是 mutableStateOf + private set，引用稳定时可让 Compose
+       正确跳过（零风险、未来若有场景可受益）。
+    ③ 行为完全不变：124 tests / 0 failures；真机冒烟（档位循环 0→2、检查更新弹窗、审计日志弹窗、
+       守卫模块"已安装"显示、进程存活、logcat 无崩溃）。
+  - **未改动项**（按"只做有证据的热点"跳过）：
+    ① FilePage 剩余 51 state（多选/弹窗类）—— 弹窗显示时只在 if 块内重组，影响有限，未实测；
+    ② Editor LazyColumn 无 key —— 只读模式（lines 不变）和历史列表（无增删），按 index 已稳定；
+    ③ DockBar / MainContainer —— DockBar 是稳定 Composable，Pager 默认 `beyondViewportPageCount=0`，
+       无明显热点。
+  - 验证：`./gradlew.bat :app:testDebugUnitTest :app:assembleDebug` → `BUILD SUCCESSFUL`；
+    **124 tests / 0 failures**（基线不变）；真机 BIYLBAFQQSS8DA69 进设置页 → 14 项可见 →
+    档位点击循环正常 → 守卫模块显示"已安装" → 检查更新弹窗"已是最新版本" →
+    审计日志弹窗正常 → 进程存活 + logcat 无崩溃。
 - [x] 优化文本编辑器批量文本处理的线程调度
   - 检查项：删除空行、整体缩进两格、删除所有换行不得在主线程同步处理大文本；处理期间保留编辑状态一致性，完成后关闭设置窗口。
   - `TextEditorDialog.kt`: 三个批量文本操作通过 `Dispatchers.Default` 计算，回到 Compose 主线程后更新文本、保持未保存状态并关闭设置；处理期间显示“处理中…”并禁用重复点击。
