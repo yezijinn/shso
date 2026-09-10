@@ -236,10 +236,49 @@ object RootService {
     /** 返回 Root 执行的守卫 PATH；受保护档位下守卫不可用时返回 null。 */
     fun guardPathPrefix(): String? {
         val level = currentSecurityLevel()
-        return GuardPathPolicy.prefixOrNull(
+        val prefix = GuardPathPolicy.prefixOrNull(
             securityLevel = level,
             guardReady = level < SecurityLevels.STANDARD || GuardModuleInstaller.guardBinDirReady()
         )
+        // 守卫恢复可用后重置降级告警，使其在「再次失效」时仍能提醒
+        if (prefix != null) guardDegradeWarned = false
+        return prefix
+    }
+
+    /** 守卫不可用告警是否已输出（只提醒一次，避免刷屏）。 */
+    @Volatile
+    private var guardDegradeWarned = false
+
+    /**
+     * 档位要求运行时守卫、但守卫不可用时的降级处理。
+     *
+     * 策略（用户已确认「自动安装 + 不再阻断」）：**不阻断，只告警**。
+     * 原因：档位 2 是默认档位，早期实现下守卫未安装会拒绝一切 root 执行
+     * （连 `ls` 都跑不了），使默认档位实际不可用。配合 `GuardModuleInstaller.ensureInstalled()`
+     * 的启动期自动安装，正常情况下守卫就是就绪的；此处只处理安装失败的兜底。
+     *
+     * 每次都会落审计（ruleId=GUARD_UNAVAILABLE_DEGRADED），便于事后追溯到
+     * 「这次执行发生时没有运行时守卫」。
+     */
+    private fun reportGuardDegraded(source: CommandSource, detail: String) {
+        SecurityAuditLog.log(source, "BLOCK", "GUARD_UNAVAILABLE_DEGRADED", RiskLevel.DANGEROUS, detail)
+        if (guardDegradeWarned) return
+        guardDegradeWarned = true
+        scope.launch(Dispatchers.Main) {
+            appendOutputDirect(
+                "\n[shso 安全提示] 当前档位要求运行时守卫，但守卫模块不可用。\n" +
+                    "  本次执行仅有静态审查保护（无运行时拦截 rm/dd/mkfs 等）。\n" +
+                    "  可在「设置 → 安全档位」中安装守卫模块以恢复完整防护。\n"
+            )
+        }
+    }
+
+    /** 取守卫 PATH 前缀；守卫不可用时落审计 + 首次告警并返回空串（不阻断执行）。 */
+    private fun guardPrefixOrDegrade(source: CommandSource, detail: String): String {
+        val prefix = guardPathPrefix()
+        if (prefix != null) return prefix
+        reportGuardDegraded(source, detail)
+        return ""
     }
 
     /**
@@ -289,15 +328,9 @@ object RootService {
 
         val level = currentSecurityLevel()
         val useRoot = runAsRoot ?: (level < SecurityLevels.MAXIMUM)
-        val guardPrefix = if (useRoot) guardPathPrefix() else ""
-        if (guardPrefix == null) {
-            SecurityAuditLog.log(
-                CommandSource.SCRIPT_FILE, "BLOCK", "GUARD_UNAVAILABLE",
-                RiskLevel.CRITICAL, filePath
-            )
-            appendOutputDirect("\n[shso 安全拦截] 守卫模块不可用，已拒绝 Root 执行\n")
-            return
-        }
+        // 守卫不可用时不再阻断（档位 2 是默认档位，阻断会让默认档位完全不可用）；
+        // 改为落审计 + 首次醒目告警后放行。守卫的自动安装由 GuardModuleInstaller.ensureInstalled 负责。
+        val guardPrefix = if (useRoot) guardPrefixOrDegrade(CommandSource.SCRIPT_FILE, filePath) else ""
 
         if (isTaskRunning) {
             killCurrentProcess()
@@ -534,17 +567,8 @@ object RootService {
                     withContext(Dispatchers.Main) {
                         appendOutputDirect("> $text\n")
                     }
-                    val guardPrefix = guardPathPrefix()
-                    if (guardPrefix == null) {
-                        SecurityAuditLog.log(
-                            CommandSource.USER_TERMINAL, "BLOCK", "GUARD_UNAVAILABLE",
-                            RiskLevel.CRITICAL, text
-                        )
-                        withContext(Dispatchers.Main) {
-                            appendOutputDirect("\n[shso 安全拦截] 守卫模块不可用，已拒绝 Root 命令\n")
-                        }
-                        return@launch
-                    }
+                    // 守卫不可用时不再拒绝命令，改为告警后放行（见 reportGuardDegraded 说明）
+                    val guardPrefix = guardPrefixOrDegrade(CommandSource.USER_TERMINAL, text)
                     val guardedCmd = guardPrefix + text
                     val (exitCode, output) = runCommandSync(guardedCmd)
                     SecurityAuditLog.log(
