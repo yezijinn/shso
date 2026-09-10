@@ -117,7 +117,7 @@ fun HomePage(
         refreshShsoFiles(RootFileManager.DEFAULT_SHSO_DIR)
     }
 
-    fun execute(path: String) {
+    fun execute(path: String, runAsRoot: Boolean? = null, riskApproved: Boolean = false) {
         val trimmed = path.trim()
         if (trimmed.isEmpty()) {
             validationError = "请输入或选择要执行的文件路径"
@@ -133,7 +133,7 @@ fun HomePage(
         }
 
         validationError = null
-        RootService.executeFile(trimmed)
+        RootService.executeFile(trimmed, runAsRoot, riskApproved)
         onNavigateToTerminal()
     }
 
@@ -417,10 +417,12 @@ fun HomePage(
         // 批次6 修复：实参传当前档位，与 FilePage 一致（避免默认值 STANDARD=2 覆盖用户实际档位）
         securityLevel = RootService.currentSecurityLevel(),
         onDismiss = { pendingExecutePath = null },
-        onConfirm = {
+        onConfirm = { runAsRoot ->
+            // 关键：透传确认框里用户的实际选择与「已获风险确认」，
+            // 否则档位 3 的「脚本默认非 Root + 用户可勾选以 Root」是死代码。
             val p = pendingExecutePath
             pendingExecutePath = null
-            if (p != null) execute(p)
+            if (p != null) execute(p, runAsRoot = runAsRoot, riskApproved = true)
         }
     )
 }

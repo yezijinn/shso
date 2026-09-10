@@ -104,7 +104,7 @@ import java.util.Locale
 @Composable
 fun FilePage(
     appSettings: AppSettings,
-    onExecuteFileAndNavigate: (String) -> Unit
+    onExecuteFileAndNavigate: (path: String, runAsRoot: Boolean?, riskApproved: Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -826,7 +826,9 @@ fun FilePage(
                             feedbackMessage = "已添加到 shso: $resultPath"
                             refresh()
                             if (appSettings.autoExecuteAfterAdding && (item.isExecutableScript || item.isExecutableBinary)) {
-                                onExecuteFileAndNavigate(resultPath)
+                                // 自动执行链路：未经确认框，故 riskApproved=false（executeFile 仍会扫描脚本内容），
+                                // runAsRoot=null 表示按档位自动（档位 3 默认非 Root）。
+                                onExecuteFileAndNavigate(resultPath, null, false)
                             }
                         } else {
                             feedbackMessage = resultPath
@@ -1725,10 +1727,12 @@ fun FilePage(
         // 批次6 修复：实参传当前档位，之前默认 STANDARD=2 导致档位 0/1 仍扫描 + 档位 3 不显示默认非 Root
         securityLevel = RootService.currentSecurityLevel(),
         onDismiss = { pendingExecuteItem = null },
-        onConfirm = {
+        onConfirm = { runAsRoot ->
+            // 关键：把确认框里用户的实际选择（是否以 Root 执行）与「已获风险确认」一并透传，
+            // 否则档位 3 的「脚本默认非 Root + 用户可勾选以 Root」永远不会生效（死代码）。
             val target = pendingExecuteItem?.path
             pendingExecuteItem = null
-            if (target != null) onExecuteFileAndNavigate(target)
+            if (target != null) onExecuteFileAndNavigate(target, runAsRoot, true)
         }
     )
 }

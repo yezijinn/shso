@@ -3,6 +3,13 @@
 
 package com.mixradio.droid.data
 
+import com.mixradio.droid.data.security.CommandSource
+import com.mixradio.droid.data.security.PolicyEngine
+import com.mixradio.droid.data.security.RiskLevel
+import com.mixradio.droid.data.security.RootCommandGateway
+import com.mixradio.droid.data.security.SecurityAuditLog
+import com.mixradio.droid.data.security.SecurityLevels
+import com.mixradio.droid.data.security.Verdict
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -49,6 +56,59 @@ object RootFileManager {
      * 无 ROOT 或 su 失败时回退标准 File API（授予「所有文件访问」后可操作 /sdcard）。
      */
     private fun preferRoot(): Boolean = RootService.isRootGranted == true
+
+    /**
+     * 文件管理危险操作（删除 / 改名 / 移动 / 改权 / 改属）的统一安全门禁。
+     *
+     * 背景：这些操作此前直接 `su -c rm|mv|chmod|chown`，既不过 L1 静态审查也不落审计，
+     * 使「安全档位」对文件管理页形同虚设（档位 0 与档位 3 行为完全一致）。
+     *
+     * 档位语义与终端路径保持一致：
+     * - 0 无防护：不判定、不审计，行为与旧版逐字节一致；
+     * - 1 仅审计：判定为 Allow，但落一条 ALLOW 审计；
+     * - 2/3：完整策略判定 —— Block 直接拒绝；Confirm 视为已放行（UI 侧已由用户弹窗确认），
+     *   落 CONFIRM 审计；Allow 落 ALLOW 审计。
+     *
+     * @return null=放行；非 null=拒绝理由（调用方原样返回给 UI）
+     */
+    private fun guardDestructiveOp(command: String, label: String): String? {
+        if (!shouldGuardFileOp(PolicyEngine.currentLevel())) return null
+
+        return when (val verdict = RootCommandGateway.check(command, CommandSource.USER_TERMINAL)) {
+            is Verdict.Block -> {
+                val finding = verdict.findings.firstOrNull()
+                SecurityAuditLog.log(
+                    CommandSource.USER_TERMINAL, "BLOCK", finding?.ruleId, RiskLevel.CRITICAL, command
+                )
+                "$label 被安全策略拦截：${finding?.message ?: "高危操作"}"
+            }
+            is Verdict.Confirm -> {
+                val finding = verdict.findings.firstOrNull()
+                SecurityAuditLog.log(
+                    CommandSource.USER_TERMINAL, "CONFIRM", finding?.ruleId, verdict.level, command
+                )
+                null
+            }
+            Verdict.Allow -> {
+                SecurityAuditLog.log(CommandSource.USER_TERMINAL, "ALLOW", null, RiskLevel.SAFE, command)
+                null
+            }
+        }
+    }
+
+    /**
+     * 文件管理危险操作是否进入安全门禁（纯函数，便于单测）。
+     *
+     * 档位 0（无防护）不判定、不审计，与旧版行为逐字节一致；档位 1 及以上才走判定
+     * （档位 1 的判定恒为 Allow，但**要落审计**，故返回值必须包含 1）。
+     */
+    internal fun shouldGuardFileOp(securityLevel: Int): Boolean = securityLevel > SecurityLevels.OFF
+
+    /**
+     * Root 执行的守卫 PATH 前缀（档位 <2 时为空串；档位 ≥2 但守卫不可用时同样返回空串，
+     * 由 RootService 侧统一落降级审计 + 首次告警，此处不重复告警、不阻断）。
+     */
+    private fun guardPrefix(): String = RootService.guardPathPrefix().orEmpty()
 
     /**
      * 路径级非法校验：拒绝空路径、反斜杠、NUL、换行、回车，以及含 `..` 的路径段（防路径穿越）。
@@ -138,7 +198,8 @@ object RootFileManager {
         }
 
         val escapedPath = RootService.escapeShellArg(path)
-        val (code, output) = RootService.runCommandSync("chmod $mode $escapedPath")
+        guardDestructiveOp("chmod $mode $path", "修改权限")?.let { return@withContext Pair(false, it) }
+        val (code, output) = RootService.runCommandSync("${guardPrefix()}chmod $mode $escapedPath")
         if (code == 0) Pair(true, "权限修改成功") else Pair(false, "权限修改失败: $output")
     }
 
@@ -152,7 +213,8 @@ object RootFileManager {
 
         val escapedOwner = RootService.escapeShellArg(owner)
         val escapedPath = RootService.escapeShellArg(path)
-        val (code, output) = RootService.runCommandSync("chown $escapedOwner $escapedPath")
+        guardDestructiveOp("chown $owner $path", "修改所有者")?.let { return@withContext Pair(false, it) }
+        val (code, output) = RootService.runCommandSync("${guardPrefix()}chown $escapedOwner $escapedPath")
         if (code == 0) Pair(true, "所有者修改成功") else Pair(false, "所有者修改失败: $output")
     }
 
@@ -166,7 +228,8 @@ object RootFileManager {
 
         val escapedGroup = RootService.escapeShellArg(group)
         val escapedPath = RootService.escapeShellArg(path)
-        val (code, output) = RootService.runCommandSync("chown :$escapedGroup $escapedPath")
+        guardDestructiveOp("chown :$group $path", "修改用户组")?.let { return@withContext Pair(false, it) }
+        val (code, output) = RootService.runCommandSync("${guardPrefix()}chown :$escapedGroup $escapedPath")
         if (code == 0) Pair(true, "用户组修改成功") else Pair(false, "用户组修改失败: $output")
     }
 
@@ -359,7 +422,8 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         if (preferRoot()) {
             val escapedOld = RootService.escapeShellArg(oldPath)
             val escapedNew = RootService.escapeShellArg(newPath)
-            val (code, _) = RootService.runCommandSync("mv $escapedOld $escapedNew")
+            guardDestructiveOp("mv $oldPath $newPath", "重命名")?.let { return@withContext Pair(false, it) }
+            val (code, _) = RootService.runCommandSync("${guardPrefix()}mv $escapedOld $escapedNew")
             if (code == 0) return@withContext Pair(true, "重命名成功")
         }
         try {
@@ -481,8 +545,9 @@ suspend fun moveFile(
         if (RootService.isRootGranted == true) {
             val escapedSource = RootService.escapeShellArg(sourcePath)
             val escapedDestination = RootService.escapeShellArg(finalPath)
+            guardDestructiveOp("mv $sourcePath $finalPath", "移动")?.let { return@withContext Pair(false, it) }
             val (code, output) = RootService.runCommandSync(
-                "mv $escapedSource $escapedDestination && test ! -e $escapedSource && " +
+                "${guardPrefix()}mv $escapedSource $escapedDestination && test ! -e $escapedSource && " +
                     if (sourceType == 2) "test -d $escapedDestination" else "test -f $escapedDestination"
             )
             if (code == 0) return@withContext Pair(true, "移动成功")
@@ -520,8 +585,9 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
         // ROOT 已授权时优先用 su 删除（可操作受保护/系统路径）；
         // 未授权或 su 失败时回退标准 File API（授予「所有文件访问」后可操作 /sdcard）。
         if (preferRoot()) {
+            guardDestructiveOp("rm -rf $path", "删除")?.let { return@withContext Pair(false, it) }
             val escaped = RootService.escapeShellArg(path)
-            val (code, _) = RootService.runCommandSync("rm -rf $escaped")
+            val (code, _) = RootService.runCommandSync("${guardPrefix()}rm -rf $escaped")
             if (code == 0) return@withContext Pair(true, "删除成功")
         }
         try {
