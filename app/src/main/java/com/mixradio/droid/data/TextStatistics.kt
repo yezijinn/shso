@@ -27,7 +27,10 @@ object TextStatistics {
     fun compute(text: String): Stats {
         if (text.isEmpty()) return Stats(0, 0, 0, 0, 0, 0, 0, 0)
         val lines = countLines(text)
-        val maxLine = text.split('\n').maxOfOrNull { it.length } ?: 0
+        // 最长行（columns）：与分类遍历合并到同一个 while 循环，避免 split 分配整行列表。
+        // 语义等价于 text.split('\n').maxOfOrNull { it.length }（仅按 '\n' 切分，末尾段也参与比较）。
+        var maxLine = 0
+        var currentLen = 0
         var english = 0
         var chinese = 0
         var digits = 0
@@ -36,9 +39,19 @@ object TextStatistics {
         val n = text.length
         while (i < n) {
             val c = text[i]
+            // 仅按 '\n' 切分；遇换行即结算当前行长度并归零（与 split 的分段一致）。
+            // 注意：'\n' 仍须计入 symbols（历史语义中它走 else 分支），不可在此提前 continue 跳过分类。
+            if (c == '\n') {
+                if (currentLen > maxLine) maxLine = currentLen
+                currentLen = 0
+                symbols++
+                i++
+                continue
+            }
             if (c.isHighSurrogate() && i + 1 < n && text[i + 1].isLowSurrogate()) {
                 val cp = Character.toCodePoint(c, text[i + 1])
                 if (isChineseCodePoint(cp)) chinese++ else symbols++
+                currentLen += 2
                 i += 2
                 continue
             }
@@ -48,8 +61,11 @@ object TextStatistics {
                 isChineseCodePoint(c.code) -> chinese++
                 else -> symbols++
             }
+            currentLen += 1
             i++
         }
+        // 比较尾部段（split 出来的最后一段长度）
+        if (currentLen > maxLine) maxLine = currentLen
         return Stats(
             chars = text.length,
             lines = lines,
