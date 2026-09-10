@@ -80,6 +80,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
+import java.io.IOException
 import android.util.Log
 
 /**
@@ -93,7 +94,7 @@ import android.util.Log
 private sealed interface UpdateUiState {
     data object Idle : UpdateUiState
     data object Checking : UpdateUiState
-    data object UpToDate : UpdateUiState
+    data class UpToDate(val tag: Int) : UpdateUiState
     data class Available(val tag: Int) : UpdateUiState
     data object NetworkError : UpdateUiState
 }
@@ -111,14 +112,17 @@ private suspend fun fetchLatestGitHubDateTag(): Int = withContext(Dispatchers.IO
         setRequestProperty("User-Agent", "shso-update-check")
     }
     try {
-        if (conn.responseCode != HttpURLConnection.HTTP_OK) return@withContext 0
+        if (conn.responseCode != HttpURLConnection.HTTP_OK) {
+            throw IOException("GitHub tags HTTP ${conn.responseCode}")
+        }
         val html = conn.inputStream.bufferedReader().use { it.readText() }
         val linkRe = Regex("""yezijinn/shso/(?:tree|releases/tag)/([^"'<>?#\s]+)""")
         val nums = linkRe.findAll(html).mapNotNull { m ->
-            val digits = m.groupValues[1].filter { it.isDigit() }
-            if (digits.length in 6..8) digits.toIntOrNull() else null
+            m.groupValues[1].removePrefix("v")
+                .takeIf { it.length in 6..8 && it.all(Char::isDigit) }
+                ?.toIntOrNull()
         }
-        nums.maxOrNull() ?: 0
+        nums.maxOrNull() ?: throw IOException("GitHub tags contain no numeric release tag")
     } finally {
         conn.disconnect()
     }
@@ -231,7 +235,7 @@ fun SettingsPage(
                 val latest = fetchLatestGitHubDateTag()
                 val local = BuildConfig.VERSION_CODE
                 Log.d("ShsoUpdate", "latest=$latest local=$local")
-                updateState = if (latest > local) UpdateUiState.Available(latest) else UpdateUiState.UpToDate
+                updateState = if (latest > local) UpdateUiState.Available(latest) else UpdateUiState.UpToDate(latest)
             } catch (_: Exception) {
                 updateState = UpdateUiState.NetworkError
             }
@@ -643,7 +647,7 @@ fun SettingsPage(
             }
         }
 
-        UpdateUiState.UpToDate -> {
+        is UpdateUiState.UpToDate -> {
             AuroraWindowDialog(
                 show = true,
                 title = "提示",
@@ -661,7 +665,7 @@ fun SettingsPage(
                         textAlign = TextAlign.Start
                     )
                     Text(
-                        text = "在线最新版本:${BuildConfig.VERSION_CODE}",
+                        text = "在线最新版本:${s.tag}",
                         style = AuroraTextStyles.body2,
                         color = AuroraTokens.Text,
                         textAlign = TextAlign.Start
