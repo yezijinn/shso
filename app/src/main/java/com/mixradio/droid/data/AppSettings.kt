@@ -5,6 +5,7 @@ package com.mixradio.droid.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -14,6 +15,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 
+/**
+ * 全部 var 都是 mutableStateOf（Compose 读取会自动订阅其变化），
+ * 声明 @Stable 让 Compose 把整个实例视为「引用不变即未变」——父 Composable 因其它原因
+ * 重组时，接收 AppSettings 的子 Composable 可正确跳过（否则保守认为不稳定而被迫重组）。
+ * 类内字段读写都已通过 mutableStateOf 自动订阅，外层只需持有同一引用即可。
+ */
+@Stable
 class AppSettings private constructor(context: Context) {
 
     private val prefs: SharedPreferences = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
