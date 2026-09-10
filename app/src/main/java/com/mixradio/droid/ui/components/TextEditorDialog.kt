@@ -164,7 +164,13 @@ private fun TextEditorDialogContent(
     var lastAutoSaveAt by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var lastSavedAtMs by remember { mutableLongStateOf(0L) }
 
-    val stats by remember { derivedStateOf { TextStatistics.compute(contentValue.text) } }
+    // 统计改为后台异步计算，避免每次按键在主线程同步全量扫描阻塞 UI。
+    var stats by remember { mutableStateOf(TextStatistics.Stats(0, 0, 0, 0, 0, 0, 0, 0)) }
+    LaunchedEffect(contentValue.text) {
+        val t = contentValue.text
+        stats = if (t.isEmpty()) TextStatistics.Stats(0, 0, 0, 0, 0, 0, 0, 0)
+        else withContext(Dispatchers.Default) { TextStatistics.compute(t) }
+    }
 
     fun replaceEditorText(newText: String) {
         if (newText != contentValue.text) {
@@ -252,18 +258,21 @@ private fun TextEditorDialogContent(
     // 修复：旧实现用「静态 Text + 透明 BasicTextField(matchParentSize)」叠加，
     // 在 Row(verticalScroll) 滚动容器内产生 0 宽 Constraints → IllegalArgumentException 闪退（.sh），
     // 同一坏约束使普通分支 fillMaxSize 拿到 0 宽 → txt 内容不可见。
-    val highlightTransformation = remember(language) {
+    // 语法高亮结果提升到组合层记忆化：仅随 contentValue.text 或 language 变化重算，
+    // 避免 VisualTransformation 的 lambda 在每次重组/布局时都全量重跑 CodeHighlighter。
+    val highlightedText = remember(contentValue.text, language) {
         val lang = language
-        if (lang == null) androidx.compose.ui.text.input.VisualTransformation.None
+        if (lang == null || contentValue.text.isEmpty() || contentValue.text.length > 100_000) null
+        else CodeHighlighter.highlight(contentValue.text, lang.ext, AuroraTokens.Text)
+    }
+    val highlightTransformation = remember(highlightedText) {
+        if (highlightedText == null) androidx.compose.ui.text.input.VisualTransformation.None
         else androidx.compose.ui.text.input.VisualTransformation { text ->
             // 超长文本降级纯文本（全量重扫描高亮在输入时会造成卡顿）
             if (text.text.isEmpty() || text.text.length > 100_000) {
                 androidx.compose.ui.text.input.TransformedText(text, androidx.compose.ui.text.input.OffsetMapping.Identity)
             } else {
-                androidx.compose.ui.text.input.TransformedText(
-                    CodeHighlighter.highlight(text.text, lang.ext, AuroraTokens.Text),
-                    androidx.compose.ui.text.input.OffsetMapping.Identity
-                )
+                androidx.compose.ui.text.input.TransformedText(highlightedText, androidx.compose.ui.text.input.OffsetMapping.Identity)
             }
         }
     }
@@ -845,22 +854,11 @@ private fun EditorContentArea(
                 // ── 行号列（与编辑区共享同一 scrollState，纵向同步滚动）──
                 if (showLineNumber) {
                     Box(modifier = Modifier.width((lineNumberWidth * (fontSize.value * 0.7f)).dp + 12.dp)) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(scrollState)
-                                .padding(end = 8.dp),
-                            horizontalAlignment = Alignment.End
-                        ) {
-                            for (i in 1..lineCount) {
-                                Text(
-                                    text = "$i",
-                                    style = AuroraTextStyles.monospace.copy(fontSize = fontSize),
-                                    color = AuroraTokens.TextDisabled,
-                                    modifier = Modifier.padding(horizontal = 4.dp)
-                                )
-                            }
-                        }
+                        EditorLineNumbers(
+                            lineCount = lineCount,
+                            fontSize = fontSize,
+                            scrollState = scrollState
+                        )
                     }
                     // 竖直分隔线：必须用 VerticalDivider（fillMaxHeight）。
                     // 不可用 HorizontalDivider——其内部强制 fillMaxWidth()，在横向 Row 里会
@@ -895,6 +893,36 @@ private fun EditorContentArea(
                     scope.launch { scrollState.scrollTo((f * scrollState.maxValue).toInt().coerceAtLeast(0)) }
                 },
                 modifier = Modifier.align(Alignment.CenterEnd)
+            )
+        }
+    }
+}
+
+/**
+ * 编辑模式行号列（独立重组单元）。
+ * 参数 [lineCount]/[fontSize]/[scrollState] 稳定，只有真正增删行时才会重算，
+ * 避免每次按键重建全部行号 Text 节点。与编辑区共享 [scrollState]，纵向滚动同步保持不变。
+ */
+@Composable
+private fun EditorLineNumbers(
+    lineCount: Int,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    scrollState: androidx.compose.foundation.ScrollState,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(scrollState)
+            .padding(end = 8.dp),
+        horizontalAlignment = Alignment.End
+    ) {
+        for (i in 1..lineCount) {
+            Text(
+                text = "$i",
+                style = AuroraTextStyles.monospace.copy(fontSize = fontSize),
+                color = AuroraTokens.TextDisabled,
+                modifier = Modifier.padding(horizontal = 4.dp)
             )
         }
     }
@@ -1041,7 +1069,17 @@ private fun FindReplaceDialog(
     var replaceText by remember { mutableStateOf("") }
     val matchCount = remember(findText, text) {
         if (findText.isEmpty()) 0
-        else text.split(findText).size - 1
+        else {
+            // 用 indexOf 循环计数，避免 split 产生巨大临时 List/子串分配；
+            // 步进 idx + findText.length 与原 split（非重叠）计数语义一致。
+            var count = 0
+            var idx = text.indexOf(findText)
+            while (idx >= 0) {
+                count++
+                idx = text.indexOf(findText, idx + findText.length)
+            }
+            count
+        }
     }
 
     // 极光渐变画笔（青→紫→粉，主题同源）
