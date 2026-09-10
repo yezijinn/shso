@@ -6,13 +6,23 @@ package com.mixradio.droid.data
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 
-data class ParsedAnsiResult(
-    val text: AnnotatedString,
-    val plainText: String
-)
+/**
+ * ANSI 解析结果。
+ * @param lines 按行切分的渲染结果，每行一个 [AnnotatedString]（不含行尾 '\n'）；
+ *   空行对应空 [AnnotatedString]，与 `split('\n')` 语义一致（"a\n" → ["a", ""]）。
+ */
+class ParsedAnsiResult(
+    val lines: List<AnnotatedString>
+) {
+    /**
+     * 已剥离转义序列、CR 已归一化的纯文本（与历史语义一致）。
+     * 惰性求值：它只在「复制输出」时被读取，若每次 flush 都拼接整段（250k）会造成大量
+     * 重复分配，故改为按需计算并缓存。
+     */
+    val plainText: String by lazy { lines.joinToString("\n") { it.text } }
+}
 
 object AnsiParser {
 
@@ -38,20 +48,57 @@ object AnsiParser {
     )
 
     fun parseAnsi(raw: String, defaultColor: Color): ParsedAnsiResult {
-        // CR 归一化：\r\n 视为换行，孤立 \r 剥离（终端回车符在文本容器中会导致光标/显示异常）
-        val normalized = raw.replace("\r\n", "\n").replace('\r', '\n')
+        // CR 归一化不要无条件做：仅当含 '\r' 时才做单次归一化，避免每次 flush 两次全量 replace 分配。
+        val normalized = if (raw.indexOf('\r') >= 0) {
+            raw.replace("\r\n", "\n").replace('\r', '\n')
+        } else {
+            raw
+        }
         if (normalized.isEmpty()) {
-            return ParsedAnsiResult(AnnotatedString(""), "")
+            return ParsedAnsiResult(emptyList())
+        }
+
+        // 逐行构建：lineTexts 存每行纯文本，lineStyles 存每行相对该行的 SpanStyle 区间。
+        val lineTexts = ArrayList<StringBuilder>()
+        val lineStyles = ArrayList<MutableList<AnnotatedString.Range<SpanStyle>>>()
+        var curText = StringBuilder()
+        var curStyles = mutableListOf<AnnotatedString.Range<SpanStyle>>()
+
+        // 把一段文本按 '\n' 切分后追加到当前行（记录区间的 start/end 为相对该行偏移），遇 '\n' 新起一行。
+        fun emit(segment: String, style: SpanStyle) {
+            var i = 0
+            while (i < segment.length) {
+                val nl = segment.indexOf('\n', i)
+                if (nl == -1) {
+                    val start = curText.length
+                    curText.append(segment, i, segment.length)
+                    val end = curText.length
+                    if (end > start) {
+                        curStyles.add(AnnotatedString.Range(style, start, end))
+                    }
+                    break
+                } else {
+                    val start = curText.length
+                    curText.append(segment, i, nl)
+                    val end = curText.length
+                    if (end > start) {
+                        curStyles.add(AnnotatedString.Range(style, start, end))
+                    }
+                    // 行结束：收尾当前行并开新行
+                    lineTexts.add(curText)
+                    lineStyles.add(curStyles)
+                    curText = StringBuilder()
+                    curStyles = mutableListOf()
+                    i = nl + 1
+                }
+            }
         }
 
         if (!normalized.contains('\u001B')) {
+            // 无 ANSI 快速路径：整段用默认色一次性按行 emit
             val singleStyle = SpanStyle(color = defaultColor, fontWeight = FontWeight.Normal)
-            val annotated = AnnotatedString(normalized, spanStyles = listOf(AnnotatedString.Range(singleStyle, 0, normalized.length)))
-            return ParsedAnsiResult(annotated, normalized)
-        }
-
-        val plainSb = StringBuilder(normalized.length)
-        val annotated = buildAnnotatedString {
+            emit(normalized, singleStyle)
+        } else {
             var currentColor = defaultColor
             var isBold = false
             var lastIndex = 0
@@ -59,15 +106,12 @@ object AnsiParser {
             ANSI_REGEX.findAll(normalized).forEach { matchResult ->
                 if (matchResult.range.first > lastIndex) {
                     val segment = normalized.substring(lastIndex, matchResult.range.first)
-                    plainSb.append(segment)
-                    append(segment)
-                    addStyle(
-                        style = SpanStyle(
+                    emit(
+                        segment,
+                        SpanStyle(
                             color = currentColor,
                             fontWeight = if (isBold) FontWeight.Bold else FontWeight.Normal
-                        ),
-                        start = length - segment.length,
-                        end = length
+                        )
                     )
                 }
 
@@ -120,20 +164,24 @@ object AnsiParser {
 
             if (lastIndex < normalized.length) {
                 val tail = normalized.substring(lastIndex)
-                plainSb.append(tail)
-                append(tail)
-                addStyle(
-                    style = SpanStyle(
+                emit(
+                    tail,
+                    SpanStyle(
                         color = currentColor,
                         fontWeight = if (isBold) FontWeight.Bold else FontWeight.Normal
-                    ),
-                    start = length - tail.length,
-                    end = length
+                    )
                 )
             }
         }
 
-        return ParsedAnsiResult(annotated, plainSb.toString())
+        // 收尾最后一行（句尾 '\n' 产生的空行也要保留，与 split('\n') 语义一致）
+        lineTexts.add(curText)
+        lineStyles.add(curStyles)
+
+        val lines = lineTexts.mapIndexed { idx, sb ->
+            AnnotatedString(sb.toString(), spanStyles = lineStyles[idx])
+        }
+        return ParsedAnsiResult(lines)
     }
 
     /**
