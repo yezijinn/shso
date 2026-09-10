@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mixradio.droid.data.AnsiParser
 import com.mixradio.droid.data.AppSettings
+import com.mixradio.droid.data.IncrementalAnsiParser
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.security.CommandSource
 import com.mixradio.droid.data.security.Finding
@@ -100,6 +101,13 @@ fun TerminalPage(
         Color(appSettings.terminalTextColor)
     }
 
+    // 增量解析器：跨 flush 维护「当前未完成行 / SGR 状态 / \r 光标列 / 截断的 ESC 序列」，
+    // 因此每次发布只需解析**新增尾部**，不再全量重扫 250k 窗口。
+    // 颜色是解析器的构造参数，换色即重建（key 为 terminalDefaultColor）。
+    val ansiParser = remember(terminalDefaultColor) { IncrementalAnsiParser(terminalDefaultColor) }
+    // 已消费的输入前缀，用于判定「本次是追加还是整体替换」。
+    var consumedLog by remember(terminalDefaultColor) { mutableStateOf("") }
+
     // 首帧同步解析一次（仅进入终端页时发生一次），保证打开即有内容、无空白闪烁。
     var parsedOutput by remember {
         mutableStateOf(AnsiParser.parseAnsi(RootService.outputLog, terminalDefaultColor))
@@ -109,11 +117,23 @@ fun TerminalPage(
     // 实测留在组合期会占满主线程（主线程 CPU ≈142%，帧耗时 200ms+，界面近乎冻结）。
     // conflate() 保证同一时刻只有一个解析在跑，中间值直接丢弃，不会因高频发布堆积。
     LaunchedEffect(terminalDefaultColor) {
+        ansiParser.reset()
+        consumedLog = ""
         snapshotFlow { RootService.outputLog }
             .conflate()
             .collect { log ->
                 parsedOutput = withContext(Dispatchers.Default) {
-                    AnsiParser.parseAnsi(log, terminalDefaultColor)
+                    if (log.length > consumedLog.length && log.startsWith(consumedLog)) {
+                        // 追加：只解析新增部分
+                        ansiParser.feed(log.substring(consumedLog.length))
+                    } else {
+                        // 整体替换（清屏 / 横幅重生成 / 滑动窗口裁剪掉了头部）：
+                        // 此时无法复用状态，回落全量解析。
+                        ansiParser.reset()
+                        ansiParser.feed(log)
+                    }
+                    consumedLog = log
+                    ansiParser.snapshot()
                 }
             }
     }
