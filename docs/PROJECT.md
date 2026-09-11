@@ -1,5 +1,11 @@
 # PROJECT.md — shso
 
+> **本文档面向开发者 / AI 协作者**：技术栈、目录结构、架构与安全约束、安全子系统设计、已知注意点。
+> 功能用法与面向用户的说明见仓库根目录 [`README.md`](../README.md)；
+> 变更记录见 [`更新日志.md`](../更新日志.md)；
+> 运行时守卫模块见 [`module/shso_guard/README.md`](../module/shso_guard/README.md)。
+> 任务看板（`TASKS*.md`）属过程记录，不在本文档维护范围内。
+
 ## 项目定位
 
 Android ROOT 环境下的图形化执行工具：一键运行 `.sh` 脚本与 `.so`/ELF 原生程序，带 ANSI 高亮终端、stdin 交互、ROOT 全盘文件管理。包名 `com.mixradio.droid`，`versionName = Jinn`，`versionCode` = 构建当日日期（如 `20260911`），默认工作目录 `/data/adb/shso`。
@@ -129,8 +135,13 @@ UI 层 100% 采用 AndroidX Compose Material 3 原生控件（`androidx.compose.
 - **未使用 zstd**（`.zst` / `.tar.zst`，2026-09-11 移除）：zstd-jni 的 AAR 为 4 个 ABI 各带一份原生库（约 1.9MB）。
   当前支持的 12 种格式见 `ArchiveExtractor`。
  - Release 签名：本地 keystore（仓库外，V2+V3，alias=com.mixradio.droid），debug buildType 复用 release 签名
+- **产物体积参考（2026-09-11 版本，1.84MB）**：dex 约 1.59MB（88%）/ `resources.arsc` 98KB / `res/` 79KB /
+  `assets/` 34KB / `lib/` 10KB。想继续瘦身只能从 dex 入手（Compose 与 `material-icons-extended`），
+  `python build_apk.py` 会在每次构建后打印该构成并校验 ABI 白名单与 zstd 残留。
 - **Release 已开启 R8**：`isMinifyEnabled = true` + `shrinkResources = true`（2026-09-11 起；此前为 `false`）。开启后资源会被重命名为随机短名（如 `res/RJ.png`）并剔除未引用资源，因此**不要按 APK 内的资源名反查源码资源**，应以源码 `res/` 与构建产物的映射为准。
 - packaging excludes 清理了 META-INF/kotlin/assets 冗余；ArtProfile 与 mergeAssets 任务被禁用
+- packaging excludes 同时排除 `org/apache/commons/codec/language/bm/**`（commons-codec 的语音匹配词典，
+  约 96KB，本应用不涉及语音编码）
 
 ## 页面功能清单（Jinn / 20260911）
 
@@ -170,3 +181,17 @@ UI 层 100% 采用 AndroidX Compose Material 3 原生控件（`androidx.compose.
 - **「安装套件」聚合规则**（`ApkInstaller.collectApkSet`）：主判定走命名约定（`<名>-<版本>.APK` + `-splitN`，纯函数 `nameBasedSet` 有单测覆盖），次判定走 manifest 的「同包名 + 同版本号」；`bases.size != 1` 时退回单文件，绝不猜测。改动这里需同步 `ApkInstallerSetTest`。
 - **「提取 APK」依赖 `QUERY_ALL_PACKAGES`**：targetSdk 30+ 的包可见性过滤会让 `getInstalledPackages()` 只返回可见包；移除该权限会导致应用列表残缺。读取 `/data/app/...` 的安装包需 ROOT，无 ROOT 仅系统分区可直读的应用可用。产物命名规则（大写 `.APK`、分包 `-splitN`）由 `ApkExtractor` 的纯函数决定，改动需同步 `ApkExtractorTest`。
 - `Process.pid()` 在 Android 上不存在，取子进程 pid 只能反射；中断正确性由**进程组回收**保证。
+
+## 文档维护约定
+
+| 文档 | 职责 | 不要写什么 |
+|---|---|---|
+| `README.md` | 面向用户的功能、构建、安全与版本说明 | **不写更新日志内容**（只保留指向 `更新日志.md` 的一行） |
+| `更新日志.md` | 所有变更：新增 / 修复 / 优化 / 安全，一行一条，按日期倒序 | 不复述实现细节（细节在提交信息或本文档） |
+| `docs/PROJECT.md`（本文件） | 技术栈、架构、安全子系统、构建约束、已知注意点 | 不重复 README 的功能清单 |
+| `module/shso_guard/README.md` | 守卫模块的原理、策略、覆盖范围、能力边界 | 不写 App 侧静态审查细节 |
+
+- 改动功能后同步顺序：代码 → 单测 → `更新日志.md` → `README.md` / 本文件（仅当影响用法或约束时）→ 提交。
+- 任务看板 `TASKS*.md` 属过程记录，不参与对外文档同步。
+- 新增守卫包装器必须三处同步：`gen_wrappers.py` 的 specs、`assets/shso_guard.zip`、
+  `GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES`，并升 `module.prop` 的 `version=`。
