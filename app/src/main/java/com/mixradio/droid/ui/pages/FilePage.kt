@@ -28,7 +28,6 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 
 
 import androidx.compose.material.icons.Icons
@@ -168,7 +167,10 @@ fun FilePage(
     var showBatchRenameDialog by remember { mutableStateOf(false) }
     var batchRenameInput by remember { mutableStateOf("") }
 
-    val listState = rememberLazyListState()
+    // 按目录重建 LazyListState：切目录即天然回到顶部（新状态初始位置为 0），无需调用可挂起的
+    // `scrollToItem(0)`——那样会阻塞 LaunchedEffect（列表尚未组合时该调用会一直挂起），
+    // 使紧随其后的 refresh() 永不执行，表现为「进入目录后一直空白、点刷新才出来」。
+    val listState = remember(currentDirectory) { LazyListState() }
 
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
     var installStatusMessage by remember { mutableStateOf<String?>(null) }
@@ -273,12 +275,11 @@ fun FilePage(
     }
 
     LaunchedEffect(currentDirectory) {
-        // 切目录：退出多选、清空选中、滚动归顶。
-        // 多选态下若保留旧的 selectedPaths，批量删除/拷贝会作用到旧目录里同名路径（用户还看不见）；
-        // 滚动位置也不继承，否则新目录会直接停在旧下标（小目录可能停在末尾、漏看前列）。
+        // 切目录：退出多选、清空选中。
+        // 多选态下若保留旧的 selectedPaths，批量删除/拷贝会作用到旧目录里同名路径（用户还看不见）。
+        // 滚动位置由上面的 `remember(currentDirectory) { LazyListState() }` 自动归零，无挂起调用。
         multiSelectMode = false
         selectedPaths.clear()
-        listState.scrollToItem(0)
         // 建目录与列目录无关，改为后台并行，不再串行阻塞列表首屏加载
         launch { RootFileManager.ensureShsoDir() }
         refresh()

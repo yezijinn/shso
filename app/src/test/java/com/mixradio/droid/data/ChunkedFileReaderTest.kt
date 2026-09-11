@@ -86,4 +86,32 @@ class ChunkedFileReaderTest {
         val missing = File(System.getProperty("java.io.tmpdir"), "chunked-does-not-exist-${System.nanoTime()}")
         assertTrue(ChunkedFileReader.readHeadLocal(missing.absolutePath, 4096).isEmpty())
     }
+
+    // ── 分段加载的行边界对齐（避免在行/多字节字符中间切断）──
+
+    @Test
+    fun `行对齐返回最后一个换行的结束下标`() {
+        val bytes = "abc\ndef\nxyz".toByteArray(Charsets.UTF_8)
+        // "abc\ndef\n" 共 8 字节，下一个块的起点应为 8
+        assertEquals(8, ChunkedFileReader.lastCompleteLineEnd(bytes))
+    }
+
+    @Test
+    fun `行对齐在末尾换行时返回全长`() {
+        val bytes = "abc\n".toByteArray(Charsets.UTF_8)
+        assertEquals(4, ChunkedFileReader.lastCompleteLineEnd(bytes))
+    }
+
+    @Test
+    fun `行对齐在无换行时返回负一`() {
+        assertEquals(-1, ChunkedFileReader.lastCompleteLineEnd("abc".toByteArray(Charsets.UTF_8)))
+        assertEquals(-1, ChunkedFileReader.lastCompleteLineEnd(ByteArray(0)))
+    }
+
+    @Test
+    fun `行对齐落在多字节字符之后而非其中间`() {
+        // "中\n" = E4 B8 AD 0A → 换行在第 4 字节，切割点必须是 4（不会切在汉字中间）
+        val bytes = "中\n".toByteArray(Charsets.UTF_8)
+        assertEquals(4, ChunkedFileReader.lastCompleteLineEnd(bytes))
+    }
 }

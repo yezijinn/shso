@@ -15,6 +15,9 @@ object ChunkedFileReader {
 
     /** 默认分块大小：1MB；总大小超过此值走分段加载。 */
     const val CHUNK_BYTES = 1024L * 1024L
+
+    /** 换行符字节（LF）。分段加载按它对齐到完整行边界。 */
+    private const val LINE_FEED: Byte = 0x0A
     /**
      * 大于 **128KB** 的文件强制分段（只读 LazyColumn）加载。
      *
@@ -38,6 +41,22 @@ object ChunkedFileReader {
      * 在 1–2GB 区间则尝试申请等量内存 → OOM。
      */
     const val MAX_LOAD_BYTES = 32L * 1024L * 1024L
+
+    /**
+     * 返回 [bytes] 中「最后一个完整行」的结束下标（**含**该行的换行符）。
+     * 语义：`bytes[0, result)` 恰好包含整数个以 '\n' 结尾的行，可安全解码；
+     * `bytes[result, size)` 是尚未完整的一行，应留给下一块拼接。无换行时返回 -1。
+     *
+     * 为什么按单个 0x0A 字节扫描是安全的：'\n' 在 UTF-8 中是单字节 0x0A，而所有多字节序列的
+     * 续字节都 ≥0x80，因此 0x0A 一定落在字符边界上，不会从多字节字符中间截断。
+     * （UTF-16 不满足此性质，调用方需自行跳过对齐，见 TextEditorDialog。）
+     */
+    internal fun lastCompleteLineEnd(bytes: ByteArray): Int {
+        for (i in bytes.indices.reversed()) {
+            if (bytes[i] == LINE_FEED) return i + 1
+        }
+        return -1
+    }
 
     /** [loadAll] 实际最多读取的字节数（纯函数，便于单测）。 */
     internal fun cappedLoadBytes(total: Long): Long = when {

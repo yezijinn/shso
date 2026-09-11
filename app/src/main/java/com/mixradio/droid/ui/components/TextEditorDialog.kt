@@ -63,6 +63,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -216,19 +217,32 @@ private fun TextEditorDialogContent(
                     currentCharset = overrideCharset ?: load.charset
                     hasBom = load.hasBom
                     currentLineEnding = LineEnding.detect(load.text)
-                    contentValue = TextFieldValue(load.text, TextRange(load.text.length))
+                    // 内存统一归一为 LF 后再交给编辑器：Compose 的 BasicTextField 只按 '\n' 断行，
+                    // CR-only（旧 Mac）文本若不归一，整篇会被显示成一行、行号恒为 1；CRLF 也会让
+                    // 每行尾部残留一个不可见的 '\r'。保存时由 LineEnding.apply 按 currentLineEnding 还原。
+                    val normalized = LineEnding.apply(load.text, LineEnding.LF)
+                    contentValue = TextFieldValue(normalized, TextRange(normalized.length))
                     // 进入小文件模式时清空 chunkedLines，避免下次再切回大文件残留上次状态。
                     chunkedLines = emptyList()
                 } else {
                     val raw = ChunkedFileReader.readHead(path, ChunkedFileReader.CHUNK_BYTES.toInt())
-                    val det = CharsetDetector.detect(raw)
+                    val detected = CharsetDetector.detect(raw)
+                    // 首块也要对齐到完整行：否则会在行中间切断（同一逻辑行裂成两行、行号错位），
+                    // 或在多字节字符中间切断（出现替换符）。UTF-16 下按 0x0A 扫描不安全，跳过对齐。
+                    val alignedEnd =
+                        if (isUtf16Charset(overrideCharset ?: detected.charset)) -1
+                        else ChunkedFileReader.lastCompleteLineEnd(raw)
+                    val det = if (alignedEnd >= 0) CharsetDetector.detect(raw.copyOf(alignedEnd)) else detected
                     currentCharset = overrideCharset ?: det.charset
                     hasBom = det.hasBom
                     currentLineEnding = LineEnding.detect(det.text)
                     // 首次 load：head 全量 split（单次 O(N)，可接受）。后续 loadMore 仅追加。
-                    chunkedLines = det.text.split('\n')
-                    chunkedOffset = raw.size.toLong()
-                    chunkedHasMore = raw.size.toLong() < total
+                    val headText = LineEnding.apply(det.text, LineEnding.LF)
+                    chunkedLines = headText.split('\n').let { l ->
+                        if (l.isNotEmpty() && l.last().isEmpty()) l.dropLast(1) else l
+                    }
+                    chunkedOffset = (if (alignedEnd >= 0) alignedEnd else raw.size).toLong()
+                    chunkedHasMore = chunkedOffset < total
                 }
                 history = EditHistoryManager.getHistory(path)
             } catch (e: Exception) { loadError = "读取失败: ${e.message}" }
@@ -282,21 +296,34 @@ private fun TextEditorDialogContent(
     // 修复：旧实现用「静态 Text + 透明 BasicTextField(matchParentSize)」叠加，
     // 在 Row(verticalScroll) 滚动容器内产生 0 宽 Constraints → IllegalArgumentException 闪退（.sh），
     // 同一坏约束使普通分支 fillMaxSize 拿到 0 宽 → txt 内容不可见。
-    // 语法高亮结果提升到组合层记忆化：仅随 contentValue.text 或 language 变化重算，
-    // 避免 VisualTransformation 的 lambda 在每次重组/布局时都全量重跑 CodeHighlighter。
-    val highlightedText = remember(contentValue.text, language) {
+    // 语法高亮：**不在组合期同步计算**。旧实现 `remember(contentValue.text, language){}` 会在每次
+    // 按键触发的主线程重组里全量跑 CodeHighlighter（对每个标识符做 substring，上限 10 万字符），
+    // 实测连续输入时明显掉帧。改为输入停顿 120ms 后在后台线程重算。
+    //
+    // 关键正确性约束：VisualTransformation 返回的文本必须与输入文本一致，否则会把**陈旧文本**渲染到
+    // 输入框里。因此下面按 `hl.text == text.text` 校验：不等则回退为无高亮（仅短暂失色，文本与光标
+    // 始终正确），待新高亮算完再套用。
+    var highlightedText by remember { mutableStateOf<AnnotatedString?>(null) }
+    LaunchedEffect(contentValue.text, language) {
         val lang = language
-        if (lang == null || contentValue.text.isEmpty() || contentValue.text.length > 100_000) null
-        else CodeHighlighter.highlight(contentValue.text, lang.ext, AuroraTokens.Text)
+        val text = contentValue.text
+        if (lang == null || text.isEmpty() || text.length > 100_000) {
+            highlightedText = null
+            return@LaunchedEffect
+        }
+        delay(120L)
+        highlightedText = withContext(Dispatchers.Default) {
+            CodeHighlighter.highlight(text, lang.ext, AuroraTokens.Text)
+        }
     }
     val highlightTransformation = remember(highlightedText) {
-        if (highlightedText == null) androidx.compose.ui.text.input.VisualTransformation.None
+        val hl = highlightedText
+        if (hl == null) androidx.compose.ui.text.input.VisualTransformation.None
         else androidx.compose.ui.text.input.VisualTransformation { text ->
-            // 超长文本降级纯文本（全量重扫描高亮在输入时会造成卡顿）
-            if (text.text.isEmpty() || text.text.length > 100_000) {
-                androidx.compose.ui.text.input.TransformedText(text, androidx.compose.ui.text.input.OffsetMapping.Identity)
+            if (hl.text == text.text) {
+                androidx.compose.ui.text.input.TransformedText(hl, androidx.compose.ui.text.input.OffsetMapping.Identity)
             } else {
-                androidx.compose.ui.text.input.TransformedText(highlightedText, androidx.compose.ui.text.input.OffsetMapping.Identity)
+                androidx.compose.ui.text.input.TransformedText(text, androidx.compose.ui.text.input.OffsetMapping.Identity)
             }
         }
     }
@@ -662,22 +689,40 @@ private fun TextEditorDialogContent(
 //  工具函数
 // ═══════════════════════════════════════════════════════════════
 
-/** 大文件读下一段（追加加载）。 */
+/**
+ * 大文件读下一段（追加加载）。
+ *
+ * 关键：读取区间要**对齐到完整行边界**。旧实现固定 `+CHUNK_BYTES` 推进并按 1MB 原样解码，
+ * 会在行中间把同一个逻辑行切成两行（行号错乱），也会在多字节字符中间切断（出现替换符）。
+ * 现在只解码到本块最后一个 '\n'，并把 offset 推进到该换行之后——不足一行的尾字节留到下一块重读
+ * （最多重复读一行，代价可忽略），从而天然消除跨界问题，也无需跨块携带多余状态。
+ */
 private suspend fun loadNextChunk(
     filePath: String, fromOffset: Long, charset: java.nio.charset.Charset,
     onResult: (text: String, newOffset: Long, hasMore: Boolean) -> Unit
 ) = withContext(Dispatchers.IO) {
     try {
         val total = ChunkedFileReader.fileSize(filePath)
-        val nextOffset = fromOffset + ChunkedFileReader.CHUNK_BYTES
-        val hasMore = nextOffset < total
         val raw = ChunkedFileReader.readRange(filePath, fromOffset, ChunkedFileReader.CHUNK_BYTES)
-        val text = String(raw, charset)
-        onResult(text, nextOffset, hasMore)
+        if (raw.isEmpty()) {
+            onResult("", fromOffset, false)
+            return@withContext
+        }
+        val alignedEnd =
+            if (isUtf16Charset(charset)) -1 else ChunkedFileReader.lastCompleteLineEnd(raw)
+        val consumedLen = if (alignedEnd >= 0) alignedEnd else raw.size
+        val bytes = if (alignedEnd >= 0) raw.copyOf(consumedLen) else raw
+        val text = LineEnding.apply(String(bytes, charset), LineEnding.LF)
+        val newOffset = fromOffset + consumedLen
+        onResult(text, newOffset, newOffset < total)
     } catch (_: Throwable) {
         onResult("", fromOffset, false)
     }
 }
+
+/** UTF-16 系列编码下不能按单个 0x0A 字节做行对齐（换行是 2 字节，且 0x0A 可能出现在别的码元里）。 */
+private fun isUtf16Charset(cs: java.nio.charset.Charset): Boolean =
+    cs == Charsets.UTF_16 || cs == Charsets.UTF_16LE || cs == Charsets.UTF_16BE
 
 /** 写入文本：root 走 /data/local/tmp 中转 + mv；无 root 直写。 */
 private suspend fun writeTextFile(
