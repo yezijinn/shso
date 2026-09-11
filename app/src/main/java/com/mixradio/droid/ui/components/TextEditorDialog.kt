@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -50,6 +51,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -86,7 +88,9 @@ import com.mixradio.droid.data.TextStatistics
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraTokens
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
@@ -143,6 +147,10 @@ private fun TextEditorDialogContent(
 
     var fileTotalBytes by remember { mutableLongStateOf(0L) }
     var isLargeFile by remember { mutableStateOf(false) }
+    // 大文件分段模式：append-only 行列表。旧版复用 contentValue.text 累积 loadMore 内容，
+    // 每次新增都触发「整个累积文本」的重新 split，N 次 load → O(N²) 扫描 + 重新分配新 List。
+    // 此处只追加新行，整体 split 工作量降到 O(N) 线性。
+    var chunkedLines by remember { mutableStateOf(listOf<String>()) }
     var chunkedOffset by remember { mutableLongStateOf(0L) }
     var chunkedHasMore by remember { mutableStateOf(false) }
 
@@ -164,12 +172,25 @@ private fun TextEditorDialogContent(
     var lastAutoSaveAt by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var lastSavedAtMs by remember { mutableLongStateOf(0L) }
 
-    // 统计改为后台异步计算，避免每次按键在主线程同步全量扫描阻塞 UI。
-    var stats by remember { mutableStateOf(TextStatistics.Stats(0, 0, 0, 0, 0, 0, 0, 0)) }
-    LaunchedEffect(contentValue.text) {
-        val t = contentValue.text
-        stats = if (t.isEmpty()) TextStatistics.Stats(0, 0, 0, 0, 0, 0, 0, 0)
-        else withContext(Dispatchers.Default) { TextStatistics.compute(t) }
+    // 文本统计：按文件体积分支，避免大文本连续按键时反复扫描浪费 CPU。
+    //   - 小文件（≤ 64KB）：单次 compute < 5ms，直接在后台同步算，最新一帧 UI 即看到准确数字。
+    //   - 大文件（> 64KB）：compute 是单遍全字段扫描 + toByteArray，全量代价线性增长；
+    //     若不加防抖，按 launch 重启时每个字符仍触发扫描（且 LaunchedEffect 仅取消旧 launch
+    //     不取消已 enqueue 的 compute）。先 delay(600ms) 等连按结束，期间用最新文本比对短路。
+    val statsEmpty = TextStatistics.Stats(0, 0, 0, 0, 0, 0, 0, 0)
+    var stats by remember { mutableStateOf(statsEmpty) }
+    LaunchedEffect(Unit) {
+        snapshotFlow { contentValue.text }.collectLatest { t ->
+            if (t.isEmpty()) { stats = statsEmpty; return@collectLatest }
+            val wasLarge = t.length > 64 * 1024
+            if (wasLarge) delay(600L)
+            // compute 期间用户可能又改了文本；若已变则丢弃这次结果（collectLatest 也会取消旧 launch，
+            // 但 LaunchedEffect 重启不取消已在 IO 线程上跑的 compute，做二次保险）。
+            if (t != contentValue.text) return@collectLatest
+            val r = withContext(Dispatchers.Default) { TextStatistics.compute(t) }
+            if (t != contentValue.text) return@collectLatest
+            stats = r
+        }
     }
 
     fun replaceEditorText(newText: String) {
@@ -196,13 +217,16 @@ private fun TextEditorDialogContent(
                     hasBom = load.hasBom
                     currentLineEnding = LineEnding.detect(load.text)
                     contentValue = TextFieldValue(load.text, TextRange(load.text.length))
+                    // 进入小文件模式时清空 chunkedLines，避免下次再切回大文件残留上次状态。
+                    chunkedLines = emptyList()
                 } else {
                     val raw = ChunkedFileReader.readHead(path, ChunkedFileReader.CHUNK_BYTES.toInt())
                     val det = CharsetDetector.detect(raw)
                     currentCharset = overrideCharset ?: det.charset
                     hasBom = det.hasBom
                     currentLineEnding = LineEnding.detect(det.text)
-                    contentValue = TextFieldValue(det.text, TextRange(det.text.length))
+                    // 首次 load：head 全量 split（单次 O(N)，可接受）。后续 loadMore 仅追加。
+                    chunkedLines = det.text.split('\n')
                     chunkedOffset = raw.size.toLong()
                     chunkedHasMore = raw.size.toLong() < total
                 }
@@ -299,6 +323,9 @@ private fun TextEditorDialogContent(
                         dirty = false; lastSavedAtMs = System.currentTimeMillis()
                         history = r.third
                         toastMessage = "已保存"
+                        // 旧版 saveMessage 在成功路径不清理，导致上一次失败的红字提示在恢复后依旧停留。
+                        // 此处每次成功都强制置空，确保状态栏只剩最新的有效提示。
+                        saveMessage = null
                     } else { saveMessage = r.second ?: "保存失败" }
                 }
             }
@@ -351,8 +378,14 @@ private fun TextEditorDialogContent(
                                     filePath = currentFilePath ?: return@launch, fromOffset = chunkedOffset,
                                     charset = currentCharset,
                                     onResult = { text, newOffset, hasMore ->
-                                        val newText = contentValue.text + text
-                                        contentValue = TextFieldValue(newText, TextRange(newText.length))
+                                        // 仅追加新行到行列表，不重建旧行 → O(chunkSize) 而非 O(totalLoaded)。
+                                        // 行尾 \n 处理：「abc\n」split 后得到 ["abc", ""]，这里再 drop 末端空行
+                                        // 以保证行号与文件字节偏移一致（每行自带一个 \n）。
+                                        val newLines = text.split('\n').let { l ->
+                                            if (l.isNotEmpty() && l.last().isEmpty()) l.dropLast(1) else l
+                                        }
+                                        chunkedLines = if (newLines.isEmpty()) chunkedLines
+                                                       else chunkedLines + newLines
                                         chunkedOffset = newOffset
                                         chunkedHasMore = hasMore
                                     }
@@ -801,22 +834,25 @@ private fun EditorContentArea(
     highlightTransformation: androidx.compose.ui.text.input.VisualTransformation,
     showLineNumber: Boolean, fontSize: androidx.compose.ui.unit.TextUnit,
     scrollState: androidx.compose.foundation.ScrollState, hScroll: androidx.compose.foundation.ScrollState,
+    chunkedLines: List<String> = emptyList(),
     readOnly: Boolean = false
 ) {
     val scope = rememberCoroutineScope()
     // 编辑区 + 右侧细拖动条（贴紧边缘）：拖动可快速跳到目标行号。
     Box(modifier = Modifier.fillMaxSize()) {
         if (readOnly) {
-            // 大文件（分段模式）：用 LazyColumn 按行懒加载渲染，只布局可见行，
-            // 彻底规避 BasicTextField 对整段文本做 StaticLayout 全量布局导致的 OOM。
-            val lines = remember(value.text) { value.text.split('\n') }
+            // 大文件（分段模式）：用 LazyColumn 按行懒加载渲染，只布局可见行。
+            // chunkedLines 由调用方 append-only 维护，本组件直接消费、不再 split → 避开旧版
+            // 「每次 loadMore 重新分配整段累积文本 + 全量 split」的 O(N²) 退化。
+            // 加 stable key = index：append 时旧行索引未变，LazyColumn 跳过其重组，仅新增 N 行更新。
+            val lines = chunkedLines
             val lazyState = rememberLazyListState()
             LazyColumn(
                 state = lazyState,
                 modifier = Modifier.fillMaxSize().padding(start = 4.dp, top = 4.dp, bottom = 4.dp, end = 10.dp),
                 horizontalAlignment = Alignment.Start
             ) {
-                itemsIndexed(lines) { index, line ->
+                itemsIndexed(lines, key = { idx, _ -> idx }) { index, line ->
                     Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
                         if (showLineNumber) {
                             Text(
@@ -900,8 +936,17 @@ private fun EditorContentArea(
 
 /**
  * 编辑模式行号列（独立重组单元）。
- * 参数 [lineCount]/[fontSize]/[scrollState] 稳定，只有真正增删行时才会重算，
- * 避免每次按键重建全部行号 Text 节点。与编辑区共享 [scrollState]，纵向滚动同步保持不变。
+ *
+ * 旧版实现：非惰性 `Column { for (i in 1..lineCount) Text("$i") }`。
+ * 在 200k 行的文件上会一次性把 200k 个 Text 节点塞进组合树，O(N) 内存+ O(N) 首次 measure 开销，
+ * 在大型编辑会话中接近 OOM（与 2026-09-10 之前 BasicTextField 全量布局同一量级的隐患）。
+ *
+ * 新版实现：LazyColumn 按需组合可见行（~30-50 行）。
+ * 与编辑区共享同一个 [scrollState]，纵向同步由 `firstVisibleLine` 派生状态驱动
+ * `lazyState.scrollToItem(...)`，用户滚动 BasicTextField 时行号列即时跟随。
+ *
+ * @param lineCount 文件总行数（由 value.text.count('\n')+1 派生）
+ * @param scrollState 与 BasicTextField 共用的滚动状态
  */
 @Composable
 private fun EditorLineNumbers(
@@ -910,20 +955,45 @@ private fun EditorLineNumbers(
     scrollState: androidx.compose.foundation.ScrollState,
     modifier: Modifier = Modifier
 ) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(scrollState)
-            .padding(end = 8.dp),
-        horizontalAlignment = Alignment.End
-    ) {
-        for (i in 1..lineCount) {
-            Text(
-                text = "$i",
-                style = AuroraTextStyles.monospace.copy(fontSize = fontSize),
-                color = AuroraTokens.TextDisabled,
-                modifier = Modifier.padding(horizontal = 4.dp)
-            )
+    if (lineCount <= 0) return
+    val lazyState = rememberLazyListState()
+    // 行高 ≈ fontSize × 1.4（Material/M3 默认 lineHeight 系数）。
+    // 与 BasicTextField 内部排版存在亚像素级偏差，sync 时按整行滚动（scrollToItem），
+    // 让 LazyListState 自带的「贴齐 item」行为吸收偏差，最终在视觉上完全一致。
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val fontSizePx = with(density) { fontSize.toPx() }
+    val lineHeightPx = (fontSizePx * 1.4f).coerceAtLeast(1f)
+
+    // editor scrollState 像素偏移 → 行号列的「首个可见行」。
+    val firstVisibleLine by remember(lineCount, lineHeightPx) {
+        derivedStateOf {
+            if (lineCount <= 0) 0
+            else (scrollState.value / lineHeightPx).toInt().coerceIn(0, lineCount - 1)
+        }
+    }
+    LaunchedEffect(firstVisibleLine) {
+        // 仅当分歧 ≥1 行时 scrollToItem，避免每像素都触发滚动动画造成 churn。
+        val cur = lazyState.firstVisibleItemIndex
+        if (kotlin.math.abs(firstVisibleLine - cur) >= 1) {
+            lazyState.scrollToItem(firstVisibleLine)
+        }
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        LazyColumn(state = lazyState, modifier = Modifier.fillMaxSize()) {
+            items(lineCount, key = { it }) { i ->
+                Text(
+                    text = (i + 1).toString(),
+                    style = AuroraTextStyles.monospace.copy(
+                        fontSize = fontSize,
+                        color = AuroraTokens.TextDisabled
+                    ),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp)
+                )
+            }
         }
     }
 }

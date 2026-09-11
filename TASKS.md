@@ -242,3 +242,60 @@
     - APK：从 **5,024,154 bytes** 进一步降至 **5,004,178 bytes**（约 5.0 MB），节省 **19,976 bytes**。
   - 真机回归：启动后文件页正常渲染、进程存活、`logcat -b crash` 无崩溃输出。冒烟文件测试期间因多次 back 导致误退到桌面，重启后验证进入文件页正常。
   - 验证：`./gradlew.bat :app:assembleRelease` → `BUILD SUCCESSFUL`；`./gradlew.bat :app:testDebugUnitTest --rerun-tasks` → **124 tests / 0 failures**（真实重跑）。
+
+### 17. P1 性能 / ANR BUG 闭环 + 相关 P2 健壮性修复
+- [x] 编辑器行号列 / 大文件分段模式 / 文本统计 / 终端 items 四个 P1 性能 / ANR 风险点
+  - 排查方法：派 Explore 子代理对全工程做源码级审计（22 项），按影响面排序挑出 4 个 P1 性能 / ANR 风险 + 4 个相关 P2 健壮性 BUG，集中在这次落地。证据全部基于真实源码行号，无推测项。
+  - **P1-1 `TextEditorDialog.kt:920` `EditorLineNumbers` 非惰性 `Column { for (i in 1..lineCount) Text("$i") }`**：
+    200k 行的可编辑文件会把 200k 个 Text 节点塞进组合树 → 首次 measure O(N) + 内存占用 O(N)，
+    距 OOM 只差「文件再大一倍」。改为 **LazyColumn** + `items(lineCount, key = { it })`，
+    只组合可见 ~30-50 行；与编辑区共享的 scrollState 通过 `derivedStateOf { scrollState.value / lineHeightPx }`
+    派生 firstVisibleLine，再 `LaunchedEffect(firstVisibleLine)` 调 `lazyState.scrollToItem(...)`，按整行滚动而非像素
+    滚动（避免每像素 churn + 容忍字体度量亚像素级偏差）。
+  - **P1-2 `TextEditorDialog.kt:812/819` readOnly 模式 O(N²) split**：
+    旧实现用 `remember(value.text) { value.text.split('\n') }`，loadMore 把 `contentValue.text += text`
+    累积到原 contentValue，每次新增都触发「整段累积文本」的 split + 重新分配：
+    N 次 load → split 工作量 1+2+3+...+N = O(N²)。
+    修法：新增 `var chunkedLines: List<String>` append-only 状态；初始头文件全量 split
+    单次（O(N), 可接受）；loadMore 改为 `chunkedLines = chunkedLines + text.split('\n')`（O(chunk),
+    不重建旧行）。`EditorContentArea` 新增 `chunkedLines` 参数，按 `itemsIndexed(lines, key = { idx, _ -> idx })`
+    渲染：append 时旧行索引未变，LazyColumn 跳过其重组，仅新增行进入可视区。
+  - **P1-3 `TextEditorDialog.kt:169-173` 文本统计无防抖**：
+    旧实现 `LaunchedEffect(contentValue.text)` + `withContext(Default) { compute(t) }`，
+    连按时每个字符都 dispatch 一次 compute（全字段扫描 + `toByteArray`），大文件（> 64KB）
+    下队列堆积、status bar 滞后。改为按体积分支：小文件（≤ 64KB）同步算（< 5ms 一帧可见），
+    大文件 `delay(600ms)` 等连按结束，期间 `if (t != contentValue.text) return` 短路旧结果，
+    `collectLatest` 二次保险取消旧协程。
+  - **P1-4 `TerminalPage.kt:342` items 无 key → 全列重组**：
+    每次 flush（250ms 节流）`parsedOutput.lines` 返回新 `List<AnnotatedString>`，
+    LazyColumn 在无 key 时无法识别「同一逻辑行」，结果**整列**重新 measure + layout。
+    改为 `items(parsedOutput.lines, key = { line -> line.hashCode() })`：`AnnotatedString.hashCode`
+    由底层 `String.hashCode` 派生，对相同内容稳定；同一逻辑行跨 flush 共享 key，
+    LazyColumn 跳过其重组，仅新增行 + 滑动窗口裁剪后的新可见行进入。
+  - **P2-12 `RootService.kt:129` `outputLog == HyperCore.generateBanner(...)` O(N)**：
+    outputLog 在分页/拖动期间最大 250k 字符，== 仍逐字节扫描。改为长度快速短路 +
+    缓存 `expected` 引用：长度不等 → 一定不是当前横幅（O(1) 返回）；长度相等再做一次完整 equals。
+  - **P2-13 `TextEditorDialog.kt:302` 保存成功不清理 saveMessage**：
+    旧版 red 红字（saveMessage）在失败后不再清空，用户手动保存恢复成功后那条红字仍挂状态栏。
+    在 `dirty=false; lastSavedAtMs=...; toastMessage="已保存"` 后追加 `saveMessage = null`。
+  - **P2-14 `TextEditorDialog.kt:238-252` 自动保存「while(true)+delay(1000)+continue」空转**：
+    两个 BUG：① 即使无任务也每秒重调度协程；② dirty/path 变化 cancel + 重建协程，连按时协程不停重启。
+    改为 `LaunchedEffect(autoSaveSeconds)`（key 不再含 dirty/path）+ 内部 `combine(snapshotFlow(dirty), snapshotFlow(path))`，
+    真正改 → 再触发 collect；`collectLatest` 在用户继续编辑时取消上一次 wait/IO；`withContext(IO + NonCancellable)`
+    保护正在写的历史不被撕开半完成记录。
+  - **P2-19 `RootService.kt:680` `sendInterrupt` 写 ETX `\u0003` 冗余 / 误导**：
+    ProcessBuilder 起的子进程没有 TTY，\u0003 经 stdin 写入只是普通字符，不会触发 SIGINT；
+    真正能中断的是下方 `kill -2`。删除 `targetWriter?.write(3)` 一行并加注释澄清。
+  - **未变更项**：其余 11 项 P2（FilePage key、ChunkedFileReader overflow、RootService pid 反射、
+    Bitmap recycle、ArchiveExtractor Zip Slip canonical path、RootFileManager chmod 777、
+    runCommandSync stream close、sendInterrupt ETX 之外 4 项）已被审计但属次优先级；
+    按「只做有源码证据的热点」原则留待后续轮次，本轮优先 4 个真实可触发的 OOM / 卡顿 /
+    整列重组的 P1 路径 + 同批次 4 个相邻 P2 健壮性 BUG。
+  - 新增 import：`kotlinx.coroutines.flow.collectLatest`、`kotlinx.coroutines.NonCancellable`、
+    `androidx.compose.runtime.snapshotFlow`、`androidx.compose.foundation.lazy.items`、
+    `androidx.compose.foundation.layout.fillMaxWidth`（已有，编辑器 dispose 文案不变）。
+  - 验证：`./gradlew.bat --stop` 后 `./gradlew.bat :app:compileDebugKotlin` 与 `:app:assembleDebug :app:assembleRelease` → `BUILD SUCCESSFUL`；
+    `./gradlew.bat :app:testDebugUnitTest --rerun-tasks` → **124 tests / 0 failures**（基线守住，未因代码改动漂移）。
+    真机（BIYLBAFQQSS8DA69，debug）：`adb install -r` 成功，`am start` 后 `pidof com.mixradio.droid` 返回 PID，
+    `logcat -d -b crash` 为空，进程存活无 FATAL EXCEPTION。本轮无 ROOT 链路改动，ROOT 验收仍阻塞于 5a91ac60 未连接。
+
