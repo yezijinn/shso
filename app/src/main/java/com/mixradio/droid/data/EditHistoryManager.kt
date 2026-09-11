@@ -5,22 +5,27 @@ package com.mixradio.droid.data
 import android.content.Context
 import android.content.SharedPreferences
 import com.mixradio.droid.ShsoApplication
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
  * 文本编辑器编辑历史记录管理器。
- *  - 存储在 SharedPreferences（KEY `edit_history`，JSON 数组）
- *  - 每文件最多 20 条历史记录
- *  - 每条记录：content + timestamp
- *  - 按时间戳降序排列（最新在前）
+ *
+ * **存储布局**：每个文件一个 SharedPreferences key（`history:<绝对路径>`），值为该文件的 JSON 数组。
+ *  - 每文件最多 20 条历史记录，单条 content 上限 50 万字
+ *  - 每条记录：content + timestamp，按时间戳降序（最新在前）
+ *
+ * 旧实现把**所有文件**的历史塞进单个 key 的 JSON 数组，于是每次「读一条 / 加一条 / 清一个文件」
+ * 都要把整份历史（可能包含多个文件各 20 条 × 50 万字）完整解析并重写一遍：解析/序列化开销随
+ * 历史总量线性放大，SharedPreferences 字符串也会持续膨胀。改为按文件分 key 后，单次操作只触碰
+ * 该文件的数据。[ensureMigrated] 负责把旧的单 key 数据无损拆分。
  */
 object EditHistoryManager {
-    private const val KEY_HISTORY = "edit_history"
+    /** 旧版：所有文件共用一个大 JSON 数组。仅用于一次性迁移。 */
+    private const val KEY_LEGACY = "edit_history"
+    private const val KEY_PREFIX = "history:"
     private const val MAX_HISTORY_PER_FILE = 20
-    private const val MAX_CONTENT_CHARS = 500_000  // 单条历史上限 50 万字，防 SharedPreferences 膨胀
+    private const val MAX_CONTENT_CHARS = 500_000  // 单条历史上限 50 万字
 
     private val prefs: SharedPreferences by lazy {
         ShsoApplication.appContext.getSharedPreferences("shso_editor", Context.MODE_PRIVATE)
@@ -35,77 +40,100 @@ object EditHistoryManager {
      * 获取指定文件的全部历史记录（按时间降序）。
      */
     fun getHistory(filePath: String): List<HistoryEntry> {
-        val all = readAll()
-        return all.filter { it.optString("filePath") == filePath }
-            .map { entry ->
-                HistoryEntry(
-                    content = entry.optString("content", ""),
-                    timestamp = entry.optLong("timestamp", 0L)
-                )
-            }
-            .sortedByDescending { it.timestamp }
+        ensureMigrated()
+        return readFile(filePath)
     }
 
     /**
      * 添加一条历史记录（追加到最前）。
-     *  - 内容超过 MAX_CONTENT_CHARS 时截断（取末尾）
-     *  - 文件历史超过 MAX_HISTORY_PER_FILE 时淘汰最旧条目
+     *  - 内容超过 [MAX_CONTENT_CHARS] 时截断（取末尾）
+     *  - 与最新一条相同则跳过（类 git：无变更不入库）
+     *  - 文件历史超过 [MAX_HISTORY_PER_FILE] 时淘汰最旧条目
      */
+    @Synchronized
     fun addHistory(filePath: String, content: String) {
+        ensureMigrated()
         val safeContent = if (content.length > MAX_CONTENT_CHARS) {
             content.substring(content.length - MAX_CONTENT_CHARS)
         } else {
             content
         }
 
-        val all = readAll()
-        // 去重：与最新版本内容相同则跳过（类 git：无变更不入库）
-        val latestForFile = all.firstOrNull { it.optString("filePath") == filePath }
-        if (latestForFile != null && latestForFile.optString("content", "") == safeContent) return
+        val entries = readFile(filePath)
+        if (entries.firstOrNull()?.content == safeContent) return
 
-        // 内容级去重：相同内容的历史只保留最新一条（用户要求）
-        val thisFileEntries = all.filter { it.optString("filePath") == filePath }
-            .filter { it.optString("content", "") != safeContent }  // 剔除内容相同的旧条目
-            .sortedByDescending { it.optLong("timestamp", 0L) }
-            .take(MAX_HISTORY_PER_FILE - 1)  // 留 1 个位置给新条目
-            .toMutableList()
-        val otherFileEntries = all.filter { it.optString("filePath") != filePath }
-
-        // 新记录插到最前
-        val newEntry = JSONObject().apply {
-            put("filePath", filePath)
-            put("content", safeContent)
-            put("timestamp", System.currentTimeMillis())
-        }
-        thisFileEntries.add(0, newEntry)
-
-        writeAll(otherFileEntries + thisFileEntries)
+        // 内容级去重：相同内容的历史只保留最新一条；留 1 个位置给新条目
+        val kept = entries.filter { it.content != safeContent }.take(MAX_HISTORY_PER_FILE - 1)
+        writeFile(filePath, listOf(HistoryEntry(safeContent, System.currentTimeMillis())) + kept)
     }
 
     /**
      * 清除指定文件的全部历史。
      */
+    @Synchronized
     fun clearHistory(filePath: String) {
-        val all = readAll()
-        val filtered = all.filter { it.optString("filePath") != filePath }
-        writeAll(filtered)
+        ensureMigrated()
+        prefs.edit().remove(keyFor(filePath)).apply()
     }
 
-    /** 读取全部 JSON 数组 */
-    private fun readAll(): List<JSONObject> {
-        val raw = prefs.getString(KEY_HISTORY, "[]") ?: "[]"
+    private fun keyFor(filePath: String) = KEY_PREFIX + filePath
+
+    private fun readFile(filePath: String): List<HistoryEntry> {
+        val raw = prefs.getString(keyFor(filePath), null) ?: return emptyList()
         return try {
             val arr = JSONArray(raw)
-            (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                HistoryEntry(o.optString("content", ""), o.optLong("timestamp", 0L))
+            }.sortedByDescending { it.timestamp }
         } catch (_: Throwable) {
             emptyList()
         }
     }
 
-    /** 写回全部 JSON 数组 */
-    private fun writeAll(list: List<JSONObject>) {
+    private fun writeFile(filePath: String, entries: List<HistoryEntry>) {
+        prefs.edit().putString(keyFor(filePath), entriesToJson(entries).toString()).apply()
+    }
+
+    private fun entriesToJson(entries: List<HistoryEntry>): JSONArray {
         val arr = JSONArray()
-        list.forEach { arr.put(it) }
-        prefs.edit().putString(KEY_HISTORY, arr.toString()).apply()
+        entries.forEach { e ->
+            arr.put(JSONObject().apply {
+                put("content", e.content)
+                put("timestamp", e.timestamp)
+            })
+        }
+        return arr
+    }
+
+    /**
+     * 一次性迁移：把旧的单 key 大数组按 filePath 拆分到各自的 key，然后删除旧 key。
+     * 幂等：迁移后 `KEY_LEGACY` 不存在，后续调用立即返回。
+     */
+    @Synchronized
+    private fun ensureMigrated() {
+        if (!prefs.contains(KEY_LEGACY)) return
+        val edit = prefs.edit()
+        val legacy = prefs.getString(KEY_LEGACY, null)
+        if (!legacy.isNullOrBlank()) {
+            try {
+                val arr = JSONArray(legacy)
+                val byFile = LinkedHashMap<String, MutableList<HistoryEntry>>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val path = o.optString("filePath")
+                    if (path.isEmpty()) continue
+                    byFile.getOrPut(path) { mutableListOf() }
+                        .add(HistoryEntry(o.optString("content", ""), o.optLong("timestamp", 0L)))
+                }
+                for ((path, list) in byFile) {
+                    val trimmed = list.sortedByDescending { it.timestamp }.take(MAX_HISTORY_PER_FILE)
+                    edit.putString(keyFor(path), entriesToJson(trimmed).toString())
+                }
+            } catch (_: Throwable) {
+                // 旧数据损坏：直接丢弃，不阻断使用
+            }
+        }
+        edit.remove(KEY_LEGACY).apply()
     }
 }
