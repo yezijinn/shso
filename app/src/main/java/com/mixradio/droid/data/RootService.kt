@@ -200,6 +200,9 @@ object RootService {
     fun runCommandSync(cmd: String, timeoutMs: Long = 120_000L): Pair<Int, String> {
         return try {
             val process = ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
+            // 立即关闭子进程 stdin：本函数只读输出、从不喂输入。若不关闭，任何会读 stdin 的命令
+            // （cat / read / 等 EOF 的交互式命令）都会一直阻塞到 timeoutMs（默认 120s）才返回。
+            runCatching { process.outputStream.close() }
             val output = StringBuilder()
             val readerThread = Thread {
                 try {

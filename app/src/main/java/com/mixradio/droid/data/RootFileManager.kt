@@ -233,9 +233,16 @@ object RootFileManager {
         if (code == 0) Pair(true, "用户组修改成功") else Pair(false, "用户组修改失败: $output")
     }
 
+    /**
+     * 确保 shso 工作目录存在。
+     *
+     * 权限用 **0755**（旧实现为 0777）：该目录是 root 侧写入审计日志与守卫产物的位置，
+     * 全世界可写会让任意应用都能往里塞/改文件（例如伪造审计内容）；
+     * 而目录内所有写入都经 `su` 以 root 身份进行，owner 可写 755 已完全够用。
+     */
     suspend fun ensureShsoDir(): Boolean = withContext(Dispatchers.IO) {
         if (shsoDirEnsured) return@withContext true
-        val cmd = "mkdir -p ${RootService.escapeShellArg(DEFAULT_SHSO_DIR)} && chmod 777 ${RootService.escapeShellArg(DEFAULT_SHSO_DIR)}"
+        val cmd = "mkdir -p ${RootService.escapeShellArg(DEFAULT_SHSO_DIR)} && chmod 755 ${RootService.escapeShellArg(DEFAULT_SHSO_DIR)}"
         val (code, _) = RootService.runCommandSync(cmd)
         if (code == 0) shsoDirEnsured = true
         code == 0
