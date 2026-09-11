@@ -412,6 +412,9 @@ private fun TextEditorDialogContent(
                             } else highlightTransformation,
                             showLineNumber = showLineNumber, fontSize = fontSize.sp,
                             scrollState = editorScroll, hScroll = hScroll,
+                            // 大文件（分段模式）正文来自 chunkedLines，必须显式传入：
+                            // 该参数默认 emptyList()，漏传会让只读 LazyColumn 渲染空列表 → 打开大文件一片空白（任务 29）。
+                            chunkedLines = chunkedLines,
                             readOnly = isLargeFile
                         )
                     }
@@ -421,6 +424,9 @@ private fun TextEditorDialogContent(
                 EditorStatusBar(
                     stats = stats, filePath = currentFilePath, isLargeFile = isLargeFile,
                     fileTotalBytes = fileTotalBytes, chunkedOffset = chunkedOffset,
+                    // 大文件模式下正文在 chunkedLines 里，contentValue 是空的，
+                    // 行数必须改用它，否则会一直显示「行数 0」（任务 29 的连带问题）。
+                    chunkedLineCount = chunkedLines.size,
                     lastSavedAtMs = lastSavedAtMs, autoSaveSeconds = autoSaveSeconds, dirty = dirty
                 )
 
@@ -834,7 +840,8 @@ private fun EditorContentArea(
     highlightTransformation: androidx.compose.ui.text.input.VisualTransformation,
     showLineNumber: Boolean, fontSize: androidx.compose.ui.unit.TextUnit,
     scrollState: androidx.compose.foundation.ScrollState, hScroll: androidx.compose.foundation.ScrollState,
-    chunkedLines: List<String> = emptyList(),
+    // 刻意**不给默认值**：给默认 emptyList() 会让调用方漏传时静默渲染空白（正是任务 29 的根因），改为必填以在编译期暴露。
+    chunkedLines: List<String>,
     readOnly: Boolean = false
 ) {
     val scope = rememberCoroutineScope()
@@ -1079,6 +1086,7 @@ private fun LineScrollBar(
 private fun EditorStatusBar(
     stats: TextStatistics.Stats, filePath: String?, isLargeFile: Boolean,
     fileTotalBytes: Long, chunkedOffset: Long,
+    chunkedLineCount: Int = 0,
     lastSavedAtMs: Long, autoSaveSeconds: Int, dirty: Boolean
 ) {
     val df = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
@@ -1090,7 +1098,7 @@ private fun EditorStatusBar(
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
-                text = "行数 ${stats.lines}",
+                text = "行数 ${if (isLargeFile) chunkedLineCount else stats.lines}",
                 style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary
             )
             Text(
