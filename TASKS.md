@@ -213,3 +213,18 @@
   - 看板自迭代以来已多次压缩与重写，两份均为 9.0.2/283 时期快照，内容已被覆盖。
   - 顺带清空"待决事项"一节：3 条历史待办（守卫源码入库 / 根目录 53 张截图 / 旧看板）全部完成。
   - 提交：`9fdc1f2`。
+
+### 15. 构建配置优化：R8 + 资源压缩 + 死依赖清理
+- [x] 开启 release R8 / shrinkResources，移除未使用的 kotlinx-serialization-core
+  - 背景：任务 2 已证实 4.4s 冷启动主要是 **debug 包固有的 ART JIT / 类加载成本**，应用源码无启动热点；本项处理正确的构建杠杆。
+  - 变更：
+    - `app/build.gradle.kts`：release `isMinifyEnabled = true`、`isShrinkResources = true`；移除 `kotlinx-serialization-core` 直接依赖（全代码无 `@Serializable`、无 `kotlinx.serialization` import；`androidx.savedstate` 仍会传递引入，体积收益主要来自 R8 而非本依赖移除）。
+    - 新增 `app/proguard-rules.pro`：保留 commons-compress / xz / zip4j / zstd-jni 的反射、SPI 与 JNI 入口；对 commons-compress 未调用的 brotli / pack200 asm 可选依赖加 `-dontwarn`。
+    - **keep 规则二次收窄**：首版额外保留 Kotlin metadata / BuildConfig / material3 后，mapping 实测 `MainActivity` 等应用类完全未混淆；源码无 `rememberSaveable` / kotlin.reflect / 序列化使用，故移除这三条宽 keep，交给 Compose / AndroidX consumer rules。收窄后应用与 Material3 合成类正常混淆。
+  - R8 问题修复：首次构建报 `Missing classes`（`org.brotli.dec.BrotliInputStream`、`org.objectweb.asm.*`），确认均为 commons-compress 的可选路径，应用未调用，加 `-dontwarn` 后构建通过。
+  - 实测收益（BIYLBAFQQSS8DA69，真机 `am start -W`）：
+    - 冷启动：debug 基线约 **4364 ms**；最终 release 5 次 **520 / 581 / 586 / 543 / 560 ms**，均值 **558 ms**，降幅约 **87.2%**。
+    - APK：debug **38,707,000 bytes（约 38.7 MB）** → 最终 release **5,024,154 bytes（约 5.0 MB）**，降幅约 **87.0%**。
+  - 真机回归：设置页、主页文件列表、文件页进入 `Download`、文本编辑器打开冒烟文件（内容 / 行号 / 统计正常）、进程存活、`logcat -b crash` 无崩溃。ROOT 链路未重新验收（5a91ac60 未连接）。
+  - 独立复核：fresh-eyes 代理两轮确认——首轮确认压缩库 keep/dontwarn 覆盖充分、`kotlinx-serialization-core` 直接依赖确未使用、zstd-jni 四 ABI 原生库已打入 release APK；次轮强制 R8 真实重跑后确认移除三条宽 keep 不破坏 savedstate / BuildConfig / Material3 consumer rules，且应用类恢复混淆。
+  - 验证：`./gradlew.bat :app:assembleRelease` → `BUILD SUCCESSFUL`；`./gradlew.bat :app:testDebugUnitTest --rerun-tasks` → **124 tests / 0 failures**（真实重跑，非 UP-TO-DATE）。
