@@ -133,6 +133,18 @@
 - **无 ROOT**：回退系统安装器（FileProvider + `ACTION_VIEW`），由用户交互完成；受保护路径（如 `/data/adb`）非 ROOT 不可读时给出明确提示。
 - 兼容伪装名（如 `qq.apk.1`、大小写变体）。
 
+#### 3.6.1 分包应用自动整套安装
+
+单文件 `pm install` 对**分包应用**（App Bundle 上架，现已是主流）必定失败（`INSTALL_FAILED_MISSING_SPLIT`），必须走会话安装。因此安装前会先在同目录里把「同一套安装包」聚齐：
+
+- **主判定：命名约定**（无需读取文件内容）——基础包 `<名>-<版本>.APK`、分包 `<名>-<版本>-split<序号>.APK`。
+  这套命名正是「提取 APK」的输出，因此提取出来的分包**可以直接安装**。
+- **次判定：manifest 分组**——命名不规范时（如 SAI / MT 解包出的 `split_config.*.apk`），改用 `getPackageArchiveInfo()` 按「同包名 + 同版本号」聚合，并要求基础包能唯一定位（splitNames 为空且名字不像分包）。
+- **点基础包或点任意分包，效果相同**，都会装整套。
+- **不确定就退回单文件**：目录里存在两份同包同版本的基础包、或定位不到基础包时，不做猜测。
+- 真机实测：`WhatsApp-263507522.APK` + 3 个 `-splitN.APK` → 安装后 `pm path` 返回 base + `split_config.armeabi_v7a` + `split_config.xhdpi` + `split_i18n_ko`，4 个分片全部就位。
+- **无 ROOT 时**：识别出是分包套件会直接给出明确提示（会话安装需要 ROOT），而不是把基础包丢给系统安装器后报一个看不懂的错误。
+
 ### 3.7 图片浏览
 - 点击图片文件（jpg/jpeg/png/bmp/gif/webp/ico/tiff/tif）→ 全屏查看器：右下角 `←` 上一张 / `→` 下一张 / `↻` 顺时针旋转 90°；支持双指缩放与拖动平移。
 
@@ -436,6 +448,14 @@ A：手机「设置 → 应用管理」找到 shso，应用信息里会显示包
 ## 📋 更新日志
 
 > 每一次修改均按「修复 / 新增 / 优化」各一行说明。
+
+### 20260911（分包应用可直接安装）
+
+- **修复**：shso **无法安装自己提取出的分包 APK** —— 点 `.APK` 走的是单文件 `pm install`，对分包应用必然失败（`INSTALL_FAILED_MISSING_SPLIT`）；而会话安装（`install-create/-write/-commit`）早已实现，只是仅 `.xapk` 路径用到。
+- **新增**：安装前自动把同目录的「同一套安装包」聚齐——主判定为命名约定（`<名>-<版本>.APK` + `<名>-<版本>-splitN.APK`，正是「提取 APK」的输出），命名不规范时用 manifest 的「同包名 + 同版本号」聚合兜底（覆盖 SAI / MT 的 `split_config.*.apk`）；**点基础包或点任意分包都能装整套**，定位不到唯一基础包则保守退回单文件。
+- **新增**：无 ROOT 时若识别出分包套件，直接提示需 ROOT（会话安装无法在无 ROOT 下完成），不再把基础包交给系统安装器后报 `MISSING_SPLIT`。
+- **测试**：新增 `ApkInstallerSetTest` 8 例（前缀剥离 / 分包名判定 / 点 base 与点 split 结果一致 / 前缀相近文件不误并 / 应用名含 `split` 不误判）；单测 212 → **220**。
+- **真机验证**：`WhatsApp-263507522.APK` + 3 个 `-splitN.APK`（共 92MB）→ 经 shso 安装成功，`pm path com.whatsapp` 返回 base + 3 个 split。
 
 ### 20260911（新增「提取 APK」）
 
