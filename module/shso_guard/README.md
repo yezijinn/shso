@@ -153,9 +153,13 @@ allow=/sdcard       # 豁免路径，优先级高于 protect
 2026-09-05 23:41:09|GUARD|ALLOW|NONE|cmd=rm|args=-f /sdcard/a.log|path=/sdcard/a.log
 ```
 
-超过 `AUDIT_MAX_LINES + 400` 行时保留尾部 `AUDIT_MAX_LINES` 行（默认 2000）。
+超过 `AUDIT_MAX_LINES + 400` 行时保留尾部 `AUDIT_MAX_LINES` 行（默认 2000，
+可用环境变量 `SHSO_AUDIT_MAX` 覆盖）。
 轮转使用**每进程唯一**的临时名（`audit.log.$$.tmp`），避免并发守卫调用互相覆盖丢行；
 行数统计按 PID 抽样（每 16 次调用一次），把 `wc -l` 的整文件扫描成本均摊到可忽略。
+
+App 侧的 `SecurityAuditLog` 另有**字节级环形滚动**（超 512KB 裁剪保留约 256KB），
+两侧写同一个文件，因此「行数上限」与「字节上限」会同时起作用。
 
 ## 覆盖范围
 
