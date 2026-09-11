@@ -16,12 +16,17 @@ object ChunkedFileReader {
     /** 默认分块大小：1MB；总大小超过此值走分段加载。 */
     const val CHUNK_BYTES = 1024L * 1024L
     /**
-     * 大于 2MB 的文件强制分段（只读 LazyColumn）加载。
-     * 注：Compose BasicTextField 对整段大文本做全量 StaticLayout，
-     * 实测 ~4MB 即触发主线程卡死/崩溃；故阈值取保守的 2MB，
-     * 2MB 以上一律走按行懒加载的只读安全路径。
+     * 大于 **128KB** 的文件强制分段（只读 LazyColumn）加载。
+     *
+     * 为什么从 2MB 下调：Compose 的 BasicTextField 会对**整段**文本做全量 StaticLayout，
+     * 开销随体积快速放大。在低端机上实测（BIYLBAFQQSS8DA69）：
+     *  - 32KB：秒开；
+     *  - 256KB：主线程 100% 持续约 30 秒才渲染完（用户观感＝长时间空白）；
+     *  - 2MB：数分钟无响应，等于不可用。
+     * 因此把阈值定在实测「秒开」区间的上沿（128KB），之上一律走按行懒加载的只读安全路径，
+     * 宁可牺牲「可编辑」，也不要给用户一个空白/假死的编辑器。
      */
-    const val LARGE_FILE_THRESHOLD = 2L * 1024L * 1024L
+    const val LARGE_FILE_THRESHOLD = 128L * 1024L
 
     /**
      * `loadAll` 一次性载入的**字节上限**。
