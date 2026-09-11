@@ -190,6 +190,7 @@ UI 层 100% 采用 AndroidX Compose Material 3 原生控件（`androidx.compose.
 | `更新日志.md` | 所有变更：新增 / 修复 / 优化 / 安全，一行一条，按日期倒序 | 不复述实现细节（细节在提交信息或本文档） |
 | `docs/PROJECT.md`（本文件） | 技术栈、架构、安全子系统、构建约束、已知注意点 | 不重复 README 的功能清单 |
 | `module/shso_guard/README.md` | 守卫模块的原理、策略、覆盖范围、能力边界 | 不写 App 侧静态审查细节 |
+| `docs/在线编译.md` | 用 GitHub Actions 自定义包名编译 APK 的图文步骤与 FAQ | 不写本地构建（本地构建见本文件 § 构建与产物） |
 
 - 改动功能后同步顺序：代码 → 单测 → `更新日志.md` → `README.md` / 本文件（仅当影响用法或约束时）→ 提交。
 - 任务看板 `TASKS*.md` 属过程记录，不参与对外文档同步。
