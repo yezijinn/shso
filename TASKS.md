@@ -11,8 +11,8 @@
 - 性能优化主线已收敛到边际收益 0（真机帧 50th 10-50ms；冷启动 547ms 释放；APK 5.0MB）。
 - 安全链路（守卫模块 / 挡位 / 审计）已全链路打通；App 侧集成任务 8/9/10 [x]。
 - 4 P1 + 4 P2 BUG 已闭环（commit `e7b3816`）；**137 tests / 0 failures**（124 → +3 任务22 → +7 任务26/27 → +3 任务25）。
-- 任务 19 真机补测：守卫绕过回归 + 0–3 档位端到端全绿；期间新发现并闭环 **任务 22**（终端 LazyColumn 崩溃）、**任务 25**（中断后孤儿进程 / UI 无法回收）、**任务 26**（mtime 1970）、**任务 27**（`file -b` 误判）。仅剩「文件 chmod 改属」未测。
-- 推送状态：分支 `fix/github-tag-version-check` 已推送至 `c391cd4`；PR **#1** 已建（draft）。任务 25 的修复**尚未提交**。
+- 任务 19 真机补测 **✅ 全部通过（4/4）**：守卫绕过回归 × 0–3 档位端到端 × RootFileManager 执行（含 chmod 改属）× 终端 `\n` 与中断。期间新发现并闭环 **任务 22**（终端 LazyColumn 崩溃）、**任务 25**（中断后孤儿进程 / UI 无法回收）、**任务 26**（mtime 1970）、**任务 27**（`file -b` 误判）。
+- 推送状态：分支 `fix/github-tag-version-check` 已推送至 `25877f6`；PR **#1** 已建（draft）—— 任务 19 已完成，**可转 ready for review**。
 - ROOT 链路：BIYLBAFQQSS8DA69 是**已连接、已确认 ROOT 的真机**（Magisk v30.7、`su -c id` uid=0、守卫模块已装、PATH 注入验证通过）——**此前记忆里 5a91ac60 当 ROOT 机是错的,本机无 ROOT 的说法也是错的**。任务 19 ROOT 链路补测可立即执行。
 - 审计余项：22 项 BUG 排查已闭环 8 项；剩余 14 项 P2（FilePage key / ChunkedFileReader >2GB overflow / RootService pid reflection / ArchiveExtractor Zip Slip canonical path / chmod 777 / runCommandSync stream close / Bitmap recycle / 等）属次优先级，按用户节奏分批处理。
 
@@ -42,10 +42,10 @@
   - 标题：「feat: 守卫模块 / 终端洪流进化 / 编辑器优化 / R8 / BUG 闭环」。
   - 描述取自新生成的 `artifacts/推送前检查报告-20260911.md`（**该文件此前并不存在，任务 18 首轮核验时补生成**；`artifacts/` 已 gitignore，不入库）。
   - CI 说明：仓库两个 workflow 均为 `workflow_dispatch` 手动触发，推送/PR **不会自动跑 CI**，故 `gh pr checks` 显示 "no checks reported" 属预期，非失败。
-- [ ] 后续：**BIYLBAFQQSS8DA69**（已连接、已确认 ROOT）跑通任务 19 端到端冒烟 → 转 ready for review。
+- [x] 后续：**BIYLBAFQQSS8DA69** 跑通任务 19 端到端冒烟 → **已于 2026-09-11 完成**，PR #1 具备转 ready for review 的条件（是否转由用户决定）。
   - 注：原写「5a91ac60 连接」为旧认知残留，按任务 19 修正为准。
 
-### 19. ROOT 链路真机补测（BIYLBAFQQSS8DA69）—— 进行中，已完成 2/4 项
+### 19. ROOT 链路真机补测（BIYLBAFQQSS8DA69）—— ✅ 全部通过（4/4）
 - [x] 真机能力已确认（2026-09-11 重新核验）：`su -c id` → `uid=0(root) context=u:r:magisk:s0`（Magisk v30.7 / 30750）；`/data/adb/modules/shso_guard/` 已装（20 wrapper）；守卫 PATH 注入 `which rm` → `guard/rm`；`/data/adb/shso/` 落盘。
 - [x] **1. 守卫符号链接绕过回归（真机全绿）**
   - 复测手法：当前 `module/shso_guard/guard` 重新推送至 `/data/local/tmp/gt/guard`，`su -c` 运行 `test/device-symlink.sh`。
@@ -58,18 +58,19 @@
   - 档位 1（log）：受保护命令**真实执行**（放行），审计 `GUARD|DENY|PROTECTED_PATH` + `INTERNAL_APP|ALLOW|GUARD_POLICY_MODE mode=log (档位=1)`。
   - 档位 2/3（enforce）：命令**被拦截**（`shso_guard: 已拦截 [rm]`），审计 `mode=enforce (档位=2/3)`。
   - 补充事实：策略优先级 `/data/adb/shso_guard/policy.conf`（应用写） > 模块自带（`mode=enforce`）；`which rm` 恒为 `guard/rm`（守卫 PATH 优先于 `/system/bin`）。
-- [ ] **3. RootFileManager 真实执行（部分完成）**
+- [x] **3. RootFileManager 真实执行**
   - [x] 终端执行链正常：`echo AAAABBBB_TAIL` → 输出正确（无截断）；错误路径 → `sh: ...: No such file or directory` + `[退出码: 127]`。
   - [x] 洪流可运行并正确解析：`sh /data/adb/shso/flood.sh`（8×8000 = 64000 行），实测 **24–60 行/秒**，应用单核 CPU 96.5%，全量约需 18 分钟。
-  - [ ] 文件 chmod 改属（`FilePermissionDialog`）未测。
+  - [x] **文件 chmod 改属（`FilePermissionDialog`）实测通过**：文件页 → 长按/短按行打开动作菜单（长按进多选、短按弹动作表）→ 「权限/属性」→ 对话框正确回显 `八进制权限 644` + 所有者/用户组 `root`（与设备 `stat` 一致）→ 直接输入 `755` 并选 `system:system` → 保存。
+    设备侧核对：`-rwxr-xr-x 1 system system /data/adb/shso/permtest.txt`，`stat` → `mode=755 owner=system:system` —— 与界面设定完全一致 ✓
+    （注：档位 0 不审计，故审计日志无对应条目，属设计行为。）
 - [x] **4. 终端 `kill -2` 中断 + `\n` 写入响应（已测，`\n` 通过；中断未通过 → 任务 25）**
   - [x] `\n` 写入响应：`echo AAAABBBB_TAIL` / `echo PING_ONE` 均正确回显与输出（两条路径：终端一次性命令、脚本执行流）。
   - [x] 关键认知：终端「一次性命令」走 `runCommandSync`（输出**全量缓冲**、不设 `taskRunning`）→ 该路径下 `中断` 按钮**始终禁用**，不可能被中断（这本身是设计边界，非缺陷）。
   - [x] 可中断路径 = 脚本执行（主页「立即执行」）→ 设置 `taskRunning`/`processWriter`/`processPid`、输出流式、`中断` 启用，且自动跳转终端页。
-  - [ ] **中断实测未生效 → 详见任务 25（P1）。**
-- [ ] 第 3 项（文件 chmod 改属）未测；其余已跑完。
-- [x] **5. 无 crash 基线**：冷启动（`Status: ok` / COLD）、档位切换、命令执行、洪流连续 4.25 分钟 —— 除任务 22 已修复的崩溃外无其他 crash。
-- [ ] 第 3、4 项补完后 → 任务 19 [x]，PR 改 ready for review。
+  - [x] **中断实测未生效 → 已定位并修复，详见任务 25（P1·已修复）。**
+- [x] **5. 无 crash 基线**：冷启动（`Status: ok` / COLD）、档位切换、命令执行、洪流连续 4.25 分钟、中断/结束进程、chmod 改属 —— 除任务 22 已修复的崩溃外无其他 crash。
+- [x] **任务 19 全部通过（4/4）**：守卫绕过回归 × 0–3 档位 × RootFileManager 执行（含 chmod 改属）× 终端 `\n` 与中断。**PR #1 可转 ready for review**（是否转由用户决定）。
 
 ### 20. 审计剩余 14 项 P2 BUG（按用户节奏分批）
 - [!] 批次 6: 健壮性微调（3-4 项）
@@ -207,7 +208,7 @@
 
 ## ⚠️ 待决事项（需用户确认或外部依赖）
 
-1. **主线选择**：任务 18 已完成；任务 19 已完成 3/4（守卫绕过、0–3 档位、终端 `\n` 与中断）；仅剩文件 chmod 改属。期间闭环任务 22/25/26/27。当前仍处 18 → **19** → 20 路径。
+1. **主线选择**：任务 18 与 **19 均已完成**（19 真机补测 4/4 通过）。期间闭环任务 22/25/26/27。当前处 **19 → 20** 节点：可选「转 PR #1 ready」或「开任务 20 清理审计余项」。
 2. **5a91ac60 历史身份**：2026-09-11 修正——该 ID 自 2026-09-06 后已不在 adb 设备列表,长期被记忆误标为"ROOT 主力机",实际上 BIYLBAFQQSS8DA69 才是 ROOT 真机。历史 daily log 里的 5a91ac60 引用是当时真实接入的设备（与今日不同),保留原状不再回填;但新生成的看板、commit、PR 描述一律以 BIYLBAFQQSS8DA69 为准。
 3. **审计余项处理节奏**：任务 20 是「全做」版（3 批 ~10 项），用户可指派「只做高风险（Zip Slip / overflow / chmod）」或「暂缓」。注意：任务 22/23 说明**原审计清单不完整**——「迁移导致测试脚本失效」与「终端内容 key 崩溃」都不在那 22 项里。
 4. **PR 标题 / 描述模板**：已用于 PR #1（标题「feat: 守卫模块 / 终端洪流进化 / 编辑器优化 / R8 / BUG 闭环」，描述存 `artifacts/pr-body-fix-github-tag-version-check.md`）；用户可随时改。
