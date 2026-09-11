@@ -156,7 +156,11 @@ fun MainContainer(appSettings: AppSettings) {
         HorizontalPager(
             state = pagerState,
             modifier = Modifier.fillMaxSize(),
-            userScrollEnabled = true
+            userScrollEnabled = true,
+            // 保留全部 4 页于组合树中（默认只保留当前页，离屏即销毁）。
+            // 否则切换标签会丢掉页面内状态：终端输入框内容、文件页的多选/滚动位置、
+            // 乃至「终端高危命令确认弹窗」（用户输入命令后翻页，弹窗会被静默丢弃 → 高风险命令无声作废）。
+            beyondViewportPageCount = 3
         ) { page ->
             when (page) {
                 0 -> HomePage(
