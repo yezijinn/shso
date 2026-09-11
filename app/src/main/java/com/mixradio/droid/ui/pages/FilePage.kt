@@ -752,6 +752,12 @@ fun FilePage(
         }
     }
 
+    // 「全选文件」状态：当前是否**已全选所有文件**（不含文件夹）。用于把设置项文案切换为「取消全选」。
+    val allFilesSelected = run {
+        val filePaths = displayFileList.filter { !it.isDirectory }.map { it.path }
+        filePaths.isNotEmpty() && multiSelectMode && selectedPaths.containsAll(filePaths)
+    }
+
     if (showFileSettingsDialog) {
         FileListSettingsDialog(
             appSettings = appSettings,
@@ -763,7 +769,27 @@ fun FilePage(
                 newFileExt = "txt"
                 showFileSettingsDialog = false
                 showNewFileDialog = true
-            }
+            },
+            onSelectAllFilesRequest = {
+                // 全选**文件**（不含文件夹）：多选模式只针对文件，文件夹不参与选中与批量操作。
+                // 第一次点击 = 全选；已全选状态下再点击 = 取消全选（清空选择并退出多选模式）
+                val filePaths = displayFileList.filter { !it.isDirectory }.map { it.path }
+                showFileSettingsDialog = false
+                if (filePaths.isEmpty()) {
+                    feedbackMessage = "当前目录没有可全选的文件"
+                } else if (multiSelectMode && selectedPaths.containsAll(filePaths)) {
+                    selectedPaths.clear()
+                    multiSelectMode = false
+                    feedbackMessage = "已取消全选（${filePaths.size} 个文件）"
+                } else {
+                    selectedPaths.clear()
+                    selectedPaths.addAll(filePaths)
+                    multiSelectMode = true
+                    feedbackMessage = "已全选 ${filePaths.size} 个文件（不含文件夹）"
+                }
+            },
+            allFilesSelected = allFilesSelected
+
         )
     }
 
