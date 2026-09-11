@@ -10,8 +10,10 @@
 
 - 性能优化主线已收敛到边际收益 0（真机帧 50th 10-50ms；冷启动 547ms 释放；APK 5.0MB）。
 - 安全链路（守卫模块 / 挡位 / 审计）已全链路打通；App 侧集成任务 8/9/10 [x]。
-- 4 P1 + 4 P2 BUG 已闭环（`e7b3816`）；**146 tests / 0 failures**（124 → +3 任务22 → +7 任务26/27 → +3 任务25 → +7 任务20 → +2 解压端到端）。
+- 4 P1 + 4 P2 BUG 已闭环（`e7b3816`）；**150 tests / 0 failures**（124 → +3 任务22 → +7 任务26/27 → +3 任务25 → +7 任务20 → +2 解压端到端 → +4 任务28）。
 - 任务 19 真机补测 **✅ 全部通过（4/4）**；期间新发现并闭环 **任务 22/25/26/27**。
+- **任务 20 审计余项 ✅ 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `chmod 777`→755 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏，外加 `ChunkedFileReader` 上限加固）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
+- **任务 28 ✅ 已修**：解压到不可写目录（`/data/adb/` 受 SELinux 拦截）时禁用入口并说明原因（方案 B）。
 - **任务 20 审计余项 ✅ 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `chmod 777`→755 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏，外加 `ChunkedFileReader` 上限加固）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
 - **任务 28（新）**：解压到 `/data/adb/` 下静默失败已定位（SELinux 拦截应用 uid，与我方改动无关），修法待定。
 - **任务 20 审计余项 ✅ 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `chmod 777`→755 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏，外加 `ChunkedFileReader` 上限加固）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
@@ -234,8 +236,8 @@
 - **测试**：新增 `FileExecutionAnalyzerTest`（5 例），含真机原始输出 `/data/adb/shso/flood.sh: /system/bin/sh script` → `("文本 / 脚本", "明文代码")`，以及「路径含 data 不得污染判定」的回归。
 - **真机验证**（12:34 版 APK）：同一确认框显示 `文件类型 = 文本 / 脚本`、`文件内容 = 明文代码`（修复前为 `Shell Script` + `二进制 / 加密`），SHA-256 不变。
 
-### 28. [待修·UX/健壮性] 解压到 `/data/adb/` 下会静默失败（非本轮引入）
-> 来源：任务 20 回归冒烟时发现「点解压无任何产出」，已定位，见下。
+### 28. ✅ 解压到 `/data/adb/` 下会静默失败 —— 已按方案 B 修复（非本轮引入）
+> 来源：任务 20 回归冒烟时发现「点解压无任何产出」，已定位并修。
 
 - **现象**：文件页对 `/data/adb/shso/` 下的 zip 点「自动解压文件」→ 不产生任何目录/文件，只有一闪而过的 Toast（uiautomator 读不到）。**正常 zip 与恶意 zip 表现一致**。
 - **根因（已证实，非代码逻辑 bug）**：解压是以**应用自身 uid** 落盘的（`extract()` 里 `File(finalTarget).mkdirs()`，以及 `copyStream` 的 `FileOutputStream`）。而 `/data/adb/` 对应用域有 **SELinux(MAC)** 限制。
@@ -243,10 +245,12 @@
   - 因此：**本轮 `chmod 777 → 755` 不是回归**（777 下同样失败）。
 - **代码侧佐证**：`ArchiveExtractorExtractTest` 在 JVM 真实文件系统上直接调 `extract()`，正常 zip 解压成功 → 解压逻辑本身正确。
 - **为什么是问题**：UI 没有前置判断，仍向用户暴露「自动解压文件」入口；失败只通过 Toast 反馈，用户难以察觉原因。
-- **可选修法（待用户定）**：
-  1. 目标目录不可写时改用 root 落盘（`su` 建目录 + 以 root 流写入），使 `/data/adb/*` 下也能解压；
-  2. 或检测到目标父目录不可写时**禁用/隐藏该入口**并给出明确提示（改动小、风险低）；
-  3. 或至少把 `mkdirs()` 的返回值纳入失败判定，给出可诊断的错误文案（最小改动）。
+- **已实施修复（用户选定方案 B：禁用入口并说明原因）**：
+  - `ArchiveExtractor.canExtractTo(dirPath)`（纯函数，便于单测）：实测目标父目录可写性 —— `File.canWrite()` 底层走 `access(W_OK)` 系统调用，**能同时反映 SELinux 限制**，所以不是只看权限位。
+  - `FilePage` 动作菜单：不可写时标签改为 **「自动解压文件（当前目录不可写）」** 且 `enabled = false`，不再给用户一个「点了没反应、只闪 Toast」的入口。
+- **真机验证**（`/data/adb/shso/zstest.zip`）：标签正确变为「自动解压文件（当前目录不可写）」；点击后**动作菜单停留在原地**（确认点击真被拦截），且**未产生任何解压目录** ✓
+- **测试**：`ArchiveExtractorCanExtractTest` 4 例（可写目录可解压 / 不存在目录 / 文件而非目录 / 只读目录）。全量 **150 tests / 0 failures**（只读目录用例在 Windows 上按权限跳过 1 例）。
+- **未做**：方案 C（改用 root 落盘以支持在 `/data/adb/` 下真正解压）—— 改动面大、需充分回归，如后续需要可单开。
 
 ### 21. 新主目标（占位 — 视用户输入）
 - [ ] 用户指定后填充
