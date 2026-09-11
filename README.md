@@ -270,7 +270,7 @@ cd shso
 ./gradlew :app:assembleRelease
 ```
 
-> Windows 下可运行仓库内一键脚本 `python build_apk.py --skip-check`（内含 V2+V3 签名与产物校验）。
+> Windows 下可运行仓库内一键脚本 `python build_apk.py --skip-check`：环境预检 → 依赖校正 → Gradle 构建 → **签名校验（V2+V3）** → **版本规则校验（`versionName=Jinn`、`versionCode`=构建当日日期）** → 结果汇总。
 
 编译输出的 APK 默认位于 `app/build/outputs/apk/` 目录下（Release 产物默认签名为 V2+V3，签名文件 `release.jks` 不在仓库内）；仓库内一键脚本 `python build_apk.py` 已将 `buildDir` 重定向至 `shso-main/.tmp/build_out/app/outputs/apk/` 取包（规避部分环境对 `app/build` 的句柄占用）。
 
