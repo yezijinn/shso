@@ -180,15 +180,26 @@ fun FilePage(
     var showPermissionDialog by remember { mutableStateOf(false) }
     var permissionMetadata by remember { mutableStateOf<FilePermissionMetadata?>(null) }
 
+    // 刷新代次（非 Compose 状态，赋值不触发重组）：每发起一次刷新 +1，用于作废更早的刷新结果。
+    val refreshGenRef = remember { intArrayOf(0) }
+    // 刷新任务引用：切目录时取消上一次，省掉无谓的 root 列目录开销。
+    val refreshJobRef = remember { arrayOfNulls<kotlinx.coroutines.Job>(1) }
+
     fun refresh(showToast: Boolean = false) {
+        // 记录本次要加载的目录。切目录时旧协程不会被自动取消（它挂在页面级 scope 上，
+        // 不是 LaunchedEffect(currentDirectory) 的子协程），若不校验就会用**旧目录的结果覆盖新目录**：
+        // 表现是路径栏已是 B、列表却是 A，随后的删除/移动会作用到错误路径（数据风险）。
+        val requestedDir = currentDirectory
+        val gen = ++refreshGenRef[0]
+        refreshJobRef[0]?.cancel()
         isLoading = true
         directoryLoadFailed = false
-        scope.launch {
+        refreshJobRef[0] = scope.launch {
             try {
                 // 先探测目录是否真实存在（不可用 `fileList.isEmpty()` 判断——合法空目录也返回空列表）
-                val exists = RootFileManager.pathExists(currentDirectory)
+                val exists = RootFileManager.pathExists(requestedDir)
                 val loaded = if (exists) {
-                    RootFileManager.listFiles(currentDirectory)
+                    RootFileManager.listFiles(requestedDir)
                 } else {
                     emptyList()
                 }
@@ -198,6 +209,8 @@ fun FilePage(
                 val display = withContext(Dispatchers.Default) {
                     applyFileViewSettings(loaded, showHidden, sortMode)
                 }
+                // 已有更新的刷新接替（切目录或重复刷新）：本次结果过期，直接丢弃。
+                if (gen != refreshGenRef[0]) return@launch
                 // 两个状态之间没有挂起点：只产生一次重组，不会出现「新目录列表 + 旧排序结果」的中间帧
                 fileList = loaded
                 displayFileList = display
@@ -207,16 +220,20 @@ fun FilePage(
                 } else {
                     // 目录加载成功（含合法空目录）：开启记忆时记录为「上次浏览目录」
                     if (appSettings.rememberDirectory) {
-                        RootFileManager.rememberedDirectory = currentDirectory
+                        RootFileManager.rememberedDirectory = requestedDir
                     }
                 }
             } catch (_: Exception) {
+                if (gen != refreshGenRef[0]) return@launch
                 fileList = emptyList()
                 displayFileList = emptyList()
             } finally {
-                isLoading = false
-                // 用户手动点击「⟳」时给出明确反馈，避免「点了没反应」的错觉
-                if (showToast) feedbackMessage = "已刷新"
+                // 仅最新一代收尾：否则被取消的旧刷新会误清新刷新的加载态（cancel 的 finally 异步执行）
+                if (gen == refreshGenRef[0]) {
+                    isLoading = false
+                    // 用户手动点击「⟳」时给出明确反馈，避免「点了没反应」的错觉
+                    if (showToast) feedbackMessage = "已刷新"
+                }
             }
         }
     }
@@ -256,6 +273,12 @@ fun FilePage(
     }
 
     LaunchedEffect(currentDirectory) {
+        // 切目录：退出多选、清空选中、滚动归顶。
+        // 多选态下若保留旧的 selectedPaths，批量删除/拷贝会作用到旧目录里同名路径（用户还看不见）；
+        // 滚动位置也不继承，否则新目录会直接停在旧下标（小目录可能停在末尾、漏看前列）。
+        multiSelectMode = false
+        selectedPaths.clear()
+        listState.scrollToItem(0)
         // 建目录与列目录无关，改为后台并行，不再串行阻塞列表首屏加载
         launch { RootFileManager.ensureShsoDir() }
         refresh()
@@ -537,7 +560,9 @@ fun FilePage(
                         state = listState,
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        itemsIndexed(displayFileList, key = { index, item -> "${item.path}_$index" }) { _, item ->
+                        // key 只用唯一的 item.path：混入下标会在删除/排序导致位移时使后续项 key 全变，
+                        // LazyColumn 复用失效、整段重建（滚动抖动、状态错位）。path 由 listFiles 去重保证唯一。
+                        itemsIndexed(displayFileList, key = { _, item -> item.path }) { _, item ->
                             val isExecutable = item.isExecutableScript || item.isExecutableBinary
                             val isFontFile = !item.isDirectory && (item.name.endsWith(".ttf", ignoreCase = true) || item.name.endsWith(".otf", ignoreCase = true))
 

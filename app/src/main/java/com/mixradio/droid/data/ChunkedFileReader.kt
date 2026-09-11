@@ -60,10 +60,34 @@ object ChunkedFileReader {
         if (RootService.isRootGranted == true) {
             val raw = readRangeRoot(filePath, 0L, headBytes.toLong())
             if (raw.isNotEmpty()) return raw.copyOf(minOf(raw.size, headBytes))
-            // 兜底
-            return try { File(filePath).readBytes().let { if (it.size > headBytes) it.copyOf(headBytes) else it } } catch (_: Throwable) { ByteArray(0) }
+            // 兜底（同样只读前 headBytes 字节）
+            return readHeadLocal(filePath, headBytes)
         }
-        return try { File(filePath).readBytes().let { if (it.size > headBytes) it.copyOf(headBytes) else it } } catch (_: Throwable) { ByteArray(0) }
+        return readHeadLocal(filePath, headBytes)
+    }
+
+    /**
+     * 本地（非 root）有界读取前 [headBytes] 字节。
+     *
+     * 旧实现用 `File.readBytes()` 把**整个文件**读进堆后再截断，对超大文本（本用例正是
+     * 「>128KB 走分段」的文件，可达数百 MB）必然 OOM。改为流式读取、读满即停。
+     */
+    internal fun readHeadLocal(filePath: String, headBytes: Int): ByteArray {
+        if (headBytes <= 0) return ByteArray(0)
+        return try {
+            java.io.FileInputStream(filePath).use { fis ->
+                val buf = ByteArray(headBytes)
+                var read = 0
+                while (read < headBytes) {
+                    val r = fis.read(buf, read, headBytes - read)
+                    if (r <= 0) break
+                    read += r
+                }
+                if (read > 0) buf.copyOf(read) else ByteArray(0)
+            }
+        } catch (_: Throwable) {
+            ByteArray(0)
+        }
     }
 
     /**
