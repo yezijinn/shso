@@ -25,6 +25,20 @@
 
 ---
 
+## 📚 文档导航
+
+| 文档 | 面向 | 内容 |
+|---|---|---|
+| `README.md`（本文件） | 用户 / 使用者 | 功能总览、快速上手、安装与构建、安全说明、版本规则 |
+| `docs/PROJECT.md` | 开发者 / AI | 技术栈、目录结构、架构与安全约束、安全子系统设计、已知注意点 |
+| [`更新日志.md`](更新日志.md) | 所有人 | 按日期分组的变更清单（新增 / 修复 / 优化 / 安全，一行一条） |
+| `module/shso_guard/README.md` | 模块使用者 | 运行时守卫模块的原理、策略、覆盖范围与能力边界 |
+| `AGENTS.md` | AI 协作 | 本仓库的 AI 行为准则与导航 |
+
+> 本 README 不再内嵌更新日志内容，所有变更说明统一写入 `更新日志.md`。
+
+---
+
 ## 📸 应用截图
 
 | 主页 | 文件管理 |
@@ -89,7 +103,7 @@
 - **隐藏文件**：开关显示以 `.` 开头的隐藏条目。
 - **排序**：`名称↓` / `名称↑` / `时间↑` / `时间↓` 四个**纯文本**选项（无圆角矩形底色容器），选中项以 Accent 色 + SemiBold 区分。
 
-### 3.2.1 全选文件 / 取消全选
+#### 3.2.1 全选文件 / 取消全选
 - **位置**：弹窗底部，与「新建文件」**同一行**（左「全选文件」、右「新建文件」）。
 - **只选文件**：仅选中当前目录下的**文件**，文件夹不参与选中、也不计入批量操作。
 - **切换语义**：
@@ -404,6 +418,7 @@ A：手机「设置 → 应用管理」找到 shso，应用信息里会显示包
 #### 🔧 原理说明（进阶，看不懂可跳过）
 
 > 编译仅覆盖 `applicationId`（安装身份），`namespace` 与源码包名保持 `com.mixradio.droid` 不变，因此 `R` / `BuildConfig` 与全部 `import` 不受影响；FileProvider authority、跳设置页 Uri 等均基于 `${applicationId}` / `context.packageName` 自动跟随。CI 环境自动改用调试密钥签名，导出的 APK 可直接安装。
+
 ---
 
 ## 🛡️ 安全与防护说明
@@ -437,17 +452,33 @@ A：手机「设置 → 应用管理」找到 shso，应用信息里会显示包
 
 **运行时守卫（`module/shso_guard`，档位 ≥2）**
 
-- 随 APK 以 `assets/shso_guard.zip` 分发，安装到 `/data/adb/modules/shso_guard`，通过 **PATH 前置**拦截破坏性命令并落审计日志 `/data/adb/shso/audit.log`。
+- 随 APK 以 `assets/shso_guard.zip` 分发，安装到 `/data/adb/modules/shso_guard`，通过 **PATH 前置**拦截破坏性命令并落审计日志 `/data/adb/shso/audit.log`（当前模块版本 **v1.2.0**）。
 - 覆盖包装器：`rm/rmdir/shred/truncate/wipe/dd/fastboot/mkfs*/mke2fs/make_f2fs/mv/cp/find/sed/toybox/busybox`，以及 v1.2.0 新增的 `chmod/chown/chgrp/mkfs/mknod/sgdisk/parted/fdisk/flash_image`。
 - 策略文件 `/data/adb/shso_guard/policy.conf` 可编辑（`protect=` / `allow=` / `mode=enforce|log|off`），修改即时生效；`mode` 会按当前档位自动同步。
 - 安装/升级为**原子替换**：同文件系统内构建 `.new` → 校验 → 旧目录挪 `.old` → `mv` 替换 → 清理；任一步失败保留或回滚旧版本。
 - **能力边界**：PATH 前置型守卫无法拦到脚本内部的**绝对路径**调用（如 `/system/bin/rm`）或自行重置 `PATH` 的情况；这类绕过由 App 侧静态审查覆盖（App 解析并执行的命令），但脚本内部自行拼装的绝对路径调用不在其内。
+
+> 模块的原理、策略语法与完整覆盖范围见 [`module/shso_guard/README.md`](module/shso_guard/README.md)。
 
 ---
 
 ## 📋 更新日志
 
 > 完整更新日志见独立文件 [`更新日志.md`](更新日志.md)（按日期分组，一行一条「新增 / 修复 / 优化 / 安全」）。此处不再重复罗列。
+
+---
+
+## 🔄 版本号规则与检查更新
+
+- **版本命名（2026-09-11 起生效）**：
+  - `versionCode` = **构建当日日期**纯数字（`YYYYMMDD`，例如 `20260911`），是「是否有新版」的唯一判定依据；
+  - `versionName` = **`Jinn`**（固定字符串，仅作展示，不再使用 `9.0.2` 之类的数字版本名）。
+  - GitHub 发布标签同样采用**纯日期**格式（如 `20260911`），与 `versionCode` 天然对齐。
+- **检查更新（设置页）**：设置页底部「检查 github 是否发布了新的版本」一项，点击后应用会抓取 `https://github.com/yezijinn/shso/tags`，正则提取其中的纯数字标签（兼容 `v20260904` 与 `20260904` 两种写法），取最大值与本地 `versionCode` 做大小比较：
+  - 远端更新 → 显示「发现新版本：\<tag\>」+「去更新」按钮（跳转 `https://github.com/yezijinn/shso/releases`）；
+  - 已是最新 → 显示「已是最新版本 无需更新」；
+  - 网络异常 → 弹框提示「网络不佳 建议开启科学上网」。
+- **作者发布纯日期版本**：仓库 `Actions` 中另提供「发布 Release（纯日期标签）」工作流（手动触发），自动以当日日期打标签并上传 APK；留空则取构建当日，亦可在表单中手动指定 `YYYYMMDD` 标签。
 
 ---
 
@@ -460,16 +491,3 @@ A：手机「设置 → 应用管理」找到 shso，应用信息里会显示包
 <div align="center">
   <sub>shso contributors · 2026</sub>
 </div>
-
-
-### 🔄 版本号规则与检查更新
-
-- **版本命名（2026-09-11 起生效）**：
-  - `versionCode` = **构建当日日期**纯数字（`YYYYMMDD`，例如 `20260911`），是「是否有新版」的唯一判定依据；
-  - `versionName` = **`Jinn`**（固定字符串，仅作展示，不再使用 `9.0.2` 之类的数字版本名）。
-  - GitHub 发布标签同样采用**纯日期**格式（如 `20260911`），与 `versionCode` 天然对齐。
-- **检查更新（设置页）**：设置页底部「检查 github 是否发布了新的版本」一项，点击后应用会抓取 `https://github.com/yezijinn/shso/tags`，正则提取其中的纯数字标签（兼容 `v20260904` 与 `20260904` 两种写法），取最大值与本地 `versionCode` 做大小比较：
-  - 远端更新 → 显示「发现新版本：\<tag\>」+「去更新」按钮（跳转 `https://github.com/yezijinn/shso/releases`）；
-  - 已是最新 → 显示「已是最新版本 无需更新」；
-  - 网络异常 → 弹框提示「网络不佳 建议开启科学上网」。
-- **作者发布纯日期版本**：仓库 `Actions` 中另提供「发布 Release（纯日期标签）」工作流（手动触发），自动以当日日期打标签并上传 APK；留空则取构建当日，亦可在表单中手动指定 `YYYYMMDD` 标签。
