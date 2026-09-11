@@ -402,9 +402,9 @@ object ArchiveExtractor {
     /**
      * 解压目标父目录是否**可写**（纯函数，便于单测）。
      *
-     * 解压是以**应用自身 uid** 落盘的（`File.mkdirs()` + `FileOutputStream`），因此受两类限制：
-     * ① DAC 权限位；② **SELinux(MAC)** —— 实测 `/data/adb/shso` 即使 `chmod 777`，
-     * 应用 uid 建目录仍 `Permission denied`。所以必须实测而不能只判断权限位。
+     * 解压以应用自身 uid 落盘（`File.mkdirs()` + `FileOutputStream`），受两类限制：
+     * DAC 权限位与 SELinux（MAC）—— `/data/adb/shso` 即便 `chmod 777`，
+     * 应用 uid 建目录仍可能 `Permission denied`，因此必须实际检测而非只看权限位。
      *
      * `File.canWrite()` 底层走 `access(W_OK)` 系统调用，能同时反映 MAC 限制。
      */

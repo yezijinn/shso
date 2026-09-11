@@ -78,12 +78,12 @@ private fun detectContentLocal(file: File): Pair<String, String> {
 /**
  * 把 toybox `file` 的输出行归一化为 `(类型, 内容类别)`。
  *
- * 真机实测（2026-09-11，Android toybox）两条约束，均在此处收口：
- * 1. toybox 的 `file` **只支持 `-hL`，不支持 `-b`**。旧实现传 `-b` 必然失败并返回
- *    `file: Unknown option b`，而调用方丢弃了退出码，把这段错误文本当成文件内容去匹配关键词，
- *    于是普通 shell 脚本被判成「二进制 / 加密」（与类型标签自相矛盾）。
- * 2. 输出形如 `<path>: <描述>`，**必须剥掉路径前缀**再匹配：否则路径里的 `data` 等字样会
- *    污染判定（如 `/data/adb/...` 命中 `contains("data")` → 误判「未知二进制」）。
+ * Android toybox 的两条约束，均在此处收口：
+ * 1. toybox 的 `file` 只支持 `-hL`，不支持 `-b`：传 `-b` 会失败并返回
+ *    `file: Unknown option b`，若丢弃退出码就会把错误文本当成文件内容匹配关键词，
+ *    普通 shell 脚本会被判成「二进制 / 加密」。
+ * 2. 输出形如 `<path>: <描述>`，必须先剥掉路径前缀再匹配：
+ *    否则路径里的 `data` 等字样会污染判定（`/data/adb/...` 命中 `contains("data")`）。
  */
 internal fun classifyFileTypeLine(line: String, ext: String): Pair<String, String> {
     val lower = line.substringAfter(": ", line).lowercase()

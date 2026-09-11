@@ -164,10 +164,10 @@ object GuardModuleInstaller {
             }
 
             // 2) root 原子替换安装
-            //    旧实现是「先 rm -rf 旧模块，再 cp -R 新模块」：cp 中途失败/断电/空间不足时，
-            //    旧守卫已被删除、新守卫又不完整 —— 档位 2/3 会在用户毫不知情的情况下失去运行时防护。
-            //    现改为：先在同文件系统内构建 .new → 校验 → 把旧目录挪成 .old → mv 原子替换 →
-            //    删 .old。任一步失败都保留或回滚旧版本。
+            //    不能「先 rm -rf 旧模块再 cp -R 新模块」：cp 失败或空间不足时旧守卫已删除、
+            //    新守卫不完整，运行时防护会静默失效。
+            //    改为同文件系统内构建 .new → 校验 → 旧目录挪 .old → mv 原子替换 → 删 .old，
+            //    任一步失败都保留或回滚旧版本。
             //    放在 /data/adb 下（而非 /data/adb/modules 内）是为了不让 Magisk 把临时目录当成模块。
             val stagingPath = RootService.escapeShellArg(moduleDir.absolutePath)
             val newDir = "/data/adb/.shso_guard.new"
@@ -280,15 +280,15 @@ object GuardModuleInstaller {
      * **升级判定**：早期实现只要 `guard/rm` 存在就认为「已就绪」直接返回，
      * 导致已装过旧版的用户**永远拿不到 APK 内置的新版守卫**（本轮新增的
      * toybox/busybox/mv/cp/find/sed 包装器与 P0 修复全部失效）。
-     * 现改为比对 APK 内置 `module.prop` 的 `version=` 与已装模块版本，不一致即重装。
+     * 因此比对 APK 内置 `module.prop` 的 `version=` 与已装模块版本，不一致即重装。
      *
-     * **并发**：一次档位变更会被 MainActivity 与 SettingsPage **同时**触发本函数，
-     * 两个 `install()` 并发 `rm -rf $MODULE_DIR` + `cp -R` 会互相破坏 ——
-     * 真机实测出现过 `GUARD_AUTO_INSTALL_FAILED | 安装校验失败（guard/rm 不可执行）`，
-     * 随后第二次才装成功。故用互斥锁串行化，并在持锁后重新判定（第二个调用方直接复用结果）。
+     * 并发：一次档位变更会被 MainActivity 与 SettingsPage 同时触发本函数，
+     * 两个 `install()` 并发 `rm -rf $MODULE_DIR` + `cp -R` 会互相破坏
+     * （表现为安装校验失败、`guard/rm` 不可执行）。故用互斥锁串行化，
+     * 并在持锁后重新判定（第二个调用方直接复用结果）。
      *
-     * 失败返回 false —— 调用方应**降级为醒目告警后继续放行**，而不是阻断全部执行
-     * （早期实现是硬阻断，导致默认档位 2 在未装守卫时连 `ls` 都跑不了）。
+     * 失败返回 false —— 调用方应降级为醒目告警后继续放行，而不是阻断全部执行
+     * （硬阻断会让未装守卫的设备连 `ls` 都无法执行）。
      */
     private val installMutex = Mutex()
 

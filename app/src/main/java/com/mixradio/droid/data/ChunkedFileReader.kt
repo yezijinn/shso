@@ -21,24 +21,18 @@ object ChunkedFileReader {
     /**
      * 大于 **128KB** 的文件强制分段（只读 LazyColumn）加载。
      *
-     * 为什么从 2MB 下调：Compose 的 BasicTextField 会对**整段**文本做全量 StaticLayout，
-     * 开销随体积快速放大。在低端机上实测（BIYLBAFQQSS8DA69）：
-     *  - 32KB：秒开；
-     *  - 256KB：主线程 100% 持续约 30 秒才渲染完（用户观感＝长时间空白）；
-     *  - 2MB：数分钟无响应，等于不可用。
-     * 因此把阈值定在实测「秒开」区间的上沿（128KB），之上一律走按行懒加载的只读安全路径，
-     * 宁可牺牲「可编辑」，也不要给用户一个空白/假死的编辑器。
+     * 阈值依据：Compose 的 BasicTextField 会对整段文本做全量 StaticLayout，开销随体积快速放大。
+     * 低端机（BIYLBAFQQSS8DA69）实测：32KB 秒开，256KB 主线程持续约 30 秒，2MB 数分钟无响应。
+     * 因此阈值取 128KB，超过即走按行懒加载的只读路径（不可编辑）。
      */
     const val LARGE_FILE_THRESHOLD = 128L * 1024L
 
     /**
      * `loadAll` 一次性载入的**字节上限**。
      *
-     * 唯一调用方（文本编辑器）只在文件 ≤ [LARGE_FILE_THRESHOLD]（2MB）时才走 [loadAll]，
-     * 32MB 已有 16 倍余量。设上限是为了兜住「未来调用方传入超大文件」：
-     * 旧实现 `ByteArrayOutputStream(total.toInt().coerceAtMost(Int.MAX_VALUE))` 在 >2GB 时
-     * `total.toInt()` 溢出为**负数** → `IllegalArgumentException: Negative initial size`；
-     * 在 1–2GB 区间则尝试申请等量内存 → OOM。
+     * 调用方只在文件 ≤ [LARGE_FILE_THRESHOLD] 时才走 [loadAll]，32MB 已有充足余量。
+     * 设上限用于兜住超大文件：`total.toInt()` 在 >2GB 时溢出为负数
+     * （`IllegalArgumentException: Negative initial size`），1–2GB 区间则直接 OOM。
      */
     const val MAX_LOAD_BYTES = 32L * 1024L * 1024L
 
@@ -88,8 +82,8 @@ object ChunkedFileReader {
     /**
      * 本地（非 root）有界读取前 [headBytes] 字节。
      *
-     * 旧实现用 `File.readBytes()` 把**整个文件**读进堆后再截断，对超大文本（本用例正是
-     * 「>128KB 走分段」的文件，可达数百 MB）必然 OOM。改为流式读取、读满即停。
+     * 不能用 `File.readBytes()` 整读后再截断：走分段的文件可达数百 MB，必然 OOM。
+     * 改为流式读取、读满即停。
      */
     internal fun readHeadLocal(filePath: String, headBytes: Int): ByteArray {
         if (headBytes <= 0) return ByteArray(0)
@@ -179,8 +173,8 @@ object ChunkedFileReader {
                 else try { File(filePath).readBytes() } catch (_: Throwable) { ByteArray(0) }
             } else try { File(filePath).readBytes() } catch (_: Throwable) { ByteArray(0) }
         } else {
-            // 大文件分块读取。**必须按 MAX_LOAD_BYTES 封顶**：旧实现把 total 直接 toInt() 当初始容量，
-            // >2GB 会溢出为负（ByteArrayOutputStream 抛 Negative initial size），1–2GB 则直接 OOM。
+            // 必须按 MAX_LOAD_BYTES 封顶：total 直接 toInt() 当初始容量，
+            // >2GB 溢出为负，1–2GB 直接 OOM。
             val cap = cappedLoadBytes(total)
             val buf = java.io.ByteArrayOutputStream(minOf(cap, CHUNK_BYTES).toInt())
             var off = 0L
