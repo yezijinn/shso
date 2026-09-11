@@ -964,13 +964,22 @@ fun FilePage(
                             val result = try {
                                 if (rootGranted) {
                                     if (item.realExtension == "apk") {
-                                        ApkInstaller.installApk(item.path)
+                                        // 同目录存在分包时自动改装整套（会话安装）
+                                        ApkInstaller.installApk(context, item.path)
                                     } else {
-                                        ApkInstaller.installXapk(item.path)
+                                        ApkInstaller.installXapk(context, item.path)
                                     }
                                 } else {
                                     if (item.realExtension == "apk") {
-                                        ApkInstaller.installApkViaSystem(context, item.path)
+                                        // 无 ROOT 无法走会话安装：若识别出是分包套件，给出明确指引，
+                                        // 而不是把 base 交给系统安装器后报一个看不懂的 MISSING_SPLIT
+                                        if (ApkInstaller.collectApkSet(context, item.path).isSplit) {
+                                            ApkInstaller.InstallResult.Failure(
+                                                "该应用为分包应用，无 ROOT 时无法整套安装；请将同目录的 base 与 -splitN 文件一并交给 SAI / MT 管理器安装"
+                                            )
+                                        } else {
+                                            ApkInstaller.installApkViaSystem(context, item.path)
+                                        }
                                     } else {
                                         ApkInstaller.InstallResult.Failure("XAPK 分片安装需 ROOT 静默权限，请先授权 ROOT")
                                     }

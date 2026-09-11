@@ -45,13 +45,27 @@ object ApkInstaller {
     private const val INSTALL_TIMEOUT_MS = 300_000L
 
     /**
-     * 安装单个 APK（root 静默）。
+     * 安装 APK（root 静默）。
      * 支持伪装名：qq.apk.1（腾讯下载追加 .1）、APK/Apk 等大小写变体——
      * 统一先拷到 /data/local/tmp 的规范名 _shso_install.apk 再安装。
+     *
+     * **分包自动识别**：若同目录存在同一套件的分包（shso 自己提取出的
+     * `<名>-<版本>-splitN.APK`，或 SAI/MT 解包的 `split_config.*.apk`），
+     * 则自动改装整套（单文件 `pm install` 对分包应用必然失败：
+     * INSTALL_FAILED_MISSING_SPLIT）。点基础包或点任意分包都能装整套。
      */
-    suspend fun installApk(apkPath: String): InstallResult = withContext(Dispatchers.IO) {
+    suspend fun installApk(context: Context, apkPath: String): InstallResult = withContext(Dispatchers.IO) {
         val file = File(apkPath)
         if (!file.exists()) return@withContext InstallResult.Failure("APK 文件不存在: $apkPath")
+
+        // 同目录聚合出「安装套件」；只有基础包时退回单文件安装
+        val set = collectApkSet(context, apkPath)
+        if (set.isSplit) {
+            return@withContext when (val r = installSplitApks(set.all)) {
+                is InstallResult.Success -> InstallResult.Success("${r.message}（含 ${set.splits.size} 个分包）")
+                is InstallResult.Failure -> r
+            }
+        }
 
         // 统一用规范名（.apk）落到 /data/local/tmp：pm install 对 .1 等非规范后缀可能拒绝
         val tmpApk = "$TMP_DIR/_shso_install.apk"
@@ -83,7 +97,7 @@ object ApkInstaller {
      *
      * @param xapkPath  .xapk/.apks/.aspk/.apkm 文件路径
      */
-    suspend fun installXapk(xapkPath: String): InstallResult = withContext(Dispatchers.IO) {
+    suspend fun installXapk(context: Context, xapkPath: String): InstallResult = withContext(Dispatchers.IO) {
         val file = File(xapkPath)
         if (!file.exists()) return@withContext InstallResult.Failure("文件不存在: $xapkPath")
 
@@ -156,7 +170,7 @@ object ApkInstaller {
 
             // ── 3. 单 APK 直接装；多 APK（split）走会话流 ──
             return@withContext if (apkFiles.size == 1) {
-                installApk(apkFiles[0].absolutePath)
+                installApk(context, apkFiles[0].absolutePath)
             } else {
                 installSplitApks(apkFiles.map { it.absolutePath })
             }
@@ -167,6 +181,136 @@ object ApkInstaller {
             } catch (_: Exception) {}
         }
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  安装套件识别（基础包 + 分包）
+    //
+    //  为什么需要：单文件 `pm install` 对分包应用必定失败（INSTALL_FAILED_MISSING_SPLIT）。
+    //  分包安装必须走 `pm install-create/-write/-commit` 会话流，且**分片要先拷到
+    //  /data/local/tmp** —— 真机实测 `install-write` 直接读 /storage 会被 SELinux 拒绝
+    //  （avc denied sdcardfs，system_server 无权读 emulated 存储）。
+    // ══════════════════════════════════════════════════════════════════════
+
+    /** 一个「安装套件」：基础包 + 其分包（单包应用 splits 为空）。 */
+    internal data class ApkSet(val base: String, val splits: List<String>) {
+        val all: List<String> get() = listOf(base) + splits
+        val isSplit: Boolean get() = splits.isNotEmpty()
+    }
+
+    /** 同目录扫描上限：避免在塞满 APK 的目录里付出无谓的 manifest 解析开销。 */
+    private const val MAX_SIBLING_SCAN = 200
+    private const val MAX_SPLITS = 64
+
+    private val SPLIT_SUFFIX_REGEX = Regex("-split(\\d+)$", RegexOption.IGNORE_CASE)
+    private val SPLIT_NAME_REGEX = Regex("^split[_.-].*", RegexOption.IGNORE_CASE)
+
+    /**
+     * 由文件名推导「套件前缀」：`X-123.APK` → `X-123`；`X-123-split2.APK` → `X-123`。
+     * 非 `.apk` 后缀返回 null。纯函数，便于单测。
+     */
+    internal fun apkSetStem(fileName: String): String? {
+        val ext = fileName.substringAfterLast('.', "")
+        if (!ext.equals("apk", ignoreCase = true)) return null
+        return SPLIT_SUFFIX_REGEX.replace(fileName.substringBeforeLast('.'), "")
+    }
+
+    /** 文件名是否形如分包：`...-split<数字>.apk`（shso 提取命名）。纯函数。 */
+    internal fun isSplitName(fileName: String): Boolean =
+        SPLIT_SUFFIX_REGEX.containsMatchIn(fileName.substringBeforeLast('.', fileName))
+
+    /**
+     * 按命名约定从目录内挑出一个安装套件。纯函数（只吃文件名），便于单测。
+     *
+     * 约定：基础包 `<名>-<版本>.APK`、分包 `<名>-<版本>-split<序号>.APK`。
+     * **点基础包或点任意分包都能得到同一套件**。
+     *
+     * @return (基础包文件名, 分包文件名列表)；不构成套件时返回 null
+     */
+    internal fun nameBasedSet(tappedName: String, siblingNames: List<String>): Pair<String, List<String>>? {
+        val stem = apkSetStem(tappedName)?.takeIf { it.isNotEmpty() } ?: return null
+        fun isBase(n: String) = apkSetStem(n) == stem && !isSplitName(n)
+        fun isSplit(n: String) = apkSetStem(n) == stem && isSplitName(n)
+
+        val base = if (isBase(tappedName)) tappedName else siblingNames.firstOrNull { isBase(it) } ?: return null
+        val splits = (siblingNames.filter { isSplit(it) } + if (isSplit(tappedName)) listOf(tappedName) else emptyList())
+            .distinct()
+            .filter { it != base }
+            .sorted()
+        return if (splits.isEmpty()) null else base to splits
+    }
+
+    /**
+     * 收集 [apkPath] 所属的安装套件。
+     *
+     * 先按命名约定（覆盖 shso 自己提取出来的产物，**不需要读 manifest**，因此对
+     * 应用不可读的目录同样有效）；命名不规范时再按 manifest 的「同包名 + 同版本号」
+     * 聚合（覆盖 SAI / MT / xapk 解包出来的 `split_config.*.apk`）。
+     * 任何不确定的情形都退回「单文件」，绝不猜测。
+     */
+    internal fun collectApkSet(context: Context, apkPath: String): ApkSet {
+        val tapped = File(apkPath)
+        val fallback = ApkSet(apkPath, emptyList())
+        val dir = tapped.parentFile ?: return fallback
+        val siblings = runCatching {
+            dir.listFiles { f -> f.isFile && f.extension.equals("apk", ignoreCase = true) }
+        }.getOrNull()?.toList() ?: return fallback
+        if (siblings.size < 2) return fallback
+
+        val byName = siblings.associateBy { it.name }
+
+        // A) 命名约定
+        nameBasedSet(tapped.name, siblings.map { it.name }.take(MAX_SIBLING_SCAN))?.let { (baseName, splitNames) ->
+            val base = byName[baseName]
+            val splits = splitNames.mapNotNull { byName[it] }
+            if (base != null && splits.isNotEmpty()) {
+                return ApkSet(base.absolutePath, splits.map { it.absolutePath })
+            }
+        }
+
+        // B) manifest 分组
+        return manifestBasedSet(context, tapped, siblings) ?: fallback
+    }
+
+    private fun manifestBasedSet(context: Context, tapped: File, siblings: List<File>): ApkSet? {
+        val pm = context.packageManager
+        val tappedInfo = archiveInfo(pm, tapped) ?: return null
+        val pkg = tappedInfo.packageName.takeIf { it.isNotBlank() } ?: return null
+        val version = longVersionCode(tappedInfo)
+
+        val group = ArrayList<Pair<File, android.content.pm.PackageInfo>>()
+        group += tapped to tappedInfo
+        for (f in siblings) {
+            if (f.absolutePath == tapped.absolutePath) continue
+            if (group.size > MAX_SPLITS) break
+            val info = archiveInfo(pm, f) ?: continue
+            if (info.packageName != pkg || longVersionCode(info) != version) continue
+            group += f to info
+        }
+        if (group.size < 2) return null
+
+        // 基础包必须能唯一定位：manifest 的 splitNames 为空且名字不像分包
+        val bases = group.filter { (f, info) -> !isSplitArchive(f, info) }
+        if (bases.size != 1) return null
+        val base = bases.single().first
+        val splits = group.filter { it.first.absolutePath != base.absolutePath }
+            .map { it.first.absolutePath }
+            .sorted()
+        return if (splits.isEmpty()) null else ApkSet(base.absolutePath, splits)
+    }
+
+    private fun isSplitArchive(f: File, info: android.content.pm.PackageInfo): Boolean {
+        if (!info.applicationInfo?.splitNames.isNullOrEmpty()) return true
+        return isSplitName(f.name) || SPLIT_NAME_REGEX.containsMatchIn(f.name)
+    }
+
+    /** 解析 APK 归档的 manifest；不可读 / 非 APK 时返回 null。 */
+    @Suppress("DEPRECATION")
+    private fun archiveInfo(pm: android.content.pm.PackageManager, f: File): android.content.pm.PackageInfo? =
+        runCatching { pm.getPackageArchiveInfo(f.absolutePath, 0) }.getOrNull()
+
+    private fun longVersionCode(info: android.content.pm.PackageInfo): Long =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode
+        else @Suppress("DEPRECATION") info.versionCode.toLong()
 
     /**
      * 安装 split 分片 APK（pm 会话流）。
