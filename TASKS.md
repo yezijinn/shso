@@ -228,3 +228,17 @@
   - 真机回归：设置页、主页文件列表、文件页进入 `Download`、文本编辑器打开冒烟文件（内容 / 行号 / 统计正常）、进程存活、`logcat -b crash` 无崩溃。ROOT 链路未重新验收（5a91ac60 未连接）。
   - 独立复核：fresh-eyes 代理两轮确认——首轮确认压缩库 keep/dontwarn 覆盖充分、`kotlinx-serialization-core` 直接依赖确未使用、zstd-jni 四 ABI 原生库已打入 release APK；次轮强制 R8 真实重跑后确认移除三条宽 keep 不破坏 savedstate / BuildConfig / Material3 consumer rules，且应用类恢复混淆。
   - 验证：`./gradlew.bat :app:assembleRelease` → `BUILD SUCCESSFUL`；`./gradlew.bat :app:testDebugUnitTest --rerun-tasks` → **124 tests / 0 failures**（真实重跑，非 UP-TO-DATE）。
+
+### 16. 移除 androidx.appcompat:appcompat 直接依赖
+- [x] 移除工程中未被使用的 AppCompat 依赖
+  - 背景：任务 15 已开启 R8 + shrinkResources，再清理未使用的 AppCompat 可让 R8 进一步缩减 dex / 方法数。
+  - 排查依据：
+    - 源码全树 `grep` 确认无 `AppCompatActivity` / `AppCompatDialog` / `import androidx.appcompat`。
+    - `themes.xml` 继承 `android:Theme.Material.Light.NoActionBar`，不走 AppCompat 主题路径。
+    - UI 全自研 Compose + `Theme.shso`，不依赖 AppCompat。
+  - 变更：`app/build.gradle.kts` 移除 `implementation("androidx.appcompat:appcompat:1.7.0")` 并补充注释。
+  - 实测收益（BIYLBAFQQSS8DA69，真机 `am start -W`）：
+    - 冷启动：5 次 **509 / 580 / 531 / 554 / 560 ms**，均值 **546.8 ms**（较任务 15 的 558 ms 略快 2.0%）。
+    - APK：从 **5,024,154 bytes** 进一步降至 **5,004,178 bytes**（约 5.0 MB），节省 **19,976 bytes**。
+  - 真机回归：启动后文件页正常渲染、进程存活、`logcat -b crash` 无崩溃输出。冒烟文件测试期间因多次 back 导致误退到桌面，重启后验证进入文件页正常。
+  - 验证：`./gradlew.bat :app:assembleRelease` → `BUILD SUCCESSFUL`；`./gradlew.bat :app:testDebugUnitTest --rerun-tasks` → **124 tests / 0 failures**（真实重跑）。
