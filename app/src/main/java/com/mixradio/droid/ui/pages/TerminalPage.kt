@@ -117,10 +117,9 @@ fun TerminalPage(
     // 因此每次发布只需解析**新增尾部**，不再全量重扫 250k 窗口。
     // 颜色是解析器的构造参数，换色即重建（key 为 terminalDefaultColor）。
     //
-    // 跨页面重建复用：HorizontalPager 离屏即销毁本页，重进终端会重建全部状态；而日志窗口可达
-    // 250k 字符，同步全量解析实测 ≈200ms+ 卡帧（低端机接近 ANR）。若只缓存「快照」，解析器的
-    // 跨行/SGR 状态仍丢失、只能全量重扫。故连**解析器实例与其进度**一并缓存：重进时直接续用，
-    // 新日志只走增量；首帧也不再在主线程做任何解析。
+    // HorizontalPager 离屏即销毁本页，重进会重建状态；日志窗口可达 250k 字符，
+    // 同步全量解析约 200ms+。只缓存快照会丢失解析器的跨行 / SGR 状态，
+    // 因此连解析器实例与进度一并缓存：重进时续用，新日志只走增量，首帧不在主线程解析。
     val cachedParse = TerminalParseCache.state?.takeIf { it.color == terminalDefaultColor }
     val ansiParser = remember(terminalDefaultColor) {
         cachedParse?.parser ?: IncrementalAnsiParser(terminalDefaultColor)
@@ -133,9 +132,8 @@ fun TerminalPage(
         mutableStateOf(cachedParse?.result ?: ParsedAnsiResult(emptyList()))
     }
 
-    // 后续更新必须移出主线程：解析成本与「整个日志窗口」(250k) 成正比，而每次发布都会重解析。
-    // 实测留在组合期会占满主线程（主线程 CPU ≈142%，帧耗时 200ms+，界面近乎冻结）。
-    // conflate() 保证同一时刻只有一个解析在跑，中间值直接丢弃，不会因高频发布堆积。
+    // 解析移出主线程：成本与整个日志窗口（250k）成正比，每次发布都会重解析。
+    // conflate() 保证同一时刻只有一个解析在跑，中间值直接丢弃。
     LaunchedEffect(terminalDefaultColor) {
         // 仅「换色 / 首次进入」需要清空重建；复用缓存解析器时保留其状态与进度。
         if (ansiParser !== cachedParse?.parser) {
@@ -371,10 +369,8 @@ fun TerminalPage(
                         // 跨 flush 可跳过重组；窗口裁剪头部时整批序号平移，属可接受代价。
                         //
                         // 禁止用行内容（text/hashCode）做 key：终端里重复行极其常见——空行、
-                        // 重复提示符、回显、以及 `\r` 原地覆盖产生的同文本行。内容相同即产生
-                        // 重复 key，LazyColumn 会直接抛
-                        // IllegalArgumentException("Key ... was already used") 使 App 崩溃
-                        // （真机 BIYLBAFQQSS8DA69 洪流场景已复现，见 TASKS 任务 19）。
+                        // 重复提示符、回显与 CR 原地覆盖产生的同文本行。
+                        // 相同 key 会让 LazyColumn 抛 "Key ... was already used"。
                         itemsIndexed(parsedOutput.lines, key = { idx, line -> terminalLineKey(idx, line) }) { _, line ->
                             Text(
                                 text = line,

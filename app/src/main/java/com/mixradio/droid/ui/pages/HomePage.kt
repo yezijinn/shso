@@ -342,8 +342,8 @@ fun HomePage(
             }
 
             if (isScanningShso && shsoFiles.isEmpty()) {
-                // 扫描中且尚无结果：给出加载态。旧实现只写不读 isScanningShso，扫描期或读取失败
-                // 都会直接显示「暂无文件」，与真正的空目录无法区分，看起来像卡死。
+                // 扫描中且尚无结果时给出加载态：否则扫描期与读取失败都显示「暂无文件」，
+                // 与真正的空目录无法区分。
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()

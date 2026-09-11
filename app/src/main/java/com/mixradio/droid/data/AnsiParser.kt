@@ -208,8 +208,7 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
                     if (end > i + 1 && input[i + 1] == '[') {
                         applySgr(input.substring(i + 2, end - 1))
                     } else {
-                        // 非 CSI（ESC 后不是 `[`）或畸形序列：ESC 本身按普通文本输出，
-                        // 与旧实现「正则不匹配即原文保留」一致
+                        // 非 CSI（ESC 后不是 `[`）或畸形序列：ESC 按普通文本输出。
                         writeSegment(input, i, i + 1)
                     }
                     textStart = end
@@ -348,9 +347,8 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
         // 索引遍历：38;5;n（256 色）与 38;2;r;g;b（真彩色）为可变长度参数，
         // 解析后跳过其参数，避免把 5/2 或颜色分量误当独立 SGR 码处理。
         //
-        // 注意：0 必须作为「循环内的一条指令」就地处理，不能像旧实现那样 `codes.contains(0)` 直接
-        // reset 后 return——否则 `\e[0;32m`（先复位再设绿，是大量 CLI 的常见输出）会丢掉 32，
-        // 把本应显示绿色的文本渲染成默认色。
+        // 0 必须作为循环内的一条指令就地处理，不能 `codes.contains(0)` 后直接 reset return：
+        // `\e[0;32m`（先复位再设绿，CLI 常见输出）会丢掉 32，文本被渲染成默认色。
         var i = 0
         while (i < codes.size) {
             val code = codes[i]

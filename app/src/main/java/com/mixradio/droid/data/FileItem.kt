@@ -103,8 +103,8 @@ data class FileItem(
     val formattedDate: String
         get() {
             if (lastModified <= 0) return ""
-            // 用不可变、线程安全的 DateTimeFormatter 替代「每次调用 new SimpleDateFormat」：
-            // 文件列表每项每帧都会读取本属性，旧实现会持续产生 formatter + Date 临时对象（GC 热点）。
+            // 使用不可变、线程安全的 DateTimeFormatter：每项每帧都会读取本属性，
+            // 每次新建 formatter 会持续产生临时对象。
             return Instant.ofEpochMilli(lastModified)
                 .atZone(ZoneId.systemDefault())
                 .format(FILE_DATE_FORMATTER)

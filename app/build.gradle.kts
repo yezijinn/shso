@@ -71,9 +71,8 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // 只打包 arm64-v8a（2026-09-11）：ROOT 玩机设备基本都是 arm64，
-        // 去掉 armeabi-v7a / x86 / x86_64 的原生库可省约 1.4MB。
-        // 注意：不要用 splits.abi —— 产物名会变成 app-arm64-v8a-release.apk，
+        // 只打包 arm64-v8a，其余 ABI 的原生库约 1.4MB。
+        // 不要用 splits.abi：产物名会变成 app-arm64-v8a-release.apk，
         // build_apk.py 按 app-release*.apk 定位产物会失败。
         ndk {
             abiFilters += "arm64-v8a"
@@ -96,13 +95,10 @@ android {
 
     buildTypes {
         release {
-            // 2026-09-11 开启 R8（原来是 isMinifyEnabled = false）。
-            // 目标：① 通过混淆+删未引用类减 dex 体积；② 让 ART 用 AOT 预编译而非 JIT 解释执行，
-            //        显著降冷启动时间（debug 包 ~4.4s 主要在 JIT/类加载，release + R8 预期 1.5-2.5s）。
-            // 反射/SPI 类（commons-compress / zip4j / zstd-jni / material3）已在 proguard-rules.pro 保留。
+            // R8：混淆并删除未引用类以减小 dex，同时让 ART 走 AOT 而非 JIT。
+            // 反射与 SPI 类（commons-compress / zip4j / material3）在 proguard-rules.pro 中保留。
             isMinifyEnabled = true
-            // 2026-09-11 同时启用 shrinkResources：R8 删类后随之清理未引用资源（drawable / layout / string 等），
-            // 进一步减 APK 体积。注意 shrinkResources 依赖 isMinifyEnabled = true。
+            // shrinkResources 随 R8 删除未引用资源，依赖 isMinifyEnabled = true。
             isShrinkResources = true
             signingConfig = if (useDebugSigning) signingConfigs.getByName("debug") else signingConfigs.getByName("release")
             proguardFiles(
@@ -142,8 +138,7 @@ android {
                 "kotlin-tooling-metadata.json",
                 "assets/**",
                 "assets/dexopt/**",
-                // commons-codec 的语音匹配词典（120 个 txt，约 96KB）：
-                // 本应用只用 commons-compress / zip4j，不涉及语音编码，排除后无害。
+                // commons-codec 的语音匹配词典（120 个 txt，约 96KB），本应用不使用。
                 "org/apache/commons/codec/language/bm/**"
             )
         }
@@ -160,15 +155,12 @@ dependencies {
 
     implementation(libs.androidx.activity)
     implementation(libs.androidx.navigationevent)
-    // kotlinx-serialization-core 直接依赖移除（2026-09-11 排查死依赖）：
-    // 全代码无 @Serializable 注解、无 import kotlinx.serialization，确认未直接使用。
-    // 注意：androidx.savedstate 仍会传递引入 serialization-core，本项主要是清理无用直接依赖，
-    // 不是 APK 体积收益来源。若未来引入 JSON 序列化，恢复 implementation(libs.kotlinx.serialization.core)。
+    // 无 @Serializable 与 kotlinx.serialization 引用，故不直接依赖 serialization-core；
+    // androidx.savedstate 仍会传递引入。需要 JSON 序列化时再恢复该依赖。
 
     implementation("androidx.core:core-ktx:1.15.0")
-    // androidx.appcompat:appcompat 移除（2026-09-11 排查死依赖）：
-    // 全工程无 AppCompatActivity / AppCompatDialog / android:Theme.AppCompat，主题继承 android:Theme.Material。
-    // Compose 全自研 UI，不依赖 AppCompat。删除后 R8 进一步缩减 dex/APK。
+    // 无 AppCompatActivity / AppCompatDialog / Theme.AppCompat，主题继承 android:Theme.Material，
+    // 不依赖 appcompat。
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
 
     // 压缩包解压（zip/tar/tgz/7z 解析；本地 Gradle 缓存已具备 1.27.1，离线可构建）
@@ -178,9 +170,8 @@ dependencies {
     // ZIP 加密解密（zip4j 支持 ZipCrypto + WinZip AES，char[] 密码天然支持中文）
     implementation("net.lingala.zip4j:zip4j:2.11.1")
 
-    // Zstd 解压已于 2026-09-11 移除：zstd-jni 的 Android AAR 需为 arm64-v8a / armeabi-v7a /
-    // x86 / x86_64 各打一份原生库，合计约 1.9MB（当时占 release 包 47%），与收益不匹配。
-    // 受影响的格式：.zst / .tar.zst（其余 12 种格式不受影响）。
+    // 不使用 zstd：zstd-jni 的 AAR 为 4 个 ABI 各带一份原生库，合计约 1.9MB。
+    // 受影响的格式只有 .zst / .tar.zst，其余 12 种不受影响。
 
     // JVM 单元测试（JUnit 4，验证 CommandParser / PathClassifier / PolicyEngine / SecurityModels 纯逻辑拦截路径,
     // 不依赖设备,可在无 ROOT 真机环境下覆盖 ROOT 链路清单 #7-10 项拦截规则）

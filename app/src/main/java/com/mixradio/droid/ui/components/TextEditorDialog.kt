@@ -293,12 +293,12 @@ private fun TextEditorDialogContent(
         derivedStateOf { currentFilePath?.let { CodeHighlighter.languageOf(File(it).name) } }
     }
     // 语法高亮经 visualTransformation 在 BasicTextField 内部渲染。
-    // 修复：旧实现用「静态 Text + 透明 BasicTextField(matchParentSize)」叠加，
-    // 在 Row(verticalScroll) 滚动容器内产生 0 宽 Constraints → IllegalArgumentException 闪退（.sh），
-    // 同一坏约束使普通分支 fillMaxSize 拿到 0 宽 → txt 内容不可见。
-    // 语法高亮：**不在组合期同步计算**。旧实现 `remember(contentValue.text, language){}` 会在每次
-    // 按键触发的主线程重组里全量跑 CodeHighlighter（对每个标识符做 substring，上限 10 万字符），
-    // 实测连续输入时明显掉帧。改为输入停顿 120ms 后在后台线程重算。
+    // 不能用「静态 Text + 透明 BasicTextField(matchParentSize)」叠加：
+    // 在 Row(verticalScroll) 内会产生 0 宽 Constraints，导致 IllegalArgumentException 闪退，
+    // 或使普通分支 fillMaxSize 拿到 0 宽而内容不可见。
+    // 语法高亮不在组合期同步计算：每次按键都会在主线程重组里全量跑 CodeHighlighter
+    // （对每个标识符做 substring，上限 10 万字符），连续输入会掉帧。
+    // 改为输入停顿 120ms 后在后台线程重算。
     //
     // 关键正确性约束：VisualTransformation 返回的文本必须与输入文本一致，否则会把**陈旧文本**渲染到
     // 输入框里。因此下面按 `hl.text == text.text` 校验：不等则回退为无高亮（仅短暂失色，文本与光标
@@ -441,8 +441,8 @@ private fun TextEditorDialogContent(
                             } else highlightTransformation,
                             showLineNumber = showLineNumber, fontSize = fontSize.sp,
                             scrollState = editorScroll, hScroll = hScroll,
-                            // 大文件（分段模式）正文来自 chunkedLines，必须显式传入：
-                            // 该参数默认 emptyList()，漏传会让只读 LazyColumn 渲染空列表 → 打开大文件一片空白（任务 29）。
+                            // 分段模式正文来自 chunkedLines，必须显式传入：
+                            // 漏传时只读 LazyColumn 会渲染空列表，表现为打开大文件一片空白。
                             chunkedLines = chunkedLines,
                             readOnly = isLargeFile
                         )
@@ -453,8 +453,7 @@ private fun TextEditorDialogContent(
                 EditorStatusBar(
                     stats = stats, filePath = currentFilePath, isLargeFile = isLargeFile,
                     fileTotalBytes = fileTotalBytes, chunkedOffset = chunkedOffset,
-                    // 大文件模式下正文在 chunkedLines 里，contentValue 是空的，
-                    // 行数必须改用它，否则会一直显示「行数 0」（任务 29 的连带问题）。
+                    // 大文件模式下 contentValue 为空，行数必须取自 chunkedLines。
                     chunkedLineCount = chunkedLines.size,
                     lastSavedAtMs = lastSavedAtMs, autoSaveSeconds = autoSaveSeconds, dirty = dirty
                 )
@@ -479,9 +478,8 @@ private fun TextEditorDialogContent(
         charset = currentCharset,
         onCharsetChange = { cs ->
             // 切换编码 = 丢弃当前内存内容、按新编码从磁盘重新解码。
-            // 若有未保存修改，必须先阻断：旧实现无条件清空 contentValue 并触发重载，
-            // 用户未保存的编辑被静默覆盖；若随后重载失败，内容为空而 dirty 仍为 true，
-            // 此时按保存会把文件截断成 0 字节（数据损坏）。
+            // 有未保存修改时必须阻断：否则重载后编辑被静默覆盖；
+            // 若重载失败，内容为空而 dirty 仍为 true，保存会把文件截断为 0 字节。
             if (!isNewFile && dirty) {
                 toastMessage = "有未保存的修改，请先保存后再切换编码"
             } else if (cs != currentCharset) {
@@ -692,10 +690,10 @@ private fun TextEditorDialogContent(
 /**
  * 大文件读下一段（追加加载）。
  *
- * 关键：读取区间要**对齐到完整行边界**。旧实现固定 `+CHUNK_BYTES` 推进并按 1MB 原样解码，
- * 会在行中间把同一个逻辑行切成两行（行号错乱），也会在多字节字符中间切断（出现替换符）。
- * 现在只解码到本块最后一个 '\n'，并把 offset 推进到该换行之后——不足一行的尾字节留到下一块重读
- * （最多重复读一行，代价可忽略），从而天然消除跨界问题，也无需跨块携带多余状态。
+ * 读取区间必须对齐到完整行边界：按固定字节推进会在行中间切断（行号错乱），
+ * 也会在多字节字符中间切断（出现替换符）。
+ * 只解码到本块最后一个 '
+'，offset 推进到该换行之后，不足一行的尾字节留到下一块重读。
  */
 private suspend fun loadNextChunk(
     filePath: String, fromOffset: Long, charset: java.nio.charset.Charset,
@@ -743,12 +741,11 @@ internal fun buildRestoreAttrsCommand(statOutput: String, escapedPath: String): 
 /**
  * 写入文本：root 走 /data/local/tmp 中转 + mv；无 root 直写。
  *
- * root 路径的两处关键处理（旧实现缺失，会导致副作用）：
- *  1. **符号链接**：`mv` 覆盖会把链接本身替换成普通文件。若目标是软链，先 `readlink -f` 解析真实
- *     路径并写入真身，保持链接结构不变。
- *  2. **权限/属主**：`mv` 后新文件沿用临时文件的权限与属主（如 root:root 600），会丢掉原文件
- *     的 mode/owner。写入前记录 `stat -c '%a %u %g'`，写入后还原；并尽力 `restorecon` 恢复
- *     SELinux 上下文（系统分区文件否则可能因上下文错误而不可读/不可执行）。
+ * root 路径的两处处理：
+ *  1. 符号链接：`mv` 覆盖会把链接替换成普通文件。目标是软链时先 `readlink -f` 解析真实路径
+ *     再写入真身，保持链接结构不变。
+ *  2. 权限与属主：`mv` 后新文件沿用临时文件的 mode/owner（如 root:root 600）。
+ *     写入前记录 `stat -c '%a %u %g'`，写入后还原，并尽力 `restorecon` 恢复 SELinux 上下文。
  */
 private suspend fun writeTextFile(
     filePath: String, text: String, charset: java.nio.charset.Charset,
@@ -932,8 +929,8 @@ private fun formatBytes(bytes: Long): String = when {
 //  · 崩溃根因：旧「静态Text+透明BasicTextField(matchParentSize)叠加」在滚动容器内产生
 //    0 宽 Constraints → IllegalArgumentException 闪退（.sh 高亮路径）。
 //  · 不可见根因：BasicTextField 放在 Row(verticalScroll) 内 weight(1f) 在无界高度
-//    测量下失效，实际只测得 ~112px 宽（uiautomator 实测 bounds=[1313,448][1425,1767]），
-//    文字/焦点/输入法全不可用。Row + weight 与滚动容器嵌套是官方文档明确反对的结构。
+//    下测量失效（实际约 112px 宽），文字、焦点与输入法均不可用。
+//    Row + weight 与滚动容器嵌套是官方文档明确反对的结构。
 //  · 正解：BasicTextField 自带内部滚动，直接放 weight(1f) 的 Box 中（不在 verticalScroll
 //    内），行号列用同高 Box 平铺，两者各自独立滚动同步（MT/MP-Manager 同款布局）。
 // ═══════════════════════════════════════════════════════════════
@@ -943,7 +940,7 @@ private fun EditorContentArea(
     highlightTransformation: androidx.compose.ui.text.input.VisualTransformation,
     showLineNumber: Boolean, fontSize: androidx.compose.ui.unit.TextUnit,
     scrollState: androidx.compose.foundation.ScrollState, hScroll: androidx.compose.foundation.ScrollState,
-    // 刻意**不给默认值**：给默认 emptyList() 会让调用方漏传时静默渲染空白（正是任务 29 的根因），改为必填以在编译期暴露。
+    // 刻意不给默认值：漏传时会静默渲染空白，必填可在编译期暴露问题。
     chunkedLines: List<String>,
     readOnly: Boolean = false
 ) {
