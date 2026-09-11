@@ -332,137 +332,25 @@ fun SettingsPage(
                 verticalArrangement = Arrangement.spacedBy(0.dp),
                 horizontalAlignment = Alignment.Start
             ) {
-            AuroraArrowPreference(
-                title = "存储空间",
-                summary = "允许读取外部存储,所有文件访问权限",
-                statusSwitch = permissionStorageGranted,
-                onClick = {
-                    if (permissionStorageGranted) {
-                        Toast.makeText(context, "存储空间权限已获得", Toast.LENGTH_SHORT).show()
-                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        try {
-                            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                                data = Uri.parse("package:${context.packageName}")
-                            }
-                            context.startActivity(intent)
-                        } catch (_: Exception) {
-                            try {
-                                context.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
-                            } catch (_: Exception) {
-                                Toast.makeText(context, "无法打开系统设置页面", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    } else {
+            SettingsPermissionsGroup(
+                storage = permissionStorageGranted,
+                battery = permissionBatteryGranted,
+                backgroundStart = permissionBackgroundStartGranted,
+                root = permissionRootGranted,
+                install = permissionInstallGranted,
+                onRequestStorage = {
+                    SettingsPermissionIntents.openStorageSettings(context) {
                         legacyPermissionQueue = PermissionChecker.missingLegacyStoragePermissions(context)
                         requestNextLegacyPermission()
                     }
-                }
-            )
-
-            AuroraArrowPreference(
-                title = "省电策略",
-                summary = "省电策略无限制  耗电保护允许后台",
-                statusSwitch = permissionBatteryGranted,
-                onClick = {
-                    if (permissionBatteryGranted) {
-                        Toast.makeText(context, "已获得省电策略豁免（忽略电池优化）", Toast.LENGTH_SHORT).show()
-                    } else {
-                        try {
-                            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                                data = Uri.parse("package:${context.packageName}")
-                            }
-                            context.startActivity(intent)
-                        } catch (_: Exception) {
-                            try {
-                                context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                            } catch (_: Exception) {
-                                Toast.makeText(context, "无法打开电池优化设置页面", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    }
-                }
-            )
-
-            AuroraArrowPreference(
-                title = "后台弹出",
-                summary = "权限管理 其他权限 允许后台弹出页",
-                statusSwitch = permissionBackgroundStartGranted,
-                onClick = {
-                    if (permissionBackgroundStartGranted) {
-                        Toast.makeText(context, "已允许后台弹出页面", Toast.LENGTH_SHORT).show()
-                    } else {
-                        try {
-                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                data = Uri.parse("package:${context.packageName}")
-                            }
-                            context.startActivity(intent)
-                        } catch (_: Exception) {
-                            Toast.makeText(context, "无法打开应用详情设置页面", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                }
-            )
-
-            AuroraArrowPreference(
-                title = "超级用户",
-                summary = "Magisk KernelSU 超级用户授权",
-                statusSwitch = permissionRootGranted == true,
-                statusSwitchEnabled = permissionRootGranted != null,
-                onClick = {
-                    if (permissionRootGranted == true) {
-                        Toast.makeText(context, "超级用户授权已获得", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(context, "未检测到 ROOT，请在 Magisk / KernelSU 中为本应用授权后返回自动刷新", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            )
-
-            AuroraArrowPreference(
-                title = "安装应用",
-                summary = "无ROOT 手动允许安装外部来源应用",
-                statusSwitch = permissionInstallGranted,
-                onClick = {
-                    if (permissionInstallGranted) {
-                        Toast.makeText(context, "已允许安装外部来源应用", Toast.LENGTH_SHORT).show()
-                    } else {
-                        try {
-                            val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                                data = Uri.parse("package:${context.packageName}")
-                            }
-                            context.startActivity(intent)
-                        } catch (_: Exception) {
-                            try {
-                                context.startActivity(Intent(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS))
-                            } catch (_: Exception) {
-                                Toast.makeText(context, "无法打开安装未知应用设置", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    }
-                }
+                },
+                onRequestBattery = { SettingsPermissionIntents.openBatterySettings(context) },
+                onRequestBackground = { SettingsPermissionIntents.openBackgroundSettings(context) },
+                onRequestInstall = { SettingsPermissionIntents.openInstallSettings(context) }
             )
 
             // 无空行直连：权限区后紧跟三个开关项
-            // ===== 检查更新 =====
-            AuroraSwitchPreference(
-                title = "独立存储",
-                summary = "添加到 shso 时存到专用的文件夹",
-                checked = appSettings.useIndependentFolder,
-                onCheckedChange = { appSettings.setIndependentFolder(it) }
-            )
-
-            AuroraSwitchPreference(
-                title = "自动删除",
-                summary = "添加到 shso 后自动删除原始文件",
-                checked = appSettings.autoDeleteAfterAdding,
-                onCheckedChange = { appSettings.setAutoDelete(it) }
-            )
-
-            AuroraSwitchPreference(
-                title = "自动执行",
-                summary = "添加到 shso 时转到终端立即执行",
-                checked = appSettings.autoExecuteAfterAdding,
-                onCheckedChange = { appSettings.setAutoExecute(it) }
-            )
+            SettingsFileBehaviorGroup(appSettings = appSettings)
 
             // ===== 检查更新 =====
             // 右侧胶囊与权限行一致；点击胶囊/整行触发检查，亮起 3 秒后自动回关
@@ -486,64 +374,64 @@ fun SettingsPage(
             Spacer(modifier = Modifier.height(24.dp))
 
             // ===== 安全（指令审查 / 拦截）=====
-            // 档位 — 0=关 1=审计 2=标准 3=最高；默认 2（标准）
-            AuroraArrowPreference(
-                title = "安全档位",
-                summary = "当前：${SecurityLevels.nameOf(appSettings.securityLevel)}（0 关 1 审计 2 标准 3 最高）",
-                statusSwitch = appSettings.securityLevel > AppSettings.SECURITY_OFF,
-                statusSwitchEnabled = false,
-                onClick = {
-                    val next = (appSettings.securityLevel + 1) % 4
-                    appSettings.updateSecurityLevel(next)
-                    val tip = when (next) {
-                        AppSettings.SECURITY_OFF -> "已关闭：不审查 / 不拦截 / 不审计"
-                        AppSettings.SECURITY_AUDIT_ONLY -> "审计：仅留痕，不拦截命令"
-                        AppSettings.SECURITY_STANDARD -> "标准：黑名单拦截 + 终端硬规则 + 守卫 PATH"
-                        AppSettings.SECURITY_MAXIMUM -> "最高：脚本默认非 Root 执行 + 全档收口"
-                        else -> ""
+            // 三个副作用（写 AppSettings / 同步守卫 / Toast）都在父层做回调，本节点纯 UI
+            SettingsSecurityGroup(
+                currentLevel = appSettings.securityLevel,
+                guardInstalled = guardInstalled,
+                onLevelClicked = remember(appSettings.securityLevel) {
+                    {
+                        val next = (appSettings.securityLevel + 1) % 4
+                        appSettings.updateSecurityLevel(next)
+                        // ── 档位即时生效 ──
+                        // ① 失效「守卫就绪」缓存，避免 60s TTL 内仍用旧判定；
+                        // ② 切到受保护档位（≥2）时确保守卫已安装（未装则用内置 zip 静默安装）；
+                        // ③ 把档位同步为守卫 policy.conf 的 mode（0→off / 1→log / 2,3→enforce），
+                        //    否则会出现「App 说标准防护、模块实际 mode=off」的口径不一致。
+                        GuardModuleInstaller.invalidateReadyCache()
+                        scope.launch {
+                            if (GuardModuleInstaller.requiresRuntimeGuard(next)) {
+                                if (GuardModuleInstaller.ensureInstalled(context)) guardInstalled = true
+                            }
+                            GuardModuleInstaller.syncPolicyMode(next)
+                        }
+                        val tip = when (next) {
+                            AppSettings.SECURITY_OFF -> "已关闭：不审查 / 不拦截 / 不审计"
+                            AppSettings.SECURITY_AUDIT_ONLY -> "审计：仅留痕，不拦截命令"
+                            AppSettings.SECURITY_STANDARD -> "标准：黑名单拦截 + 终端硬规则 + 守卫 PATH"
+                            AppSettings.SECURITY_MAXIMUM -> "最高：脚本默认非 Root 执行 + 全档收口"
+                            else -> ""
+                        }
+                        Toast.makeText(context, tip, Toast.LENGTH_SHORT).show()
                     }
-                    Toast.makeText(context, tip, Toast.LENGTH_SHORT).show()
-                }
-            )
-
-            AuroraArrowPreference(
-                title = "查看审计日志",
-                summary = "最近50条拦截/放行/脚本扫描记录",
-                statusSwitch = false,
-                statusSwitchEnabled = false,
-                onClick = {
-                    scope.launch {
-                        val tail = SecurityAuditLog.readTail(50)
-                        showAuditDialog = true
-                        auditDialogLines = tail.lines().filter { it.isNotBlank() }
+                },
+                onShowAuditLogClicked = remember(Unit) {
+                    {
+                        scope.launch {
+                            val tail = SecurityAuditLog.readTail(50)
+                            showAuditDialog = true
+                            auditDialogLines = tail.lines().filter { it.isNotBlank() }
+                        }
                     }
-                }
-            )
-
-            AuroraArrowPreference(
-                title = if (guardInstalled) "守卫模块：已安装" else "安装 shso_guard 守卫模块",
-                summary = if (guardInstalled)
-                    "拦截 rm/dd/mkfs 等命令运行"
-                else
-                    "复制本 APP 内置模块到 /data/adb/modules/",
-                statusSwitch = guardInstalled,
-                statusSwitchEnabled = false,
-                onClick = {
-                    if (guardInstalled) {
-                        Toast.makeText(context, "模块已就绪", Toast.LENGTH_SHORT).show()
-                        return@AuroraArrowPreference
-                    }
-                    installingGuard = true
-                    scope.launch {
-                        val (ok, msg) = withContext(Dispatchers.IO) { GuardModuleInstaller.install(context) }
-                        installingGuard = false
-                        if (ok) guardInstalled = true
-                        Toast.makeText(
-                            context,
-                            if (ok) "守卫模块已部署，PATH 已生效"
-                            else "部署失败：${msg.take(120)}",
-                            if (ok) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
-                        ).show()
+                },
+                onInstallGuardClicked = remember(guardInstalled) {
+                    {
+                        // 守卫已就绪：直接吐司提示，不触发安装逻辑（避免覆盖已部署模块）
+                        if (guardInstalled) {
+                            Toast.makeText(context, "模块已就绪", Toast.LENGTH_SHORT).show()
+                        } else {
+                            installingGuard = true
+                            scope.launch {
+                                val (ok, msg) = withContext(Dispatchers.IO) { GuardModuleInstaller.install(context) }
+                                installingGuard = false
+                                if (ok) guardInstalled = true
+                                Toast.makeText(
+                                    context,
+                                    if (ok) "守卫模块已部署，PATH 已生效"
+                                    else "部署失败：${msg.take(120)}",
+                                    if (ok) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
                     }
                 }
             )

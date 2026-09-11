@@ -65,7 +65,9 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = buildDateVersionCode
-        versionName = "9.0.2"
+        // 版本名固定为 "Jinn"（新规则，不再使用 9.0.2 之类的数字版本名）。
+        // 升级判定只看 versionCode（构建当日日期 YYYYMMDD），versionName 仅作展示。
+        versionName = "Jinn"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -86,7 +88,14 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // 2026-09-11 开启 R8（原来是 isMinifyEnabled = false）。
+            // 目标：① 通过混淆+删未引用类减 dex 体积；② 让 ART 用 AOT 预编译而非 JIT 解释执行，
+            //        显著降冷启动时间（debug 包 ~4.4s 主要在 JIT/类加载，release + R8 预期 1.5-2.5s）。
+            // 反射/SPI 类（commons-compress / zip4j / zstd-jni / material3）已在 proguard-rules.pro 保留。
+            isMinifyEnabled = true
+            // 2026-09-11 同时启用 shrinkResources：R8 删类后随之清理未引用资源（drawable / layout / string 等），
+            // 进一步减 APK 体积。注意 shrinkResources 依赖 isMinifyEnabled = true。
+            isShrinkResources = true
             signingConfig = if (useDebugSigning) signingConfigs.getByName("debug") else signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -140,10 +149,15 @@ dependencies {
 
     implementation(libs.androidx.activity)
     implementation(libs.androidx.navigationevent)
-    implementation(libs.kotlinx.serialization.core)
+    // kotlinx-serialization-core 直接依赖移除（2026-09-11 排查死依赖）：
+    // 全代码无 @Serializable 注解、无 import kotlinx.serialization，确认未直接使用。
+    // 注意：androidx.savedstate 仍会传递引入 serialization-core，本项主要是清理无用直接依赖，
+    // 不是 APK 体积收益来源。若未来引入 JSON 序列化，恢复 implementation(libs.kotlinx.serialization.core)。
 
     implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.appcompat:appcompat:1.7.0")
+    // androidx.appcompat:appcompat 移除（2026-09-11 排查死依赖）：
+    // 全工程无 AppCompatActivity / AppCompatDialog / android:Theme.AppCompat，主题继承 android:Theme.Material。
+    // Compose 全自研 UI，不依赖 AppCompat。删除后 R8 进一步缩减 dex/APK。
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
 
     // 压缩包解压（zip/tar/tgz/7z 解析；本地 Gradle 缓存已具备 1.27.1，离线可构建）

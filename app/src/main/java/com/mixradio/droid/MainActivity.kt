@@ -27,12 +27,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.PermissionChecker
 import com.mixradio.droid.data.RootService
+import com.mixradio.droid.data.security.GuardModuleInstaller
 import com.mixradio.droid.ui.components.DockBar
 import com.mixradio.droid.ui.pages.FilePage
 import com.mixradio.droid.ui.pages.HomePage
@@ -114,6 +116,23 @@ fun MainContainer(appSettings: AppSettings) {
         }
     }
 
+    // ── 运行时守卫自动安装 ──
+    // 档位 ≥2（标准/最强）时，用 APK 内置的 shso_guard.zip 静默安装守卫模块，
+    // 使默认档位「开箱即有运行时防护」，而不是要求用户手动去设置页安装。
+    // 早期实现是「守卫未安装 → 拒绝一切 root 执行」，导致默认档位 2 连 `ls` 都跑不了。
+    // 现改为自动安装：失败也不阻断，由 RootService.reportGuardDegraded 降级为告警 + 审计。
+    val context = LocalContext.current
+    // 按档位重置尝试标记，使「改档位后」会重新尝试安装
+    var guardEnsureAttempted by remember(appSettings.securityLevel) { mutableStateOf(false) }
+    LaunchedEffect(rootGranted, appSettings.securityLevel) {
+        if (rootGranted != true) return@LaunchedEffect
+        if (!GuardModuleInstaller.requiresRuntimeGuard(appSettings.securityLevel)) return@LaunchedEffect
+        if (guardEnsureAttempted) return@LaunchedEffect
+        guardEnsureAttempted = true
+        // ensureInstalled：已就绪直接返回 true；否则走 su 静默安装（失败返回 false，不抛异常）
+        GuardModuleInstaller.ensureInstalled(context)
+    }
+
     // 首次进入即检测；每次回到前台（用户授权完跳回/切换页面）自动重查
     LaunchedEffect(Unit) {
         refreshRootGranted()
@@ -153,8 +172,9 @@ fun MainContainer(appSettings: AppSettings) {
                 1 -> TerminalPage(appSettings = appSettings)
                 2 -> FilePage(
                     appSettings = appSettings,
-                    onExecuteFileAndNavigate = { filePath ->
-                        RootService.executeFile(filePath)
+                    onExecuteFileAndNavigate = { filePath, runAsRoot, riskApproved ->
+                        // 透传确认框的用户选择与风险确认标记（档位 3 的「脚本默认非 Root」依赖此项）
+                        RootService.executeFile(filePath, runAsRoot, riskApproved)
                         coroutineScope.launch {
                             pagerState.animateScrollToPage(1)
                         }

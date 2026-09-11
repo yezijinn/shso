@@ -6,6 +6,8 @@ package com.mixradio.droid.data.security
 import android.content.Context
 import com.mixradio.droid.data.RootService
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
@@ -42,7 +44,15 @@ object GuardModuleInstaller {
         "guard/mke2fs",
         "guard/mkfs.ext4",
         "guard/mkfs.f2fs",
-        "guard/mkfs.vfat"
+        "guard/mkfs.vfat",
+        // v1.1.0 新增覆盖面：多二进制派发 + 高频破坏原语。
+        // 缺任何一个即说明打包异常（或用户手里是旧包），安装前会被直接拒绝。
+        "guard/toybox",
+        "guard/busybox",
+        "guard/mv",
+        "guard/cp",
+        "guard/find",
+        "guard/sed"
     )
 
     fun validateArchiveEntry(stagingDir: File, entryName: String): File? {
@@ -168,6 +178,144 @@ object GuardModuleInstaller {
         } catch (e: Exception) {
             Pair(false, "安装失败: ${e.message}")
         }
+    }
+
+    /** 失效「守卫就绪」缓存，使档位变更 / 安装卸载后立即重新探测（无需等 60s TTL）。 */
+    fun invalidateReadyCache() {
+        guardReadyCache = null
+        guardReadyAt = 0
+    }
+
+    /** 就绪缓存是否已确定（未探测或已过期返回 false）。 */
+    fun hasFreshReadyCache(): Boolean {
+        val c = guardReadyCache ?: return false
+        return c && System.currentTimeMillis() - guardReadyAt < 60_000
+    }
+
+    /**
+     * 该档位是否需要运行时守卫（纯函数，便于单测）。
+     *
+     * 档位 0/1 明确表示「不拦截」，安装守卫既无意义也违反档位语义，故只在 ≥标准防护时安装。
+     */
+    fun requiresRuntimeGuard(securityLevel: Int): Boolean = securityLevel >= SecurityLevels.STANDARD
+
+    /**
+     * 档位 → 守卫 `policy.conf` 的 `mode` 取值（纯函数，便于单测）。
+     *
+     * 0(关) → `off`（完全放行）；1(仅审计) → `log`（只记录不拦截）；2/3(标准/最强) → `enforce`。
+     * 越界或未知档位一律按最严格处理（`enforce`），与守卫自身的 fail-closed 取向一致。
+     */
+    fun policyModeFor(securityLevel: Int): String = when (securityLevel) {
+        SecurityLevels.OFF -> "off"
+        SecurityLevels.AUDIT_ONLY -> "log"
+        // 2/3 以及一切越界/未知取值一律取最严格档，避免脏数据把守卫降级成完全放行
+        // （`mode=off` 是完全不拦截，属 fail-open，与项目「误断网 > 意外放行」取向相反）
+        else -> "enforce"
+    }
+
+    /**
+     * 按安全档位同步守卫 `policy.conf` 的 `mode=`。
+     *
+     * 守卫未就绪时静默返回 false（策略文件本身不存在时，守卫会退回内置兜底清单）。
+     * 只改写 `mode=` 行，其余 `protect=` / `allow=` 用户自定义内容原样保留。
+     */
+    suspend fun syncPolicyMode(securityLevel: Int): Boolean = withContext(Dispatchers.IO) {
+        if (!guardBinDirReady()) return@withContext false
+        val mode = policyModeFor(securityLevel)
+        val policyDir = "/data/adb/shso_guard"
+        val script = buildString {
+            append("d=$policyDir; mkdir -p \$d; f=\$d/policy.conf; ")
+            append("[ -f \"\$f\" ] || cp $MODULE_DIR/policy.conf \"\$f\" 2>/dev/null; ")
+            append("[ -f \"\$f\" ] || : > \"\$f\"; ")
+            // 删掉既有的 mode= 行（容忍 `mode = x` 写法），再追加一行标准写法
+            append("grep -v '^[[:space:]]*mode[[:space:]]*=' \"\$f\" > \"\$f.shso.tmp\" 2>/dev/null; ")
+            append("[ -s \"\$f.shso.tmp\" ] || : > \"\$f.shso.tmp\"; ")
+            append("mv \"\$f.shso.tmp\" \"\$f\" 2>/dev/null; ")
+            append("echo 'mode=$mode' >> \"\$f\"")
+        }
+        val code = RootService.runCommandSync(script, 10_000L).first
+        if (code == 0) {
+            SecurityAuditLog.log(
+                CommandSource.INTERNAL_APP, "ALLOW", "GUARD_POLICY_MODE", RiskLevel.SAFE,
+                "$policyDir/policy.conf mode=$mode (档位=$securityLevel)"
+            )
+            true
+        } else {
+            false
+        }
+    }
+
+    /**
+     * 确保守卫可用：需要时安装/升级，已就绪且版本一致时直接返回 true。
+     *
+     * 调用时机：档位 ≥2（进入 App / 切换到受保护档位）。
+     *
+     * **升级判定**：早期实现只要 `guard/rm` 存在就认为「已就绪」直接返回，
+     * 导致已装过旧版的用户**永远拿不到 APK 内置的新版守卫**（本轮新增的
+     * toybox/busybox/mv/cp/find/sed 包装器与 P0 修复全部失效）。
+     * 现改为比对 APK 内置 `module.prop` 的 `version=` 与已装模块版本，不一致即重装。
+     *
+     * **并发**：一次档位变更会被 MainActivity 与 SettingsPage **同时**触发本函数，
+     * 两个 `install()` 并发 `rm -rf $MODULE_DIR` + `cp -R` 会互相破坏 ——
+     * 真机实测出现过 `GUARD_AUTO_INSTALL_FAILED | 安装校验失败（guard/rm 不可执行）`，
+     * 随后第二次才装成功。故用互斥锁串行化，并在持锁后重新判定（第二个调用方直接复用结果）。
+     *
+     * 失败返回 false —— 调用方应**降级为醒目告警后继续放行**，而不是阻断全部执行
+     * （早期实现是硬阻断，导致默认档位 2 在未装守卫时连 `ls` 都跑不了）。
+     */
+    private val installMutex = Mutex()
+
+    suspend fun ensureInstalled(context: Context): Boolean = installMutex.withLock {
+        if (guardBinDirReady(forceRefresh = true) && !needsUpgrade(context)) return@withLock true
+        return@withLock try {
+            val (ok, msg) = install(context)
+            if (!ok) {
+                SecurityAuditLog.log(
+                    CommandSource.INTERNAL_APP, "BLOCK", "GUARD_AUTO_INSTALL_FAILED", RiskLevel.DANGEROUS,
+                    msg
+                )
+            }
+            ok && guardBinDirReady(forceRefresh = true)
+        } catch (e: Exception) {
+            SecurityAuditLog.log(
+                CommandSource.INTERNAL_APP, "BLOCK", "GUARD_AUTO_INSTALL_FAILED", RiskLevel.DANGEROUS,
+                e.message ?: "异常"
+            )
+            false
+        }
+    }
+
+    /** 已装模块与 APK 内置版本不一致（或已装模块无版本号）时判定需要重装。 */
+    private suspend fun needsUpgrade(context: Context): Boolean {
+        val bundled = bundledModuleVersion(context) ?: return false
+        val installed = (status() as? GuardStatus.Installed)?.version ?: return true
+        return bundled != installed || installed == "?"
+    }
+
+    /**
+     * 读取 APK 内置守卫模块声明的 `version=`（升级判定用）。
+     * 读取失败返回 null —— 此时跳过升级判定，按「已就绪」处理，不阻塞启动。
+     */
+    private fun bundledModuleVersion(context: Context): String? = try {
+        context.assets.open(ASSET_ZIP).use { asset ->
+            ZipInputStream(asset.buffered()).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    if (entry.name == "module.prop") {
+                        return zis.readBytes().toString(Charsets.UTF_8)
+                            .lineSequence()
+                            .firstOrNull { it.startsWith("version=") }
+                            ?.removePrefix("version=")
+                            ?.trim()
+                            ?.takeIf { it.isNotEmpty() }
+                    }
+                    entry = zis.nextEntry
+                }
+                null
+            }
+        }
+    } catch (_: Exception) {
+        null
     }
 
     /** 卸载守卫模块。 */
