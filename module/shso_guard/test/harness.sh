@@ -7,8 +7,11 @@
 #   - PATH 采用「fakebin 前置 + 保留原 PATH」，否则 sh/tr/date/wc 都找不到。
 
 set -u
-ROOT="/c/AI_WORKSPACE/PROJECTS/com.mixradio.droid"
-GUARD="$ROOT/shso_guard/guard"
+# 脚本自带定位：test/ 的父目录即模块目录，避免硬编码仓库绝对路径。
+# （旧版写死迁移前的 .../com.mixradio.droid/shso_guard，9cd74ed 迁移后即失效。）
+SELF="$(cd "$(dirname "$0")" && pwd)"
+ROOT="${ROOT:-$(dirname "$SELF")}"
+GUARD="$ROOT/guard"
 WORK="$ROOT/.tmp-guard-test/work"
 FAKE="$WORK/fakebin"
 ORIG_PATH="$PATH"
