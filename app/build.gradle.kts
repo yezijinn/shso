@@ -70,6 +70,14 @@ android {
         versionName = "Jinn"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // 只打包 arm64-v8a（2026-09-11）：ROOT 玩机设备基本都是 arm64，
+        // 去掉 armeabi-v7a / x86 / x86_64 的原生库可省约 1.4MB。
+        // 注意：不要用 splits.abi —— 产物名会变成 app-arm64-v8a-release.apk，
+        // build_apk.py 按 app-release*.apk 定位产物会失败。
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     signingConfigs {
@@ -133,7 +141,10 @@ android {
                 "kotlin/**",
                 "kotlin-tooling-metadata.json",
                 "assets/**",
-                "assets/dexopt/**"
+                "assets/dexopt/**",
+                // commons-codec 的语音匹配词典（120 个 txt，约 96KB）：
+                // 本应用只用 commons-compress / zip4j，不涉及语音编码，排除后无害。
+                "org/apache/commons/codec/language/bm/**"
             )
         }
     }
@@ -167,8 +178,9 @@ dependencies {
     // ZIP 加密解密（zip4j 支持 ZipCrypto + WinZip AES，char[] 密码天然支持中文）
     implementation("net.lingala.zip4j:zip4j:2.11.1")
 
-    // Zstd 解压（zstd-jni Android AAR 含 arm64-v8a/armeabi-v7a/x86/x86_64 原生库）
-    implementation("com.github.luben:zstd-jni:1.5.7-16@aar")
+    // Zstd 解压已于 2026-09-11 移除：zstd-jni 的 Android AAR 需为 arm64-v8a / armeabi-v7a /
+    // x86 / x86_64 各打一份原生库，合计约 1.9MB（当时占 release 包 47%），与收益不匹配。
+    // 受影响的格式：.zst / .tar.zst（其余 12 种格式不受影响）。
 
     // JVM 单元测试（JUnit 4，验证 CommandParser / PathClassifier / PolicyEngine / SecurityModels 纯逻辑拦截路径,
     // 不依赖设备,可在无 ROOT 真机环境下覆盖 ROOT 链路清单 #7-10 项拦截规则）
