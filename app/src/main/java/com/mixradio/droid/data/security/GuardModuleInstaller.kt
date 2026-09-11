@@ -175,11 +175,13 @@ object GuardModuleInstaller {
             val installScript = buildString {
                 append("mkdir -p /data/adb && ")
                 append("/system/bin/rm -rf $newDir 2>/dev/null; ")
-                append("cp -R $stagingPath $newDir && chmod -R 0755 $newDir || exit 2; ")
-                append("test -f $newDir/module.prop && test -x $newDir/guard/rm || exit 3; ")
+                // 任一步失败都要清掉半成品 .new，不能把垃圾留在 /data/adb
+                append("cp -R $stagingPath $newDir && chmod -R 0755 $newDir || { /system/bin/rm -rf $newDir; exit 2; }; ")
+                append("if ! (test -f $newDir/module.prop && test -x $newDir/guard/rm); then /system/bin/rm -rf $newDir; exit 3; fi; ")
                 append("/system/bin/rm -rf $oldDir 2>/dev/null; ")
                 append("if [ -d $MODULE_DIR ]; then mv $MODULE_DIR $oldDir || exit 4; fi; ")
-                append("if ! mv $newDir $MODULE_DIR; then [ -d $oldDir ] && mv $oldDir $MODULE_DIR; exit 5; fi; ")
+                append("if ! mv $newDir $MODULE_DIR; then /system/bin/rm -rf $newDir; ")
+                append("[ -d $oldDir ] && mv $oldDir $MODULE_DIR; exit 5; fi; ")
                 append("/system/bin/rm -rf $oldDir 2>/dev/null; true")
             }
             RootService.runCommandSync(installScript, 60_000L).let { (code, out) ->
