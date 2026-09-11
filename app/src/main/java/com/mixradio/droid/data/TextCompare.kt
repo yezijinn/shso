@@ -277,13 +277,22 @@ object TextCompare {
                     }
                     val ch = FileInputStream(tmp).channel
                     val len = ch.size()
-                    if (len <= 0L) { ch.close(); throw CompareException("文件为空或不可读: ${File(path).name}") }
-                    if (len > Int.MAX_VALUE) {
-                        ch.close()
-                        throw CompareException("文件过大（>${Int.MAX_VALUE / 1024 / 1024}MB）: ${File(path).name}")
+                    // 进入「已产出 tmp」阶段后，任何失败都必须清掉临时文件：
+                    // 成功路径由 MappedFile.close() 负责删除（tmp 会随对象一起传给调用方），
+                    // 但下面几处 throw 与 mmap 异常原先都不删 —— 大文件对比本身吃空间，
+                    // 残留的 _shso_cmp_*.tmp 不易被察觉。
+                    try {
+                        if (len <= 0L) { ch.close(); throw CompareException("文件为空或不可读: ${File(path).name}") }
+                        if (len > Int.MAX_VALUE) {
+                            ch.close()
+                            throw CompareException("文件过大（>${Int.MAX_VALUE / 1024 / 1024}MB）: ${File(path).name}")
+                        }
+                        val buf = ch.map(FileChannel.MapMode.READ_ONLY, 0, len) as MappedByteBuffer
+                        return MappedFile(ch, buf, len.toInt(), bomOffset(buf, len.toInt()), tmp)
+                    } catch (e: Throwable) {
+                        runCatching { File(tmp).delete() }
+                        throw e
                     }
-                    val buf = ch.map(FileChannel.MapMode.READ_ONLY, 0, len) as MappedByteBuffer
-                    return MappedFile(ch, buf, len.toInt(), bomOffset(buf, len.toInt()), tmp)
                 }
                 throw CompareException("无法读取文件: $path")
             }
