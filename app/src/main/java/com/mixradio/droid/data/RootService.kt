@@ -126,7 +126,11 @@ object RootService {
         if (isTaskRunning || !outputIsPristineBanner) return
         val showBanner = appSettings?.showHyperCoreBanner ?: true
         if (!showBanner) return
-        if (outputLog == HyperCore.generateEngineBanner("工作中", pristineBannerRoot)) {
+        // 在分页/拖动期间 outputLog 最大 250k 字符，== 仍是 O(N) 字节扫描。
+        // 这里先把生成的 banner 缓存一次，再加长度快速短路：长度不等 ⇒ 一定不是当前横幅；
+        // 长度相等再做一次完整 equals。在 250k 字符串场景下把最坏比较降到 1 次长度读取。
+        val expected = HyperCore.generateEngineBanner("工作中", pristineBannerRoot)
+        if (outputLog.length == expected.length && outputLog == expected) {
             pristineBannerRoot = granted
             outputLog = HyperCore.generateEngineBanner("工作中", granted)
         }
@@ -677,7 +681,9 @@ object RootService {
                     withContext(Dispatchers.Main) {
                         appendOutputDirect("^C\n")
                     }
-                    targetWriter?.write(3)
+                    // ProcessBuilder 起的子进程没有 TTY，\u0003 (\u0003) 经 stdin 写入只是普通字符，
+                    // 不会触发 SIGINT；真正能中断的是下方 `kill -2`。旧版两个都写会误导后来阅读
+                    // 代码的人以为 ETX 起了作用，这里明确移除冗余 IO。
                     targetWriter?.write("\n")
                     targetWriter?.flush()
 
