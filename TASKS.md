@@ -11,7 +11,7 @@
 - 性能优化主线已收敛到边际收益 0（真机帧 50th 10-50ms；冷启动 547ms 释放；APK 5.0MB）。
 - 安全链路（守卫模块 / 挡位 / 审计）已全链路打通；App 侧集成任务 8/9/10 [x]。
 - 4 P1 + 4 P2 BUG 已闭环（commit `e7b3816`）；124 tests / 0 failures 基线守住。
-- 推送状态：分支 `fix/github-tag-version-check` 本地领先 origin 17 个提交，**未推送**。
+- 推送状态：分支 `fix/github-tag-version-check` **已推送**（`3140003..ee26e03`，18 commits fast-forward）；PR **#1** 已建，状态 draft。
 - ROOT 链路：BIYLBAFQQSS8DA69 是**已连接、已确认 ROOT 的真机**（Magisk v30.7、`su -c id` uid=0、守卫模块已装、PATH 注入验证通过）——**此前记忆里 5a91ac60 当 ROOT 机是错的,本机无 ROOT 的说法也是错的**。任务 19 ROOT 链路补测可立即执行。
 - 审计余项：22 项 BUG 排查已闭环 8 项；剩余 14 项 P2（FilePage key / ChunkedFileReader >2GB overflow / RootService pid reflection / ArchiveExtractor Zip Slip canonical path / chmod 777 / runCommandSync stream close / Bitmap recycle / 等）属次优先级，按用户节奏分批处理。
 
@@ -32,16 +32,17 @@
 ## 📋 任务流水线
 
 ### 18. 推送当前 fix/github-tag-version-check 分支
-- [ ] 把本地 16 commits 推到 origin
-  - 前置：`git status` 干净、`git log origin..HEAD` 已确认（e7b3816..b034fe4..adbf6c1..9fdc1f2..7fd5a6e..9cd74ed..66e4f44 + 之前 9 个）。
-  - 推送目标：`origin/fix/github-tag-version-check`（**不** `--force`，**不** `git push --set-upstream` 除非首次）。
-  - 验证：远端 `git log --oneline | head -5` 出现 e7b3816。
-  - 已知信息：`artifacts/推送前检查报告-20260911.md` 已含 PR 标题 / 描述模板。
-- [ ] 创建 PR：`fix/github-tag-version-check` → `main`
-  - 标题：「feat: 守卫模块 / 终端洪流进化 / 编辑器优化 / R8 / BUG 闭环 」
-  - 描述贴自 `artifacts/推送前检查报告-20260911.md` + 任务 17 BUG 闭环简述。
-  - 状态：draft（ROOT 链路未补测 → 不能 merge）。
-- [ ] 后续：5a91ac60 连接 + ROOT 验收通过 → 转 ready for review。
+- [x] 把本地 18 commits 推到 origin
+  - 已执行 `git push origin fix/github-tag-version-check` → `3140003..ee26e03`（fast-forward，无 force）。
+  - 验证：远端 `git log --oneline -3` → `ee26e03 / b42f37a / e7b3816` ✓。
+  - 说明：看板原记载 16 commits 已过时，实际 18（新增 `ee26e03` ROOT 身份修正、`b42f37a` 看板归档）。
+- [x] 创建 PR：`fix/github-tag-version-check` → `main`
+  - PR **#1**：https://github.com/yezijinn/shso/pull/1 ，状态 **draft**（68 files, +5756/-607）。
+  - 标题：「feat: 守卫模块 / 终端洪流进化 / 编辑器优化 / R8 / BUG 闭环」。
+  - 描述取自新生成的 `artifacts/推送前检查报告-20260911.md`（**该文件此前并不存在，任务 18 首轮核验时补生成**；`artifacts/` 已 gitignore，不入库）。
+  - CI 说明：仓库两个 workflow 均为 `workflow_dispatch` 手动触发，推送/PR **不会自动跑 CI**，故 `gh pr checks` 显示 "no checks reported" 属预期，非失败。
+- [ ] 后续：**BIYLBAFQQSS8DA69**（已连接、已确认 ROOT）跑通任务 19 端到端冒烟 → 转 ready for review。
+  - 注：原写「5a91ac60 连接」为旧认知残留，按任务 19 修正为准。
 
 ### 19. ROOT 链路真机补测（BIYLBAFQQSS8DA69,设备已连接;此前误标"待 5a91ac60"是认知错误,已修正）
 - [ ] 真机能力已确认（2026-09-11 重新核验）:
@@ -84,10 +85,10 @@
 
 ## ⚠️ 待决事项（需用户确认或外部依赖）
 
-1. **主线选择**：任务 18 → 19 → 20 是默认推荐路径；用户若有其他优先级可重新排序。
+1. **主线选择**：任务 18 已完成（2026-09-11 推送 + PR #1）。当前处于 18 → **19** → 20 路径的 19 节点；用户若有其他优先级可重新排序。
 2. **5a91ac60 历史身份**：2026-09-11 修正——该 ID 自 2026-09-06 后已不在 adb 设备列表,长期被记忆误标为"ROOT 主力机",实际上 BIYLBAFQQSS8DA69 才是 ROOT 真机。历史 daily log 里的 5a91ac60 引用是当时真实接入的设备（与今日不同),保留原状不再回填;但新生成的看板、commit、PR 描述一律以 BIYLBAFQQSS8DA69 为准。
 3. **审计余项处理节奏**：任务 20 是「全做」版（3 批 ~10 项），用户可指派「只做高风险（Zip Slip / overflow / chmod）」或「暂缓」。
-4. **PR 标题 / 描述模板**：已用 `artifacts/推送前检查报告-20260911.md` 里的草案；用户可改。
+4. **PR 标题 / 描述模板**：已用于 PR #1（标题「feat: 守卫模块 / 终端洪流进化 / 编辑器优化 / R8 / BUG 闭环」，描述存 `artifacts/pr-body-fix-github-tag-version-check.md`）；用户可随时改。
 5. **TASKS-old-20260911-v17final.md 保留期**：默认永久保留（git history 仍可查），用户可指派删除。
 
 ---
