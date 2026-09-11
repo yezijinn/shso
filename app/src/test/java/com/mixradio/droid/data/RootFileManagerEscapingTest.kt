@@ -3,6 +3,9 @@
 
 package com.mixradio.droid.data
 
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -98,5 +101,18 @@ class RootFileManagerEscapingTest {
         assertNull(RootFileManager.permissionStringToOctal("-rwxr-xr"))
         assertNull(RootFileManager.permissionStringToOctal("-rwxr-xr-z"))
         assertNull(RootFileManager.permissionStringToOctal("?rwxr-xr-x"))
+    }
+
+    @Test fun `stat 秒值换算为毫秒，避免时间显示成 1970`() {
+        // 真机实测：/data/adb/shso/flood.sh 的 `stat -c %Y` = 1789044590（秒）
+        // 旧实现直接把秒交给 Date(long)（要求毫秒）→ 显示 1970-01-22
+        assertEquals(1789044590000L, RootFileManager.statSecondsToMillis(1789044590L))
+        val year = SimpleDateFormat("yyyy", Locale.US).format(Date(1789044590000L))
+        assertEquals("2026", year)
+    }
+
+    @Test fun `stat 空值或非正值回退为 0`() {
+        assertEquals(0L, RootFileManager.statSecondsToMillis(0L))
+        assertEquals(0L, RootFileManager.statSecondsToMillis(-1L))
     }
 }

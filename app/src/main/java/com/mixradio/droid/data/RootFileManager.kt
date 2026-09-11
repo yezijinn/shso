@@ -321,6 +321,16 @@ object RootFileManager {
         items.distinctBy { it.path }
     }
 
+    /**
+     * `stat -c %Y` 输出的是「秒」，而 [FileItem.lastModified] 的契约是「毫秒」
+     * （本地路径走 `File.lastModified()`，本身就是毫秒）。
+     *
+     * 必须换算：旧实现把秒直接交给 `Date(long)`（要求毫秒），使 Root 路径下所有文件的
+     * 「最后修改时间」都显示成 1970 年（1789044590 秒 → 1970-01-22），且与本地路径单位不一致，
+     * 混排时还会让按时间排序错乱。
+     */
+    internal fun statSecondsToMillis(seconds: Long): Long = if (seconds <= 0L) 0L else seconds * 1000L
+
     private fun parseStatOutput(output: String, targetPath: String, items: MutableList<FileItem>) {
         for (line in output.lineSequence()) {
             val trimmed = line.trim()
@@ -335,7 +345,8 @@ object RootFileManager {
 
             val isDir = perms[0] == 'd'
             val size = parts[1].toLongOrNull() ?: 0L
-            val modified = parts[2].toLongOrNull() ?: 0L
+            // stat -c %Y 给的是「秒」；lastModified 契约是「毫秒」，此处必须换算（见 statSecondsToMillis）
+            val modified = statSecondsToMillis(parts[2].toLongOrNull() ?: 0L)
             var name = parts[3]
 
             // find 输出带 "./" 前缀
