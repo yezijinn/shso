@@ -162,7 +162,7 @@
 ---
 
 ### 12. 新一轮热点排查 + SettingsPage 拆分（2026-09-11）
-- [/] SettingsPage 抽子 Composable + AppSettings 加 @Stable（**结构改善，CPU 实测持平，无量化收益**）
+- [x] SettingsPage 抽子 Composable + AppSettings 加 @Stable（**结构改善，CPU 实测持平，无量化收益**）
   - 排查背景：前 11 项任务已全部 [x]，新一轮按"只做有证据的热点"原则排查未审过的范围。
     未审过 + 体积大：SettingsPage 815 行单 Composable + 9 state + 13 Dialog + 18 内联 Aurora* 项；
     FilePage 1746 行（文件列表已审，剩余 51 state 主要为多选/弹窗）；其余页面/组件已审。
