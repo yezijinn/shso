@@ -10,9 +10,10 @@
 
 - 性能优化主线已收敛到边际收益 0（真机帧 50th 10-50ms；冷启动 547ms 释放；APK 5.0MB）。
 - 安全链路（守卫模块 / 挡位 / 审计）已全链路打通；App 侧集成任务 8/9/10 [x]。
-- 4 P1 + 4 P2 BUG 已闭环（commit `e7b3816`）；**137 tests / 0 failures**（124 → +3 任务22 → +7 任务26/27 → +3 任务25）。
-- 任务 19 真机补测 **✅ 全部通过（4/4）**：守卫绕过回归 × 0–3 档位端到端 × RootFileManager 执行（含 chmod 改属）× 终端 `\n` 与中断。期间新发现并闭环 **任务 22**（终端 LazyColumn 崩溃）、**任务 25**（中断后孤儿进程 / UI 无法回收）、**任务 26**（mtime 1970）、**任务 27**（`file -b` 误判）。
-- 推送状态：分支 `fix/github-tag-version-check` 已推送至 `25877f6`；PR **#1** 已建（draft）—— 任务 19 已完成，**可转 ready for review**。
+- 4 P1 + 4 P2 BUG 已闭环（`e7b3816`）；**144 tests / 0 failures**（124 → +3 任务22 → +7 任务26/27 → +3 任务25 → +7 任务20）。
+- 任务 19 真机补测 **✅ 全部通过（4/4）**；期间新发现并闭环 **任务 22/25/26/27**。
+- **任务 20 审计余项 ✅ 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `chmod 777`→755 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏，外加 `ChunkedFileReader` 上限加固）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
+- 推送状态：分支 `fix/github-tag-version-check` 已推送至 `be6db40`；PR **#1 已 ready for review**。任务 20 的修复**尚未提交**。
 - ROOT 链路：BIYLBAFQQSS8DA69 是**已连接、已确认 ROOT 的真机**（Magisk v30.7、`su -c id` uid=0、守卫模块已装、PATH 注入验证通过）——**此前记忆里 5a91ac60 当 ROOT 机是错的,本机无 ROOT 的说法也是错的**。任务 19 ROOT 链路补测可立即执行。
 - 审计余项：22 项 BUG 排查已闭环 8 项；剩余 14 项 P2（FilePage key / ChunkedFileReader >2GB overflow / RootService pid reflection / ArchiveExtractor Zip Slip canonical path / chmod 777 / runCommandSync stream close / Bitmap recycle / 等）属次优先级，按用户节奏分批处理。
 
@@ -72,24 +73,52 @@
 - [x] **5. 无 crash 基线**：冷启动（`Status: ok` / COLD）、档位切换、命令执行、洪流连续 4.25 分钟、中断/结束进程、chmod 改属 —— 除任务 22 已修复的崩溃外无其他 crash。
 - [x] **任务 19 全部通过（4/4）**：守卫绕过回归 × 0–3 档位 × RootFileManager 执行（含 chmod 改属）× 终端 `\n` 与中断。**PR #1 可转 ready for review**（是否转由用户决定）。
 
-### 20. 审计剩余 14 项 P2 BUG（按用户节奏分批）
-- [!] 批次 6: 健壮性微调（3-4 项）
-  - `FilePage.kt` 列表 `itemsIndexed` 缺 stable key → 改为 `key = { idx, _ -> idx }`（与任务 17 P1-2 同手法）。
-  - `ChunkedFileReader.kt:117` `ByteArrayOutputStream(total.toInt().coerceAtMost(Int.MAX_VALUE))` 在 >2GB 文件上分配 2GB → OOM；改为分段读 / 限制上限 512MB。
-  - `RootService.kt:433-441` `Process.javaClass.getDeclaredField("pid")` 反射在新 Android 可能 throw NoSuchFieldException → 改用 `Process.pid()`（API 26+，本工程 minSdk 已满足）。
-  - `Bitmap.recycle()` 漏调用 → 找具体位点。
-- [ ] 批次 7: 路径安全（2-3 项）
-  - `ArchiveExtractor.kt:403-409` `safeDest` 缺 canonical path 校验 → 改为 `if (realDest.startsWith(realBaseDir + File.separator))` 双层防御。
-  - `RootFileManager.kt:238` `ensureShsoDir` 用 `chmod 777` → 改为 `chmod 755` + 显式 selinux 上下文（如 root 可写）。
-  - `RootFileManager.kt:581` `delete` 全部走 `rm -rf` 单文件 → 改 `rm -f` 路径优先、`rm -rf` 仅当目标是目录。
-  - `RootService.kt:174-206` `runCommandSync` 缺 `outputStream.close()` 显式 → 加 try-finally。
-- [ ] 批次 8: 终态收口（剩余 5-6 项）
-  - `RootService.sendInterrupt` 的 `\n` flush 行为再审视（删掉 ETX 之后是否还需要）。
-  - `RootService.activeProcess = process` 后异常路径无 destroy。
-  - `TextCompare.kt` mmap 错误回退路径 tmp 清理。
-  - `ShsoApplication.appContext` `@Volatile lateinit var` 启动前访问的兜底。
-  - 各类 `catch (_: Exception) {}` 静默吞异常的最小审计。
-  - 每批完成时同步更新：单测新增 + 真机冒烟 + TASKS 文档 + commit。
+### 20. ✅ 审计余项核查（2026-09-11 逐项核对代码现状；4 项真修 + 4 项判定不成立）
+> 说明：清单是早期写的，本轮**逐项回到代码核对**，而不是照单全改。**已修** 4 项、**判定不成立/不需改** 4 项、**已覆盖** 2 项。
+> 单测：新增 `ChunkedFileReaderTest`(4) + `ArchiveExtractorZipSlipTest`(3)。全量 **144 tests / 0 failures**。
+
+#### 批次 6 · 健壮性
+- **`ChunkedFileReader` >2GB 分配 → 已修（加固）**
+  - 旧：`ByteArrayOutputStream(total.toInt().coerceAtMost(Int.MAX_VALUE))`。>2GB 时 `toInt()` 溢出为**负数** → `IllegalArgumentException: Negative initial size`；1–2GB 则直接申请等量内存 → OOM。
+  - 新：新增 `MAX_LOAD_BYTES = 32MB` 与纯函数 `cappedLoadBytes(total)`，按上限分块读取；初始容量取 `minOf(cap, CHUNK_BYTES)`。
+  - **可达性更正**：唯一调用点（`TextEditorDialog.kt:214`）有 `total <= LARGE_FILE_THRESHOLD`(2MB) 守卫，故该分支**当前不可达**，属潜在缺陷而非现网问题 —— 仍加固，因 `loadAll` 是公开 API。
+- **`RootService` pid 反射 → 判定「按原建议不可修」**
+  - 原建议「改用 `Process.pid()`（API 26+）」**不成立**：Android 的 `java.lang.Process` 没有 `pid()`，实测编译报 `Unresolved reference 'pid'`。反射保留并容错（失败退回 0）。
+  - 且中断/回收的正确性**已不再依赖该 pid**（任务 25 改为进程组回收）。
+- **`FilePage.kt` 列表缺 stable key → 已修（本轮之前）**
+  - 现为 `itemsIndexed(displayFileList, key = { index, item -> "${item.path}_$index" })`，index 保证唯一。
+- **`Bitmap.recycle()` → 判定「不建议改」**
+  - 唯一 Bitmap 位点 `ContentViewerDialogs.kt:123`。API 26+ 起 Bitmap 像素内存由 Java 堆统一管理，不显式 `recycle()` 不构成泄漏；
+  - 反而在换图/组合切换时显式回收，有「Canvas 绘制已回收位图」崩溃风险。收益为负，未改。
+
+#### 批次 7 · 路径安全
+- **`ArchiveExtractor.safeDest` Zip Slip → 已修**（真实文件系统回归测试已加）
+  - 旧：仅词法剥离绝对路径与 `../`。词法层**看不到符号链接**，`<target>/link -> 外部目录` 仍可逃逸。
+  - 新：双层防御 —— 保留词法层，再加 `canonicalFile` 真实路径校验（解析 `..` 与符号链接），越界即丢弃目录只留文件名；**异常路径同样退化为文件名**（不留 fail-open）。
+  - 测试：`ArchiveExtractorZipSlipTest` 3 例（7 种穿越型条目名 / 正常条目保留结构 / **符号链接逃逸**）。旧代码在符号链接用例下会失败。
+- **`ensureShsoDir` chmod 777 → 已修**（真机验证）
+  - 改为 **755**：该目录是 root 侧写审计日志与守卫产物的位置，0777 让任意应用可往里塞/改文件（例如伪造审计内容）；目录内写入均由 `su` 以 root 进行，owner 可写已足够。
+  - 真机验证：App 启动后 `/data/adb/shso` 由 `drwxrwxrwx`(777) → **`drwxr-xr-x`(755)** ✓
+  - 注：SELinux 上下文未额外处理 —— Magisk root 域写入正常，加显式上下文无观测收益。
+- **`delete` 全走 `rm -rf` → 判定「不成立」**
+  - 路径已过 `isUnsafePath` 校验 + `escapeShellArg`（无通配展开），对**文件**而言 `rm -rf` 与 `rm -f` 行为等价；递归只会在目标是目录时发生，而那正是「删除文件夹」的预期语义。
+  - 改成「先 `rm -f` 失败再 `rm -rf`」反而多一次 fork 且引入中间态，未改。
+- **`runCommandSync` 未关 stdin → 已修**（真机验证）
+  - 该函数只读输出、从不喂输入，但不关 stdin：任何读 stdin 的命令（`cat`/`read`/等 EOF 的交互式命令）会**阻塞到 timeoutMs（默认 120s）**才返回。
+  - 新：`start()` 后立即 `runCatching { process.outputStream.close() }`。
+  - 真机验证：终端发 `cat`，**+8s 时状态已回到「待命中」且无超时提示**（修复前会一直 RUNNING 到 120s）✓
+
+#### 批次 8 · 终态收口
+- **`sendInterrupt` 的 `\n` flush → 保留（不需要改）**：它让行缓冲的读取端及时拿到最后一行，是中断可观测性的必要动作。
+- **`activeProcess = process` 后异常路径无 destroy → 判定「已覆盖」**：执行协程 `finally` 中已有 `process?.destroy()`（`RootService` 执行块 finally），异常/取消路径都会走到。
+- **`TextCompare` mmap 回退路径 tmp 清理 → 已修**
+  - `MappedFile.close()` 会删 tmp（成功路径 OK），但 ROOT 分支里 `len <= 0` / `len > Int.MAX_VALUE` 两处 `throw` **都不删 tmp**，`FileInputStream`/`mmap` 抛异常同样漏 —— 大文件对比本就吃空间，残留 `_shso_cmp_*.tmp` 不易察觉。
+  - 新：进入「已产出 tmp」阶段后统一 `try { … } catch (e: Throwable) { runCatching { File(tmp).delete() }; throw e }`；成功路径 `return` 不经过 catch，tmp 仍交给 `MappedFile.close()`。
+- **`ShsoApplication.appContext` 启动前访问兜底 → 判定「理论风险、不可达」**
+  - `appContext` 在 `Application.onCreate()` 赋值。清单中唯一 `<provider>` 是 androidx 的 `FileProvider`（其 `onCreate` 不触碰本应用上下文），**本应用无自定义 provider/receiver**，不存在早于 `onCreate` 的入口。
+  - 本轮新增的 `RootService.runPgidFile` 已用 `runCatching` 包裹。其余 3 个调用点（`SecurityAuditLog:41` / `EditHistoryManager:26` / `RootService:412`）都在 UI 之后触发，未加防御性改写（避免为不可达路径增加噪音）。
+- **静默吞异常审计 → 已核查，无需改动**
+  - 全项目仅 **6 处** `catch (_: Exception) {}`：`RootService.forceCloseProcess` 关三流（717/718/719）、`RootService:535/538`、`ApkInstaller:167` —— 全部位于**资源关闭/清理**路径，吞掉异常是正确做法。
 
 ### 22. [P1·已修复] 终端 LazyColumn 重复 key 崩溃（真机复现 → 修复 → 验证）
 - [x] **现象**：终端跑洪流时崩溃
@@ -210,7 +239,7 @@
 
 1. **主线选择**：任务 18 与 **19 均已完成**（19 真机补测 4/4 通过）。期间闭环任务 22/25/26/27。当前处 **19 → 20** 节点：可选「转 PR #1 ready」或「开任务 20 清理审计余项」。
 2. **5a91ac60 历史身份**：2026-09-11 修正——该 ID 自 2026-09-06 后已不在 adb 设备列表,长期被记忆误标为"ROOT 主力机",实际上 BIYLBAFQQSS8DA69 才是 ROOT 真机。历史 daily log 里的 5a91ac60 引用是当时真实接入的设备（与今日不同),保留原状不再回填;但新生成的看板、commit、PR 描述一律以 BIYLBAFQQSS8DA69 为准。
-3. **审计余项处理节奏**：任务 20 是「全做」版（3 批 ~10 项），用户可指派「只做高风险（Zip Slip / overflow / chmod）」或「暂缓」。注意：任务 22/23 说明**原审计清单不完整**——「迁移导致测试脚本失效」与「终端内容 key 崩溃」都不在那 22 项里。
+3. **审计余项处理节奏**：任务 20 **已逐项核查完毕**（4 修 / 4 判不成立 / 2 已覆盖），不再需要分批。注意：任务 22/25/26/27 与本轮核查共同说明**原审计清单本身不够准确**（有过时项、有建议本身错误、有重复项），后续引用清单前应回代码核对。
 4. **PR 标题 / 描述模板**：已用于 PR #1（标题「feat: 守卫模块 / 终端洪流进化 / 编辑器优化 / R8 / BUG 闭环」，描述存 `artifacts/pr-body-fix-github-tag-version-check.md`）；用户可随时改。
 5. **TASKS-old-20260911-v17final.md 保留期**：默认永久保留（git history 仍可查），用户可指派删除。
 6. **设备侧状态残留（本轮测试副作用，均无害）**：

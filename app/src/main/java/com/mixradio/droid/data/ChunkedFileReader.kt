@@ -23,6 +23,24 @@ object ChunkedFileReader {
      */
     const val LARGE_FILE_THRESHOLD = 2L * 1024L * 1024L
 
+    /**
+     * `loadAll` 一次性载入的**字节上限**。
+     *
+     * 唯一调用方（文本编辑器）只在文件 ≤ [LARGE_FILE_THRESHOLD]（2MB）时才走 [loadAll]，
+     * 32MB 已有 16 倍余量。设上限是为了兜住「未来调用方传入超大文件」：
+     * 旧实现 `ByteArrayOutputStream(total.toInt().coerceAtMost(Int.MAX_VALUE))` 在 >2GB 时
+     * `total.toInt()` 溢出为**负数** → `IllegalArgumentException: Negative initial size`；
+     * 在 1–2GB 区间则尝试申请等量内存 → OOM。
+     */
+    const val MAX_LOAD_BYTES = 32L * 1024L * 1024L
+
+    /** [loadAll] 实际最多读取的字节数（纯函数，便于单测）。 */
+    internal fun cappedLoadBytes(total: Long): Long = when {
+        total <= 0L -> 0L
+        total > MAX_LOAD_BYTES -> MAX_LOAD_BYTES
+        else -> total
+    }
+
     data class LoadResult(
         val text: String,
         val charset: java.nio.charset.Charset,
@@ -113,11 +131,13 @@ object ChunkedFileReader {
                 else try { File(filePath).readBytes() } catch (_: Throwable) { ByteArray(0) }
             } else try { File(filePath).readBytes() } catch (_: Throwable) { ByteArray(0) }
         } else {
-            // 大文件分块读取
-            val buf = java.io.ByteArrayOutputStream(total.toInt().coerceAtMost(Int.MAX_VALUE))
+            // 大文件分块读取。**必须按 MAX_LOAD_BYTES 封顶**：旧实现把 total 直接 toInt() 当初始容量，
+            // >2GB 会溢出为负（ByteArrayOutputStream 抛 Negative initial size），1–2GB 则直接 OOM。
+            val cap = cappedLoadBytes(total)
+            val buf = java.io.ByteArrayOutputStream(minOf(cap, CHUNK_BYTES).toInt())
             var off = 0L
-            while (off < total) {
-                val len = minOf(CHUNK_BYTES, total - off)
+            while (off < cap) {
+                val len = minOf(CHUNK_BYTES, cap - off)
                 val chunk = readRange(filePath, off, len)
                 if (chunk.isEmpty()) break
                 buf.write(chunk)
