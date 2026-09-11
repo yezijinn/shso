@@ -62,7 +62,12 @@
   - [x] 终端执行链正常：`echo AAAABBBB_TAIL` → 输出正确（无截断）；错误路径 → `sh: ...: No such file or directory` + `[退出码: 127]`。
   - [x] 洪流可运行并正确解析：`sh /data/adb/shso/flood.sh`（8×8000 = 64000 行），实测 **24–60 行/秒**，应用单核 CPU 96.5%，全量约需 18 分钟。
   - [ ] 文件 chmod 改属（`FilePermissionDialog`）未测。
-- [ ] **4. 终端 `kill -2` 中断（任务 17 P2-19 改动）+ `\n` 写入响应** 未测。
+- [x] **4. 终端 `kill -2` 中断 + `\n` 写入响应（已测，`\n` 通过；中断未通过 → 任务 25）**
+  - [x] `\n` 写入响应：`echo AAAABBBB_TAIL` / `echo PING_ONE` 均正确回显与输出（两条路径：终端一次性命令、脚本执行流）。
+  - [x] 关键认知：终端「一次性命令」走 `runCommandSync`（输出**全量缓冲**、不设 `taskRunning`）→ 该路径下 `中断` 按钮**始终禁用**，不可能被中断（这本身是设计边界，非缺陷）。
+  - [x] 可中断路径 = 脚本执行（主页「立即执行」）→ 设置 `taskRunning`/`processWriter`/`processPid`、输出流式、`中断` 启用，且自动跳转终端页。
+  - [ ] **中断实测未生效 → 详见任务 25（P1）。**
+- [ ] 第 3 项（文件 chmod 改属）未测；其余已跑完。
 - [x] **5. 无 crash 基线**：冷启动（`Status: ok` / COLD）、档位切换、命令执行、洪流连续 4.25 分钟 —— 除任务 22 已修复的崩溃外无其他 crash。
 - [ ] 第 3、4 项补完后 → 任务 19 [x]，PR 改 ready for review。
 
@@ -114,6 +119,47 @@
 - **实测**（BIYLBAFQQSS8DA69，各 300 次 `cp`）：裸 `cp` ≈ **16.8 ms/次**；守卫 `cp` ≈ **58.0 ms/次**（+41 ms）。
 - **归因**：mksh 解释器启动 + 每次调用一次 `date` fork（`common.sh:503` 的 ALLOW 路径**无条件**调用 `audit()`，`audit()` 内 `common.sh:252` 跑 `date`）。
 - **结论**：README 宣称的「每次守卫调用 0–1 个进程」指**守卫逻辑自身**的 fork，与本测量不矛盾，但表述易被误读；且档位 ≤1 是「不装守卫」语义，该开销只在 ≥2 档出现。是否优化另开任务，不在任务 19 验收范围。
+
+### 25. [P1·待修] `中断`（kill -2）无法终止脚本执行 —— 进程孤悬并持续占用 CPU
+- **复现步骤**（BIYLBAFQQSS8DA69，12:15 版 APK）：主页输入 `/data/adb/shso/flood.sh` → 立即执行 → 确认框「确认执行」→ 自动跳转终端页，状态「运行中..」、输出流式 → 点「中断」。
+- **实测结果**：
+  - UI 立刻转为「待命中」，输出停止推进（停在 `run0 line 1244`）。
+  - **无 `^C` 回显**（`sendInterrupt` 中 `appendOutputDirect("^C\n")` 未出现）。
+  - **无「进程未响应 SIGINT」提示**（3s 兜底文案未触发）。
+  - **实际进程仍存活**：`sh -c ... sh /data/adb/shso/flood.sh`(9831) 与 `sh /data/adb/shso/flood.sh`(9833)，并出现孤儿 `sh /data/adb/shso/flood.sh`(21379, PPID=465)。
+  - 非僵死：`ps` 状态 `S`，CPU **8.1%**；`/proc/9833/stat` 的 utime/stime 在 3 秒内 117→119、653→677 —— **仍在持续消耗 CPU**（写入已被应用关闭的管道）。
+  - 收尾：`kill -9 9831 9833 21379` 才真正停止。
+- **定位线索**：
+  - `RootService.sendInterrupt`（`:672`）逻辑为：写 `^C` 回显 → `processWriter.write("\n")+flush()` → `if (targetPid > 0) runCommandSync("kill -2 $targetPid")`。**UI 状态与 `^C` 回显都没发生**，说明中断路径可能在更早处即已返回（或 `isTaskRunning` 已被别的路径置 false），需进一步确认。
+  - `processPid` 来自 `RootService.kt:437-439` 的反射 `process.javaClass.getDeclaredField("pid")`，失败则 `processPid = 0` → **跳过 `kill -2`**。此反射在新版 Android 上可能抛 `NoSuchFieldException`（任务 20 批次 6 已列为待改项，建议改用 `Process.pid()`，minSdk 26 可满足）。
+  - 即便 `kill -2` 发出，目标可能是 `su` 包装进程（`9827` 在中断后消失）而非真正的 `sh flood.sh` → 子进程被孤悬。
+- **影响**：用户点「中断」后 UI 假装已停，实际脚本继续跑（本例是无限循环写日志），CPU 白耗且无法从 UI 回收，只能靠「结束进程」或外部 kill。
+
+### 26. [BUG·待修] Root 文件「最后修改时间」恒为 1970（秒当毫秒）
+- **现象**：执行确认框显示 `最后修改时间 = 1970-01-22 00:57`，而设备实际 mtime 为 `2026-09-10 20:49:50 (+0800)`（`stat -c %Y` = `1789044590`）。
+- **换算验证**：`1789044590` 当作**毫秒** → `/1000 = 1789044 s` → `1970-01-21 16:57:24 UTC` → **+0800 恰为 `1970-01-22 00:57`**。完全吻合，证实单位错误。
+- **根因链**：
+  - `RootFileManager.kt:278/281` 执行 `stat -c "%A|%s|%Y|%n"` —— **`%Y` 是「秒」**。
+  - `RootFileManager.kt:337` `val modified = parts[2].toLongOrNull() ?: 0L` → 直接赋给 `FileItem.lastModified`。
+  - `FileItem.kt:106` `sdf.format(Date(lastModified))` —— `Date(long)` 要求**毫秒**。
+  - 而本地路径 `RootFileManager.kt:308` 用 `f.lastModified()`（**毫秒**）→ **同一字段两种单位混用**。
+- **影响**：Root 路径（含执行确认框、文件页时间列）时间显示错误；若同一列表混入本地项（毫秒）与 Root 项（秒），按时间排序（`FileListViewSettings.kt:70` `compareBy { it.lastModified }`）会错乱。
+- **建议改法**：在 `parseStatOutput` 归一化为毫秒（`modified * 1000`），并统一 `FileItem.lastModified` 的单位契约（或改存 `Instant`）。
+
+### 27. [BUG·待修] `file -b` 在 Android toybox 不存在 → 内容判定失真（普通脚本被判「二进制 / 加密」）
+- **现象**：`/data/adb/shso/flood.sh`（纯 shell 脚本）在执行确认框里显示 **文件类型 = `Shell Script`**、**文件内容 = `二进制 / 加密`**，两者自相矛盾。
+- **根因**：`FileExecutionAnalyzer.detectContentViaRoot`（`:79-97`）执行
+  `RootService.runCommandSync("file -b " + escapeShellArg(path))`，
+  但真机实测 **toybox 的 `file` 不支持 `-b`**：
+  ```
+  $ su -c 'file -b /data/adb/shso/flood.sh'
+  file: Unknown option b (see "file --help")     # 退出码非 0
+  ```
+  而该函数用 `val (_, out) = ...` **丢弃退出码**，把 stderr 的错误文本当成文件内容去匹配关键词：
+  - `out` 里没有 `elf/shell script/script/text/data` → 落入 `else` → `extTypeLabel(".sh", binary = !contains("text"))` = `("Shell Script", …)`；
+  - `contentLabel` 条件 `!contains("text") && !contains("script")` 为真 → **「二进制 / 加密」**。
+- **影响**：所有需要 Root 才能读的文件（`/data/adb/**` 等）内容判定失真，可能误导用户放弃执行正常脚本。
+- **建议改法**：改用 toybox 支持的写法（如 `file <path>` 不加 `-b`，或 `file -i`/`--brief` 存在性探测），**并检查退出码**，失败时回退扩展名而非把错误文本当内容。
 
 ### 21. 新主目标（占位 — 视用户输入）
 - [ ] 用户指定后填充
