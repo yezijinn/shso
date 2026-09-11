@@ -69,7 +69,7 @@ Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + 
 - 全工程零圆角：所有 Card/Button/TextField/弹窗/面板/状态点/DockBar 一律直角矩形。实现：① `AuroraShapes`（M3 Shapes 五槽位 `RoundedCornerShape(0.dp)`）注入 `MaterialTheme`；② 显式 `clip/shape/shadow/border` 全用 `RoundedCornerShape(0.dp)`。`foundation 1.12.0` 缓存制品 shape 包**无 `RectangleShape`/`CircleShape` 符号**，勿 import。
 - 禁止外层 Card/Container 容器包裹列表项：设置页/文件页/主页均为无容器列表，行内容（Row 图标+文本）直接置于页面 Column。
 - 页面文案按需求用字号内联（如 section 标题 14sp、preference 主标题 body2、summary 用注释色）；行高统一 `heightIn(min = 48.dp)`；分隔线用 0.7dp 细线（`SurfaceHover.copy(0.6f)`）或纯零间距。
-- **自适应图标（Adaptive Icon）**：`AndroidManifest.xml` 的 `icon`/`roundIcon` 指向 `@mipmap/ic_launcher`（background + foreground 两层）；背景透明、前景为去白去黑后的彩色 PNG，缩进中心安全区（≤72dp）确保圆形/圆角矩形/水滴等 OEM mask 下完整显示，无需为不同形状单独出图。
+- **自适应图标（Adaptive Icon）**：`AndroidManifest.xml` 的 `icon`/`roundIcon` 指向 `@mipmap/ic_launcher`（background + foreground 两层）；背景透明、前景为去白去黑后的彩色图（当前为无损 WebP，`mipmap-*/ic_launcher_foreground.webp`），缩进中心安全区（≤72dp）确保圆形/圆角矩形/水滴等 OEM mask 下完整显示，无需为不同形状单独出图。
 
 **后台长任务约束**：执行脚本、下载或编译等长任务时，`RootService.executeFile()` 启动 `ExecutionForegroundService`（`foregroundServiceType="dataSync"`）作为前台服务哨兵。实际 Process、stdin、日志、取消和状态仍由 `RootService` 管理；服务只负责持续通知、结束进程入口和任务结束后的自动停止。修改该链路时必须保持 `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_DATA_SYNC` 权限、非导出 Service 声明和低重要性通知渠道的一致性。
 
@@ -78,9 +78,14 @@ Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + 
 | 场景 | 阅读文档 |
 |---|---|
 | 查看/更新开发计划与状态 | `TASKS.md`（按自治协议实时推进与写回） |
+| 了解功能用法 / 写对外说明 | `README.md`（用户向；不写更新日志，变更一律进 `更新日志.md`） |
+| 记录一条变更 | `更新日志.md`（一行一条：新增 / 修复 / 优化 / 安全） |
 | 了解技术栈、目录结构、架构 | `docs/PROJECT.md` |
-| 改执行引擎/ROOT 逻辑 | `docs/PROJECT.md` § 核心模块 |
-| 改 UI 页面/组件 | `docs/PROJECT.md` § UI 层 |
+| 改执行引擎/ROOT 逻辑 | `docs/PROJECT.md` § 核心模块：RootService（执行引擎） |
+| 改 UI 页面/组件 | `docs/PROJECT.md` § UI 形态铁律（改动必守） |
+| 改安全相关逻辑 | `docs/PROJECT.md` § 安全子系统 |
+| 改守卫模块 / 新增包装器 | `module/shso_guard/README.md` |
+| 文档该改哪一份 | `docs/PROJECT.md` § 文档维护约定 |
 | 加依赖/改版本 | `gradle/libs.versions.toml`（禁止在模块内硬编码版本，例外：`app/build.gradle.kts` 中已有的 3 个直引坐标） |
 
 ## 常用命令
@@ -89,9 +94,10 @@ Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + 
 ./gradlew :app:assembleDebug     # Debug APK 编译验证
 ./gradlew :app:assembleRelease   # Release APK（输出在 app/build/outputs/apk/）
 ./gradlew :app:testDebugUnitTest # Debug 单元测试验证
-python3 build_apk.py             # 一键构建并触发原生 M3 规范校验
-
+python build_apk.py              # 一键构建：签名校验 + 版本规则校验 + 产物内容/体积构成校验
 ```
+
+> 产物只打包 `arm64-v8a`（`app/build.gradle.kts` 的 `ndk.abiFilters`）；新增带原生库的依赖时注意别把多 ABI 一起打进来。
 
 **底部 DockBar 布局约束**：FilePage 与 SettingsPage 的 `Scaffold` 内容由 `innerPadding` 负责系统 inset；页面内容额外仅预留 `56.dp` 给底部 DockBar。禁止在这两个页面为此目的增加 `navigationBarsPadding()`，也不要删除 `FilePage` 列表外层 `weight(1f).fillMaxWidth().padding(bottom = 56.dp)` 的预留。
 
