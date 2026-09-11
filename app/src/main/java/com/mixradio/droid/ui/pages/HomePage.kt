@@ -157,10 +157,17 @@ fun HomePage(
             }
         }
     ) { innerPadding ->
+        // 与文件页保持一致的底部关系：
+        // `innerPadding` 只承担**系统导航条** inset；DockBar 是叠在其上的透明玻璃层，
+        // 若内容继续延伸到它的高度范围，就会透过导航栏看到内容（任务卡片 / shso 目录文件列表）。
+        // 因此这里再预留 DockBar 内容高度 56.dp，让内容底端恰好止于 DockBar 上沿，
+        // 其下方只显示极光背景。不要再叠加 navigationBarsPadding，否则与 innerPadding 重复计算，
+        // 会多出一道系统导航条高度的空白带。
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .padding(bottom = 56.dp)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
