@@ -400,6 +400,20 @@ object ArchiveExtractor {
     }
 
     /**
+     * 解压目标父目录是否**可写**（纯函数，便于单测）。
+     *
+     * 解压是以**应用自身 uid** 落盘的（`File.mkdirs()` + `FileOutputStream`），因此受两类限制：
+     * ① DAC 权限位；② **SELinux(MAC)** —— 实测 `/data/adb/shso` 即使 `chmod 777`，
+     * 应用 uid 建目录仍 `Permission denied`。所以必须实测而不能只判断权限位。
+     *
+     * `File.canWrite()` 底层走 `access(W_OK)` 系统调用，能同时反映 MAC 限制。
+     */
+    internal fun canExtractTo(dirPath: String): Boolean = runCatching {
+        val d = File(dirPath)
+        d.isDirectory && d.canWrite()
+    }.getOrDefault(false)
+
+    /**
      * 安全化条目名并解析为目标文件。
      *
      * **双层防御（Zip Slip）**：

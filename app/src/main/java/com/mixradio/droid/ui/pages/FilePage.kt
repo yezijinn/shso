@@ -838,10 +838,20 @@ fun FilePage(
 
                 // 自动解压：仅已知压缩包显示；所有已知格式均可解压
                 if (item.isArchive) {
+                    // 解压以**应用自身 uid** 落盘：受 SELinux 限制的目录（如 `/data/adb/`）即使 chmod 777 也写不进去。
+                    // 旧实现仍暴露入口，点了只会冒一闪而过的 Toast，用户无从得知原因（任务 28）。
+                    // 这里实测可写性，不可写则禁用入口并在标签上说明原因。
+                    val canExtract = remember(currentDirectory) {
+                        ArchiveExtractor.canExtractTo(currentDirectory)
+                    }
                     ActionTextRow(
-                        label = if (isExtracting) "正在解压…" else "自动解压文件",
+                        label = when {
+                            isExtracting -> "正在解压…"
+                            !canExtract -> "自动解压文件（当前目录不可写）"
+                            else -> "自动解压文件"
+                        },
                         color = AuroraTokens.Accent,
-                        enabled = !isExtracting
+                        enabled = !isExtracting && canExtract
                     ) {
                         showActionDialog = false
                         scope.launch {
