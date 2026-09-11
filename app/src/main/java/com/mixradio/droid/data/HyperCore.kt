@@ -84,18 +84,39 @@ $rootLine
     ) {
         batchFlushJob?.cancel()
         batchFlushJob = scope.launch(Dispatchers.Main) {
-            while (isActive && isTaskRunningProvider()) {
-                // 2026-09-09: delay(Long) → kotlin.time.Duration
-                delay(16.milliseconds)
-                if (logBatchQueue.isNotEmpty()) {
-                    val sb = StringBuilder()
-                    while (true) {
-                        val item = logBatchQueue.poll() ?: break
-                        sb.append(item)
+            // 保留 16ms tick 去 drain 队列（防止队列无界增长），但累积到 pending，
+            // 仅当满足条件（距上次发布 ≥ 48ms，或累积 ≥ 8192 字符）时才发布一次，降低重组频率。
+            val pending = StringBuilder()
+            var lastFlushMs = System.currentTimeMillis()
+            // 发布节流：实测「每次发布都在主线程产生固定开销（组合 + 可见行布局 + 重绘失效）」，
+            // 故发布频率直接决定主线程负载与 CPU 总量（实测把 item 数从 3570 降到 60 几乎不改变占用，
+            // 说明成本与发布次数成正比、与 item 数无关）。250ms ≈ 4 次/秒：
+            // 洪流输出下整机 CPU 与主线程占用显著下降，而人对终端日志的刷新延迟几乎无感。
+            // backlogChars 仅作内存安全阀，防止极端积压时 pending 无界增长。
+            val minIntervalMs = 250L
+            val backlogChars = 400_000
+            try {
+                while (isActive && isTaskRunningProvider()) {
+                    // 2026-09-09: delay(Long) → kotlin.time.Duration
+                    delay(16.milliseconds)
+                    if (logBatchQueue.isNotEmpty()) {
+                        while (true) {
+                            val item = logBatchQueue.poll() ?: break
+                            pending.append(item)
+                        }
                     }
-                    if (sb.isNotEmpty()) {
-                        onFlush(sb.toString())
+                    val now = System.currentTimeMillis()
+                    if (pending.isNotEmpty() && (now - lastFlushMs >= minIntervalMs || pending.length >= backlogChars)) {
+                        onFlush(pending.toString())
+                        pending.setLength(0)
+                        lastFlushMs = now
                     }
+                }
+            } finally {
+                // 循环退出前必须把残留 pending 文本 flush 一次，避免丢日志
+                if (pending.isNotEmpty()) {
+                    onFlush(pending.toString())
+                    pending.setLength(0)
                 }
             }
         }

@@ -25,11 +25,12 @@ import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material3.Icon
@@ -41,18 +42,19 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -60,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mixradio.droid.data.AnsiParser
 import com.mixradio.droid.data.AppSettings
+import com.mixradio.droid.data.IncrementalAnsiParser
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.security.CommandSource
 import com.mixradio.droid.data.security.Finding
@@ -74,8 +77,23 @@ import com.mixradio.droid.ui.theme.AuroraThinSlider
 import com.mixradio.droid.ui.theme.AuroraTokens
 import com.mixradio.droid.ui.theme.AuroraWindowDialog
 import com.mixradio.droid.ui.theme.auroraTextFieldColors
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+
+/**
+ * 终端输出行的 LazyColumn key：**只取行序号**。
+ *
+ * 为什么不取内容：终端里重复行极常见（空行、重复提示符、回显、`\r` 原地覆盖产生的同文本行），
+ * 一旦两行内容相同，内容派生的 key 就重复，LazyColumn 会抛
+ * `IllegalArgumentException("Key ... was already used")` 直接崩溃。
+ * 本函数刻意忽略 [line]，size 变化即代表追加/裁剪，序号唯一性由列表下标保证。
+ */
+internal fun terminalLineKey(index: Int, @Suppress("UNUSED_PARAMETER") line: AnnotatedString): Int =
+    index
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -86,7 +104,7 @@ fun TerminalPage(
     var inputText by remember { mutableStateOf("") }
     var pendingCommand by remember { mutableStateOf<String?>(null) }
     var pendingFindings by remember { mutableStateOf<List<Finding>>(emptyList()) }
-    val scrollState = rememberScrollState()
+    val listState = rememberLazyListState()
 
     var showTerminalSettings by remember { mutableStateOf(false) }
     var showColorDialog by remember { mutableStateOf(false) }
@@ -95,24 +113,62 @@ fun TerminalPage(
         Color(appSettings.terminalTextColor)
     }
 
-    val parsedOutput = remember(RootService.outputLog, terminalDefaultColor) {
-        AnsiParser.parseAnsi(RootService.outputLog, terminalDefaultColor)
+    // 增量解析器：跨 flush 维护「当前未完成行 / SGR 状态 / \r 光标列 / 截断的 ESC 序列」，
+    // 因此每次发布只需解析**新增尾部**，不再全量重扫 250k 窗口。
+    // 颜色是解析器的构造参数，换色即重建（key 为 terminalDefaultColor）。
+    val ansiParser = remember(terminalDefaultColor) { IncrementalAnsiParser(terminalDefaultColor) }
+    // 已消费的输入前缀，用于判定「本次是追加还是整体替换」。
+    var consumedLog by remember(terminalDefaultColor) { mutableStateOf("") }
+
+    // 首帧同步解析一次（仅进入终端页时发生一次），保证打开即有内容、无空白闪烁。
+    var parsedOutput by remember {
+        mutableStateOf(AnsiParser.parseAnsi(RootService.outputLog, terminalDefaultColor))
+    }
+
+    // 后续更新必须移出主线程：解析成本与「整个日志窗口」(250k) 成正比，而每次发布都会重解析。
+    // 实测留在组合期会占满主线程（主线程 CPU ≈142%，帧耗时 200ms+，界面近乎冻结）。
+    // conflate() 保证同一时刻只有一个解析在跑，中间值直接丢弃，不会因高频发布堆积。
+    LaunchedEffect(terminalDefaultColor) {
+        ansiParser.reset()
+        consumedLog = ""
+        snapshotFlow { RootService.outputLog }
+            .conflate()
+            .collect { log ->
+                parsedOutput = withContext(Dispatchers.Default) {
+                    if (log.length > consumedLog.length && log.startsWith(consumedLog)) {
+                        // 追加：只解析新增部分
+                        ansiParser.feed(log.substring(consumedLog.length))
+                    } else {
+                        // 整体替换（清屏 / 横幅重生成 / 滑动窗口裁剪掉了头部）：
+                        // 此时无法复用状态，回落全量解析。
+                        ansiParser.reset()
+                        ansiParser.feed(log)
+                    }
+                    consumedLog = log
+                    ansiParser.snapshot()
+                }
+            }
     }
 
     val isImeVisible = WindowInsets.isImeVisible
 
-    // 是否「停留在底部」：距底部容差 100px 内视为在底部。
-    // 仅当用户已在底部时才自动滚动，防止新日志把正在向上回看的用户拽回底部。
-    val isAtBottom = remember {
-        derivedStateOf {
-            scrollState.value >= scrollState.maxValue - 100
-        }
+    // 「跟随尾部」意图：只在用户手动滚动（拖动/惯性）时更新，不受新日志追加影响。
+    // 注意不可直接用 `!canScrollForward` 判定「是否在底部」——新内容一追加 canScrollForward 立刻变 true，
+    // 会被误判成「用户已向上回看」而永久停止自动滚动。此处只在滚动进行中采样用户真实落点。
+    var followTail by remember { mutableStateOf(true) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
+            .collect { (scrolling, canForward) ->
+                // 滚动停在底部时 canForward 为 false → 恢复跟随；停在中间/顶部则停止跟随
+                if (scrolling) followTail = !canForward
+            }
     }
 
-    LaunchedEffect(RootService.outputLog.length, isImeVisible) {
-        delay(60)
-        if (isAtBottom.value) {
-            scrollState.animateScrollTo(scrollState.maxValue)
+    // 自动滚动到底部：跟随意图为真时即时跳到底（scrollToItem 而非 animateScrollTo，避免每帧动画 churn）。
+    // key 用行数而非字符串长度，避免每次 flush 都取消并重启协程。
+    LaunchedEffect(parsedOutput.lines.size, isImeVisible) {
+        if (followTail && parsedOutput.lines.isNotEmpty()) {
+            listState.scrollToItem(parsedOutput.lines.lastIndex)
         }
     }
 
@@ -155,7 +211,7 @@ fun TerminalPage(
     fun copyOutput() {
         try {
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-            val textToCopy = parsedOutput.text.text
+            val textToCopy = parsedOutput.plainText
             val clip = ClipData.newPlainText("TerminalOutput", textToCopy)
             clipboard?.setPrimaryClip(clip)
             Toast.makeText(context, "终端输出已复制到剪贴板", Toast.LENGTH_SHORT).show()
@@ -291,17 +347,26 @@ fun TerminalPage(
                     .padding(12.dp)
             ) {
                 SelectionContainer {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(scrollState)
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize()
                     ) {
-                        Text(
-                            text = parsedOutput.text,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = appSettings.terminalFontSize.sp,
-                            lineHeight = (appSettings.terminalFontSize + 5f).sp
-                        )
+                        // 用「行序号」做 stable key：终端日志只向后追加，既有行序号恒定，
+                        // 跨 flush 可跳过重组；窗口裁剪头部时整批序号平移，属可接受代价。
+                        //
+                        // 禁止用行内容（text/hashCode）做 key：终端里重复行极其常见——空行、
+                        // 重复提示符、回显、以及 `\r` 原地覆盖产生的同文本行。内容相同即产生
+                        // 重复 key，LazyColumn 会直接抛
+                        // IllegalArgumentException("Key ... was already used") 使 App 崩溃
+                        // （真机 BIYLBAFQQSS8DA69 洪流场景已复现，见 TASKS 任务 19）。
+                        itemsIndexed(parsedOutput.lines, key = { idx, line -> terminalLineKey(idx, line) }) { _, line ->
+                            Text(
+                                text = line,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = appSettings.terminalFontSize.sp,
+                                lineHeight = (appSettings.terminalFontSize + 5f).sp
+                            )
+                        }
                     }
                 }
             }

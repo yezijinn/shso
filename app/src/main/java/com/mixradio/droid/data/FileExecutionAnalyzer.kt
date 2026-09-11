@@ -75,24 +75,41 @@ private fun detectContentLocal(file: File): Pair<String, String> {
     }
 }
 
-/** 不可直接读（需 Root 的路径）：经 su 调 file -b 辅助判定，失败回退扩展名。 */
+/**
+ * 把 toybox `file` 的输出行归一化为 `(类型, 内容类别)`。
+ *
+ * 真机实测（2026-09-11，Android toybox）两条约束，均在此处收口：
+ * 1. toybox 的 `file` **只支持 `-hL`，不支持 `-b`**。旧实现传 `-b` 必然失败并返回
+ *    `file: Unknown option b`，而调用方丢弃了退出码，把这段错误文本当成文件内容去匹配关键词，
+ *    于是普通 shell 脚本被判成「二进制 / 加密」（与类型标签自相矛盾）。
+ * 2. 输出形如 `<path>: <描述>`，**必须剥掉路径前缀**再匹配：否则路径里的 `data` 等字样会
+ *    污染判定（如 `/data/adb/...` 命中 `contains("data")` → 误判「未知二进制」）。
+ */
+internal fun classifyFileTypeLine(line: String, ext: String): Pair<String, String> {
+    val lower = line.substringAfter(": ", line).lowercase()
+    val typeLabel = when {
+        lower.contains("elf") -> "ELF 二进制 (.so / 可执行)"
+        lower.contains("shell script") -> "Shell Script"
+        lower.contains("script") || lower.contains("text") -> "文本 / 脚本"
+        lower.contains("data") -> "未知二进制"
+        else -> extTypeLabel(ext, binary = !lower.contains("text"))
+    }
+    val contentLabel = if (lower.contains("elf") || lower.contains("data")
+        || (!lower.contains("text") && !lower.contains("script"))
+    ) "二进制 / 加密" else "明文代码"
+    return typeLabel to contentLabel
+}
+
+/** 不可直接读（需 Root 的路径）：经 su 调 `file` 辅助判定，失败则回退扩展名（绝不把错误文本当内容）。 */
 private fun detectContentViaRoot(path: String, ext: String): Pair<String, String> {
+    val fallback = extTypeLabel(ext, binary = false) to "明文代码"
     return try {
-        val (_, out) = RootService.runCommandSync("file -b " + RootService.escapeShellArg(path))
-        val lower = out.lowercase()
-        val typeLabel = when {
-            lower.contains("elf") -> "ELF 二进制 (.so / 可执行)"
-            lower.contains("shell script") -> "Shell Script"
-            lower.contains("script") || lower.contains("text") -> "文本 / 脚本"
-            lower.contains("data") -> "未知二进制"
-            else -> extTypeLabel(ext, binary = !lower.contains("text"))
-        }
-        val contentLabel = if (lower.contains("elf") || lower.contains("data")
-            || (!lower.contains("text") && !lower.contains("script"))
-        ) "二进制 / 加密" else "明文代码"
-        typeLabel to contentLabel
+        val (code, out) = RootService.runCommandSync("file " + RootService.escapeShellArg(path))
+        if (code != 0) return fallback
+        val line = out.lineSequence().firstOrNull { it.isNotBlank() } ?: return fallback
+        classifyFileTypeLine(line, ext)
     } catch (_: Exception) {
-        extTypeLabel(ext, binary = false) to "明文代码"
+        fallback
     }
 }
 

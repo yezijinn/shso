@@ -50,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.TextUnit
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.FileItem
 import com.mixradio.droid.data.RootFileManager
@@ -96,9 +97,14 @@ fun HomePage(
             try {
                 RootFileManager.ensureShsoDir()
                 val files = RootFileManager.listFiles(targetDir)
-                shsoFiles = files.sortedWith(
-                    compareByDescending<FileItem> { it.isDirectory }.thenBy { it.name.lowercase() }
-                )
+                // 一次性预计算小写名，避免比较器内逐次 lowercase（O(N log N) 次临时字符串分配）
+                val decorated = files.map { FileItemSortKey(it, it.name.lowercase()) }
+                shsoFiles = decorated
+                    .sortedWith(
+                        compareByDescending<FileItemSortKey> { it.item.isDirectory }
+                            .thenBy { it.key }
+                    )
+                    .map { it.item }
             } catch (_: Exception) {
                 shsoFiles = emptyList()
             } finally {
@@ -111,19 +117,7 @@ fun HomePage(
         refreshShsoFiles(RootFileManager.DEFAULT_SHSO_DIR)
     }
 
-    var elapsedSeconds by remember { mutableLongStateOf(0L) }
-
-    LaunchedEffect(RootService.isTaskRunning, RootService.taskStartTime) {
-        while (RootService.isTaskRunning) {
-            val start = RootService.taskStartTime
-            if (start > 0) {
-                elapsedSeconds = (System.currentTimeMillis() - start) / 1000
-            }
-            delay(1000)
-        }
-    }
-
-    fun execute(path: String) {
+    fun execute(path: String, runAsRoot: Boolean? = null, riskApproved: Boolean = false) {
         val trimmed = path.trim()
         if (trimmed.isEmpty()) {
             validationError = "请输入或选择要执行的文件路径"
@@ -139,7 +133,7 @@ fun HomePage(
         }
 
         validationError = null
-        RootService.executeFile(trimmed)
+        RootService.executeFile(trimmed, runAsRoot, riskApproved)
         onNavigateToTerminal()
     }
 
@@ -208,12 +202,7 @@ fun HomePage(
                         color = AuroraTokens.TextSecondary.copy(0.7f)
                     )
 
-                    Text(
-                        text = "已运行时间: ${elapsedSeconds}s",
-                        style = AuroraTextStyles.footnote1,
-                        color = AuroraTokens.Accent,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    ElapsedRunningTimeText()
 
                     Button(
                         onClick = onNavigateToTerminal,
@@ -369,98 +358,16 @@ fun HomePage(
                 Column(modifier = Modifier.fillMaxWidth()) {
                     shsoFiles.forEachIndexed { index, fileItem ->
                         val isSelected = filePathInput == fileItem.path
-                        val isExecutable = fileItem.isExecutableScript || fileItem.isExecutableBinary
-
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    if (fileItem.isDirectory) {
-                                        refreshShsoFiles(fileItem.path)
-                                    } else {
-                                        filePathInput = fileItem.path
-                                        validationError = null
-                                    }
-                                }
-                                .background(
-                                    if (isSelected) AuroraTokens.Accent.copy(0.08f)
-                                    else Color.Transparent
-                                )
-                                .padding(horizontal = 16.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            // 类型图标：无底色方框、左右零间隙，直接裸文字
-                            Text(
-                                text = when {
-                                    fileItem.isDirectory -> "📁"
-                                    fileItem.isExecutableScript -> "SH"
-                                    fileItem.isExecutableBinary -> "SO"
-                                    else -> "📄"
-                                },
-                                fontSize = if (fileItem.isDirectory || !isExecutable) 16.sp else 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = when {
-                                    fileItem.isDirectory -> AuroraTokens.Accent
-                                    fileItem.isExecutableScript -> AuroraTokens.Accent
-                                    fileItem.isExecutableBinary -> AuroraTokens.GlowBlue
-                                    else -> AuroraTokens.TextSecondary
-                                }
-                            )
-
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = fileItem.name,
-                                    style = AuroraTextStyles.body1,
-                                    fontSize = listFontSize,
-                                    fontWeight = FontWeight.Normal,
-                                    color = if (isSelected) AuroraTokens.Accent else AuroraTokens.Text,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = if (fileItem.isDirectory) "文件夹" else fileItem.formattedSize,
-                                        style = AuroraTextStyles.footnote2,
-                                        fontSize = listSecondaryFontSize,
-                                        color = AuroraTokens.TextSecondary
-                                    )
-                                    if (fileItem.permissions.isNotEmpty()) {
-                                        Text(
-                                            text = fileItem.permissions,
-                                            style = AuroraTextStyles.footnote2,
-                                            fontSize = listSecondaryFontSize,
-                                            fontFamily = FontFamily.Monospace,
-                                            color = AuroraTokens.TextSecondary.copy(0.7f)
-                                        )
-                                    }
-                                }
+                        ShsoFileRow(
+                            fileItem = fileItem,
+                            isSelected = isSelected,
+                            listFontSize = listFontSize,
+                            listSecondaryFontSize = listSecondaryFontSize,
+                            onSelect = {
+                                if (fileItem.isDirectory) refreshShsoFiles(fileItem.path)
+                                else { filePathInput = fileItem.path; validationError = null }
                             }
-
-                            if (!fileItem.isDirectory) {
-                                Button(
-                                    onClick = {
-                                        filePathInput = fileItem.path
-                                        validationError = null
-                                    },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (isSelected) AuroraTokens.Accent else AuroraTokens.SurfaceHover,
-                                        contentColor = if (isSelected) AuroraTokens.OnAccent else AuroraTokens.Text
-                                    ),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
-                                    modifier = Modifier.clip(RoundedCornerShape(0.dp))
-                                ) {
-                                    Text(
-                                        text = if (isSelected) "已选择" else "选择",
-                                        fontSize = 12.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                    )
-                                }
-                            }
-                        }
-
+                        )
                         if (index < shsoFiles.size - 1) {
                             Box(
                                 modifier = Modifier
@@ -510,10 +417,138 @@ fun HomePage(
         // 批次6 修复：实参传当前档位，与 FilePage 一致（避免默认值 STANDARD=2 覆盖用户实际档位）
         securityLevel = RootService.currentSecurityLevel(),
         onDismiss = { pendingExecutePath = null },
-        onConfirm = {
+        onConfirm = { runAsRoot ->
+            // 关键：透传确认框里用户的实际选择与「已获风险确认」，
+            // 否则档位 3 的「脚本默认非 Root + 用户可勾选以 Root」是死代码。
             val p = pendingExecutePath
             pendingExecutePath = null
-            if (p != null) execute(p)
+            if (p != null) execute(p, runAsRoot = runAsRoot, riskApproved = true)
         }
     )
+}
+
+/**
+ * 排序辅助键：持有原始 [FileItem] 与其预计算的小写名，避免比较器内逐次 lowercase 产生临时字符串。
+ */
+private class FileItemSortKey(val item: FileItem, val key: String)
+
+/**
+ * 任务已运行时间。独立成 Composable + 自身状态，使其每秒变化只重组本节点，
+ * 不再波及主页文件列表等无关内容。
+ */
+@Composable
+private fun ElapsedRunningTimeText() {
+    var elapsedSeconds by remember { mutableLongStateOf(0L) }
+    // 行为与改造前严格一致（原计时逻辑逐字迁移）：仅在任务运行中刷新，不加归零、不设 else 分支。
+    // 本组件仅在有任务进行中时才出现在组合树内，故这里的唯一收益是「把每秒重组限制在本节点」，
+    // 不再牵连主页文件列表等无关内容。
+    LaunchedEffect(RootService.isTaskRunning, RootService.taskStartTime) {
+        while (RootService.isTaskRunning) {
+            val start = RootService.taskStartTime
+            if (start > 0) {
+                elapsedSeconds = (System.currentTimeMillis() - start) / 1000
+            }
+            delay(1000)
+        }
+    }
+    Text(
+        text = "已运行时间: ${elapsedSeconds}s",
+        style = AuroraTextStyles.footnote1,
+        color = AuroraTokens.Accent,
+        fontWeight = FontWeight.SemiBold
+    )
+}
+
+/**
+ * 单个 shso 文件行。独立成 Composable 以提升跳过性：外部重组（如选中态变化、滚动）时，
+ * 未变化的行可独立跳过重绘，不再牵连整列。
+ */
+@Composable
+private fun ShsoFileRow(
+    fileItem: FileItem,
+    isSelected: Boolean,
+    listFontSize: TextUnit,
+    listSecondaryFontSize: TextUnit,
+    onSelect: () -> Unit
+) {
+    val isExecutable = fileItem.isExecutableScript || fileItem.isExecutableBinary
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onSelect)
+            .background(
+                if (isSelected) AuroraTokens.Accent.copy(0.08f)
+                else Color.Transparent
+            )
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 类型图标：无底色方框、左右零间隙，直接裸文字
+        Text(
+            text = when {
+                fileItem.isDirectory -> "📁"
+                fileItem.isExecutableScript -> "SH"
+                fileItem.isExecutableBinary -> "SO"
+                else -> "📄"
+            },
+            fontSize = if (fileItem.isDirectory || !isExecutable) 16.sp else 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = when {
+                fileItem.isDirectory -> AuroraTokens.Accent
+                fileItem.isExecutableScript -> AuroraTokens.Accent
+                fileItem.isExecutableBinary -> AuroraTokens.GlowBlue
+                else -> AuroraTokens.TextSecondary
+            }
+        )
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = fileItem.name,
+                style = AuroraTextStyles.body1,
+                fontSize = listFontSize,
+                fontWeight = FontWeight.Normal,
+                color = if (isSelected) AuroraTokens.Accent else AuroraTokens.Text,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (fileItem.isDirectory) "文件夹" else fileItem.formattedSize,
+                    style = AuroraTextStyles.footnote2,
+                    fontSize = listSecondaryFontSize,
+                    color = AuroraTokens.TextSecondary
+                )
+                if (fileItem.permissions.isNotEmpty()) {
+                    Text(
+                        text = fileItem.permissions,
+                        style = AuroraTextStyles.footnote2,
+                        fontSize = listSecondaryFontSize,
+                        fontFamily = FontFamily.Monospace,
+                        color = AuroraTokens.TextSecondary.copy(0.7f)
+                    )
+                }
+            }
+        }
+
+        if (!fileItem.isDirectory) {
+            Button(
+                onClick = onSelect,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isSelected) AuroraTokens.Accent else AuroraTokens.SurfaceHover,
+                    contentColor = if (isSelected) AuroraTokens.OnAccent else AuroraTokens.Text
+                ),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
+                modifier = Modifier.clip(RoundedCornerShape(0.dp))
+            ) {
+                Text(
+                    text = if (isSelected) "已选择" else "选择",
+                    fontSize = 12.sp,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                )
+            }
+        }
+    }
 }

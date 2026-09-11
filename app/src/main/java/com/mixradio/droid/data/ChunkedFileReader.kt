@@ -16,12 +16,35 @@ object ChunkedFileReader {
     /** 默认分块大小：1MB；总大小超过此值走分段加载。 */
     const val CHUNK_BYTES = 1024L * 1024L
     /**
-     * 大于 2MB 的文件强制分段（只读 LazyColumn）加载。
-     * 注：Compose BasicTextField 对整段大文本做全量 StaticLayout，
-     * 实测 ~4MB 即触发主线程卡死/崩溃；故阈值取保守的 2MB，
-     * 2MB 以上一律走按行懒加载的只读安全路径。
+     * 大于 **128KB** 的文件强制分段（只读 LazyColumn）加载。
+     *
+     * 为什么从 2MB 下调：Compose 的 BasicTextField 会对**整段**文本做全量 StaticLayout，
+     * 开销随体积快速放大。在低端机上实测（BIYLBAFQQSS8DA69）：
+     *  - 32KB：秒开；
+     *  - 256KB：主线程 100% 持续约 30 秒才渲染完（用户观感＝长时间空白）；
+     *  - 2MB：数分钟无响应，等于不可用。
+     * 因此把阈值定在实测「秒开」区间的上沿（128KB），之上一律走按行懒加载的只读安全路径，
+     * 宁可牺牲「可编辑」，也不要给用户一个空白/假死的编辑器。
      */
-    const val LARGE_FILE_THRESHOLD = 2L * 1024L * 1024L
+    const val LARGE_FILE_THRESHOLD = 128L * 1024L
+
+    /**
+     * `loadAll` 一次性载入的**字节上限**。
+     *
+     * 唯一调用方（文本编辑器）只在文件 ≤ [LARGE_FILE_THRESHOLD]（2MB）时才走 [loadAll]，
+     * 32MB 已有 16 倍余量。设上限是为了兜住「未来调用方传入超大文件」：
+     * 旧实现 `ByteArrayOutputStream(total.toInt().coerceAtMost(Int.MAX_VALUE))` 在 >2GB 时
+     * `total.toInt()` 溢出为**负数** → `IllegalArgumentException: Negative initial size`；
+     * 在 1–2GB 区间则尝试申请等量内存 → OOM。
+     */
+    const val MAX_LOAD_BYTES = 32L * 1024L * 1024L
+
+    /** [loadAll] 实际最多读取的字节数（纯函数，便于单测）。 */
+    internal fun cappedLoadBytes(total: Long): Long = when {
+        total <= 0L -> 0L
+        total > MAX_LOAD_BYTES -> MAX_LOAD_BYTES
+        else -> total
+    }
 
     data class LoadResult(
         val text: String,
@@ -113,11 +136,13 @@ object ChunkedFileReader {
                 else try { File(filePath).readBytes() } catch (_: Throwable) { ByteArray(0) }
             } else try { File(filePath).readBytes() } catch (_: Throwable) { ByteArray(0) }
         } else {
-            // 大文件分块读取
-            val buf = java.io.ByteArrayOutputStream(total.toInt().coerceAtMost(Int.MAX_VALUE))
+            // 大文件分块读取。**必须按 MAX_LOAD_BYTES 封顶**：旧实现把 total 直接 toInt() 当初始容量，
+            // >2GB 会溢出为负（ByteArrayOutputStream 抛 Negative initial size），1–2GB 则直接 OOM。
+            val cap = cappedLoadBytes(total)
+            val buf = java.io.ByteArrayOutputStream(minOf(cap, CHUNK_BYTES).toInt())
             var off = 0L
-            while (off < total) {
-                val len = minOf(CHUNK_BYTES, total - off)
+            while (off < cap) {
+                val len = minOf(CHUNK_BYTES, cap - off)
                 val chunk = readRange(filePath, off, len)
                 if (chunk.isEmpty()) break
                 buf.write(chunk)

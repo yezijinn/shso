@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-Android ROOT 环境下的图形化执行工具：一键运行 `.sh` 脚本与 `.so`/ELF 原生程序，带 ANSI 高亮终端、stdin 交互、ROOT 全盘文件管理。包名 `com.mixradio.droid`，版本 9.0.2/283，默认工作目录 `/data/adb/shso`。
+Android ROOT 环境下的图形化执行工具：一键运行 `.sh` 脚本与 `.so`/ELF 原生程序，带 ANSI 高亮终端、stdin 交互、ROOT 全盘文件管理。包名 `com.mixradio.droid`，`versionName = Jinn`，`versionCode` = 构建当日日期（如 `20260911`），默认工作目录 `/data/adb/shso`。
 
 ## 技术栈
 
@@ -55,7 +55,9 @@ shso-main/
 
 单协程域（`SupervisorJob + Dispatchers.IO`）驱动的进程管理器：
 
-1. `su -c` 启动子进程，注入环境变量（PATH/TERM=xterm-256color/LANG），`chmod 777` 补权限
+1. `su -c` 启动子进程，注入环境变量（PATH/TERM=xterm-256color/LANG）；`.so` / 二进制执行前 `chmod 755`，`.sh` 一律经 `sh` 运行**不改动用户文件权限**
+   - 进程启动后立即关闭子进程 stdin，避免读 stdin 的命令阻塞到超时才返回
+   - 中断（SIGINT）与「结束进程」按**进程组**（`kill -<sig> -- -<pgid>`）发信号，回收 `su` 之下的子孙进程；发信号前校验目标确为进程组组长、且不是本应用所在组（fail-closed）
 2. stdout/stderr 由独立协程读入 **16ms 微批次队列**（`ConcurrentLinkedQueue` 聚合）防 Compose 重组风暴（`HyperCore.startBatchFlushLoop`）
 3. 日志超 250,000 字符触发滑动窗口截断（防 OOM，`appendWithSlidingWindow`）
 4. 支持 stdin 写入、SIGINT（Ctrl+C）、`kill -9` 强杀；退出码/实时 PID 暴露为 Compose State
@@ -90,17 +92,24 @@ UI 层 100% 采用 AndroidX Compose Material 3 原生控件（`androidx.compose.
 
 - Windows 下推荐仓库内一键脚本：`python build_apk.py --skip-check`
  - Release 签名：本地 keystore（仓库外，V2+V3，alias=com.mixradio.droid），debug buildType 复用 release 签名
-- `isMinifyEnabled=false`（当前未混淆）
+- **Release 已开启 R8**：`isMinifyEnabled = true` + `shrinkResources = true`（2026-09-11 起；此前为 `false`）。开启后资源会被重命名为随机短名（如 `res/RJ.png`）并剔除未引用资源，因此**不要按 APK 内的资源名反查源码资源**，应以源码 `res/` 与构建产物的映射为准。
 - packaging excludes 清理了 META-INF/kotlin/assets 冗余；ArtProfile 与 mergeAssets 任务被禁用
 
-## 页面功能清单（v9.0.2）
+## 页面功能清单（Jinn / 20260911）
 
 | 页面 | 内容 |
 |---|---|
 | 主页 | 执行目标输入框 + 居中「立即执行」「从文件管理器选择」（无框/自适应宽度）+ 当前任务状态区 + `/data/adb/shso` 目录文件列表 |
 | 终端 | 顶栏（左 IDLE/RUNNING 状态灯，右 复制输出/结束进程/重启终端/设置）；内容区为 ANSI 着色滚动日志；底部输入行 + 中断/清屏/Enter/发送；「设置」弹窗含 终端文字颜色/HyperCore 终端提示/shso 终端提示 |
 | 文件 | ROOT 全文盘浏览（/、/storage/emulated/0、/data/adb/shso 快捷入口）、排序（名称/时间升降序）、隐藏文件开关、列表字号滑块（5–30sp，默认 15sp）、记忆路径、书签、长按单文件动作（添加到shso/安装APK·XAPK/浏览图片/编辑文本/重命名/拷贝/删除）、多选批量删除·拷贝·重命名、三悬浮导航按钮（回顶/到底/刷新）、APK·XAPK 安装（ROOT 静默 / 无 ROOT 系统安装器）、图片浏览、.ttf/.otf 字体预览并应用、设置菜单内「新建文件」、刷新 |
-| 设置 | 单列扁平列表：存储空间/省电策略/后台弹出/超级用户/安装应用（权限状态 + 授权跳转）+ 独立存储/自动删除/自动执行开关；右上角「关于」按钮弹窗（图标/版本/Github） |
+| 设置 | 单列扁平列表：存储空间/省电策略/后台弹出/超级用户/安装应用（权限状态 + 授权跳转）+ **安全档位 0–3（点击循环，同步守卫策略）** + 独立存储/自动删除/自动执行开关 + 查看审计日志；右上角「关于」按钮弹窗（图标/版本 Jinn/Github） |
+
+## 安全子系统
+
+- **安全档位**：`0 关 / 1 审计 / 2 标准 / 3 最高`，由 `AppSettings.securityLevel` 持久化；切换时失效「守卫就绪」缓存、按需安装守卫并同步 `/data/adb/shso_guard/policy.conf` 的 `mode`（`off` / `log` / `enforce`）。
+- **运行时守卫**：仓库内 `module/shso_guard/` 为守卫模块源码（随 APK 以 `assets/shso_guard.zip` 分发），档位 ≥2 时安装到 `/data/adb/modules/shso_guard`，拦截破坏性写操作并落审计日志 `/data/adb/shso/audit.log`。
+- **执行前确认**：脚本 / 程序执行前弹风险确认框（文件名 / 路径 / 类型 / 大小 / 修改时间 / SHA-256 / 是否 Root）。
+- **编辑器只读阈值**：`ChunkedFileReader.LARGE_FILE_THRESHOLD = 128KB`，超过即走只读懒加载（低端机实测：编辑框对整段文本全量排版，256KB 约 30s、2MB 数分钟无响应）。
 
 ## 已知注意点
 

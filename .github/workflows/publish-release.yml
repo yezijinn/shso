@@ -23,6 +23,9 @@ jobs:
     steps:
       - name: 拉取代码
         uses: actions/checkout@v7.0.1
+        with:
+          # Release 说明需要「上一个 tag 至今」的提交历史，必须完整拉取（含全部 tag）
+          fetch-depth: 0
 
       - name: 计算发布标签
         id: tag
@@ -88,6 +91,44 @@ jobs:
           KEY_ALIAS_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: ./gradlew assembleRelease
 
+      - name: 生成 Release 说明
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          PREV_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          NOTES="$RUNNER_TEMP/release_notes.md"
+          {
+            echo "## shso $TAG"
+            echo
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| versionName | \`Jinn\` |"
+            echo "| versionCode | \`$TAG\`（构建当日日期，也是应用内「检查更新」的判定依据） |"
+            echo "| 包名 | \`com.mixradio.droid\` |"
+            echo "| 最低系统 | Android 8.0（API 26） |"
+            echo
+            echo "### 更新内容"
+            echo
+            if [ -n "$PREV_TAG" ]; then
+              echo "（对比 \`$PREV_TAG\` → \`$TAG\`）"
+              echo
+              git log --no-merges --pretty=format:'- %s' "$PREV_TAG"..HEAD
+            else
+              echo "（首个 Release）"
+              echo
+              git log --no-merges --pretty=format:'- %s'
+            fi
+            echo
+            echo
+            echo "### 下载"
+            echo
+            echo "- \`app-release.apk\`：见本页 Assets，下载后传到手机安装即可。"
+            echo
+            echo "> 更完整的功能说明与更新日志见仓库 [README](https://github.com/yezijinn/shso#readme)。"
+          } > "$NOTES"
+          echo "--- 生成的说明 ---"
+          cat "$NOTES"
+
       - name: 创建 GitHub Release（纯日期标签）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -95,5 +136,5 @@ jobs:
           TAG="${{ steps.tag.outputs.tag }}"
           gh release create "$TAG" \
             --title "$TAG" \
-            --notes "shso 自动发布版本 $TAG" \
+            --notes-file "$RUNNER_TEMP/release_notes.md" \
             app/build/outputs/apk/release/*.apk

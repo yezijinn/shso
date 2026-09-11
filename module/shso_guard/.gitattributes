@@ -1,0 +1,19 @@
+# 强制 LF 换行 —— CRLF 会让 module.prop 解析失败、脚本报 bad interpreter
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.prop  text eol=lf
+*.rule  text eol=lf
+*.lua   text eol=lf
+*.rc    text eol=lf
+
+# 二进制文件禁止做任何转换
+*.zip   binary
+*.so    binary
+*.ko    binary
+*.png   binary
+*.jpg   binary
+*.apk   binary
+*.jar   binary
+*.ttf   binary
+*.otf   binary
