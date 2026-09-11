@@ -1,5 +1,8 @@
 # shso_guard —— shso 指令守卫
 
+> 模块 ID：`shso_guard`（一经发布永不修改）；当前版本 **v1.2.0**（`module.prop` 的 `version=`）。
+> 相关文档：仓库根 [`README.md`](../../README.md)（用户向）、[`docs/PROJECT.md`](../../docs/PROJECT.md)（开发者向）。
+
 shso 的配套 root 模块。**运行时**拦截 `rm` / `dd` / `mkfs` 等高危命令，
 保护系统分区，并把每一次调用落进审计日志。
 
@@ -37,6 +40,13 @@ cp -R  shso_guard  /data/adb/modules/shso_guard
 chmod -R 0755      /data/adb/modules/shso_guard
 chmod    0644      /data/adb/modules/shso_guard/module.prop
 ```
+
+> **App 内的做法（v1.2.0 起为原子安装）**：`GuardModuleInstaller` 先解压 APK 内
+> `assets/shso_guard.zip` 到应用缓存并校验必需条目，再以 root 做**原子替换** ——
+> 同文件系统内构建 `/data/adb/.shso_guard.new` → 校验 → 旧目录挪 `.old` → `mv` → 清理；
+> 任一步失败都会保留或回滚旧版本。升级判定比对 `module.prop` 的 `version=`，
+> 因此**新增包装器必须升版本号**（见文末「三处同步」）。
+> 手动复制安装时没有这套回滚，建议先备份旧目录。
 
 > **注意**：这种方式 `customize.sh` **不会执行**。因此本模块被设计成开箱即用：
 > - `guard/` 下的守卫是**预生成**的（由 `gen_wrappers.py` 从 `guard-template.sh` 生成，
@@ -101,21 +111,23 @@ Magisk App / KernelSU / APatch 均可直接刷入。Recovery 仅 Magisk 支持�
 
 ## shso App 集成点
 
-App 侧只需把守卫目录前置到 PATH（**目前尚未改动，待确认**）：
+App 侧已完成集成（v1.2.0），守卫目录由 `GuardModuleInstaller.GUARD_BIN_DIR`
+（`/data/adb/modules/shso_guard/guard`）统一提供：
 
-1. **脚本执行** —— `RootService.executeFile()`（`RootService.kt:239`）构造命令处，
-   在 `export PATH=...` 最前面插入守卫目录：
+1. **受保护的 root 执行** —— `GuardPathPolicy.prefixOrNull()` 生成命令前缀
+   `export PATH=<GUARD_BIN_DIR>:/sbin:/system/sbin:/system/bin:/system/xbin && …`，
+   由 `RootCommandGateway` 在命令前拼上：
+   - 档位 `< 2`（0 关 / 1 仅审计）→ 返回空串，**不前置守卫**（行为与未安装一致）；
+   - 档位 `≥ 2` 且守卫已就绪 → 前置守卫目录；
+   - 档位 `≥ 2` 但守卫未安装 → 返回 `null`（不可执行），由上层提示安装。
+2. **安装 / 升级** —— `GuardModuleInstaller` 按上节「原子安装」流程执行；
+   「守卫 bin 目录是否就绪」的探测结果缓存 60 秒，切换档位会主动失效该缓存。
+3. **策略同步** —— 切换档位与**冷启动**时都会把 `policy.conf` 的 `mode`
+   同步为当前档位对应值（`off` / `log` / `enforce`）；否则残留的 `off`/`log`
+   会让守卫静默不拦截。
+4. **终端输入** —— 常驻 root shell 走同一套前缀，`sendInput()` 送进去的命令同样经过守卫。
 
-```kotlin
-val guardDir = "/data/adb/modules/shso_guard/guard"
-val guardPath = if (File("$guardDir/rm").exists()) "$guardDir:" else ""
-val execCmd = "export PATH=$guardPath/sbin:/system/sbin:/system/bin:/system/xbin:\$PATH && ..."
-```
-
-2. **终端输入** —— 常驻 root shell 启动时同样前置该目录，
-   使 `sendInput()` 送进去的命令也经过守卫。
-
-守卫未安装时 `guardPath` 为空串，行为与现在完全一致（优雅降级）。
+守卫未安装或档位不足时行为与旧版完全一致（优雅降级）。
 
 ## 策略配置
 
@@ -156,6 +168,11 @@ allow=/sdcard       # 豁免路径，优先级高于 protect
 | `cp` | **目标**（可覆盖 `/system` 下的文件） | — |
 | `find` | **仅当含 `-delete`**，或 `-exec`/`-execdir` 后接 `rm`/`rmdir`/`sh`/`bash` | 常规查找零干预 |
 | `sed` | **仅当含 `-i`**；会正确跳过 sed 脚本参数 | 常规流式编辑零干预 |
+| `chmod` `chown` `chgrp` | 所有非选项操作数 | v1.2.0：防止权限崩坏（如 `chmod -R 777 /system`） |
+| `mknod` | 所有非选项操作数 | v1.2.0：防止创建设备节点 |
+| `mkfs` | 所有非选项操作数 | v1.2.0：`mkfs.*`/`mke2fs`/`make_f2fs` 之外的通用入口 |
+| `sgdisk` `parted` `fdisk` | 所有非选项操作数 | v1.2.0：分区表改动 |
+| `flash_image` | 所有非选项操作数 | v1.2.0：直接刷写分区镜像 |
 | `toybox` `busybox` | 子命令命中上表任一即 shift 后按上表判定 | 否则原样透传，零干预 |
 
 高频命令（`cp` / `find` / `sed` / `mv`）在**不需要介入**时只做最小判定就立即
@@ -201,7 +218,8 @@ shso_guard/
 ├── customize.sh             # 刷 zip 安装时执行（复制安装不会执行）
 ├── uninstall.sh             # 卸载：删除 /data/adb/shso_guard/（审计日志保留）
 ├── guard-template.sh        # 守卫模板（__CMD_NAME__ / __OPERAND_MODE__ 两处占位符）
-├── gen_wrappers.py          # 从模板生成 25 个守卫，保证模板与产物不漂移
+└── gen_wrappers.py          # 从模板生成 25 个守卫（另加 toybox / busybox 两个手写派发器，
+                             # 合计 27 个包装器），保证模板与产物不漂移
 └── guard/
     ├── common.sh            # 共用引擎：策略加载 / 路径归一化 / 判定 / 审计 / exec_real
     ├── rm rmdir shred truncate wipe dd fastboot          # 模板生成（删除 / 覆写）

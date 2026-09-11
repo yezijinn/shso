@@ -15,4 +15,4 @@ cd shso-main/module/shso_guard
 ROOT="$(pwd -W)" bash test/harness.sh   # 把 Windows 路径转 POSIX（Git Bash 必须）
 ```
 
-期望输出末尾出现 `通过 37/37`。
+期望输出末尾出现 `全部通过`（失败则输出 `存在失败` 并以非 0 退出）。
