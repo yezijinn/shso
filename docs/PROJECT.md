@@ -118,7 +118,7 @@ UI 层 100% 采用 AndroidX Compose Material 3 原生控件（`androidx.compose.
 |---|---|
 | 主页 | 执行目标输入框 + 居中「立即执行」「从文件管理器选择」（无框/自适应宽度）+ 当前任务状态区 + `/data/adb/shso` 目录文件列表 |
 | 终端 | 顶栏（左 IDLE/RUNNING 状态灯，右 复制输出/结束进程/重启终端/设置）；内容区为 ANSI 着色滚动日志；底部输入行 + 中断/清屏/Enter/发送；「设置」弹窗含 终端文字颜色/HyperCore 终端提示/shso 终端提示 |
-| 文件 | ROOT 全文盘浏览（/、/storage/emulated/0、/data/adb/shso 快捷入口）、排序（名称/时间升降序，纯文本选项）、隐藏文件开关、列表字号滑块（5–30sp，默认 15sp，一行布局）、**「全选文件 / 取消全选」（仅文件，不含文件夹；与「新建文件」同行）**、记忆路径、书签、长按单文件动作（添加到shso/安装APK·XAPK/浏览图片/编辑文本/重命名/拷贝/删除）、多选批量删除·拷贝·重命名、三悬浮导航按钮（回顶/到底/刷新）、APK·XAPK 安装（ROOT 静默 / 无 ROOT 系统安装器）、图片浏览、.ttf/.otf 字体预览并应用、设置菜单内「新建文件」与**「提取APK」**（列出已安装应用，导出安装包到 `Download/`，命名 `<应用名>-<版本号>.APK`，分包追加 `-splitN.APK`；默认仅用户应用，可切换含系统应用）、刷新 |
+| 文件 | ROOT 全文盘浏览（/、/storage/emulated/0、/data/adb/shso 快捷入口）、排序（名称/时间升降序，纯文本选项）、隐藏文件开关、列表字号滑块（5–30sp，默认 15sp，一行布局）、**「全选文件 / 取消全选」（仅文件，不含文件夹；与「新建文件」同行）**、记忆路径、书签、长按单文件动作（添加到shso/安装APK·XAPK/浏览图片/编辑文本/重命名/拷贝/删除）、多选批量删除·拷贝·重命名、三悬浮导航按钮（回顶/到底/刷新）、APK·XAPK 安装（ROOT 静默 / 无 ROOT 系统安装器；**同目录存在 `-splitN` 分包时自动整套会话安装**）、图片浏览、.ttf/.otf 字体预览并应用、设置菜单内「新建文件」与**「提取APK」**（列出已安装应用，导出安装包到 `Download/`，命名 `<应用名>-<版本号>.APK`，分包追加 `-splitN.APK`；默认仅用户应用，可切换含系统应用）、刷新 |
 | 设置 | 单列扁平列表：存储空间/省电策略/后台弹出/超级用户/安装应用（权限状态 + 授权跳转）+ **安全档位 0–3（点击循环，同步守卫策略）** + 独立存储/自动删除/自动执行开关 + 查看审计日志；右上角「关于」按钮弹窗（图标/版本 Jinn/Github） |
 
 ## 安全子系统
@@ -146,5 +146,7 @@ UI 层 100% 采用 AndroidX Compose Material 3 原生控件（`androidx.compose.
 - **守卫是 PATH 前置型**：脚本内部用绝对路径（`/system/bin/rm`）或自行重置 `PATH` 可绕过运行时守卫；这部分只由 App 侧静态审查覆盖（App 解析执行的命令），脚本内部自行拼装的调用不在内。彻底封堵需 seccomp/LSM 级 hook，属独立议题。
 - **编辑历史按文件分 key 存储**（`history:<绝对路径>`），旧的单键 `edit_history` 会在首次访问时自动迁移；不要按「一个大 JSON」的假设去读 `shso_editor`。
 - **文本编辑器载入时把 CRLF/CR 归一为 LF**（Compose 只按 `\n` 断行），保存时按 `currentLineEnding` 还原；改动 `LineEnding.apply` 需同步该契约。
+- **分包安装必须走会话流且分片要先拷到 `/data/local/tmp`**：真机实测 `pm install-write` 直接读 `/storage/emulated/0` 会被 SELinux 拒绝（`avc denied … sdcardfs`，system_server 无权读 emulated 存储）。`ApkInstaller.installSplitApks()` 因此统一先 `cp` 到 `/data/local/tmp/_shso_split_N.apk` 再写入会话。
+- **「安装套件」聚合规则**（`ApkInstaller.collectApkSet`）：主判定走命名约定（`<名>-<版本>.APK` + `-splitN`，纯函数 `nameBasedSet` 有单测覆盖），次判定走 manifest 的「同包名 + 同版本号」；`bases.size != 1` 时退回单文件，绝不猜测。改动这里需同步 `ApkInstallerSetTest`。
 - **「提取 APK」依赖 `QUERY_ALL_PACKAGES`**：targetSdk 30+ 的包可见性过滤会让 `getInstalledPackages()` 只返回可见包；移除该权限会导致应用列表残缺。读取 `/data/app/...` 的安装包需 ROOT，无 ROOT 仅系统分区可直读的应用可用。产物命名规则（大写 `.APK`、分包 `-splitN`）由 `ApkExtractor` 的纯函数决定，改动需同步 `ApkExtractorTest`。
 - `Process.pid()` 在 Android 上不存在，取子进程 pid 只能反射；中断正确性由**进程组回收**保证。
