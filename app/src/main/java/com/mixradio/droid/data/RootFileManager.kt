@@ -234,15 +234,19 @@ object RootFileManager {
     }
 
     /**
-     * 确保 shso 工作目录存在。
+     * 确保 shso 工作目录存在，权限固定为 **0777**。
      *
-     * 权限用 **0755**（旧实现为 0777）：该目录是 root 侧写入审计日志与守卫产物的位置，
-     * 全世界可写会让任意应用都能往里塞/改文件（例如伪造审计内容）；
-     * 而目录内所有写入都经 `su` 以 root 身份进行，owner 可写 755 已完全够用。
+     * 这是**硬性要求，不要收紧为 755**：`/data/adb/shso` 需要让其他应用（文件管理器、MT 管理器等）
+     * 也能自由读写其中的文件；降权后第三方应用将无法访问，会直接破坏用户「把文件放进 shso 目录
+     * 再用别的工具处理」的使用场景。
+     *
+     * 注意：即便目录是 0777，应用自身对 `/data/adb/` 的写入仍可能受 **SELinux(MAC)** 限制
+     * （实测 `run-as` 建目录依旧 `Permission denied`），所以凡以应用 uid 落盘的操作
+     * （如解压）都必须先实测目标可写性，不可写时禁用入口，而不是假设 777 就一定能写。
      */
     suspend fun ensureShsoDir(): Boolean = withContext(Dispatchers.IO) {
         if (shsoDirEnsured) return@withContext true
-        val cmd = "mkdir -p ${RootService.escapeShellArg(DEFAULT_SHSO_DIR)} && chmod 755 ${RootService.escapeShellArg(DEFAULT_SHSO_DIR)}"
+        val cmd = "mkdir -p ${RootService.escapeShellArg(DEFAULT_SHSO_DIR)} && chmod 777 ${RootService.escapeShellArg(DEFAULT_SHSO_DIR)}"
         val (code, _) = RootService.runCommandSync(cmd)
         if (code == 0) shsoDirEnsured = true
         code == 0
