@@ -1,6 +1,8 @@
 # shso 任务看板 (TASKS.md)
 
-> 当前版本：9.0.2/283  
+> **版本规则（2026-09-11 起生效，不再用旧规则）**：
+> - `versionCode` = **构建当日日期纯数字**（YYYYMMDD，如 `20260911`），由 `build.gradle.kts` 的 `buildDateVersionCode` 自动生成，也是升级判定的唯一依据；
+> - `versionName` = **`Jinn`**（固定字符串，仅作展示）。
 > 状态规范：`[ ]` 待办 | `[/]` 执行中 | `[x]` 完成 | `[!]` 阻塞/需人工确认  
 > 上一版任务全量归档：`TASKS-old-20260911-v17final.md`（17 项全部 [x]，含 R8 / 守卫 / 终端 / 编辑器优化 + 本轮 4 P1 4 P2 BUG 闭环）
 
@@ -269,6 +271,41 @@
 - **真机验证**（2.9MB 文件）：节点数 11 → **67**；正文渲染 `1 / big line 0 - … / 2 / big line 1 - …` ✓；**行数 0 → 21627** ✓；无崩溃 ✓
 - **测试**：150 tests / 0 failures（无新增单测 —— 该缺陷是 Compose 调用点漏传，已由「必填参数」在编译期兜住）。
 
+
+### 30. ✅ 中等体积文本（0.5MB～2MB）打开后长时间空白 —— 阈值失准，已修正
+> 来源：用户真机反馈「打开 0.5M / 2.00MB 文本，编辑器空白、0 行 0 字节」。
+> 补充：任务 29 修的是「>2MB 永远空白」（真 BUG），本项是「≤2MB 也慢到像坏了」（阈值失准），两者不同。
+
+- **现象**：2,097,151 B（正好比 2MB 阈值小 1 字节）的文件走**小文件 `loadAll` 路径**，整段文本塞进 BasicTextField。
+- **实测（BIYLBAFQQSS8DA69，这台机子性能较弱）**：
+  | 体积 | 表现 |
+  |---|---|
+  | 32KB / 64KB | 秒开 |
+  | 256KB | 主线程 100% 持续约 **30 秒**才渲染完（期间状态栏一直 0 行 0 字节） |
+  | 2MB | 数分钟无响应 |
+- **定位过程**：先排除了内容与编码、状态串扰、root 读取路径（手动跑同一条 `cat … \| base64 -w 0` 只要 **0.24s**，产出正确）；再用 `top`/`/proc/<pid>/stat` 确认主线程 **R + ~100% CPU**；并确认语法高亮已有保护（`>100_000` 字符就不高亮），所以开销不是高亮，而是 **BasicTextField 对整段文本的全量 StaticLayout**。
+  - 附：「0 行 0 字节」是**症状**而非独立缺陷 —— `行数/字节数` 来自 `TextStatistics`，它跑在主线程且排在渲染之后，主线程被占满时算不出来，渲染完即恢复（256KB 最终显示 `行数 37450 / 字节数 262144`）。
+- **已实施修复**：
+  1. `ChunkedFileReader.LARGE_FILE_THRESHOLD` **2MB → 128KB**（取实测「秒开」区间的上沿），128KB 以上走已验证的分块懒加载只读路径。
+  2. `TextEditorDialog.formatBytes` 的 MB 段改为保留一位小数 —— 原来是整数除法，`2097151 B` 会显示成「1 MB」，与文件列表的「2.00 MB」自相矛盾。
+- **真机验证**：
+  - 64KB → 小文件路径（可编辑），12s 内完成，`行数 9363 / 字节数 65536` ✓
+  - 2MB → 分段模式，25s 内完成，`分段模式 1.0 MB / 2.0 MB`、`行数 149797` ✓
+- **测试**：150 tests / 0 failures（无新增单测；改动为常量与格式化）。
+
+### 31. ✅ 清理 APK 里的 `res/RJ.png`（死资源启动图标）
+- **现象**：用户在 **release APK** 内发现 `res/RJ.png`（696KB），另有一批随机短名 PNG（`Em/Lf/QZ/as/zr.png`）。
+- **定位**：这些是 **R8 资源混淆重命名**的结果（源码里没有 `RJ.png`）。按尺寸比对还原：
+  | APK 内 | 尺寸 | 对应源资源 |
+  |---|---|---|
+  | `RJ.png` | 1254×1254 | `mipmap-xxhdpi/ic_launcher.png` 与 `ic_launcher_round.png`（md5 **完全相同**，去重为一份） |
+  | `as/Lf/Em/zr/QZ.png` | 432/324/216/162/108 | 各密度 `ic_launcher_foreground.png`（**需保留**） |
+- **判定为死资源（可删）**：
+  1. `minSdk = 26` → `mipmap-anydpi-v26/ic_launcher.xml`（自适应图标）**永远生效**，`ic_launcher.png` 用不到；
+  2. Manifest 的 `android:icon` 与 `android:roundIcon` **都指向 `@mipmap/ic_launcher`**，从未引用 `ic_launcher_round`。
+- **已实施**：删除 `mipmap-xxhdpi/ic_launcher.png` 与 `ic_launcher_round.png`（各 785,647 B，源码共 1.5MB）。
+- **验证**：两个 APK 中 `RJ.png` **均已消失**；5 张 foreground 完好（图标显示不受影响）；release APK **5.00MB → 4.11MB**；应用启动正常、无崩溃；150 tests / 0 failures。
+- **顺带发现（未删，待你决定）**：`drawable/ic_shso.png`(32KB)、`ic_github.png`(5.4KB)、`ic_telegram.png`(197KB) **零引用**，release 包里也已被 shrink 掉 —— 同属死资源，可一并删除。
 
 ### 21. 新主目标（占位 — 视用户输入）
 - [ ] 用户指定后填充

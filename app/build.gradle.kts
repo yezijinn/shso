@@ -65,7 +65,9 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = buildDateVersionCode
-        versionName = "9.0.2"
+        // 版本名固定为 "Jinn"（新规则，不再使用 9.0.2 之类的数字版本名）。
+        // 升级判定只看 versionCode（构建当日日期 YYYYMMDD），versionName 仅作展示。
+        versionName = "Jinn"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
