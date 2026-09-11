@@ -362,7 +362,10 @@ object RootFileManager {
 
             // find 输出带 "./" 前缀
             if (name.startsWith("./")) name = name.removePrefix("./")
-            if (name.contains(" -> ")) name = name.substringBefore(" -> ").trim()
+            // 注意：格式化串用的是 %n（仅文件名），**不会**附加 " -> 链接目标"（那是 stat -l / %N 的行为）。
+            // 真机已验证 `stat -L -c "%n" "./a -> b.txt"` 原样输出 `./a -> b.txt`。
+            // 旧实现在此执行 substringBefore(" -> ")，把名字里含 " -> " 的**真实文件名**截断，
+            // 生成错误 name/path（点击打不开、对该项操作作用到错误路径）。故此处不做任何箭头剥离。
             if (name.isEmpty() || name == "." || name == "..") continue
 
             val itemPath = if (targetPath.endsWith("/")) "$targetPath$name" else "$targetPath/$name"

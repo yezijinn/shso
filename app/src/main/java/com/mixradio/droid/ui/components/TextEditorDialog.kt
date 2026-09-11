@@ -303,6 +303,8 @@ private fun TextEditorDialogContent(
     // 保存（工具栏「保存」/ 未保存提醒共用）：无路径时转「另存为」，无改动时提示。
     val doSave: () -> Unit = {
         when {
+            // 读取失败时编辑器里的内容并非完整原文（可能为空或仅用户新输入），保存会截断/覆盖原文件。
+            loadError != null -> toastMessage = "文件读取失败，已阻止保存以防损坏原文件"
             currentFilePath == null -> showSaveAsDialog = true
             isLargeFile -> toastMessage = "分段只读模式：大文件不可编辑保存（防止数据截断）"
             !dirty -> toastMessage = "无改动"
@@ -449,8 +451,16 @@ private fun TextEditorDialogContent(
         onAutoSaveChange = { autoSaveSeconds = it; appSettings.updateEditorAutoSaveInterval(it) },
         charset = currentCharset,
         onCharsetChange = { cs ->
-            currentCharset = cs; overrideCharset = cs
-            if (!isNewFile) { contentValue = TextFieldValue(""); isLoading = true }
+            // 切换编码 = 丢弃当前内存内容、按新编码从磁盘重新解码。
+            // 若有未保存修改，必须先阻断：旧实现无条件清空 contentValue 并触发重载，
+            // 用户未保存的编辑被静默覆盖；若随后重载失败，内容为空而 dirty 仍为 true，
+            // 此时按保存会把文件截断成 0 字节（数据损坏）。
+            if (!isNewFile && dirty) {
+                toastMessage = "有未保存的修改，请先保存后再切换编码"
+            } else if (cs != currentCharset) {
+                currentCharset = cs; overrideCharset = cs
+                if (!isNewFile) { contentValue = TextFieldValue(""); isLoading = true }
+            }
         },
         lineEnding = currentLineEnding,
         onLineEndingChange = { le -> currentLineEnding = le },

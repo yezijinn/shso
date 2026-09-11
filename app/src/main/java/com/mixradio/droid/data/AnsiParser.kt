@@ -339,17 +339,23 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
 
     private fun applySgr(codeStr: String) {
         val codes = codeStr.split(";").mapNotNull { it.toIntOrNull() }
-        if (codes.isEmpty() || codes.contains(0)) {
+        // 空参数（"\e[m"）等价于单个 0（reset）。
+        if (codes.isEmpty()) {
             currentColor = defaultColor
             isBold = false
             return
         }
         // 索引遍历：38;5;n（256 色）与 38;2;r;g;b（真彩色）为可变长度参数，
-        // 解析后跳过其参数，避免把 5/2 或颜色分量误当独立 SGR 码处理
+        // 解析后跳过其参数，避免把 5/2 或颜色分量误当独立 SGR 码处理。
+        //
+        // 注意：0 必须作为「循环内的一条指令」就地处理，不能像旧实现那样 `codes.contains(0)` 直接
+        // reset 后 return——否则 `\e[0;32m`（先复位再设绿，是大量 CLI 的常见输出）会丢掉 32，
+        // 把本应显示绿色的文本渲染成默认色。
         var i = 0
         while (i < codes.size) {
             val code = codes[i]
             when {
+                code == 0 -> { currentColor = defaultColor; isBold = false }
                 code == 1 -> isBold = true
                 code == 22 -> isBold = false
                 code == 39 -> currentColor = defaultColor

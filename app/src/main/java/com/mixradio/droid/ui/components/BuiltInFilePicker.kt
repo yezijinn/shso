@@ -349,7 +349,9 @@ fun BuiltInFilePicker(
                                 }
                             } else {
                                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                    itemsIndexed(displayFileList, key = { index, item -> "${item.path}_$index" }) { _, item ->
+                                    // key 只用唯一的 item.path（路径由列目录去重保证唯一）；
+                                    // 混入下标会在排序/过滤导致位移时使 key 全变、整表重建。
+                                    itemsIndexed(displayFileList, key = { _, item -> item.path }) { _, item ->
                                         val isSelected = !directoryOnly && selectedFile?.path == item.path
                                         // 注入了 fileFilter 时，可选项以过滤器为准（如对比只允许同后缀文件）
                                         val isSupported = directoryOnly || (fileFilter?.invoke(item) ?: item.isSupportedExecutable)

@@ -161,22 +161,12 @@ object RootService {
     suspend fun checkRoot(force: Boolean = false): Boolean = withContext(Dispatchers.IO) {
         if (!force && isRootGranted == true) return@withContext true
 
-        val granted = withTimeoutOrNull(6000L) {
-            try {
-                val process = ProcessBuilder("su", "-c", "id").start()
-                val output = process.inputStream.use { stream ->
-                    InputStreamReader(stream).use { reader ->
-                        val buffer = CharArray(256)
-                        val count = reader.read(buffer)
-                        if (count > 0) String(buffer, 0, count) else ""
-                    }
-                }
-                val exitCode = process.waitFor()
-                exitCode == 0 && output.contains("uid=0")
-            } catch (_: Exception) {
-                false
-            }
-        } ?: false
+        // 复用 runCommandSync：它用「独立读线程 + waitFor(timeout) + destroyForcibly」实现
+        // **真正可中断**的超时并回收进程。旧实现把 `process.waitFor()`（阻塞 JNI，不可取消）
+        // 包在 `withTimeoutOrNull(6000)` 里，超时形同虚设：su 等授权弹窗时会一直挂住，
+        // 且超时/异常分支不 destroy，泄漏 su 进程。
+        val (code, out) = runCommandSync("id", timeoutMs = 6000L)
+        val granted = code == 0 && out.contains("uid=0")
 
         withContext(Dispatchers.Main) {
             isRootGranted = granted

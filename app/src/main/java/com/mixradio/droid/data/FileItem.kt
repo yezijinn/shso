@@ -3,8 +3,9 @@
 
 package com.mixradio.droid.data
 
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /** 可安装的 APK 系扩展名（小写；比较前先 lowercase）。 */
@@ -102,7 +103,14 @@ data class FileItem(
     val formattedDate: String
         get() {
             if (lastModified <= 0) return ""
-            val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
-            return sdf.format(Date(lastModified))
+            // 用不可变、线程安全的 DateTimeFormatter 替代「每次调用 new SimpleDateFormat」：
+            // 文件列表每项每帧都会读取本属性，旧实现会持续产生 formatter + Date 临时对象（GC 热点）。
+            return Instant.ofEpochMilli(lastModified)
+                .atZone(ZoneId.systemDefault())
+                .format(FILE_DATE_FORMATTER)
         }
+
+    private companion object {
+        private val FILE_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+    }
 }
