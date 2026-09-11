@@ -46,7 +46,15 @@ object CommandParser {
          * 前缀剥离后仍无法确定真实命令（wrapper 的选项带独立值且形态少见）。
          * 策略层据此按不可判定（fail-closed）处理，避免「剥错了就漏判」。
          */
-        val programAmbiguous: Boolean = false
+        val programAmbiguous: Boolean = false,
+        /**
+         * **程序名本身**含未解析变量（`$CMD`、`r$IFSm`、`rm$IFS-rf$IFS/system`）。
+         *
+         * 注意必须看「原始首个 token」而非 basename：`rm$IFS-rf$IFS/system` 的
+         * substringAfterLast('/') 是 `system`，会被误当成一个普通程序名，从而完全绕过
+         * 所有规则（`$IFS` 是 IFS 变量，实现「无空格拼命令」的经典混淆手法）。
+         */
+        val programUnresolved: Boolean = false
     )
 
     data class Parsed(
@@ -62,7 +70,11 @@ object CommandParser {
 
     private class Overflow : Exception()
 
-    private val WRAPPER_PREFIXES = setOf("busybox", "toybox", "magisk", "nohup", "timeout", "stdbuf", "sudo", "env")
+    private val WRAPPER_PREFIXES = setOf(
+        "busybox", "toybox", "magisk", "nohup", "timeout", "stdbuf", "sudo", "env",
+        // xargs 同样是「执行后面那条命令」的派发器：`xargs rm -rf /system` 的真实命令是 rm
+        "xargs"
+    )
     private val SHELL_PROGRAMS = setOf("sh", "bash", "ash", "dash", "mksh")
 
     /**
@@ -80,6 +92,11 @@ object CommandParser {
             "-u", "--user", "-g", "--group", "-p", "--prompt", "-C", "--close-from",
             "-h", "--host", "-r", "--role", "-t", "--type", "-T", "--command-timeout",
             "-R", "--chroot", "-D", "--chdir"
+        ),
+        "xargs" to setOf(
+            "-I", "-i", "-n", "-L", "-P", "-s", "-E", "-d", "-a",
+            "--replace", "--max-args", "--max-lines", "--max-procs",
+            "--max-chars", "--eof", "--delimiter", "--arg-file"
         ),
         "nohup" to emptySet(),
         "busybox" to emptySet(),
@@ -328,20 +345,20 @@ object CommandParser {
 
         // 3) 残留未解析变量（$x / ${x}）：解析器只展开 $(...) 与反引号，变量无法静态求值
         val hasUnresolvedVar = words.any { it.indexOf('$') >= 0 }
+        // 程序名本身含变量：真实命令不可知（$IFS 拼命令等），必须 fail-closed
+        val firstToken = original.first()
+        val programUnresolved = firstToken.indexOf('$') >= 0
 
         // 4) sh -c '...' / bash -c "..."：内层字符串本身是命令，递归解析（nested=true）
         val cIdx = args.indexOfFirst { isDashC(it) }
         if (program in SHELL_PROGRAMS && cIdx >= 0 && cIdx + 1 < args.size) {
-            val innerCmd = args[cIdx + 1]
-            if (innerCmd.isNotBlank()) {
-                val subState = ScanState(nested = true)
-                try {
-                    walk(innerCmd, depth + 1, atoms, subState, nested = true)
-                    emitAtomIfAny(subState, atoms, depth + 1)
-                } catch (_: Overflow) {
-                    throw Overflow()
-                }
-            }
+            expandInnerCommand(args[cIdx + 1], depth, atoms)
+        }
+
+        // 5) eval "<命令>"：eval 的字符串参数同样会在运行时被当作命令执行。
+        //    不展开的话 `eval "rm -rf /system"` 只会得到一条无害的 EVAL，内层破坏命令完全不被评估。
+        if (program == "eval" && args.isNotEmpty()) {
+            expandInnerCommand(args.joinToString(" "), depth, atoms)
         }
 
         atoms.add(
@@ -354,9 +371,18 @@ object CommandParser {
                 segmentId = segmentId,
                 redirects = redirects,
                 hasUnresolvedVar = hasUnresolvedVar,
-                programAmbiguous = programAmbiguous
+                programAmbiguous = programAmbiguous,
+                programUnresolved = programUnresolved
             )
         )
+    }
+
+    /** 以嵌套方式解析一段「运行时会变成命令」的字符串（sh -c / eval 的内层）。 */
+    private fun expandInnerCommand(innerCmd: String, depth: Int, atoms: ArrayList<Atom>) {
+        if (innerCmd.isBlank()) return
+        val subState = ScanState(nested = true)
+        walk(innerCmd, depth + 1, atoms, subState, nested = true)
+        emitAtomIfAny(subState, atoms, depth + 1)
     }
 
     /**

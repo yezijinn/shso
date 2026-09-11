@@ -163,14 +163,29 @@ object GuardModuleInstaller {
                 }
             }
 
-            // 2) root 复制安装（覆盖旧安装用绝对路径 rm 绕过守卫自保护）
+            // 2) root 原子替换安装
+            //    旧实现是「先 rm -rf 旧模块，再 cp -R 新模块」：cp 中途失败/断电/空间不足时，
+            //    旧守卫已被删除、新守卫又不完整 —— 档位 2/3 会在用户毫不知情的情况下失去运行时防护。
+            //    现改为：先在同文件系统内构建 .new → 校验 → 把旧目录挪成 .old → mv 原子替换 →
+            //    删 .old。任一步失败都保留或回滚旧版本。
+            //    放在 /data/adb 下（而非 /data/adb/modules 内）是为了不让 Magisk 把临时目录当成模块。
             val stagingPath = RootService.escapeShellArg(moduleDir.absolutePath)
-            RootService.runCommandSync(
-                "/system/bin/rm -rf $MODULE_DIR 2>/dev/null; mkdir -p /data/adb/modules && " +
-                    "cp -R $stagingPath $MODULE_DIR && chmod -R 0755 $MODULE_DIR",
-                60_000L
-            ).let { (code, out) ->
-                if (code != 0) return@withContext Pair(false, "root 复制失败: ${out.trim().take(200)}")
+            val newDir = "/data/adb/.shso_guard.new"
+            val oldDir = "/data/adb/.shso_guard.old"
+            val installScript = buildString {
+                append("mkdir -p /data/adb && ")
+                append("/system/bin/rm -rf $newDir 2>/dev/null; ")
+                append("cp -R $stagingPath $newDir && chmod -R 0755 $newDir || exit 2; ")
+                append("test -f $newDir/module.prop && test -x $newDir/guard/rm || exit 3; ")
+                append("/system/bin/rm -rf $oldDir 2>/dev/null; ")
+                append("if [ -d $MODULE_DIR ]; then mv $MODULE_DIR $oldDir || exit 4; fi; ")
+                append("if ! mv $newDir $MODULE_DIR; then [ -d $oldDir ] && mv $oldDir $MODULE_DIR; exit 5; fi; ")
+                append("/system/bin/rm -rf $oldDir 2>/dev/null; true")
+            }
+            RootService.runCommandSync(installScript, 60_000L).let { (code, out) ->
+                if (code != 0) {
+                    return@withContext Pair(false, "root 复制失败(code=$code): ${out.trim().take(200)}")
+                }
             }
 
             // 3) 校验

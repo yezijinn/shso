@@ -173,7 +173,60 @@ class SecurityHardeningTest {
     }
 
     // ========================================================================
-    // 7) 路径分级：root 环境数据
+    // 7) 第二轮：变量伪装程序名（$IFS 拼命令）
+    // ========================================================================
+
+    @Test fun `脚本里变量拼出的程序名按最高危拒绝`() {
+        // r$IFSm → 真实是 rm。旧实现 basename 得到 "rm$IFS-rf$IFS/system"→"system"，完全绕过规则
+        assertBlocked("r\$IFSm -rf /system", "UNRESOLVED_PROGRAM", CommandSource.SCRIPT_FILE)
+        assertBlocked("rm\$IFS-rf\$IFS/system", "UNRESOLVED_PROGRAM", CommandSource.SCRIPT_FILE)
+    }
+
+    @Test fun `终端里变量程序名需确认`() {
+        val r = v("r\$IFSm -rf /system")
+        assertTrue("期望 Confirm，实际 $r", r is Verdict.Confirm)
+        assertTrue((r as Verdict.Confirm).findings.any { it.ruleId == "UNRESOLVED_PROGRAM" })
+    }
+
+    // ========================================================================
+    // 8) 第二轮：eval 载荷与 xargs 派发
+    // ========================================================================
+
+    @Test fun `eval 内的破坏命令会被展开并拦截`() {
+        assertBlocked("eval \"rm -rf /system\"", "RM_SYSTEM", CommandSource.SCRIPT_FILE)
+    }
+
+    @Test fun `xargs 派发的破坏命令会被拦截`() {
+        assertBlocked("xargs rm -rf /system", "RM_SYSTEM")
+        assertBlocked("xargs -n1 rm -rf /vendor", "RM_SYSTEM")
+    }
+
+    // ========================================================================
+    // 9) 第二轮：cp / mv 的写入与搬走
+    // ========================================================================
+
+    @Test fun `拷贝到系统路径被硬拦`() {
+        assertBlocked("cp evil.bin /system/bin/x", "COPY_SYSTEM")
+        assertBlocked("install -m 755 evil /system/xbin/y", "COPY_SYSTEM")
+    }
+
+    @Test fun `移动到系统路径被硬拦`() {
+        assertBlocked("mv /sdcard/a /system/bin/", "MOVE_SYSTEM")
+    }
+
+    @Test fun `从系统路径移走文件为需确认`() {
+        val r = v("mv /system/build.prop /sdcard/")
+        assertTrue("期望 Confirm，实际 $r", r is Verdict.Confirm)
+        assertTrue((r as Verdict.Confirm).findings.any { it.ruleId == "MOVE_SYSTEM_SRC" })
+    }
+
+    @Test fun `普通拷贝不误报`() {
+        assertEquals(Verdict.Allow, v("cp /sdcard/a /sdcard/b"))
+        assertEquals(Verdict.Allow, v("mv /sdcard/a /sdcard/b"))
+    }
+
+    // ========================================================================
+    // 10) 路径分级：root 环境数据
     // ========================================================================
 
     @Test fun `删除 magisk 模块目录为需确认而非硬拦`() {
