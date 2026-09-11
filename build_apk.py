@@ -4,7 +4,7 @@
 shso 一键编译脚本
 ====================
 
-功能：自动完成环境预检 → 依赖校正 → Gradle 构建 → 产物签名校验 → 结果汇总，
+功能：自动完成环境预检 → 依赖校正 → Gradle 构建 → 产物签名校验 → 版本规则校验 → 结果汇总，
       一步产出可直接安装的 Release APK。
 
 用法：
@@ -12,6 +12,13 @@ shso 一键编译脚本
     python build_apk.py --variant Debug # 编译 Debug 包
     python build_apk.py --clean         # 先 clean 再编译
     python build_apk.py --skip-check    # 跳过环境预检直接构建
+
+版本规则（2026-09-11 起生效，本脚本会据此校验产物；与 app/build.gradle.kts 保持一致）：
+    versionName = "Jinn"                # 固定展示名，不再使用 9.0.2 之类的数字版本名
+    versionCode = 构建当日日期 YYYYMMDD  # 由 Gradle 自动生成；也是应用内「检查更新」
+                                        # 与 GitHub 纯日期 Release Tag 的对齐依据
+    ※ release 已开启 R8 + shrinkResources，资源会被重命名为随机短名（如 res/RJ.png），
+      比对 APK 内资源名时不要直接与源码 res/ 对号入座。
 
 可选环境变量：
     JAVA_HOME         # 优先选择的 JDK；未设置时自动发现 JDK 17
@@ -70,6 +77,19 @@ SIGNING = {
     "keystore": Path(os.environ.get("KEYSTORE_FILE", r"C:\AI_WORKSPACE\GLOBAL\credentials\JinnKeyStores\com.mixradio.droid\release.jks")),
     "alias": "com.mixradio.droid",
 }
+
+# --------------------------------------------------------------------------- #
+# 版本规则（2026-09-11 起生效，与 app/build.gradle.kts 保持一致）
+#   versionName = "Jinn"                     固定展示名，不再使用 9.0.2 之类的数字版本名
+#   versionCode = 构建当日日期 YYYYMMDD        由 Gradle 的 buildDateVersionCode 自动生成，
+#                                             也是应用内「检查更新」与 GitHub 纯日期 Tag 的对齐依据
+# --------------------------------------------------------------------------- #
+VERSION_NAME: str = "Jinn"
+
+
+def expected_version_code() -> str:
+    """按最新规则返回期望的 versionCode（构建当日日期，格式 YYYYMMDD）。"""
+    return time.strftime("%Y%m%d")
 
 BUILD_TOOLS_VERSION = "37.0.0"
 GRADLEW_BAT = PROJECT_DIR / "gradlew.bat"
@@ -452,6 +472,42 @@ def locate_apk(variant: str) -> Optional[Path]:
     return apk
 
 
+def verify_version(apk: Path) -> Optional[dict]:
+    """校验产物是否匹配最新版本规则。
+
+    规则：versionName == VERSION_NAME("Jinn")，versionCode == 构建当日日期（YYYYMMDD）。
+    仅告警、不阻断构建：跨零点编译时 Gradle 侧与本脚本取到的日期可能相差一天。
+    aapt2 不可用时返回 None 表示未校验。
+    """
+    aapt2 = ANDROID_SDK / "build-tools" / BUILD_TOOLS_VERSION / "aapt2.exe"
+    if not aapt2.is_file():
+        log(WARN, "aapt2 不可用，跳过版本规则校验")
+        return None
+
+    result = run_cmd([str(aapt2), "dump", "badging", str(apk)], timeout=180)
+    output = result.stdout or ""
+
+    m = re.search(r"versionCode='(\d+)'", output)
+    actual_code = m.group(1) if m else None
+    m = re.search(r"versionName='([^']*)'", output)
+    actual_name = m.group(1) if m else None
+
+    want_code = expected_version_code()
+    log(INFO, f"版本规则：versionName={VERSION_NAME}，versionCode=构建当日日期（今天 {want_code}）")
+
+    if actual_name == VERSION_NAME:
+        log(OK, f"versionName：{actual_name} ✓")
+    else:
+        log(WARN, f"versionName：{actual_name!r}（期望 {VERSION_NAME!r}）——请核对 app/build.gradle.kts")
+
+    if actual_code == want_code:
+        log(OK, f"versionCode：{actual_code} ✓")
+    else:
+        log(WARN, f"versionCode：{actual_code!r}（期望 {want_code!r}）——跨零点构建可能相差一天，请确认")
+
+    return {"code": actual_code, "name": actual_name, "want_code": want_code}
+
+
 def verify_signature(apk: Path) -> Tuple[bool, Optional[dict]]:
     """使用 apksigner 校验 APK 签名方案（V1 / V2 / V3）。
 
@@ -493,7 +549,13 @@ def verify_signature(apk: Path) -> Tuple[bool, Optional[dict]]:
 # --------------------------------------------------------------------------- #
 # 阶段 5：结果汇总
 # --------------------------------------------------------------------------- #
-def summarize(apk: Optional[Path], variant: str, code: int, schemes: Optional[dict] = None) -> int:
+def summarize(
+    apk: Optional[Path],
+    variant: str,
+    code: int,
+    schemes: Optional[dict] = None,
+    version: Optional[dict] = None,
+) -> int:
     section("阶段 5 / 5：结果汇总")
     if code == 0 and apk is not None:
         # 动态拼接实际校验到的签名方案；schemes 为 None 表示未执行校验
@@ -502,11 +564,16 @@ def summarize(apk: Optional[Path], variant: str, code: int, schemes: Optional[di
         else:
             enabled = [name for name in ("V1", "V2", "V3") if schemes.get(name)]
             scheme_text = " + ".join(enabled) if enabled else "未校验到任何签名方案"
+        if version is None:
+            version_text = "未校验"
+        else:
+            version_text = f"{version.get('name')}（versionCode={version.get('code')}，期望 {version.get('want_code')}）"
         log(OK, f"🎉 {PROJECT_NAME} {variant} 构建完成")
         print()
         print(f"    APK 路径 : {apk}")
         print(f"    文件大小 : {human_size(apk.stat().st_size)}")
         print(f"    签名方案 : {scheme_text}（alias={SIGNING['alias']}）")
+        print(f"    版本信息 : {version_text}")
         print(f"    安装命令 : adb install -r \"{apk}\"")
         print()
         return 0
@@ -555,11 +622,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     apk = locate_apk(args.variant) if code == 0 else None
     sig_ok = True
     schemes: Optional[dict] = None
+    version: Optional[dict] = None
     if apk is not None:
         sig_ok, schemes = verify_signature(apk)
+        # 版本规则校验：确认产物匹配「versionName=Jinn，versionCode=构建当日日期」
+        version = verify_version(apk)
 
     # 构建成功但签名校验失败时，同样以非 0 退出码上报
-    return summarize(apk, args.variant, code if sig_ok else 1, schemes)
+    return summarize(apk, args.variant, code if sig_ok else 1, schemes, version)
 
 
 if __name__ == "__main__":
