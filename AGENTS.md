@@ -86,6 +86,7 @@ Android ROOT 环境下的图形化脚本/原生二进制执行工具（Kotlin + 
 | 改安全相关逻辑 | `docs/PROJECT.md` § 安全子系统 |
 | 改守卫模块 / 新增包装器 | `module/shso_guard/README.md` |
 | 文档该改哪一份 | `docs/PROJECT.md` § 文档维护约定 |
+| 回答「在线编译 / 自定义包名」问题 | `docs/在线编译.md` |
 | 加依赖/改版本 | `gradle/libs.versions.toml`（禁止在模块内硬编码版本，例外：`app/build.gradle.kts` 中已有的 3 个直引坐标） |
 
 ## 常用命令
