@@ -339,7 +339,10 @@ fun TerminalPage(
                         state = listState,
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        items(parsedOutput.lines) { line ->
+                        // 按行内容 hashCode 做 stable key。同一逻辑行跨 flush 共享 key，LazyColumn
+                        // 跳过其重组；新增行才进入可视区。AnnotatedString.hashCode 由底层 String 的
+                        // hashCode 派生，对相同内容稳定。
+                        items(parsedOutput.lines, key = { line -> line.hashCode() }) { line ->
                             Text(
                                 text = line,
                                 fontFamily = FontFamily.Monospace,
