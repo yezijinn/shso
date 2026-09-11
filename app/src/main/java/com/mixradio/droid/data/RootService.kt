@@ -97,6 +97,28 @@ object RootService {
     @Volatile
     private var executionJob: Job? = null
 
+    /**
+     * 本次（或最近一次）执行所属**进程组组长 pid**。
+     *
+     * 为什么需要它：`su -c` 会把命令放进一个**新的会话/进程组**，`$$` 即组长 pid，
+     * 而该组长会被重挂到 init（ppid=465）——应用手上的 `Process` 句柄只对应 `su` 本身，
+     * 对它发信号既杀不到 `sh -c …`，也杀不到真正的脚本进程，于是中断后留下孤儿继续跑。
+     * 实测：`kill -2 -- -<pgid>` 可一次回收整组（toybox `kill` 支持负 pid）。
+     *
+     * 该值跨任务结束后**刻意保留**，供「结束进程」兜底回收被中断后逃逸的子孙进程；
+     * 只在下一轮执行开始时被覆盖。
+     */
+    @Volatile
+    private var runPgid: Int = 0
+
+    /**
+     * 记录进程组 id 的文件。放**应用私有目录**（`files/`，仅本应用 uid 与 root 可写），
+     * 绝不放 `/data/adb/shso`（实测 0777）——否则任何应用都能伪造一个 pgid，
+     * 让本应用以 root 对任意进程组执行 `kill -9`。
+     */
+    private val runPgidFile: File?
+        get() = runCatching { File(com.mixradio.droid.ShsoApplication.appContext.filesDir, ".run.pgid") }.getOrNull()
+
     fun initSettings(settings: AppSettings) {
         appSettings = settings
         refreshPristineBanner()
@@ -411,13 +433,22 @@ object RootService {
             try {
                 val escapedParent = escapeShellArg(parentDir)
                 val escapedFile = escapeShellArg(filePath)
+                // 开跑前清掉上一轮的记录并作废内存值，确保随后读到的 pgid 一定来自本次执行。
+                runCatching { runPgidFile?.delete() }
+                runPgid = 0
+                // 把本次执行的「进程组组长 pid」落盘：su 会新建会话，`$$` 即组长 pid（真机已验证
+                // `pid == pgrp == sid`）。仅 root 路径记录 —— 非 root 走 ProcessBuilder("sh")，
+                // 子进程沿用应用自身进程组，记录后会诱导误杀本应用所在的组。
+                val pgidRecorder = if (useRoot) {
+                    runPgidFile?.let { "echo " + "\$\$" + " > " + escapeShellArg(it.absolutePath) + "; " } ?: ""
+                } else ""
                 val execCmd = if (useRoot) {
                     if (isSh) {
                         // .sh：一律经 sh 运行，不给用户文件加执行位
-                        "${guardPrefix}export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent && sh $escapedFile"
+                        "${pgidRecorder}${guardPrefix}export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent && sh $escapedFile"
                     } else {
                         // .so：直接执行需要 +x，755 即可（不再 777）
-                        "${guardPrefix}export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent && chmod 755 $escapedFile && ( $escapedFile || sh $escapedFile )"
+                        "${pgidRecorder}${guardPrefix}export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent && chmod 755 $escapedFile && ( $escapedFile || sh $escapedFile )"
                     }
                 } else {
                     // 非 Root：普通 sh 执行（无 su 包装），改不动系统分区——档位 3 的主防线
@@ -433,16 +464,22 @@ object RootService {
                 writer = OutputStreamWriter(process.outputStream, Charsets.UTF_8)
                 processWriter = writer
 
-                try {
+                // 直接子进程（su）pid：仅用于日志与兜底 destroy。
+                // 注意：Android 的 java.lang.Process **没有** pid() 方法（实测编译不过），
+                // 所以任务清单里「改用 Process.pid()」的建议不可行；此处保留反射并容错，
+                // 失败退回 0 —— 中断与回收的正确性由下面的**进程组 kill** 保证，不再依赖此 pid。
+                val childPid = runCatching {
                     val pidField = process.javaClass.getDeclaredField("pid")
                     pidField.isAccessible = true
-                    val pid = pidField.getInt(process)
-                    withContext(Dispatchers.Main) {
-                        processPid = pid
-                    }
-                } catch (_: Exception) {
-                    processPid = 0
+                    pidField.getInt(process)
+                }.getOrDefault(0)
+                withContext(Dispatchers.Main) {
+                    processPid = childPid
                 }
+
+                // 异步取回本次执行的进程组 id（不阻塞输出读取）。任务结束后刻意保留，
+                // 供「结束进程」兜底回收被中断后逃逸到 init 下的子孙进程。
+                scope.launch { runPgid = awaitRunPgid() }
 
                 process.inputStream.use { stream ->
                     InputStreamReader(stream, Charsets.UTF_8).use { reader ->
@@ -596,17 +633,26 @@ object RootService {
     }
 
     fun killCurrentProcess() {
-        // 已完成/无任务运行时不执行任何终止动作，避免对残留句柄误操作。
-        if (!isTaskRunning) return
-        // 同步捕获本轮任务实体（Job/pid/进程句柄/任务名）：
+        // 同步捕获本轮任务实体（Job/pid/进程组/进程句柄/任务名）：
         // 之后主线程若启动新任务（覆盖启动），这些仍是旧实体，kill 只作用于它们，绝不误杀新任务。
-        val targetJob = executionJob ?: return
+        val targetJob = executionJob
         val targetPid = processPid
+        val targetPgid = runPgid
         val targetProcess = activeProcess
         val targetName = currentTaskName
+        // 前置条件已放宽：旧实现 `if (!isTaskRunning) return` 使「中断后 UI 已显示待命中、
+        // 但子孙进程仍在跑」的场景彻底无法回收（真机实测：点「结束进程」没有任何效果，
+        // 孤儿 `sh flood.sh` 继续以 10% CPU 运行）。现在只要还留有执行句柄 / 进程组记录 /
+        // 任务名，就仍允许兜底回收。
+        if (!isTaskRunning && targetProcess == null && targetPgid <= 1 && targetName == null) return
 
         scope.launch(Dispatchers.IO) {
             try {
+                // 先杀**整个进程组**：`su -c` 把命令放进新会话且组长被重挂到 init，
+                // 中断后逃逸的子孙进程（`sh -c …`、真正的脚本进程）只有这样才能回收。
+                if (targetPgid > 1) {
+                    killProcessGroup(9, targetPgid)
+                }
                 if (targetPid > 0) {
                     runCommandSync("kill -9 $targetPid 2>/dev/null")
                 }
@@ -626,8 +672,9 @@ object RootService {
                 // 进程已杀，任务实体已终止：显式取消执行协程并等待其 finally 收尾，
                 // 保证旧任务在 kill 写状态之前完成清理，避免交叉写 Compose 状态。
                 // 有界等待，避免轮询线程被不响应的 finally 永久挂起。
-                targetJob.cancel()
-                withTimeoutOrNull(2000L) { targetJob.join() }
+                // （放宽前置条件后 targetJob 可能为 null，见函数头注释）
+                targetJob?.cancel()
+                withTimeoutOrNull(2000L) { targetJob?.join() }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     if (executionJob === targetJob) {
@@ -669,12 +716,38 @@ object RootService {
         try { targetProcess.outputStream.close() } catch (_: Exception) {}
     }
 
+    /** 读取本轮执行记录的进程组 id（root 侧执行 `echo $$ > file` 写入）。 */
+    private fun readRunPgidFile(): Int =
+        runCatching { runPgidFile?.readText()?.trim()?.toIntOrNull() ?: 0 }.getOrDefault(0)
+
+    /** 有界轮询等待本轮 pgid 落盘（脚本刚启动时文件可能尚未写出）。 */
+    private suspend fun awaitRunPgid(): Int {
+        repeat(15) {
+            val v = readRunPgidFile()
+            if (v > 1) return v
+            delay(100)
+        }
+        return 0
+    }
+
+    /**
+     * 对**整个进程组**发信号（负 pid）。这是回收 `su` 之下被重挂到 init 的子孙进程的唯一可靠手段
+     * （实测：只杀 `su`/直接子进程会留下 `sh -c …` 与真正的脚本进程继续占 CPU）。
+     *
+     * 安全校验见文件末尾的顶层纯函数 [buildProcessGroupKillCommand]（返回 null 即放弃）。
+     */
+    private fun killProcessGroup(signal: Int, pgid: Int) {
+        val cmd = buildProcessGroupKillCommand(signal, pgid, android.os.Process.myPid()) ?: return
+        runCommandSync(cmd)
+    }
+
     fun sendInterrupt() {
         // 同步捕获本轮任务实体（Job/进程 writer/pid）：
         // 之后主线程若启动新任务（覆盖启动），这些仍是旧实体，中断只作用于它们，绝不误伤新任务。
         val targetJob = executionJob
         val targetWriter = processWriter
         val targetPid = processPid
+        val targetPgid = runPgid
         scope.launch(Dispatchers.IO) {
             try {
                 if (isTaskRunning) {
@@ -682,11 +755,18 @@ object RootService {
                         appendOutputDirect("^C\n")
                     }
                     // ProcessBuilder 起的子进程没有 TTY，\u0003 (\u0003) 经 stdin 写入只是普通字符，
-                    // 不会触发 SIGINT；真正能中断的是下方 `kill -2`。旧版两个都写会误导后来阅读
+                    // 不会触发 SIGINT；真正能中断的是下方 `kill`。旧版两个都写会误导后来阅读
                     // 代码的人以为 ETX 起了作用，这里明确移除冗余 IO。
                     targetWriter?.write("\n")
                     targetWriter?.flush()
 
+                    // 必须对**整个进程组**发 SIGINT：`su -c` 把命令放进新会话，组长会被重挂到
+                    // init（ppid=465），只杀直接子进程会留下 `sh -c …` 与真正的脚本进程继续占 CPU
+                    // （真机实测：flood.sh 被中断后仍以 10% CPU 运行数分钟）。
+                    if (targetPgid > 1) {
+                        killProcessGroup(2, targetPgid)
+                    }
+                    // 兜底：直接子进程也发一次（个别 su 实现下它就是组长）
                     if (targetPid > 0) {
                         runCommandSync("kill -2 $targetPid 2>/dev/null")
                     }
@@ -761,4 +841,28 @@ object RootService {
         outputIsPristineBanner = false
         outputLog = HyperCore.appendWithSlidingWindow(outputLog, text)
     }
+}
+
+/**
+ * 构造「对整进程组发信号」的 shell 命令（**顶层纯函数**，便于 JVM 单测；`RootService` 是 object，
+ * 其初始化依赖 Android/Compose，单元测试里无法加载）。
+ *
+ * 背景：`su -c` 会把命令放进新的会话/进程组，组长随即被重挂到 init（ppid=465），
+ * 因此只对直接子进程（`su`）发信号杀不到 `sh -c …` 与真正的脚本进程 —— 它们会成为孤儿继续占 CPU。
+ * 正确做法是对整组发信号（负 pid，toybox `kill` 支持）。
+ *
+ * 三重安全校验（fail-closed，任一不满足即不杀，靠 `&&` 短路保证）：
+ * ① `pgid > 1`；
+ * ② `/proc/<pgid>/stat` 第 5 字段 == pgid —— 确认它确实是**进程组组长**；
+ * ③ 本应用自己的 pgrp != 该 pgid —— 防止某些 `su` 实现不新建会话时，误杀应用自身所在的进程组。
+ *
+ * 返回 `null` 表示不安全，调用方必须放弃 kill。
+ */
+internal fun buildProcessGroupKillCommand(signal: Int, pgid: Int, myPid: Int): String? {
+    if (pgid <= 1) return null
+    return "P=$pgid; M=$myPid; " +
+        "[ -r /proc/\$P/stat ] && " +
+        "[ \"\$(cut -d' ' -f5 /proc/\$P/stat)\" = \"\$P\" ] && " +
+        "[ \"\$(cut -d' ' -f5 /proc/\$M/stat)\" != \"\$P\" ] && " +
+        "kill -$signal -- -\$P"
 }
