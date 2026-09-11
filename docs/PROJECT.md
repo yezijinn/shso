@@ -19,6 +19,8 @@ Android ROOT 环境下的图形化执行工具：一键运行 `.sh` 脚本与 `.
 ```
 shso-main/
 ├── AGENTS.md                     # AI 行为准则与导航（先读这个）
+├── README.md                     # 面向用户的总览（功能 / 构建 / 安全说明）
+├── 更新日志.md                   # 独立更新日志（README 不再内嵌，改动请同步此文件）
 ├── docs/PROJECT.md               # 本文档
 ├── module/shso_guard/            # 运行时守卫模块源码（与 assets/shso_guard.zip 保持一致）
 │   ├── guard/common.sh           # 策略加载 / 路径归一化 / 判定 / 审计（所有守卫共用）
@@ -30,21 +32,34 @@ shso-main/
 ├── gradle.properties             # 8G JVM、R8 gradual、Dokka V2 实验开关
 └── app/
     └── src/main/
-        ├── AndroidManifest.xml   # MANAGE_EXTERNAL_STORAGE、allowBackup=false
+        ├── AndroidManifest.xml   # MANAGE_EXTERNAL_STORAGE、QUERY_ALL_PACKAGES、allowBackup=false
         └── java/com/mixradio/droid/
             ├── ShsoApplication.kt
             ├── MainActivity.kt
             ├── data/             # 核心逻辑层
-            │   ├── RootService.kt        # ROOT 执行引擎（单例）
+            │   ├── RootService.kt        # ROOT 执行引擎（单例，进程组回收）
             │   ├── RootFileManager.kt    # 全盘文件操作
-            │   ├── PermissionChecker.kt  # ROOT 可用性探测（带超时）
-            │   ├── HyperCore.kt          # banner/日志批处理/环境信息
-            │   ├── AnsiParser.kt         # ANSI 转义序列解析
-            │   ├── AppSettings.kt        # 设置状态（shso_settings）
-            │   └── FileItem.kt           # 文件条目模型
+            │   ├── ApkInstaller.kt      # APK/XAPK 安装（单文件 + 分包会话安装）
+            │   ├── ApkExtractor.kt      # 提取已安装应用的安装包（纯函数可测）
+            │   ├── ChunkedFileReader.kt # 大文件分段读取（128KB 阈值）
+            │   ├── ArchiveExtractor.kt  # 压缩包解压（防 Zip Slip）
+            │   ├── AnsiParser.kt        # ANSI 转义序列解析
+            │   ├── HyperCore.kt         # banner/日志批处理/环境信息
+            │   ├── AppSettings.kt       # 设置状态（shso_settings）
+            │   ├── FileItem.kt          # 文件条目模型
+            │   └── security/            # 安全子系统（见「安全子系统」章节）
+            │       ├── CommandParser.kt         # 命令词法/原子/展开
+            │       ├── PolicyEngine.kt          # 五类拦截规则 + 来源分级
+            │       ├── PathClassifier.kt        # 路径四级分类
+            │       ├── ScriptAuditor.kt         # 逐行脚本审查 + 自动执行门控
+            │       ├── RootCommandGateway.kt    # 档位 ≤1 放行 / ≥2 评估
+            │       ├── GuardModuleInstaller.kt  # 守卫原子安装与回滚
+            │       ├── GuardPathPolicy.kt       # 守卫策略同步
+            │       ├── SecurityAuditLog.kt      # 环形审计日志
+            │       └── SecurityModels.kt        # 风险等级 / 判定模型
             └── ui/
                 ├── theme/        # AuroraTokens/AuroraGlass/AuroraComponents/AuroraBackground（极光玻璃令牌与组件）
-                ├── components/   # DockBar、BuiltInFilePicker、ColorWheelDialog
+                ├── components/   # DockBar、BuiltInFilePicker、ApkExtractDialog、TextEditorDialog、CodeHighlighter 等
                 └── pages/        # Home / Terminal / File / Settings（四 Tab，无启动页）
 ```
 
