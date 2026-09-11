@@ -31,7 +31,22 @@ object CommandParser {
         /** 是否来自 $() / 反引号 / sh -c 的内层 */
         val nested: Boolean,
         /** 段序号（同一管道内的相邻段序号连续，用于 curl|sh 等管道检测） */
-        val segmentId: Int
+        val segmentId: Int,
+        /**
+         * shell 重定向目标（`> f`、`>> f`、`2>f`、`&>f` 的目标，已排除 fd 复制如 `2>&1`）。
+         * 覆盖 `cat img > /dev/block/by-name/boot` 这类**不经 dd** 的写入（旧实现完全漏检）。
+         */
+        val redirects: List<String> = emptyList(),
+        /**
+         * 原子中残留未解析的变量/替换（`$x`、`${x}`）。解析器只展开 `$(...)`/反引号，
+         * 变量无法静态求值 —— 策略层对「破坏性程序 + 含变量」的组合按 fail-closed 处理。
+         */
+        val hasUnresolvedVar: Boolean = false,
+        /**
+         * 前缀剥离后仍无法确定真实命令（wrapper 的选项带独立值且形态少见）。
+         * 策略层据此按不可判定（fail-closed）处理，避免「剥错了就漏判」。
+         */
+        val programAmbiguous: Boolean = false
     )
 
     data class Parsed(
@@ -49,6 +64,31 @@ object CommandParser {
 
     private val WRAPPER_PREFIXES = setOf("busybox", "toybox", "magisk", "nohup", "timeout", "stdbuf", "sudo", "env")
     private val SHELL_PROGRAMS = setOf("sh", "bash", "ash", "dash", "mksh")
+
+    /**
+     * 各 wrapper 中**带独立取值**的选项（`-u root` 的 `-u`、`-o0` 除外）。
+     *
+     * 旧实现只按「是否 in WRAPPER_PREFIXES」逐词跳一个，遇到 `timeout 5 rm …`、`sudo -u root rm …`
+     * 会把 `5` / `root` 当成程序名，导致后面真正的 `rm` 规则完全不评估（真实绕过）。
+     * 这里补齐常见取值选项；`--opt=value` 形态因自带 `=` 会被视作单 token 跳过。
+     */
+    private val WRAPPER_VALUE_OPTS: Map<String, Set<String>> = mapOf(
+        "timeout" to setOf("-s", "--signal", "-k", "--kill-after"),
+        "stdbuf" to setOf("-i", "-o", "-e"),
+        "env" to setOf("-u", "--unset", "-C", "--chdir", "-S", "--split-string"),
+        "sudo" to setOf(
+            "-u", "--user", "-g", "--group", "-p", "--prompt", "-C", "--close-from",
+            "-h", "--host", "-r", "--role", "-t", "--type", "-T", "--command-timeout",
+            "-R", "--chroot", "-D", "--chdir"
+        ),
+        "nohup" to emptySet(),
+        "busybox" to emptySet(),
+        "toybox" to emptySet(),
+        "magisk" to emptySet()
+    )
+
+    /** 重定向操作符（按长度降序匹配，避免 `>` 抢先吃掉 `>>`/`>&`/`&>`）。 */
+    private val REDIRECT_OPS = listOf("<<<", ">>", "<<", "<>", ">&", "&>", ">", "<")
 
     /** 解析主入口。任何内部异常都归一为 truncated=true，绝不抛出。 */
     fun parse(command: String): Parsed {
@@ -245,35 +285,52 @@ object CommandParser {
         buildAtom(state.tokens, state.segmentId, nested = state.nested, atoms = atoms, depth = depth)
     }
 
-    /** 由 token 列表构造原子：剥前缀、识别 sh -c 递归、提取操作数。 */
+    /** 由 token 列表构造原子：剥前缀、识别 sh -c 递归、提取操作数/重定向。 */
     private fun buildAtom(tokens: MutableList<String>, segmentId: Int, nested: Boolean, atoms: ArrayList<Atom>, depth: Int) {
-        val words = tokens.toList()
+        val original = tokens.toList()
 
-        // 1) 程序名 basename + 前缀剥离（busybox/toybox/env/nohup/timeout/stdbuf/sudo）
-        // 路径类参数（PATH=/x、/usr/bin/env 等）含斜杠,要兼顾 basename 和赋值形态：
-        //  - 含 '='：原样保留(不让 /x 这种尾巴被 basename 误吞)
-        //  - 否则 basename
-        var program = words.first().substringAfterLast('/')
-        var consumed = 1
-        var guardCount = 0
-        while (program in WRAPPER_PREFIXES && consumed < words.size && guardCount++ < 8) {
-            var next = stripToName(words[consumed])
-            consumed++
-            // env 可能带 VAR=value 前缀参数：跳过赋值形态
-            var assignGuard = 0
-            while (next.indexOf('=') > 0 && consumed < words.size && assignGuard++ < 16) {
-                next = stripToName(words[consumed])
-                consumed++
+        // 0) 先摘出重定向目标（并把它从命令词流里移除，避免目标被误当操作数/程序名）。
+        //    仅识别**词首**为重定向操作符的 token（引号内的 > 已在 walk 中并入同一 token 且不以
+        //    操作符开头，如 sed 's/a>b/c'），故不会误伤。
+        val redirects = ArrayList<String>()
+        val words = ArrayList<String>(original.size)
+        var ri = 0
+        while (ri < original.size) {
+            val w = original[ri]
+            val rest = redirectRest(w)
+            if (rest == null) {
+                words.add(w)
+                ri++
+                continue
             }
-            program = next
+            var target = rest
+            if (target.isEmpty()) {
+                target = original.getOrNull(ri + 1) ?: ""
+                ri++          // 目标来自下一个 token，一并消费
+            }
+            // 仅保留「绝对路径」目标；`2>&1` 这类 fd 复制（纯数字/&N/-）不是文件，忽略
+            if (target.startsWith("/")) redirects.add(target)
+            ri++
         }
+        if (words.isEmpty()) return   // 整段只有重定向（如 `> f`），无命令可判定
+
+        // 1) 程序名 basename + 前缀剥离（busybox/toybox/env/nohup/timeout/stdbuf/sudo/magisk）
+        //    路径类参数（PATH=/x、/usr/bin/env 等）含斜杠，要兼顾 basename 和赋值形态：
+        //     - 含 '='：原样保留（不让 /x 这种尾巴被 basename 误吞）
+        //     - 否则 basename
+        val (program, consumed) = resolveProgram(words)
+        // 剥离后仍以 '-' 开头或为空：说明 wrapper 选项形态未被识别 → 无法确定真实命令
+        val programAmbiguous = program.isEmpty() || program.startsWith("-")
 
         val args = words.drop(consumed)
-        // 2) 操作数：非 flag 参数（保守视作路径操作数；重定向目标如 /dev/... 也会进入，利于 dd 规则）
+        // 2) 操作数：非 flag 参数（保守视作路径操作数）
         val operands = args.filter { it.isNotEmpty() && !it.startsWith("-") }
 
-        // 3) sh -c '...' / bash -c "..."：内层字符串本身是命令，递归解析（nested=true）
-        val cIdx = args.indexOfFirst { it == "-c" }
+        // 3) 残留未解析变量（$x / ${x}）：解析器只展开 $(...) 与反引号，变量无法静态求值
+        val hasUnresolvedVar = words.any { it.indexOf('$') >= 0 }
+
+        // 4) sh -c '...' / bash -c "..."：内层字符串本身是命令，递归解析（nested=true）
+        val cIdx = args.indexOfFirst { isDashC(it) }
         if (program in SHELL_PROGRAMS && cIdx >= 0 && cIdx + 1 < args.size) {
             val innerCmd = args[cIdx + 1]
             if (innerCmd.isNotBlank()) {
@@ -292,18 +349,70 @@ object CommandParser {
                 program = program,
                 args = args,
                 operands = operands,
-                raw = words.joinToString(" "),
+                raw = original.joinToString(" "),
                 nested = nested,
-                segmentId = segmentId
+                segmentId = segmentId,
+                redirects = redirects,
+                hasUnresolvedVar = hasUnresolvedVar,
+                programAmbiguous = programAmbiguous
             )
         )
     }
 
     /**
-     * 把一段 arg word 切到 basename 以便前缀剥离比对；
-     * 含 `=` 的赋值形态（如 env PATH=/x）原样保留——否则 PATH=/x 的尾巴 /x
-     * 会被 afterLast('/') 误切为 x,导致 env 程序名错位 + rm 命令丢失。
+     * 逐层剥离 wrapper 前缀，返回 (真实程序名, 已消费的 token 数)。
+     *
+     * 剥离时跳过 wrapper 的选项：布尔选项（`-i`）直接跳；带值选项（`-u root`）连同其值一起跳；
+     * `--opt=value` 自成一个 token；`timeout 5 …` 的纯数字时长也跳过。
+     * 这样 `timeout 5 rm -rf /system`、`sudo -u root rm -rf /`、`stdbuf -o0 rm -rf /` 都能还原出 `rm`。
      */
-    private fun stripToName(word: String): String =
-        if (word.indexOf('=') > 0) word else word.substringAfterLast('/')
+    private fun resolveProgram(words: List<String>): Pair<String, Int> {
+        // idx=1：words[0] 即当前 program，先消费掉。
+        // （务必从 1 起：非 wrapper 时循环不执行，若从 0 起会把程序名留在 args 里，
+        //   使 operands[0] 变成程序名 → find/fastboot 等按「首个操作数」判定的规则全部失效。）
+        var idx = 1
+        var program = words[0].substringAfterLast('/')
+        var guard = 0
+        while (program in WRAPPER_PREFIXES && guard++ < 12 && idx < words.size) {
+            val valueOpts = WRAPPER_VALUE_OPTS[program].orEmpty()
+            // 跳过 wrapper 的选项 / 时长 / VAR=value
+            while (idx < words.size) {
+                val w = words[idx]
+                val isNum = w.isNotEmpty() && w.all { it.isDigit() }
+                val isAssign = w.indexOf('=') > 0 && !w.startsWith("/")
+                if (w in valueOpts) {
+                    idx += 2            // 选项 + 其取值
+                } else if (w.startsWith("-") || isNum || isAssign) {
+                    idx++
+                } else {
+                    break
+                }
+            }
+            if (idx >= words.size) break
+            program = words[idx].substringAfterLast('/')
+            idx++                       // 消费真实程序名（busybox 的 applet 等）
+        }
+        return program to idx
+    }
+
+    /** `-c` / `-ec` / `-lc` 等组合短选项（bash -lc '...' 常见）。 */
+    private fun isDashC(arg: String): Boolean =
+        arg.length >= 2 && arg[0] == '-' && arg[1] != '-' && arg.contains('c')
+
+    /**
+     * 判断 token 是否以重定向操作符开头；是则返回操作符之后的内容（可能为空，表示目标在下一 token）。
+     * 支持 fd 前缀（`2>`、`1>>`）与 `&>`。非重定向返回 null。
+     */
+    private fun redirectRest(tok: String): String? {
+        if (tok.isEmpty()) return null
+        var i = 0
+        while (i < tok.length && tok[i].isDigit()) i++
+        val rest = tok.substring(i)
+        if (rest.isEmpty()) return null
+        for (op in REDIRECT_OPS) {
+            if (rest.startsWith(op)) return rest.substring(op.length)
+        }
+        return null
+    }
+
 }

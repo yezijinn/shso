@@ -25,6 +25,17 @@ specs = [
     ("cp", "cp", "MVCP"),
     ("find", "find", "FIND"),
     ("sed", "sed", "SED"),
+    # v1.2.0：补齐「权限崩坏 / 分区表 / 刷机」这一类格机原语。
+    # 均为 ARGS 模式（非选项参数即路径），命中 protect=/system、/dev、/data 即拦截。
+    ("chmod", "chmod", "ARGS"),
+    ("chown", "chown", "ARGS"),
+    ("chgrp", "chgrp", "ARGS"),
+    ("mkfs", "mkfs", "ARGS"),
+    ("mknod", "mknod", "ARGS"),
+    ("sgdisk", "sgdisk", "ARGS"),
+    ("parted", "parted", "ARGS"),
+    ("fdisk", "fdisk", "ARGS"),
+    ("flash_image", "flash_image", "ARGS"),
 ]
 
 others = re.findall(r"__[A-Z_]+__", tpl)

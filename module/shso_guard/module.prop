@@ -1,6 +1,6 @@
 id=shso_guard
 name=shso 指令守卫
-version=v1.1.0
-versionCode=20260910
+version=v1.2.0
+versionCode=20260911
 author=Jinn
-description=shso 配套指令守卫：运行时拦截 rm/dd/mkfs 等高危命令，保护系统分区并落审计日志
+description=shso 配套指令守卫：运行时拦截 rm/dd/mkfs/chmod/分区表/刷机等高危命令，保护系统分区并落审计日志
