@@ -14,7 +14,7 @@
 - 任务 19 真机补测 **✅ 全部通过（4/4）**；期间新发现并闭环 **任务 22/25/26/27**。
 - **任务 20 审计余项 ✅ 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `chmod 777`→755 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏，外加 `ChunkedFileReader` 上限加固）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
 - **任务 28 ✅ 已修**：解压到不可写目录（`/data/adb/` 受 SELinux 拦截）时禁用入口并说明原因（方案 B）。
-- ⚠️ **任务 29（新·待查）**：大文件（>2MB）编辑器显示「行数 0」且无内容，冷启动可复现；与本轮改动无关，根因未定位。
+- **任务 29 ✅ 已修**：大文件编辑器空白 —— 根因是 `EditorContentArea` 的 `chunkedLines` 漏传（该参数有默认值故静默空白）；已显式传参 + 改为必填，行数 0→21627。
 - **任务 20 审计余项 ✅ 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `chmod 777`→755 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏，外加 `ChunkedFileReader` 上限加固）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
 - **任务 28（新）**：解压到 `/data/adb/` 下静默失败已定位（SELinux 拦截应用 uid，与我方改动无关），修法待定。
 - **任务 20 审计余项 ✅ 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `chmod 777`→755 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏，外加 `ChunkedFileReader` 上限加固）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
@@ -253,17 +253,22 @@
 - **测试**：`ArchiveExtractorCanExtractTest` 4 例（可写目录可解压 / 不存在目录 / 文件而非目录 / 只读目录）。全量 **150 tests / 0 failures**（只读目录用例在 Windows 上按权限跳过 1 例）。
 - **未做**：方案 C（改用 root 落盘以支持在 `/data/adb/` 下真正解压）—— 改动面大、需充分回归，如后续需要可单开。
 
-### 29. [待查·疑似既有 BUG] 大文件（>2MB）编辑器显示「行数 0」且无内容
-> 来源：任务 20 回归冒烟（补齐「大文件读取」一项时发现）。
+### 29. ✅ 大文件（>2MB）编辑器空白 —— 已定位并修复（真 BUG，非本轮引入）
+> 来源：任务 20 回归冒烟（补齐「大文件读取」一项时发现）。**根因：Compose 参数漏传，且该参数带默认值，导致静默渲染空白。**
 
-- **复现**（BIYLBAFQQSS8DA69，已**冷启动**直接打开排除状态串扰）：新建 `big.txt` = 2,928,890 B（60000 行）→ 文件页 `/data/adb/shso/big.txt` → 动作菜单「编辑文本」。
-- **现象**：编辑器打开，标题 `big.txt`，底部显示
-  `分段模式: 1 MB / 2 MB` ／ `加载更多 →` ／ **行数 0** ／ `字节数 1 MB / 2 MB`；
-  **但正文区域没有任何内容行**（dump 中无 `big line …`，也无任何长度 >50 的文本节点）。**无崩溃**。
-- **已确认**：确实用了大文件分支（`isLargeFile = total > LARGE_FILE_THRESHOLD` 成立，走 `readHead` + 分块，不是 `loadAll`）。
-- **与本轮改动的關係**：**无关**。本轮只动了 `ChunkedFileReader.loadAll` 的「>2MB 分支」（而该分支的唯一调用点有 ≤2MB 守卫，当前不可达）；`readHead` / `CharsetDetector` / `TextEditorDialog` 均未改动。
-- **未定位**：根因未查明。相关代码 `TextEditorDialog.kt:223-231`：`readHead(...)` → `CharsetDetector.detect(raw)` → `chunkedLines = det.text.split('\n')`，理论上 `split` 至少返回 1 个元素，因此「行数 0」可能显示的是别的值，或 `det.text` 为空而 `raw` 非空（例如读到的是未trim的全零缓冲）。
-- **下一步建议**：① 确认「行数」的实际取值来源；② 在 `/sdcard`（应用可直接读、不经过 root `dd` 路径）复测同一文件，以区分是「root 读取路径问题」还是「分块渲染逻辑问题」。本次 `/sdcard` 对照因列表排序（文件夹全在前）导航成本过高未完成。
+- **现象**：`big.txt`（2,928,890 B / 60000 行）打开后编辑器标题正常、状态栏显示 `分段模式: 1 MB / 2 MB` ／ `行数 0`，**但正文区域完全空白**（dump 仅 11 个节点），**不崩溃** —— 属静默异常。
+- **排查过程（逐层排除）**：
+  1. 换正常文件？同一文件 → 排除编码/内容问题；冷启动直开 → 排除状态串扰。
+  2. 怀疑 root 读取路径：手动跑同一条 `dd if=… bs=4096 skip=0 count=256 2>/dev/null | base64 -w 0` → **1,398,104 字节 base64 → 1,048,576 字节，内容正确** → 数据侧正常。
+  3. 读代码：`TextEditorDialog.kt:184` 空文本时 `stats = statsEmpty` → 「行数 0」在分块模式下是**既有的显示局限**（行数只统计小文件 TextField），不是 bug；但 `chunkedLines` 渲染的 LazyColumn 连行号都没有 → 判定 `chunkedLines` 为空。
+- **根因**：`EditorContentArea` 的 `chunkedLines` 参数**带默认值 `emptyList()`**，而调用处（`TextEditorDialog.kt:407-416`）只传了 `readOnly = isLargeFile`、**漏传 `chunkedLines`** → 大文件模式下 `if (readOnly)` 分支拿到的永远是空列表 → 渲染空白。
+- **已实施修复**：
+  1. 调用处显式传 `chunkedLines = chunkedLines`。
+  2. **去掉 `chunkedLines` 的默认值**（改为必填）—— 防止将来再次漏传时静默空白，让问题在编译期暴露。
+  3. 状态栏「行数」在分块模式下改用 `chunkedLines.size`（否则即使正文修好也会一直显示 0）。
+- **真机验证**（2.9MB 文件）：节点数 11 → **67**；正文渲染 `1 / big line 0 - … / 2 / big line 1 - …` ✓；**行数 0 → 21627** ✓；无崩溃 ✓
+- **测试**：150 tests / 0 failures（无新增单测 —— 该缺陷是 Compose 调用点漏传，已由「必填参数」在编译期兜住）。
+
 
 ### 21. 新主目标（占位 — 视用户输入）
 - [ ] 用户指定后填充
