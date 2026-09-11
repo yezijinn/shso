@@ -60,8 +60,7 @@ object RootFileManager {
     /**
      * 文件管理危险操作（删除 / 改名 / 移动 / 改权 / 改属）的统一安全门禁。
      *
-     * 背景：这些操作此前直接 `su -c rm|mv|chmod|chown`，既不过 L1 静态审查也不落审计，
-     * 使「安全档位」对文件管理页形同虚设（档位 0 与档位 3 行为完全一致）。
+     * 这些操作统一走安全门禁，否则会绕过 L1 静态审查与审计，使安全档位对文件页失效。
      *
      * 档位语义与终端路径保持一致：
      * - 0 无防护：不判定、不审计，行为与旧版逐字节一致；
@@ -240,9 +239,8 @@ object RootFileManager {
      * 也能自由读写其中的文件；降权后第三方应用将无法访问，会直接破坏用户「把文件放进 shso 目录
      * 再用别的工具处理」的使用场景。
      *
-     * 注意：即便目录是 0777，应用自身对 `/data/adb/` 的写入仍可能受 **SELinux(MAC)** 限制
-     * （实测 `run-as` 建目录依旧 `Permission denied`），所以凡以应用 uid 落盘的操作
-     * （如解压）都必须先实测目标可写性，不可写时禁用入口，而不是假设 777 就一定能写。
+     * 即便目录为 0777，应用自身对 `/data/adb/` 的写入仍受 SELinux 限制。
+     * 凡以应用 uid 落盘的操作（如解压）必须先检测目标可写性，不可写时禁用入口。
      */
     suspend fun ensureShsoDir(): Boolean = withContext(Dispatchers.IO) {
         if (shsoDirEnsured) return@withContext true
@@ -336,9 +334,7 @@ object RootFileManager {
      * `stat -c %Y` 输出的是「秒」，而 [FileItem.lastModified] 的契约是「毫秒」
      * （本地路径走 `File.lastModified()`，本身就是毫秒）。
      *
-     * 必须换算：旧实现把秒直接交给 `Date(long)`（要求毫秒），使 Root 路径下所有文件的
-     * 「最后修改时间」都显示成 1970 年（1789044590 秒 → 1970-01-22），且与本地路径单位不一致，
-     * 混排时还会让按时间排序错乱。
+     * 不换算会把秒当成毫秒，修改时间显示为 1970 年，且按时间排序错乱。
      */
     internal fun statSecondsToMillis(seconds: Long): Long = if (seconds <= 0L) 0L else seconds * 1000L
 
@@ -362,10 +358,8 @@ object RootFileManager {
 
             // find 输出带 "./" 前缀
             if (name.startsWith("./")) name = name.removePrefix("./")
-            // 注意：格式化串用的是 %n（仅文件名），**不会**附加 " -> 链接目标"（那是 stat -l / %N 的行为）。
-            // 真机已验证 `stat -L -c "%n" "./a -> b.txt"` 原样输出 `./a -> b.txt`。
-            // 旧实现在此执行 substringBefore(" -> ")，把名字里含 " -> " 的**真实文件名**截断，
-            // 生成错误 name/path（点击打不开、对该项操作作用到错误路径）。故此处不做任何箭头剥离。
+            // 格式化串用 %n（仅文件名），不会附加 " -> 链接目标"（那是 stat -l / %N 的行为），
+            // 因此不能按 " -> " 截断，否则名字里含该串的文件会被截出错误的 name / path。
             if (name.isEmpty() || name == "." || name == "..") continue
 
             val itemPath = if (targetPath.endsWith("/")) "$targetPath$name" else "$targetPath/$name"

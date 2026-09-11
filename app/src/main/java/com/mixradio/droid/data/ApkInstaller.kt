@@ -187,7 +187,7 @@ object ApkInstaller {
     //
     //  为什么需要：单文件 `pm install` 对分包应用必定失败（INSTALL_FAILED_MISSING_SPLIT）。
     //  分包安装必须走 `pm install-create/-write/-commit` 会话流，且**分片要先拷到
-    //  /data/local/tmp** —— 真机实测 `install-write` 直接读 /storage 会被 SELinux 拒绝
+    //  /data/local/tmp** —— `install-write` 直接读 /storage 会被 SELinux 拒绝
     //  （avc denied sdcardfs，system_server 无权读 emulated 存储）。
     // ══════════════════════════════════════════════════════════════════════
 

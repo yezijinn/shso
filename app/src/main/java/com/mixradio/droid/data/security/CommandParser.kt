@@ -34,7 +34,7 @@ object CommandParser {
         val segmentId: Int,
         /**
          * shell 重定向目标（`> f`、`>> f`、`2>f`、`&>f` 的目标，已排除 fd 复制如 `2>&1`）。
-         * 覆盖 `cat img > /dev/block/by-name/boot` 这类**不经 dd** 的写入（旧实现完全漏检）。
+         * 用于覆盖 `cat img > /dev/block/by-name/boot` 这类不经 dd 的写入。
          */
         val redirects: List<String> = emptyList(),
         /**
@@ -80,9 +80,9 @@ object CommandParser {
     /**
      * 各 wrapper 中**带独立取值**的选项（`-u root` 的 `-u`、`-o0` 除外）。
      *
-     * 旧实现只按「是否 in WRAPPER_PREFIXES」逐词跳一个，遇到 `timeout 5 rm …`、`sudo -u root rm …`
-     * 会把 `5` / `root` 当成程序名，导致后面真正的 `rm` 规则完全不评估（真实绕过）。
-     * 这里补齐常见取值选项；`--opt=value` 形态因自带 `=` 会被视作单 token 跳过。
+     * 只按「是否属于 WRAPPER_PREFIXES」逐词跳一个是不够的：`timeout 5 rm …`、`sudo -u root rm …`
+     * 会把 `5` / `root` 当成程序名，使真正的 `rm` 规则完全不评估。
+     * 这里补齐常见取值选项；`--opt=value` 形态自带 `=`，按单 token 跳过。
      */
     private val WRAPPER_VALUE_OPTS: Map<String, Set<String>> = mapOf(
         "timeout" to setOf("-s", "--signal", "-k", "--kill-after"),

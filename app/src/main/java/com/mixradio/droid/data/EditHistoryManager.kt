@@ -15,10 +15,9 @@ import org.json.JSONObject
  *  - 每文件最多 20 条历史记录，单条 content 上限 50 万字
  *  - 每条记录：content + timestamp，按时间戳降序（最新在前）
  *
- * 旧实现把**所有文件**的历史塞进单个 key 的 JSON 数组，于是每次「读一条 / 加一条 / 清一个文件」
- * 都要把整份历史（可能包含多个文件各 20 条 × 50 万字）完整解析并重写一遍：解析/序列化开销随
- * 历史总量线性放大，SharedPreferences 字符串也会持续膨胀。改为按文件分 key 后，单次操作只触碰
- * 该文件的数据。[ensureMigrated] 负责把旧的单 key 数据无损拆分。
+ * 按文件分 key 存储：若所有文件共用单个 key，每次读写都要解析并重写整份历史
+ * （多个文件各 20 条 × 50 万字），开销随历史总量线性放大。
+ * [ensureMigrated] 负责把旧的单 key 数据无损拆分。
  */
 object EditHistoryManager {
     /** 旧版：所有文件共用一个大 JSON 数组。仅用于一次性迁移。 */

@@ -85,14 +85,13 @@ $rootLine
         batchFlushJob?.cancel()
         batchFlushJob = scope.launch(Dispatchers.Main) {
             // 保留 16ms tick 去 drain 队列（防止队列无界增长），但累积到 pending，
-            // 仅当满足条件（距上次发布 ≥ 48ms，或累积 ≥ 8192 字符）时才发布一次，降低重组频率。
+            // 满足阈值（距上次发布 ≥ 48ms，或累积 ≥ 8192 字符）才发布一次，降低重组频率。
             val pending = StringBuilder()
             var lastFlushMs = System.currentTimeMillis()
-            // 发布节流：实测「每次发布都在主线程产生固定开销（组合 + 可见行布局 + 重绘失效）」，
-            // 故发布频率直接决定主线程负载与 CPU 总量（实测把 item 数从 3570 降到 60 几乎不改变占用，
-            // 说明成本与发布次数成正比、与 item 数无关）。250ms ≈ 4 次/秒：
-            // 洪流输出下整机 CPU 与主线程占用显著下降，而人对终端日志的刷新延迟几乎无感。
-            // backlogChars 仅作内存安全阀，防止极端积压时 pending 无界增长。
+            // 发布节流：每次发布都有固定主线程开销（组合 + 可见行布局 + 重绘失效），
+            // 成本与发布次数成正比、与 item 数无关。250ms ≈ 4 次/秒，
+            // 洪流输出下可显著降低占用，刷新延迟几乎无感。
+            // backlogChars 是内存安全阀，防止极端积压时 pending 无界增长。
             val minIntervalMs = 250L
             val backlogChars = 400_000
             try {
