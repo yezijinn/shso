@@ -11,7 +11,6 @@ import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorInputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
-import org.apache.commons.compress.compressors.zstandard.ZstdCompressorInputStream
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
@@ -23,11 +22,13 @@ import java.util.Locale
 /**
  * 压缩包智能解压。
  *
- * 支持的格式（14 种）：
- * - 归档型：zip / 7z / tar / tgz / tar.gz / tar.xz / tar.bz2 / tar.zst / tar.lz4
- * - 单文件压缩型：gz / xz / bz2 / zst / lz4（直接解压为原文件名）
+ * 支持的格式（12 种）：
+ * - 归档型：zip / 7z / tar / tgz / tar.gz / tar.xz / tar.bz2 / tar.lz4
+ * - 单文件压缩型：gz / xz / bz2 / lz4（直接解压为原文件名）
  *
  * rar 为专有商业格式（UnRAR 许可证限制），不支持、不识别、不做任何处理。
+ * zstd（.zst / .tar.zst）自 2026-09-11 起移除：zstd-jni 需为 4 个 ABI 各打一份原生库（约 1.9MB），
+ * 占 release 包近一半体积，与使用场景不匹配。
  *
  * 智能解压算法（归档型）：
  * - 条件 A（单顶层文件夹模式）：压缩包根目录仅含 1 个顶层条目，且该条目为文件夹 →
@@ -50,12 +51,12 @@ object ArchiveExtractor {
 
     /** TAR 归档型扩展（含双后缀，判定优先于单文件压缩型）。 */
     private val TAR_EXTENSIONS = listOf(
-        ".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".tar.lz4",
+        ".tar.gz", ".tar.xz", ".tar.bz2", ".tar.lz4",
         ".tgz", ".tar"
     )
 
     /** 单文件压缩型扩展。 */
-    private val SINGLE_EXTENSIONS = listOf(".gz", ".xz", ".bz2", ".zst", ".lz4")
+    private val SINGLE_EXTENSIONS = listOf(".gz", ".xz", ".bz2", ".lz4")
 
     fun isKnownArchive(name: String): Boolean = kindOf(name) != null
 
@@ -74,7 +75,7 @@ object ArchiveExtractor {
         }
     }
 
-    /** 去除全部压缩/归档后缀后的基础名（如 a.tar.gz → a；a.zst → a）。 */
+    /** 去除全部压缩/归档后缀后的基础名（如 a.tar.gz → a；a.gz → a）。 */
     fun baseName(name: String): String {
         val lower = name.lowercase(Locale.getDefault())
         val suffix = TAR_EXTENSIONS.firstOrNull { lower.endsWith(it) }
@@ -167,7 +168,6 @@ object ArchiveExtractor {
                 GzipCompressorInputStream(base)
             lower.endsWith(".tar.xz") || lower.endsWith(".xz") -> XZCompressorInputStream(base)
             lower.endsWith(".tar.bz2") || lower.endsWith(".bz2") -> BZip2CompressorInputStream(base)
-            lower.endsWith(".tar.zst") || lower.endsWith(".zst") -> ZstdCompressorInputStream(base)
             lower.endsWith(".tar.lz4") || lower.endsWith(".lz4") -> FramedLZ4CompressorInputStream(base)
             else -> base
         }

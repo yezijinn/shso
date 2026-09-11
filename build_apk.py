@@ -19,6 +19,10 @@ shso 一键编译脚本
                                         # 与 GitHub 纯日期 Release Tag 的对齐依据
     ※ release 已开启 R8 + shrinkResources，资源会被重命名为随机短名（如 res/RJ.png），
       比对 APK 内资源名时不要直接与源码 res/ 对号入座。
+    ※ 只打包 arm64-v8a（app/build.gradle.kts 的 ndk.abiFilters）：新增带原生库的依赖时
+      注意别把 4 个 ABI 一起打进来；脚本的产物校验会检查这一点。
+    ※ 未使用 zstd（.zst / .tar.zst 已于 2026-09-11 移除）：zstd-jni 的 AAR 为 4 个 ABI
+      各带一份原生库，约 1.9MB；脚本的产物校验同样会检查它是否被意外引入。
 
 可选环境变量：
     JAVA_HOME         # 优先选择的 JDK；未设置时自动发现 JDK 17
@@ -48,6 +52,7 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
@@ -85,6 +90,10 @@ SIGNING = {
 #                                             也是应用内「检查更新」与 GitHub 纯日期 Tag 的对齐依据
 # --------------------------------------------------------------------------- #
 VERSION_NAME: str = "Jinn"
+
+# 产物内容校验：只允许这些 ABI（与 app/build.gradle.kts 的 ndk.abiFilters 一致）。
+# 新增带原生库的依赖时若把多 ABI 一起打进来，脚本会告警。
+EXPECTED_ABIS: set[str] = {"arm64-v8a"}
 
 
 def expected_version_code() -> str:
@@ -508,6 +517,57 @@ def verify_version(apk: Path) -> Optional[dict]:
     return {"code": actual_code, "name": actual_name, "want_code": want_code}
 
 
+def verify_payload(apk: Path) -> Optional[dict]:
+    """校验产物内容与体积构成（纯 zip 读取，不依赖 SDK 工具）。
+
+    检查项（与 app/build.gradle.kts 的构建配置保持一致）：
+      - ABI 白名单：只应包含 arm64-v8a；出现其他 ABI 说明有新依赖把多 ABI 原生库带进来了。
+      - zstd 残留：zstd-jni 已移除，出现 libzstd 说明被重新引入。
+    同时输出体积构成，便于判断「还能不能再瘦一点」。
+    """
+    buckets: dict[str, int] = {}
+    abis: set[str] = set()
+    zstd_hits: list[str] = []
+    total = 0
+    with zipfile.ZipFile(apk) as z:
+        for info in z.infolist():
+            name = info.filename
+            total += info.compress_size
+            if name.startswith("lib/"):
+                abis.add(name.split("/")[1])
+                buckets["lib/"] = buckets.get("lib/", 0) + info.compress_size
+            elif name.endswith(".dex"):
+                buckets["dex"] = buckets.get("dex", 0) + info.compress_size
+            elif name.startswith("res/"):
+                buckets["res/"] = buckets.get("res/", 0) + info.compress_size
+            elif name.startswith("assets/"):
+                buckets["assets/"] = buckets.get("assets/", 0) + info.compress_size
+            elif name == "resources.arsc":
+                buckets["resources.arsc"] = buckets.get("resources.arsc", 0) + info.compress_size
+            else:
+                buckets["其他"] = buckets.get("其他", 0) + info.compress_size
+            if "zstd" in name.lower():
+                zstd_hits.append(name)
+
+    log(INFO, "体积构成（压缩后，占比按 APK 内条目合计）")
+    for key, size in sorted(buckets.items(), key=lambda kv: -kv[1]):
+        pct = 100 * size / total if total else 0
+        log(INFO, f"    {key:<16} {human_size(size):>10}  {pct:5.1f}%")
+
+    unexpected = sorted(abis - EXPECTED_ABIS)
+    if unexpected:
+        log(WARN, f"ABI 白名单外：{', '.join(unexpected)}（期望只有 {', '.join(sorted(EXPECTED_ABIS))}）——检查新引入的原生库")
+    else:
+        log(OK, f"ABI：{', '.join(sorted(abis)) if abis else '无原生库'} ✓")
+
+    if zstd_hits:
+        log(WARN, f"检测到 zstd 残留（已移除依赖）：{zstd_hits[:3]}")
+    else:
+        log(OK, "zstd：无残留 ✓")
+
+    return {"total": total, "buckets": buckets, "abis": abis, "zstd": zstd_hits}
+
+
 def verify_signature(apk: Path) -> Tuple[bool, Optional[dict]]:
     """使用 apksigner 校验 APK 签名方案（V1 / V2 / V3）。
 
@@ -627,6 +687,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         sig_ok, schemes = verify_signature(apk)
         # 版本规则校验：确认产物匹配「versionName=Jinn，versionCode=构建当日日期」
         version = verify_version(apk)
+        # 产物内容与体积构成校验（ABI 白名单 / zstd 残留 / 各部分占比）
+        verify_payload(apk)
 
     # 构建成功但签名校验失败时，同样以非 0 退出码上报
     return summarize(apk, args.variant, code if sig_ok else 1, schemes, version)
