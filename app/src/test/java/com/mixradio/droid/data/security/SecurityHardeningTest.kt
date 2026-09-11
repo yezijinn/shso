@@ -226,6 +226,67 @@ class SecurityHardeningTest {
     }
 
     // ========================================================================
+    // 11) 自动执行门控（纯函数，含 truncated 兜底分支）
+    // ========================================================================
+
+    private fun report(
+        findings: List<Finding>,
+        truncated: Boolean
+    ) = ScriptAuditor.Report(
+        findings = findings,
+        maxLevel = findings.maxByOrNull { it.level.ordinal }?.level ?: RiskLevel.SAFE,
+        truncated = truncated,
+        scannedLines = 1,
+        totalLines = 1
+    )
+
+    @Test fun `只有 truncated 而没有 CRITICAL finding 时仍必须拒绝`() {
+        // 兜底分支：线上 audit() 目前总会同时产出 CRITICAL，故这条只能由纯函数单测覆盖。
+        // 它必须为 true —— 否则将来 audit 的产出行文一变，未扫完的脚本就会被自动执行。
+        val r = report(findings = emptyList(), truncated = true)
+        assertTrue(ScriptAuditor.blocksUnattendedExecution(r))
+    }
+
+    @Test fun `命中 CRITICAL 即拒绝自动执行`() {
+        val r = report(listOf(Finding("X", RiskLevel.CRITICAL, "m", "s")), truncated = false)
+        assertTrue(ScriptAuditor.blocksUnattendedExecution(r))
+    }
+
+    @Test fun `仅有 DANGEROUS 且扫描完整时不拒绝自动执行`() {
+        val r = report(listOf(Finding("X", RiskLevel.DANGEROUS, "m", "s")), truncated = false)
+        assertFalse(ScriptAuditor.blocksUnattendedExecution(r))
+    }
+
+    @Test fun `干净且扫描完整时不拒绝自动执行`() {
+        assertFalse(ScriptAuditor.blocksUnattendedExecution(report(emptyList(), truncated = false)))
+    }
+
+    @Test fun `只有 truncated 时待展示风险项为空（调用方不得直接 first）`() {
+        // 旧实现：`if (critical.isNotEmpty() || truncated)` 之后直接 `critical.first()`，
+        // 一旦 truncated 单独成立就会 NoSuchElementException。抽出该函数后按空列表处理。
+        val r = report(findings = emptyList(), truncated = true)
+        assertTrue(ScriptAuditor.blockingFindingsFor(r).isEmpty())
+    }
+
+    @Test fun `有 CRITICAL 时只展示 CRITICAL 项`() {
+        val crit = Finding("C", RiskLevel.CRITICAL, "m", "s")
+        val warn = Finding("W", RiskLevel.WARNING, "m", "s")
+        assertEquals(listOf(crit), ScriptAuditor.blockingFindingsFor(report(listOf(warn, crit), false)))
+    }
+
+    @Test fun `无 CRITICAL 时退回全部风险项`() {
+        val warn = Finding("W", RiskLevel.WARNING, "m", "s")
+        assertEquals(listOf(warn), ScriptAuditor.blockingFindingsFor(report(listOf(warn), true)))
+    }
+
+    @Test fun `真实 audit 的超限报告确实会被判定为拒绝`() {
+        val longLine = (1..200).joinToString("; ") { "ls /a$it" }
+        val r = ScriptAuditor.audit(longLine)
+        assertTrue(r.truncated)
+        assertTrue(ScriptAuditor.blocksUnattendedExecution(r))
+    }
+
+    // ========================================================================
     // 10) 路径分级：root 环境数据
     // ========================================================================
 

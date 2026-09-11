@@ -30,6 +30,27 @@ object ScriptAuditor {
 
     private const val MAX_SCAN_BYTES = 2 * 1024 * 1024
 
+    /**
+     * 未经用户确认的自动执行（「添加到 shso 后自动执行」等链路）是否**必须**拒绝（fail-closed）。
+     *
+     * 两个条件任一成立即拒绝：
+     *  1. 存在 CRITICAL 风险项；
+     *  2. 扫描不完整（[Report.truncated]，如单行超长 / 原子超限）——规则看不全，不能假设安全。
+     *
+     * 单独抽成纯函数的原因：条件 2 是**冗余兜底**，当前 [audit] 在置 truncated 时总会同时产出
+     * CRITICAL，所以线上走不到「只有 truncated」这条路；但它必须仍然正确 —— 一旦将来 audit 的
+     * 产出行文调整，兜底就是唯一的防线。纯函数让这条分支可以被单测直接覆盖。
+     */
+    fun blocksUnattendedExecution(report: Report): Boolean =
+        report.truncated || report.findings.any { it.level == RiskLevel.CRITICAL }
+
+    /**
+     * 拒绝自动执行时要展示/记账的风险项：优先 CRITICAL；没有则退回全部 finding
+     * （「只有 truncated」时会得到**空列表**，调用方必须按空处理，不能 `first()`）。
+     */
+    fun blockingFindingsFor(report: Report): List<Finding> =
+        report.findings.filter { it.level == RiskLevel.CRITICAL }.ifEmpty { report.findings }
+
     /** 扫描脚本文本（调用方先读好内容；.sh 之外的二进制请传 note 跳过）。 */
     fun audit(content: String): Report {
         // 逻辑行：行尾 \ 续行合并；heredoc 不追踪（启发式）
@@ -129,7 +150,7 @@ object ScriptAuditor {
             val f = File(path)
             if (f.canRead()) {
                 if (f.length() > MAX_SCAN_BYTES) {
-                    return Pair(null, "文件超过 2MB（${f.length()} 字节），无法完整扫描，已按保守策略处理")
+                    return Pair(null, "文件超过 2MB（${f.length()} 字节），无法完整扫描")
                 }
                 return Pair(f.readText(Charsets.UTF_8), "ok")
             }
@@ -138,7 +159,7 @@ object ScriptAuditor {
             val (sizeCode, sizeOut) = RootService.runCommandSync("stat -c %s $escaped", 10_000L)
             val size = if (sizeCode == 0) sizeOut.trim().toLongOrNull() else null
             if (size != null && size > MAX_SCAN_BYTES) {
-                return Pair(null, "文件超过 2MB（$size 字节），无法完整扫描，已按保守策略处理")
+                return Pair(null, "文件超过 2MB（$size 字节），无法完整扫描")
             }
             val (code, out) = RootService.runCommandSync(
                 "cat $escaped 2>/dev/null | head -c $MAX_SCAN_BYTES",

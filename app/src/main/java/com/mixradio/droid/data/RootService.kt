@@ -360,14 +360,18 @@ object RootService {
             val (content, note) = ScriptAuditor.readScriptContent(filePath)
             if (content != null) {
                 val report = ScriptAuditor.audit(content)
-                val critical = report.findings.filter { it.level == RiskLevel.CRITICAL }
-                // 双重保险：扫描不完整（超长行/超多 token/疑似加密）一律 fail-closed，
-                // 即便某个分支只置了 truncated 而没产出 CRITICAL finding 也不放行。
-                if (critical.isNotEmpty() || report.truncated) {
-                    val reasons = (if (critical.isNotEmpty()) critical else report.findings)
+                // 判定收敛到纯函数：CRITICAL 命中 **或** 扫描不完整（truncated）都必须拒绝。
+                // 旧写法在本行用 `critical.isNotEmpty() || report.truncated`，但紧接着用了
+                // `critical.first()` —— 一旦 truncated 单独成立（critical 为空）就会抛
+                // NoSuchElementException。这里连同 reason/ruleId 一起按「可能为空」处理。
+                if (ScriptAuditor.blocksUnattendedExecution(report)) {
+                    val shown = ScriptAuditor.blockingFindingsFor(report)
+                    val reasons = shown
                         .joinToString("\n") { "  · 第 ${it.line ?: "-"} 行 [${it.ruleId}] ${it.message}" }
+                        .ifEmpty { "  · 扫描未能完成（内容过长或结构过于复杂），无法确认安全性" }
                     SecurityAuditLog.log(
-                        CommandSource.SCRIPT_FILE, "BLOCK", critical.first().ruleId,
+                        CommandSource.SCRIPT_FILE, "BLOCK",
+                        shown.firstOrNull()?.ruleId ?: "SCRIPT_TRUNCATED",
                         RiskLevel.CRITICAL, filePath
                     )
                     appendOutputDirect(
