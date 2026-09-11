@@ -26,7 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -54,6 +54,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -82,6 +83,17 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+
+/**
+ * 终端输出行的 LazyColumn key：**只取行序号**。
+ *
+ * 为什么不取内容：终端里重复行极常见（空行、重复提示符、回显、`\r` 原地覆盖产生的同文本行），
+ * 一旦两行内容相同，内容派生的 key 就重复，LazyColumn 会抛
+ * `IllegalArgumentException("Key ... was already used")` 直接崩溃。
+ * 本函数刻意忽略 [line]，size 变化即代表追加/裁剪，序号唯一性由列表下标保证。
+ */
+internal fun terminalLineKey(index: Int, @Suppress("UNUSED_PARAMETER") line: AnnotatedString): Int =
+    index
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -339,10 +351,15 @@ fun TerminalPage(
                         state = listState,
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        // 按行内容 hashCode 做 stable key。同一逻辑行跨 flush 共享 key，LazyColumn
-                        // 跳过其重组；新增行才进入可视区。AnnotatedString.hashCode 由底层 String 的
-                        // hashCode 派生，对相同内容稳定。
-                        items(parsedOutput.lines, key = { line -> line.hashCode() }) { line ->
+                        // 用「行序号」做 stable key：终端日志只向后追加，既有行序号恒定，
+                        // 跨 flush 可跳过重组；窗口裁剪头部时整批序号平移，属可接受代价。
+                        //
+                        // 禁止用行内容（text/hashCode）做 key：终端里重复行极其常见——空行、
+                        // 重复提示符、回显、以及 `\r` 原地覆盖产生的同文本行。内容相同即产生
+                        // 重复 key，LazyColumn 会直接抛
+                        // IllegalArgumentException("Key ... was already used") 使 App 崩溃
+                        // （真机 BIYLBAFQQSS8DA69 洪流场景已复现，见 TASKS 任务 19）。
+                        itemsIndexed(parsedOutput.lines, key = { idx, line -> terminalLineKey(idx, line) }) { _, line ->
                             Text(
                                 text = line,
                                 fontFamily = FontFamily.Monospace,
