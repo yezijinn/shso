@@ -36,6 +36,8 @@ object PolicyEngine {
         "sgdisk", "parted", "fdisk", "sfdisk", "gdisk", "cgdisk", "wipefs",
         "flash_image", "mtd", "nandwrite", "fastbootd", "odin", "heimdall"
     )
+    /** 写入型工具（目标为末操作数）：cp / install / ln / rsync。 */
+    private val COPY_LIKE = setOf("cp", "install", "ln", "rsync")
     /** 未解析变量 + 这些程序 = 无法静态判定目标，按无条件最高危处理（fail-closed）。 */
     private val CRITICAL_UNRESOLVED = setOf(
         "dd", "wipe", "fastboot", "shred", "truncate", "sgdisk", "parted", "fdisk",
@@ -82,7 +84,7 @@ object PolicyEngine {
         val atoms = parsed.atoms
 
         for (atom in atoms) {
-            evaluateAtom(atom, line, findings)
+            evaluateAtom(atom, source, line, findings)
         }
 
         // 管道检测：curl/wget/base64 | sh（段序号相邻 + 后段程序为 shell）
@@ -106,10 +108,28 @@ object PolicyEngine {
     }
 
     /** 单原子规则判定，命中的 Finding 追加进 findings。 */
-    private fun evaluateAtom(atom: CommandParser.Atom, line: Int?, findings: ArrayList<Finding>) {
+    private fun evaluateAtom(
+        atom: CommandParser.Atom,
+        source: CommandSource,
+        line: Int?,
+        findings: ArrayList<Finding>
+    ) {
         val snippet = atom.raw.take(200)
 
-        // 0) fail-closed 前置：无法确定真实程序 → 不能假设它安全
+        // 0) fail-closed 前置：程序名本身含变量（$CMD / r$IFSm / rm$IFS-rf…）→ 真实命令不可知。
+        //    必须在这里拦，因为 basename 可能被 `$IFS` 之类拼成任意字符串（如 `system`），
+        //    落到下面任何规则集里都匹配不到。
+        if (atom.programUnresolved) {
+            findings.add(
+                Finding(
+                    "UNRESOLVED_PROGRAM", obfuscationLevel(source),
+                    "命令名含未解析变量（如 \$IFS 拼接），无法确定真实要执行的程序", snippet, line
+                )
+            )
+            return
+        }
+
+        // fail-closed 前置：无法确定真实程序 → 不能假设它安全
         if (atom.programAmbiguous) {
             findings.add(
                 Finding(
@@ -161,6 +181,8 @@ object PolicyEngine {
                 Finding("BRICK_TOOL", RiskLevel.CRITICAL, "分区表 / 刷机类高危工具（可能直接导致设备无法启动）", snippet, line)
             )
             "tee" -> evaluateTee(atom, line, snippet, findings)
+            in COPY_LIKE -> evaluateCopyLike(atom, line, snippet, findings)
+            "mv" -> evaluateMove(atom, line, snippet, findings)
         }
 
         // 2) 重定向写入：覆盖 `cat img > /dev/block/by-name/boot` 这类不经 dd 的写入
@@ -176,6 +198,50 @@ object PolicyEngine {
                 )
                 PathClassifier.PathClass.DANGEROUS -> findings.add(
                     Finding("TRUNCATE_DATA", RiskLevel.DANGEROUS, "截断数据分区文件: ${t.take(120)}", snippet, line)
+                )
+                else -> {}
+            }
+        }
+    }
+
+    /**
+     * cp / install / ln / rsync：**目标**是系统或设备路径 → 等于往系统里写文件。
+     * 静态层此前完全没有这类规则，只能靠运行时守卫的 PATH 包装器兜底 ——
+     * 脚本自动执行链路里就漏了。
+     */
+    private fun evaluateCopyLike(atom: CommandParser.Atom, line: Int?, snippet: String, findings: ArrayList<Finding>) {
+        val target = atom.operands.lastOrNull() ?: return
+        when (PathClassifier.classify(target)) {
+            PathClassifier.PathClass.CRITICAL -> findings.add(
+                Finding("COPY_SYSTEM", RiskLevel.CRITICAL, "写入系统/设备路径: ${target.take(120)}", snippet, line)
+            )
+            PathClassifier.PathClass.DANGEROUS -> findings.add(
+                Finding("COPY_DATA", RiskLevel.DANGEROUS, "写入数据分区: ${target.take(120)}", snippet, line)
+            )
+            else -> {}
+        }
+    }
+
+    /**
+     * mv：目标是系统/设备路径 → 覆盖写入；**源**是系统路径 → 把系统文件移走同样等于破坏。
+     * 两者合并判定，取最高等级。
+     */
+    private fun evaluateMove(atom: CommandParser.Atom, line: Int?, snippet: String, findings: ArrayList<Finding>) {
+        if (atom.operands.isEmpty()) return
+        val target = atom.operands.last()
+        when (PathClassifier.classify(target)) {
+            PathClassifier.PathClass.CRITICAL -> findings.add(
+                Finding("MOVE_SYSTEM", RiskLevel.CRITICAL, "移动到系统/设备路径: ${target.take(120)}", snippet, line)
+            )
+            PathClassifier.PathClass.DANGEROUS -> findings.add(
+                Finding("MOVE_DATA", RiskLevel.DANGEROUS, "移动到数据分区: ${target.take(120)}", snippet, line)
+            )
+            else -> {}
+        }
+        for (src in atom.operands.dropLast(1)) {
+            when (PathClassifier.classify(src)) {
+                PathClassifier.PathClass.CRITICAL -> findings.add(
+                    Finding("MOVE_SYSTEM_SRC", RiskLevel.DANGEROUS, "从系统路径移走文件: ${src.take(120)}", snippet, line)
                 )
                 else -> {}
             }
