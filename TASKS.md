@@ -305,7 +305,16 @@
   2. Manifest 的 `android:icon` 与 `android:roundIcon` **都指向 `@mipmap/ic_launcher`**，从未引用 `ic_launcher_round`。
 - **已实施**：删除 `mipmap-xxhdpi/ic_launcher.png` 与 `ic_launcher_round.png`（各 785,647 B，源码共 1.5MB）。
 - **验证**：两个 APK 中 `RJ.png` **均已消失**；5 张 foreground 完好（图标显示不受影响）；release APK **5.00MB → 4.11MB**；应用启动正常、无崩溃；150 tests / 0 failures。
-- **顺带发现（未删，待你决定）**：`drawable/ic_shso.png`(32KB)、`ic_github.png`(5.4KB)、`ic_telegram.png`(197KB) **零引用**，release 包里也已被 shrink 掉 —— 同属死资源，可一并删除。
+- **顺带已一并删除（同一轮「去除死资源」）**：`drawable/ic_shso.png`(32KB)、`ic_github.png`(5.4KB)、`ic_telegram.png`(197KB)、**`font/app_font.ttf`(24.4MB)** —— 全部**零引用**。
+  - `app_font.ttf` 的唯一「命中」`FilePage.kt:1360` 是**误报**：那里用的是 `filesDir/custom_app_font.ttf`（用户自选字体），全工程**没有任何 `R.font` 引用。
+  - 应用自身真正用到的图只有 `R.mipmap.ic_launcher_foreground`（`SettingsPage.kt:648`），通知图标用系统 `android.R.drawable.stat_sys_download`。
+- **体积结论**：
+  | 包 | 清理前 | 清理后 |
+  |---|---|---|
+  | release | 5.00 MB | **4.11 MB** |
+  | debug | 35.93 MB | 34.18 MB（**debug 包被 DEX 主导**：`classes.dex` 42.8MB + `classes10.dex` 13.5MB + `classes11.dex` 4.5MB，属未混淆调试构建的固有开销，资源清理无法显著改变它）
+  - 源码侧共移除约 **25.8MB** 死文件。
+- 保留项（有引用，勿删）：各密度 `ic_launcher_foreground.png`、`drawable/ic_launcher_background.xml`（自适应图标）、`values/strings.xml`(app_name)、`values*/themes.xml`(Theme_shso)、`xml/file_provider_paths.xml`(FileProvider)。
 
 ### 21. 新主目标（占位 — 视用户输入）
 - [ ] 用户指定后填充
