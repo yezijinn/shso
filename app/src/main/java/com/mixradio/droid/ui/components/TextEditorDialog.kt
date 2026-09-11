@@ -724,7 +724,32 @@ private suspend fun loadNextChunk(
 private fun isUtf16Charset(cs: java.nio.charset.Charset): Boolean =
     cs == Charsets.UTF_16 || cs == Charsets.UTF_16LE || cs == Charsets.UTF_16BE
 
-/** 写入文本：root 走 /data/local/tmp 中转 + mv；无 root 直写。 */
+/**
+ * 依据 `stat -c '%a %u %g'` 的输出，生成「覆盖写入后还原权限与属主」的 root 命令。
+ * 返回 null 表示输出不可用（此时不改动权限，保持现状，避免误改）。
+ * 纯函数，便于单测；三段均做数字校验，杜绝把 stat 输出意外拼进 shell 造成注入。
+ */
+internal fun buildRestoreAttrsCommand(statOutput: String, escapedPath: String): String? {
+    val parts = statOutput.trim().split(Regex("\\s+"))
+    if (parts.size < 3) return null
+    val mode = parts[0]
+    val uid = parts[1]
+    val gid = parts[2]
+    if (!mode.matches(Regex("[0-7]{1,4}"))) return null
+    if (!uid.matches(Regex("\\d+")) || !gid.matches(Regex("\\d+"))) return null
+    return "chmod $mode $escapedPath; chown $uid:$gid $escapedPath"
+}
+
+/**
+ * 写入文本：root 走 /data/local/tmp 中转 + mv；无 root 直写。
+ *
+ * root 路径的两处关键处理（旧实现缺失，会导致副作用）：
+ *  1. **符号链接**：`mv` 覆盖会把链接本身替换成普通文件。若目标是软链，先 `readlink -f` 解析真实
+ *     路径并写入真身，保持链接结构不变。
+ *  2. **权限/属主**：`mv` 后新文件沿用临时文件的权限与属主（如 root:root 600），会丢掉原文件
+ *     的 mode/owner。写入前记录 `stat -c '%a %u %g'`，写入后还原；并尽力 `restorecon` 恢复
+ *     SELinux 上下文（系统分区文件否则可能因上下文错误而不可读/不可执行）。
+ */
 private suspend fun writeTextFile(
     filePath: String, text: String, charset: java.nio.charset.Charset,
     lineEnding: LineEnding, writeBom: Boolean
@@ -745,14 +770,36 @@ private suspend fun writeTextFile(
         }
 
         if (RootService.isRootGranted == true) {
+            // 解析真实路径（软链写入真身，不替换链接）；readlink 不可用/非软链时退回原路径
+            val (linkCode, linkOut) = RootService.runCommandSync(
+                "readlink -f ${RootService.escapeShellArg(filePath)} 2>/dev/null", 10_000L
+            )
+            val resolved = if (linkCode == 0) linkOut.trim().ifEmpty { filePath } else filePath
+            val escapedTarget = RootService.escapeShellArg(resolved)
+
+            // 覆盖前记录原权限/属主，用于写入后还原
+            val (statCode, statOut) = RootService.runCommandSync(
+                "stat -c '%a %u %g' $escapedTarget 2>/dev/null", 10_000L
+            )
+
             val tmpFile = "/data/local/tmp/_shso_edit_${System.currentTimeMillis()}.tmp"
             val writeOk = RootService.writeBytesAsRoot(tmpFile, bytes)
             if (!writeOk) return@withContext Pair(false, "写入临时文件失败")
             val (mvCode, mvOut) = RootService.runCommandSync(
-                "mv ${RootService.escapeShellArg(tmpFile)} ${RootService.escapeShellArg(filePath)}",
+                "mv ${RootService.escapeShellArg(tmpFile)} $escapedTarget",
                 60_000L
             )
-            if (mvCode == 0) Pair(true, null) else Pair(false, "保存失败: ${mvOut.trim().ifEmpty { "未知错误" }}")
+            if (mvCode != 0) {
+                return@withContext Pair(false, "保存失败: ${mvOut.trim().ifEmpty { "未知错误" }}")
+            }
+
+            if (statCode == 0) {
+                val restore = buildRestoreAttrsCommand(statOut, escapedTarget)
+                if (restore != null) RootService.runCommandSync(restore, 30_000L)
+            }
+            // 尽力恢复 SELinux 上下文；失败不视为保存失败
+            RootService.runCommandSync("restorecon $escapedTarget 2>/dev/null", 30_000L)
+            Pair(true, null)
         } else {
             File(filePath).writeBytes(bytes)
             Pair(true, null)
