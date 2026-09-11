@@ -26,8 +26,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main` @ `73c8f0f`（**已推送并与 origin 同步**） |
-| 单元测试 | **205 tests / 0 failures**（本轮新增 55 条，起点 150） |
+| 分支 | `main`（本次提交后待推送；上一批 `0f2cbf9` 已同步） |
+| 单元测试 | **212 tests / 0 failures**（本轮新增 62 条，起点 150） |
 | 守卫模块 | **v1.2.0**（真机已装并验证拦截） |
 | 真机 | BIYLBAFQQSS8DA69（PacM00，Magisk，`su -c id` uid=0）|
 | 当前安全档位 | 设备上为 **0**（测试后已还原；验证拦截需切到 ≥2） |
@@ -92,6 +92,16 @@
 - root 保存：解析软链真身、还原 `mode/uid/gid`、尽力 `restorecon`（旧行为会把 640 改成 644 并替换软链）
 - `HorizontalPager` 保留 4 页：切标签不再丢终端输入 / 文件页多选·滚动 / 风险确认弹窗
 - 编辑历史改为**每文件一个 key** + 旧数据自动迁移
+
+### 批次五：新增「提取 APK」（文件页设置菜单）
+
+- 文件页「设置」弹窗内新增 **「提取APK」**：列出已安装应用 → 导出安装包到内部存储 `Download/`
+- 命名（用户指定，**后缀大写**）：基础包 `<应用名>-<版本号>.APK`；分包应用追加 `-split1.APK`、`-split2.APK`…
+- 默认只列用户应用，可切「含系统应用」；应用名非法字符净化；读取 `/data/app/...` 需 ROOT
+- 清单新增 `QUERY_ALL_PACKAGES`（否则 targetSdk 30+ 下 `getInstalledPackages()` 列表残缺）
+- 新增 `ApkExtractorTest` 7 例（命名 / 净化 / 单包与分包产物规划）
+- 真机验证：提取 `com.reveny.vbmetafix.service` → `Download/com.reveny.vbmetafix.service-1.APK`（3.15MB，魔数 `PK\x03\x04` 有效）
+- **未覆盖**：本机全量扫描无任何分包应用，分包分支由纯函数单测覆盖
 
 ### 批次四：安全加固（第 7 项，`42e725e` + `7301745` + `27c1b18` + `f34eecb`）
 
