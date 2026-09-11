@@ -96,6 +96,11 @@ object PathClassifier {
     )
 
     private val DANGEROUS_PREFIXES = arrayOf(
-        "/metadata", "/persist", "/config", "/mnt/adb"
+        "/metadata", "/persist", "/config", "/mnt/adb",
+        // Root 方案自身的数据：删除/破坏 = 丢 root 且常被恶意脚本当作第一步。
+        // 定为 DANGEROUS（弹确认）而非 CRITICAL（硬拦）：管理 Magisk 模块属正常操作，
+        // 硬拦会误伤；确认框足以让用户看到「正在动 root 环境」。
+        // （注意 /data/adb/shso 在 SAFE 前缀中先命中，不受影响。）
+        "/data/adb/modules", "/data/adb/magisk", "/data/adb/ksu", "/data/adb/ap"
     )
 }

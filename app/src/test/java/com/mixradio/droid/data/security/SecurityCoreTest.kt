@@ -56,11 +56,14 @@ class SecurityCoreTest {
 
     @Test fun `archive contract requires entries present in shso guard asset`() {
         // 含 v1.1.0 新增的覆盖面：多二进制派发（toybox/busybox）+ 高频破坏原语（mv/cp/find/sed）
+        // 以及 v1.2.0 的格机原语（chmod/chown/chgrp/mkfs/mknod/分区表/刷机）
         val names = listOf(
             "module.prop", "policy.conf", "guard/common.sh", "guard/rm", "guard/rmdir",
             "guard/wipe", "guard/dd", "guard/fastboot", "guard/truncate", "guard/shred",
             "guard/make_f2fs", "guard/mke2fs", "guard/mkfs.ext4", "guard/mkfs.f2fs", "guard/mkfs.vfat",
-            "guard/toybox", "guard/busybox", "guard/mv", "guard/cp", "guard/find", "guard/sed"
+            "guard/toybox", "guard/busybox", "guard/mv", "guard/cp", "guard/find", "guard/sed",
+            "guard/chmod", "guard/chown", "guard/chgrp", "guard/mkfs",
+            "guard/mknod", "guard/sgdisk", "guard/parted", "guard/fdisk", "guard/flash_image"
         )
         assertTrue(GuardModuleInstaller.hasRequiredArchiveEntries(names))
         assertFalse(GuardModuleInstaller.hasRequiredArchiveEntries(names - "guard/mkfs.vfat"))

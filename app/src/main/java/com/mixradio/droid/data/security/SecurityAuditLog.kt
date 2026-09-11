@@ -11,9 +11,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 /**
  * 安全审计日志（方案 §7）：先留痕，后执行；被拦截的命令同样记录。
@@ -32,7 +32,9 @@ object SecurityAuditLog {
     const val MAX_TAIL_LINES = 2_000
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+    // DateTimeFormatter 不可变、线程安全；旧的 SimpleDateFormat 是非线程安全的，
+    // 且原实现在 synchronized 块**外**调用它，并发记录时可能抛异常或产生错乱时间戳。
+    private val dateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
 
     private var entryCounter = 0
     private val lock = Any()
@@ -61,7 +63,7 @@ object SecurityAuditLog {
         // 档位 0 完全不记录
         if (PolicyEngine.currentLevel() <= SecurityLevels.OFF) return
 
-        val ts = dateFormat.format(Date())
+        val ts = Instant.now().atZone(ZoneId.systemDefault()).format(dateFormat)
         val cmd = command
             .replace("\n", "\\n")
             .replace("\r", "")
@@ -83,8 +85,13 @@ object SecurityAuditLog {
             scope.launch {
                 try {
                     if (useRootLog()) {
+                        // 审计目录是 0777（刻意为之），第三方可在此放置符号链接。
+                        // `>>` 会跟随软链，等于以 root 向任意文件追加 —— 写入前先清掉软链/非普通文件。
                         RootService.runCommandSync(
-                            "mkdir -p /data/adb/shso", 5_000L
+                            "mkdir -p /data/adb/shso; " +
+                                "[ -L $ROOT_LOG_PATH ] && rm -f $ROOT_LOG_PATH; " +
+                                "[ -e $ROOT_LOG_PATH ] && [ ! -f $ROOT_LOG_PATH ] && rm -f $ROOT_LOG_PATH; true",
+                            5_000L
                         )
                         RootService.writeBytesAsRoot(ROOT_LOG_PATH, (line + "\n").toByteArray(Charsets.UTF_8), append = true)
                         if (shouldTrim) trimRootLog()

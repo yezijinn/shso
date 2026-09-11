@@ -130,7 +130,13 @@ fun MainContainer(appSettings: AppSettings) {
         if (guardEnsureAttempted) return@LaunchedEffect
         guardEnsureAttempted = true
         // ensureInstalled：已就绪直接返回 true；否则走 su 静默安装（失败返回 false，不抛异常）
-        GuardModuleInstaller.ensureInstalled(context)
+        if (GuardModuleInstaller.ensureInstalled(context)) {
+            // 启动时必须同步守卫的运行模式：模块自带的 policy.conf 默认 mode=enforce，但
+            // 用户可编辑的那份 /data/adb/shso_guard/policy.conf **跨重装保留**。若它残留
+            // off/log（例如曾在档位 0/1 下写过），运行时会静默不拦截 —— 表现为「装好了守卫却没用」。
+            // 之前只有「用户手动改档位」才会同步，冷启动无档位变更就永远不同步。
+            GuardModuleInstaller.syncPolicyMode(appSettings.securityLevel)
+        }
     }
 
     // 首次进入即检测；每次回到前台（用户授权完跳回/切换页面）自动重查
