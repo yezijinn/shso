@@ -361,8 +361,11 @@ object RootService {
             if (content != null) {
                 val report = ScriptAuditor.audit(content)
                 val critical = report.findings.filter { it.level == RiskLevel.CRITICAL }
-                if (critical.isNotEmpty()) {
-                    val reasons = critical.joinToString("\n") { "  · 第 ${it.line} 行 [${it.ruleId}] ${it.message}" }
+                // 双重保险：扫描不完整（超长行/超多 token/疑似加密）一律 fail-closed，
+                // 即便某个分支只置了 truncated 而没产出 CRITICAL finding 也不放行。
+                if (critical.isNotEmpty() || report.truncated) {
+                    val reasons = (if (critical.isNotEmpty()) critical else report.findings)
+                        .joinToString("\n") { "  · 第 ${it.line ?: "-"} 行 [${it.ruleId}] ${it.message}" }
                     SecurityAuditLog.log(
                         CommandSource.SCRIPT_FILE, "BLOCK", critical.first().ruleId,
                         RiskLevel.CRITICAL, filePath

@@ -1,0 +1,55 @@
+#!/system/bin/sh
+###############################################################################
+# shso_guard 守卫模板（parted）
+#
+# ============================================================================
+# 不变式（INVARIANT）—— 本文件必须与每个由它生成的守卫「除了两处占位符替换外
+# 逐字节相同」：
+#   1. parted      → 命令名（如 rm / dd / mv / find / sed / fastboot / wipe）
+#   2. ARGS  → 操作数提取模式（ARGS / DD / FASTBOOT / MVCP / FIND / SED）
+# 任何决策/审计/防递归逻辑都只存在于 guard/common.sh 的 run_guard()，
+# 此处不得复制决策代码。改动公共行为请改 common.sh 后「重新生成所有守卫」。
+# 注意：toybox / busybox 守卫结构不同（多二进制派发），不由此模板生成，
+#       见 guard/toybox、guard/busybox。
+# ============================================================================
+#
+# 安装方式无关：既支持刷 zip（customize.sh），也支持直接把目录拷进
+# /data/adb/modules/shso_guard（App 复制安装）——因此本文件必须开箱即用，
+# 不依赖任何安装期生成的产物。
+#
+# 拦截流程：
+#   取操作数 → 归一化 → 对照策略 → ALLOW/DENY → 审计 → 放行时 exec 真实二进制
+# 关键：
+#   - 决策逻辑集中在 common.sh 的 run_guard()，所有守卫共用，禁止在各包装脚本里复制。
+#   - 真实二进制由 exec_real() 在运行时按 PATH 查找并跳过 guard 目录（防递归），
+#     因此不硬编码任何路径，也不依赖 busybox 位置。
+#   - common.sh 缺失时拒绝执行（fail-closed），绝不静默放行。
+#   - 递归深度由 guard_enter() 守护，超限即失败关闭。
+###############################################################################
+
+GUARD_SELF="$0"
+GUARD_DIR="${GUARD_SELF%/*}"
+CMD_NAME="parted"
+OPERAND_MODE="ARGS"
+
+# fail-closed：缺少公共库时直接拒绝，而不是退化成放行
+if [ ! -f "$GUARD_DIR/common.sh" ]; then
+    echo "shso_guard: common.sh 缺失，拒绝执行 ${CMD_NAME}（fail-closed）" >&2
+    exit 1
+fi
+
+# shellcheck source=./common.sh
+. "$GUARD_DIR/common.sh"
+guard_enter
+load_policy
+
+# mode=off：完全放行（仅用于排障，不建议长期开启）
+if [ "$SHSO_MODE" = "off" ]; then
+    exec_real "$CMD_NAME" "$@"
+fi
+
+# 决策 + 审计 + （enforce 下）拦截均集中在 run_guard；返回 0 表示放行。
+# run_guard 在 enforce 命中时直接 exit 1，不会走到下面的 exec。
+run_guard "$CMD_NAME" "$OPERAND_MODE" "$@" || exit $?
+
+exec_real "$CMD_NAME" "$@"

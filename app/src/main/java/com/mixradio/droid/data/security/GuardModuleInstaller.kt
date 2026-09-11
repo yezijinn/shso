@@ -52,7 +52,17 @@ object GuardModuleInstaller {
         "guard/mv",
         "guard/cp",
         "guard/find",
-        "guard/sed"
+        "guard/sed",
+        // v1.2.0 新增：权限崩坏 / 分区表 / 刷机 这类「格机」原语
+        "guard/chmod",
+        "guard/chown",
+        "guard/chgrp",
+        "guard/mkfs",
+        "guard/mknod",
+        "guard/sgdisk",
+        "guard/parted",
+        "guard/fdisk",
+        "guard/flash_image"
     )
 
     fun validateArchiveEntry(stagingDir: File, entryName: String): File? {

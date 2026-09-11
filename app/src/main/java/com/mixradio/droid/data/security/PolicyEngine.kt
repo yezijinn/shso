@@ -23,7 +23,33 @@ object PolicyEngine {
     private val RM_LIKE = setOf("rm", "rmdir", "shred", "unlink")
     private val MKFS_LIKE = setOf("mkfs", "mke2fs", "make_f2fs", "mkfs.ext2", "mkfs.ext3", "mkfs.ext4", "mkfs.f2fs", "mkfs.vfat", "mkfs.exfat", "mkfs.ntfs")
     private val FETCHERS = setOf("curl", "wget")
-    private val DECODERS = setOf("base64", "openssl")
+    private val SHELL_PROGRAMS = setOf("sh", "bash", "ash", "dash", "mksh")
+    /** 解码/解压工具：与 shell 组合可执行「加密脚本」（混淆恶意脚本最常见的手法）。 */
+    private val DECODERS = setOf(
+        "base64", "openssl", "xxd", "uudecode", "gunzip", "gzip", "zcat",
+        "bunzip2", "bzcat", "bzip2", "unxz", "xz", "unlzma", "lzma", "lz4", "zstd", "unzip", "cpio"
+    )
+    /** 可内联执行代码的解释器：`python -c "…"` 里塞 base64 载荷同样属混淆执行。 */
+    private val INTERPRETERS = setOf("python", "python3", "perl", "ruby", "node", "php", "lua")
+    /** 分区表 / 刷机类工具：误用即「格机」，一律硬拦。 */
+    private val BRICK_TOOLS = setOf(
+        "sgdisk", "parted", "fdisk", "sfdisk", "gdisk", "cgdisk", "wipefs",
+        "flash_image", "mtd", "nandwrite", "fastbootd", "odin", "heimdall"
+    )
+    /** 未解析变量 + 这些程序 = 无法静态判定目标，按无条件最高危处理（fail-closed）。 */
+    private val CRITICAL_UNRESOLVED = setOf(
+        "dd", "wipe", "fastboot", "shred", "truncate", "sgdisk", "parted", "fdisk",
+        "sfdisk", "gdisk", "cgdisk", "wipefs", "flash_image", "mtd", "nandwrite"
+    )
+    /** 未解析变量 + 这些程序 = 提升为需确认的高危（rm -rf "$T" 在脚本里极常见，不宜一律硬拦）。 */
+    private val DANGEROUS_UNRESOLVED = setOf(
+        "rm", "rmdir", "chmod", "chown", "chgrp", "find", "sed"
+    )
+    /** 重定向写入这些设备属正常操作（重定向目标不做路径分级，避免 `ls > /dev/null` 误报）。 */
+    private val SAFE_REDIRECT_DEVICES = setOf(
+        "/dev/null", "/dev/zero", "/dev/random", "/dev/urandom",
+        "/dev/stdout", "/dev/stderr", "/dev/tty"
+    )
 
     /** 完整评估一条命令（终端输入 / 脚本行）。 */
     fun evaluate(command: String, source: CommandSource): Verdict {
@@ -60,7 +86,11 @@ object PolicyEngine {
         }
 
         // 管道检测：curl/wget/base64 | sh（段序号相邻 + 后段程序为 shell）
-        detectPipeToShell(atoms, line, findings)
+        detectPipeToShell(atoms, source, line, findings)
+        // 解释器内联执行 + 解码载荷（python -c "base64..." 等）
+        detectInterpreterPayload(atoms, source, line, findings)
+        // eval 动态执行：eval 本身 + 解码器 / 未解析变量 → 无法审计内容
+        detectEvalDynamic(atoms, source, line, findings)
 
         if (findings.isEmpty()) return Verdict.Allow
 
@@ -79,9 +109,41 @@ object PolicyEngine {
     private fun evaluateAtom(atom: CommandParser.Atom, line: Int?, findings: ArrayList<Finding>) {
         val snippet = atom.raw.take(200)
 
+        // 0) fail-closed 前置：无法确定真实程序 → 不能假设它安全
+        if (atom.programAmbiguous) {
+            findings.add(
+                Finding(
+                    "AMBIGUOUS_PROGRAM", RiskLevel.CRITICAL,
+                    "无法确定要执行的真实命令（疑似被 wrapper 选项混淆），已按最高危处理", snippet, line
+                )
+            )
+            return
+        }
+
+        // 1) 未解析变量：破坏性程序 + 变量 = 目标不可静态判定
+        if (atom.hasUnresolvedVar) {
+            val p = atom.program
+            if (p in CRITICAL_UNRESOLVED || p.startsWith("mkfs")) {
+                findings.add(
+                    Finding(
+                        "UNRESOLVED_DESTRUCTIVE", RiskLevel.CRITICAL,
+                        "高危命令的操作目标含未解析变量，无法判定影响范围: $p", snippet, line
+                    )
+                )
+            } else if (p in DANGEROUS_UNRESOLVED) {
+                findings.add(
+                    Finding(
+                        "UNRESOLVED_DESTRUCTIVE_CONFIRM", RiskLevel.DANGEROUS,
+                        "命令的操作目标含未解析变量（$p），执行前请确认实际路径", snippet, line
+                    )
+                )
+            }
+        }
+
         when (atom.program) {
             in RM_LIKE -> evaluateRm(atom, line, snippet, findings)
             "dd" -> evaluateDd(atom, line, snippet, findings)
+            "truncate" -> evaluateTruncate(atom, line, snippet, findings)
             in MKFS_LIKE -> findings.add(
                 Finding("MKFS", RiskLevel.CRITICAL, "格式化文件系统/分区", snippet, line)
             )
@@ -94,6 +156,71 @@ object PolicyEngine {
             "find" -> evaluateFind(atom, line, snippet, findings)
             "recovery" -> if (atom.args.any { it.contains("wipe") }) {
                 findings.add(Finding("RECOVERY_WIPE", RiskLevel.DANGEROUS, "恢复模式清数据", snippet, line))
+            }
+            in BRICK_TOOLS -> findings.add(
+                Finding("BRICK_TOOL", RiskLevel.CRITICAL, "分区表 / 刷机类高危工具（可能直接导致设备无法启动）", snippet, line)
+            )
+            "tee" -> evaluateTee(atom, line, snippet, findings)
+        }
+
+        // 2) 重定向写入：覆盖 `cat img > /dev/block/by-name/boot` 这类不经 dd 的写入
+        evaluateRedirects(atom, line, snippet, findings)
+    }
+
+    /** truncate：把目标截断为 0/指定大小，对系统/数据分区等同破坏。 */
+    private fun evaluateTruncate(atom: CommandParser.Atom, line: Int?, snippet: String, findings: ArrayList<Finding>) {
+        for (t in atom.operands) {
+            when (PathClassifier.classify(t)) {
+                PathClassifier.PathClass.CRITICAL -> findings.add(
+                    Finding("TRUNCATE_SYSTEM", RiskLevel.CRITICAL, "截断系统/设备文件: ${t.take(120)}", snippet, line)
+                )
+                PathClassifier.PathClass.DANGEROUS -> findings.add(
+                    Finding("TRUNCATE_DATA", RiskLevel.DANGEROUS, "截断数据分区文件: ${t.take(120)}", snippet, line)
+                )
+                else -> {}
+            }
+        }
+    }
+
+    /** tee：把内容写入列出的文件；目标是系统/设备文件即高危。 */
+    private fun evaluateTee(atom: CommandParser.Atom, line: Int?, snippet: String, findings: ArrayList<Finding>) {
+        for (t in atom.operands) {
+            if (t == "-a" || t == "--append" || t.startsWith("-")) continue
+            when (PathClassifier.classify(t)) {
+                PathClassifier.PathClass.CRITICAL -> findings.add(
+                    Finding("TEE_SYSTEM", RiskLevel.CRITICAL, "写入系统/设备文件: ${t.take(120)}", snippet, line)
+                )
+                PathClassifier.PathClass.DANGEROUS -> findings.add(
+                    Finding("TEE_DATA", RiskLevel.DANGEROUS, "写入数据分区文件: ${t.take(120)}", snippet, line)
+                )
+                else -> {}
+            }
+        }
+    }
+
+    /**
+     * 重定向目标分级（`>` / `>>` / `2>` / `&>`）。
+     * 只对**绝对路径**目标判定，相对目标（如 `> out.txt`）与安全设备文件（/dev/null 等）跳过，
+     * 避免把 `cmd > /dev/null`、`cmd > log.txt` 这类正常写法误报。
+     */
+    private fun evaluateRedirects(atom: CommandParser.Atom, line: Int?, snippet: String, findings: ArrayList<Finding>) {
+        for (target in atom.redirects) {
+            if (target.startsWith("/dev/fd/") || target.startsWith("/dev/pts/")) continue
+            if (target in SAFE_REDIRECT_DEVICES) continue
+            if (target == "/proc/sysrq-trigger") {
+                findings.add(
+                    Finding("REDIRECT_SYSRQ", RiskLevel.CRITICAL, "写入 /proc/sysrq-trigger（可致系统立即崩溃/重启）", snippet, line)
+                )
+                continue
+            }
+            when (PathClassifier.classify(target)) {
+                PathClassifier.PathClass.CRITICAL -> findings.add(
+                    Finding("REDIRECT_SYSTEM", RiskLevel.CRITICAL, "重定向写入系统/设备路径: ${target.take(120)}", snippet, line)
+                )
+                PathClassifier.PathClass.DANGEROUS -> findings.add(
+                    Finding("REDIRECT_DATA", RiskLevel.DANGEROUS, "重定向写入数据分区: ${target.take(120)}", snippet, line)
+                )
+                else -> {}
             }
         }
     }
@@ -219,24 +346,117 @@ object PolicyEngine {
         }
     }
 
-    /** curl/wget | sh 与 base64 | sh：远程/编码内容直接进 shell。 */
-    private fun detectPipeToShell(atoms: List<CommandParser.Atom>, line: Int?, findings: ArrayList<Finding>) {
+    /**
+     * curl/wget | sh 与 base64/解压 | sh：远程/编码内容直接进 shell。
+     *
+     * 分级按来源区分：交互终端里用户是**显式输入**了这条命令，给可确认的 DANGEROUS；
+     * 脚本文件里出现则说明作者刻意隐藏载荷 → CRITICAL，自动执行链路直接拦截。
+     */
+    private fun detectPipeToShell(
+        atoms: List<CommandParser.Atom>,
+        source: CommandSource,
+        line: Int?,
+        findings: ArrayList<Finding>
+    ) {
         val bySegment = atoms.groupBy { it.segmentId }
         val sorted = bySegment.keys.sorted()
         for (idx in 0 until sorted.size - 1) {
             val cur = bySegment[sorted[idx]]?.firstOrNull() ?: continue
             val next = bySegment[sorted[idx + 1]]?.firstOrNull() ?: continue
-            if (next.program in setOf("sh", "bash", "ash", "dash")) {
+            if (next.program in SHELL_PROGRAMS) {
                 when {
                     cur.program in FETCHERS -> findings.add(
                         Finding("REMOTE_PIPE_SHELL", RiskLevel.DANGEROUS, "远程内容直接执行（${cur.program} | sh）", cur.raw.take(200), line)
                     )
                     cur.program in DECODERS -> findings.add(
-                        Finding("ENCODED_PIPE_SHELL", RiskLevel.DANGEROUS, "编码内容直接执行（${cur.program} | sh），常见于混淆恶意脚本", cur.raw.take(200), line)
+                        Finding(
+                            "ENCODED_PIPE_SHELL",
+                            if (source == CommandSource.SCRIPT_FILE) RiskLevel.CRITICAL else RiskLevel.DANGEROUS,
+                            "编码/压缩内容直接交给 shell 执行（${cur.program} | sh），常见于加密混淆脚本",
+                            cur.raw.take(200), line
+                        )
                     )
                 }
             }
         }
+    }
+
+    /**
+     * 解释器内联执行解码载荷：`python -c "import base64;exec(base64.b64decode(…))"`、
+     * `perl -e "…"`、`node -e "…"` 等。这类命令的内容不在命令流里，静态规则看不到。
+     */
+    private fun detectInterpreterPayload(
+        atoms: List<CommandParser.Atom>,
+        source: CommandSource,
+        line: Int?,
+        findings: ArrayList<Finding>
+    ) {
+        for (a in atoms) {
+            if (a.program !in INTERPRETERS) continue
+            val joined = a.args.joinToString(" ")
+            if (containsDecoderMarker(joined)) {
+                findings.add(
+                    Finding(
+                        "INTERPRETER_PAYLOAD", obfuscationLevel(source),
+                        "解释器内联执行解码后的载荷（${a.program} -c/-e …），属混淆执行",
+                        a.raw.take(200), line
+                    )
+                )
+            }
+        }
+    }
+
+    /**
+     * 混淆类行为的风险等级：脚本文件里出现 → CRITICAL（自动执行直接拦），
+     * 交互终端里是用户显式输入 → DANGEROUS（弹窗确认后仍可执行）。
+     */
+    private fun obfuscationLevel(source: CommandSource): RiskLevel =
+        if (source == CommandSource.SCRIPT_FILE) RiskLevel.CRITICAL else RiskLevel.DANGEROUS
+
+    /**
+     * `eval` 动态执行：eval 的内容在运行时才拼装，静态无法审计。
+     * - eval + 解码器 / 未解析变量 → CRITICAL（几乎必然是混淆载荷）；
+     * - 其它 eval → DANGEROUS 提示。
+     */
+    private fun detectEvalDynamic(
+        atoms: List<CommandParser.Atom>,
+        source: CommandSource,
+        line: Int?,
+        findings: ArrayList<Finding>
+    ) {
+        val evalAtoms = atoms.filter { it.program == "eval" }
+        if (evalAtoms.isEmpty()) return
+        val hasDecoder = atoms.any { it.program in DECODERS && isDecodeInvocation(it) }
+        val hasVar = evalAtoms.any { it.hasUnresolvedVar }
+        val snippet = evalAtoms.first().raw.take(200)
+        if (hasDecoder || hasVar) {
+            findings.add(
+                Finding(
+                    "EVAL_DYNAMIC", obfuscationLevel(source),
+                    "eval 动态执行解码/变量拼装的内容，静态无法审计（常见于加密脚本）", snippet, line
+                )
+            )
+        } else {
+            findings.add(Finding("EVAL", RiskLevel.DANGEROUS, "eval 动态求值并执行", snippet, line))
+        }
+    }
+
+    /** 该原子是否在「解码/解压」而非编码（如 base64 -d、xxd -r、openssl enc -d、gunzip）。 */
+    private fun isDecodeInvocation(a: CommandParser.Atom): Boolean = when (a.program) {
+        "xxd" -> a.args.any { it == "-r" }
+        "openssl" -> a.args.any { it == "enc" || it == "dgst" } || a.args.any { it == "-d" || it == "-D" }
+        "base64" -> a.args.any { it == "-d" || it == "--decode" }
+        "gunzip", "zcat", "bunzip2", "bzcat", "unxz", "unlzma", "lz4", "zstd", "unzip", "uudecode", "cpio" -> true
+        else -> false
+    }
+
+    /** 文本中是否出现「解码器」特征（大小写不敏感）。 */
+    private fun containsDecoderMarker(text: String): Boolean {
+        val t = text.lowercase()
+        return t.contains("base64") || t.contains("b64decode") || t.contains("b64encode") ||
+            t.contains("frombase64") || t.contains("atob(") || t.contains("unhexlify") ||
+            t.contains("xxd -r") || t.contains("openssl enc") || t.contains("\\x") ||
+            t.contains("bytes.fromhex") || t.contains("codecs.decode")
     }
 
     /** 当前安全档位（读 AppSettings；未初始化时保守取 STANDARD）。 */
