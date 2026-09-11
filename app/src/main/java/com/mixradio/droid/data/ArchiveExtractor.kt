@@ -399,13 +399,32 @@ object ArchiveExtractor {
         }
     }
 
-    /** 安全化条目名并解析为目标文件（剥离绝对路径与 ../ 穿越）。 */
-    private fun safeDest(target: String, entryName: String): File {
+    /**
+     * 安全化条目名并解析为目标文件。
+     *
+     * **双层防御（Zip Slip）**：
+     * ① 词法层：剥离绝对路径与前缀 `../`，把行内 `..` 段折叠成 `/`；
+     * ② 真实路径层：用 `canonicalFile` 解析 `..` 与**符号链接**后，结果必须仍落在 target 之内；
+     *    越界则丢弃目录部分、只保留文件名（fail-closed，绝不写到 target 之外）。
+     *
+     * 仅靠 ① 不够：词法层看不到符号链接，`<target>/link -> /system` 之类仍可逃逸；
+     * 而 ② 在异常（如 canonical 解析失败）时同样退化为「只保留文件名」，不留 fail-open 口子。
+     */
+    internal fun safeDest(target: String, entryName: String): File {
         var n = entryName.replace('\\', '/')
         while (n.startsWith("/")) n = n.substring(1)
         while (n.startsWith("../")) n = n.removePrefix("../")
         n = n.replace(Regex("(^|/)\\.\\.(/|$)"), "/").trim()
-        return File(target, n)
+        val candidate = File(target, n)
+        val fallback = File(target, candidate.name.ifEmpty { "unnamed" })
+        return try {
+            val base = File(target).canonicalFile
+            val real = candidate.canonicalFile
+            val basePath = base.path
+            if (real.path == basePath || real.path.startsWith(basePath + File.separator)) real else fallback
+        } catch (_: Exception) {
+            fallback
+        }
     }
 
     private fun copyStream(input: InputStream, dest: File) {
