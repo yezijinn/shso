@@ -123,6 +123,11 @@ UI 层 100% 采用 AndroidX Compose Material 3 原生控件（`androidx.compose.
 ```
 
 - Windows 下推荐仓库内一键脚本：`python build_apk.py --skip-check`
+- **只打包 `arm64-v8a`**（`defaultConfig.ndk.abiFilters`，2026-09-11 起）：ROOT 玩机设备基本都是 arm64，
+  去掉其余 ABI 的原生库可省约 1.4MB。**不要用 `splits.abi`** —— 产物名会变成 `app-arm64-v8a-release.apk`，
+  `build_apk.py` 按 `app-release*.apk` 定位产物会失败。
+- **未使用 zstd**（`.zst` / `.tar.zst`，2026-09-11 移除）：zstd-jni 的 AAR 为 4 个 ABI 各带一份原生库（约 1.9MB）。
+  当前支持的 12 种格式见 `ArchiveExtractor`。
  - Release 签名：本地 keystore（仓库外，V2+V3，alias=com.mixradio.droid），debug buildType 复用 release 签名
 - **Release 已开启 R8**：`isMinifyEnabled = true` + `shrinkResources = true`（2026-09-11 起；此前为 `false`）。开启后资源会被重命名为随机短名（如 `res/RJ.png`）并剔除未引用资源，因此**不要按 APK 内的资源名反查源码资源**，应以源码 `res/` 与构建产物的映射为准。
 - packaging excludes 清理了 META-INF/kotlin/assets 冗余；ArtProfile 与 mergeAssets 任务被禁用
