@@ -27,7 +27,7 @@
 | 项 | 值 |
 |---|---|
 | 分支 | `main`（本次提交后待推送；上一批 `0f2cbf9` 已同步） |
-| 单元测试 | **212 tests / 0 failures**（本轮新增 62 条，起点 150） |
+| 单元测试 | **220 tests / 0 failures**（本轮新增 70 条，起点 150） |
 | 守卫模块 | **v1.2.0**（真机已装并验证拦截） |
 | 真机 | BIYLBAFQQSS8DA69（PacM00，Magisk，`su -c id` uid=0）|
 | 当前安全档位 | 设备上为 **0**（测试后已还原；验证拦截需切到 ≥2） |
@@ -93,6 +93,19 @@
 - `HorizontalPager` 保留 4 页：切标签不再丢终端输入 / 文件页多选·滚动 / 风险确认弹窗
 - 编辑历史改为**每文件一个 key** + 旧数据自动迁移
 
+### 批次六：分包 APK 可直接安装（修复「提取出来却装不上」）
+
+- **根因**：点 `.APK` 走单文件 `pm install`，分包应用必失败（`INSTALL_FAILED_MISSING_SPLIT`）；
+  会话安装 `installSplitApks()` 早已存在，但只有 `.xapk` 路径调用
+- **做法**：安装前 `collectApkSet()` 聚合同目录同一套件 —— 主判定命名约定
+  （`<名>-<版本>.APK` + `-splitN`，即本 App 提取产物的命名），次判定 manifest 的
+  「同包名 + 同版本号」（覆盖 SAI/MT 的 `split_config.*.apk`）；`bases.size != 1` 退回单文件
+- **点 base 或点任意 split 都装整套**；无 ROOT 时识别出分包给出明确提示而非 `MISSING_SPLIT`
+- 新增 `ApkInstallerSetTest` 8 例；单测 212 → 220
+- 真机验证：`WhatsApp-263507522.APK` + 3 个 `-splitN.APK`（92MB）经 shso 安装成功，
+  `pm path com.whatsapp` 返回 base + `split_config.armeabi_v7a` + `split_config.xhdpi` + `split_i18n_ko`
+- 验证后已 `pm uninstall` 还原设备（测试前该应用本就未安装）
+
 ### 批次五：新增「提取 APK」（文件页设置菜单）
 
 - 文件页「设置」弹窗内新增 **「提取APK」**：列出已安装应用 → 导出安装包到内部存储 `Download/`
@@ -136,6 +149,8 @@
 8. **新增守卫包装器必须三处同步** —— `gen_wrappers.py` specs、`assets/shso_guard.zip`、`REQUIRED_ARCHIVE_ENTRIES`，并升 `module.prop` 版本。
 9. **不要在 `LaunchedEffect` 里直接 `scrollToItem`** —— 列表未组合时会挂起并阻塞后续逻辑。
 10. **档位 ≤1 时策略层一律放行** —— 验证拦截必须用档位 ≥2。
+11. **分包安装必须走 `pm install-create/-write/-commit` 且分片先拷到 `/data/local/tmp`** —— 真机实测 `install-write` 直接读 `/storage` 会被 SELinux 拒绝（system_server 无权读 emulated 存储）；单文件 `pm install` 对分包应用必定 `INSTALL_FAILED_MISSING_SPLIT`。
+12. **套件聚合宁少勿错** —— `collectApkSet` 定位不到唯一基础包时必须退回单文件安装，绝不猜测（否则会把两份同包同版本的基础包塞进一个会话）。
 
 ---
 
