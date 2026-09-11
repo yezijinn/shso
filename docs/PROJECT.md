@@ -20,6 +20,11 @@ Android ROOT 环境下的图形化执行工具：一键运行 `.sh` 脚本与 `.
 shso-main/
 ├── AGENTS.md                     # AI 行为准则与导航（先读这个）
 ├── docs/PROJECT.md               # 本文档
+├── module/shso_guard/            # 运行时守卫模块源码（与 assets/shso_guard.zip 保持一致）
+│   ├── guard/common.sh           # 策略加载 / 路径归一化 / 判定 / 审计（所有守卫共用）
+│   ├── guard/<cmd>               # 各命令包装器（由 gen_wrappers.py 从 guard-template.sh 生成）
+│   ├── policy.conf               # 默认策略（protect= / allow= / mode=）
+│   └── gen_wrappers.py           # 包装器生成器：改守卫需重新生成并重打包 zip
 ├── settings.gradle.kts           # 自包含工程：仅 include(":app")
 ├── gradle/libs.versions.toml     # 唯一版本管理入口
 ├── gradle.properties             # 8G JVM、R8 gradual、Dokka V2 实验开关
@@ -118,9 +123,17 @@ UI 层 100% 采用 AndroidX Compose Material 3 原生控件（`androidx.compose.
 
 ## 安全子系统
 
-- **安全档位**：`0 关 / 1 审计 / 2 标准 / 3 最高`，由 `AppSettings.securityLevel` 持久化；切换时失效「守卫就绪」缓存、按需安装守卫并同步 `/data/adb/shso_guard/policy.conf` 的 `mode`（`off` / `log` / `enforce`）。
-- **运行时守卫**：仓库内 `module/shso_guard/` 为守卫模块源码（随 APK 以 `assets/shso_guard.zip` 分发），档位 ≥2 时安装到 `/data/adb/modules/shso_guard`，拦截破坏性写操作并落审计日志 `/data/adb/shso/audit.log`。
-- **执行前确认**：脚本 / 程序执行前弹风险确认框（文件名 / 路径 / 类型 / 大小 / 修改时间 / SHA-256 / 是否 Root）。
+**分层模型**：App 侧静态审查（提示层 / 自动执行链路的第一道门） + `shso_guard` 运行时守卫（执行层） + 审计日志。
+
+- **安全档位**：`0 关 / 1 审计 / 2 标准 / 3 最高`，由 `AppSettings.securityLevel` 持久化；档位 ≤1 时 `RootCommandGateway` 一律放行（验证拦截效果必须用档位 ≥2）。切换档位会失效「守卫就绪」缓存、按需安装守卫并同步 `policy.conf` 的 `mode`（`off`/`log`/`enforce`）；**冷启动时也会同步一次**（`policy.conf` 跨重装保留，残留 `off/log` 会让守卫静默不拦截）。
+- **命令解析（`security/CommandParser`）**：词法切分 → 拆原子 → 展开 `$(...)`/反引号/`sh -c`/`eval`；剥离 `busybox/toybox/magisk/nohup/timeout/stdbuf/sudo/env/xargs` 前缀（含带值选项，如 `timeout 5`、`sudo -u root`）；提取重定向目标；标记 `programUnresolved`（程序名含变量，如 `r$IFSm`）与 `programAmbiguous`。超限（>32KB / >400 token / >128 原子 / 深度 >6）→ `truncated`。
+- **策略（`security/PolicyEngine`）**：五类规则 —— 删除类（`rm` 族）、写入类（`dd`/`truncate`/`tee`/`cp`/`mv`/`install`/重定向）、权限类（`chmod`/`chown`）、格机类（`mkfs`/`wipe`/分区表/刷机工具/`fastboot`）、混淆类（解码器管道 / `eval` / 解释器内联解码载荷）。**风险等级按来源区分**：`SCRIPT_FILE` 的混淆类一律 `CRITICAL`（自动执行直接拒），`USER_TERMINAL` 为 `DANGEROUS`（可确认）。`CRITICAL` → `Verdict.Block`，`DANGEROUS/WARNING` → `Verdict.Confirm`。
+- **路径分级（`security/PathClassifier`）**：词法归一化（解析 `.`/`..`/`//`/通配符基路径）后分四级；`/data/adb/shso`、`/data/local/tmp`、`/sdcard` 等为 SAFE，系统/设备为 CRITICAL，`/data/*` 与 `/data/adb/modules|magisk|ksu|ap` 为 DANGEROUS。
+- **脚本审查（`security/ScriptAuditor`）**：逐逻辑行合并续行后解析，产出带行号的风险项；`looksEncrypted` 识别超长纯 base64 单行与 NUL/二进制内容。**门控为纯函数** `blocksUnattendedExecution(report) = report.truncated || 存在 CRITICAL`；`>2MB` 返回不可读（`SCRIPT_UNREADABLE`）。展示用风险项取 `blockingFindingsFor(report)`（可能为空，调用方不得 `first()`）。
+- **运行时守卫**：`module/shso_guard/` 源码随 APK 以 `assets/shso_guard.zip` 分发，档位 ≥2 时安装到 `/data/adb/modules/shso_guard`。`guard/common.sh` 统一做策略加载 / 路径归一化（含符号链接解析）/ 判定 / 审计；各 `guard/<cmd>` 只是薄包装（决策代码禁止复制）。覆盖 `rm/rmdir/shred/truncate/wipe/dd/fastboot/mkfs*/mke2fs/make_f2fs/mv/cp/find/sed/toybox/busybox` + v1.2.0 的 `chmod/chown/chgrp/mkfs/mknod/sgdisk/parted/fdisk/flash_image`。
+- **守卫安装（`security/GuardModuleInstaller`）**：先解压 APK 内 zip 到应用缓存并校验必需条目，再 root **原子替换**（同文件系统构建 `/data/adb/.shso_guard.new` → 校验 → 旧目录挪 `.old` → `mv` → 清理）；失败保留/回滚旧版。升级判定比对 `module.prop` 的 `version`，故**新增包装器必须同步 `REQUIRED_ARCHIVE_ENTRIES` 并重打包 zip**。
+- **审计（`security/SecurityAuditLog`）**：`/data/adb/shso/audit.log`（无 ROOT 回退应用私有目录），512KB 环形滚动；写入前清除软链/非普通文件（该目录 0777，防止软链导致任意 root 写入）。
+- **执行前确认**：脚本 / 程序执行前弹风险确认框（文件名 / 路径 / 类型 / 大小 / 修改时间 / SHA-256 / 是否 Root + 脚本风险扫描逐行结果）。
 - **编辑器只读阈值**：`ChunkedFileReader.LARGE_FILE_THRESHOLD = 128KB`，超过即走只读懒加载（低端机实测：编辑框对整段文本全量排版，256KB 约 30s、2MB 数分钟无响应）。
 
 ## 已知注意点
@@ -129,3 +142,8 @@ UI 层 100% 采用 AndroidX Compose Material 3 原生控件（`androidx.compose.
 - `gradle.properties` 开启 configuration-cache，自定义 Task 配置需兼容
 - compileSdk 37 超出 AGP 默认支持，靠 `android.suppressUnsupportedCompileSdk=37.0` 压警告
 - 设置持久化文件名为 `shso_settings`（SharedPreferences）
+- **不要在 `LaunchedEffect` 里直接调用可挂起的滚动**（如 `listState.scrollToItem(0)`）：列表尚未组合时会一直挂起，导致同一 effect 中其后的逻辑永不执行（曾造成文件页「进入目录后空白、需手动刷新」）。需要归顶请用 `remember(key) { LazyListState() }` 重建状态。
+- **守卫是 PATH 前置型**：脚本内部用绝对路径（`/system/bin/rm`）或自行重置 `PATH` 可绕过运行时守卫；这部分只由 App 侧静态审查覆盖（App 解析执行的命令），脚本内部自行拼装的调用不在内。彻底封堵需 seccomp/LSM 级 hook，属独立议题。
+- **编辑历史按文件分 key 存储**（`history:<绝对路径>`），旧的单键 `edit_history` 会在首次访问时自动迁移；不要按「一个大 JSON」的假设去读 `shso_editor`。
+- **文本编辑器载入时把 CRLF/CR 归一为 LF**（Compose 只按 `\n` 断行），保存时按 `currentLineEnding` 还原；改动 `LineEnding.apply` 需同步该契约。
+- `Process.pid()` 在 Android 上不存在，取子进程 pid 只能反射；中断正确性由**进程组回收**保证。

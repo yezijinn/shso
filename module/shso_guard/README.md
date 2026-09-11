@@ -201,14 +201,20 @@ shso_guard/
 ├── customize.sh             # 刷 zip 安装时执行（复制安装不会执行）
 ├── uninstall.sh             # 卸载：删除 /data/adb/shso_guard/（审计日志保留）
 ├── guard-template.sh        # 守卫模板（__CMD_NAME__ / __OPERAND_MODE__ 两处占位符）
-├── gen_wrappers.py          # 从模板生成 16 个守卫，保证模板与产物不漂移
+├── gen_wrappers.py          # 从模板生成 25 个守卫，保证模板与产物不漂移
 └── guard/
     ├── common.sh            # 共用引擎：策略加载 / 路径归一化 / 判定 / 审计 / exec_real
-    ├── rm rmdir shred truncate wipe dd fastboot          # 模板生成
-    ├── mkfs.ext4 mkfs.f2fs mkfs.vfat mke2fs make_f2fs   # 模板生成
-    ├── mv cp find sed                                    # 模板生成
+    ├── rm rmdir shred truncate wipe dd fastboot          # 模板生成（删除 / 覆写）
+    ├── mkfs.ext4 mkfs.f2fs mkfs.vfat mke2fs make_f2fs   # 模板生成（格式化）
+    ├── mv cp find sed                                    # 模板生成（移动 / 拷贝 / 原地修改）
+    ├── chmod chown chgrp mkfs mknod                      # 模板生成（v1.2.0：权限崩坏）
+    ├── sgdisk parted fdisk flash_image                   # 模板生成（v1.2.0：分区表 / 刷机）
     └── toybox busybox       # 多二进制派发（结构特殊，不由模板生成）
 ```
+
+> **新增包装器需三处同步**：`gen_wrappers.py` 的 specs、`app/src/main/assets/shso_guard.zip`
+> （重打包）、`GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES`（必需条目清单）；并升
+> `module.prop` 的 `version=`，否则已装用户不会触发升级。
 
 改动公共行为后，**必须重新生成守卫**：
 
