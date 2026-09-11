@@ -10,9 +10,9 @@
 
 - 性能优化主线已收敛到边际收益 0（真机帧 50th 10-50ms；冷启动 547ms 释放；APK 5.0MB）。
 - 安全链路（守卫模块 / 挡位 / 审计）已全链路打通；App 侧集成任务 8/9/10 [x]。
-- 4 P1 + 4 P2 BUG 已闭环（commit `e7b3816`）；**134 tests / 0 failures**（基线 124 → 任务 22 +3 → 任务 26/27 +7）。
-- 任务 19 真机补测进行中：守卫绕过回归 + 0–3 档位端到端已全绿；期间新发现并闭环任务 22（P1 崩溃）、任务 26（mtime 1970）、任务 27（`file -b` 误判）；任务 25（中断后孤儿进程）待修，是当前唯一的 P1。
-- 推送状态：分支 `fix/github-tag-version-check` 已推送至 `72e22ac`；PR **#1** 已建（draft）。任务 26/27 的代码修复**尚未提交**。
+- 4 P1 + 4 P2 BUG 已闭环（commit `e7b3816`）；**137 tests / 0 failures**（124 → +3 任务22 → +7 任务26/27 → +3 任务25）。
+- 任务 19 真机补测：守卫绕过回归 + 0–3 档位端到端全绿；期间新发现并闭环 **任务 22**（终端 LazyColumn 崩溃）、**任务 25**（中断后孤儿进程 / UI 无法回收）、**任务 26**（mtime 1970）、**任务 27**（`file -b` 误判）。仅剩「文件 chmod 改属」未测。
+- 推送状态：分支 `fix/github-tag-version-check` 已推送至 `c391cd4`；PR **#1** 已建（draft）。任务 25 的修复**尚未提交**。
 - ROOT 链路：BIYLBAFQQSS8DA69 是**已连接、已确认 ROOT 的真机**（Magisk v30.7、`su -c id` uid=0、守卫模块已装、PATH 注入验证通过）——**此前记忆里 5a91ac60 当 ROOT 机是错的,本机无 ROOT 的说法也是错的**。任务 19 ROOT 链路补测可立即执行。
 - 审计余项：22 项 BUG 排查已闭环 8 项；剩余 14 项 P2（FilePage key / ChunkedFileReader >2GB overflow / RootService pid reflection / ArchiveExtractor Zip Slip canonical path / chmod 777 / runCommandSync stream close / Bitmap recycle / 等）属次优先级，按用户节奏分批处理。
 
@@ -120,7 +120,7 @@
 - **归因**：mksh 解释器启动 + 每次调用一次 `date` fork（`common.sh:503` 的 ALLOW 路径**无条件**调用 `audit()`，`audit()` 内 `common.sh:252` 跑 `date`）。
 - **结论**：README 宣称的「每次守卫调用 0–1 个进程」指**守卫逻辑自身**的 fork，与本测量不矛盾，但表述易被误读；且档位 ≤1 是「不装守卫」语义，该开销只在 ≥2 档出现。是否优化另开任务，不在任务 19 验收范围。
 
-### 25. [P1·待修] 高输出任务「中断」后孤儿进程存活，且 UI 无任何手段回收
+### 25. [P1·已修复] 高输出任务「中断」后孤儿进程存活，且 UI 无任何手段回收
 - **复现步骤**（BIYLBAFQQSS8DA69，12:34 版 APK）：主页输入脚本路径 → 立即执行 → 确认框「确认执行」→ 自动跳转终端页，状态「运行中..」、输出流式 → 点「中断」。
 - **对照实验（两次实测，结论相反，正是问题所在）**：
   | 被中断的任务 | `^C` 回显 | SIGINT 兜底提示 | UI 状态 | 实际进程 |
@@ -136,7 +136,34 @@
   - `sendInterrupt` 只 `kill -2 $targetPid`，`targetPid` 来自 `RootService.kt:437-439` 的反射 `process.javaClass.getDeclaredField("pid")`（失败则 `=0` → 直接跳过 kill）。该反射即任务 20 批次 6 的待改项（建议 `Process.pid()`，minSdk 26 可用）。
   - 执行协程 `finally` 只对直接子进程做 `process?.destroy()`（SIGTERM），未按进程组/子孙树回收 → 孙进程被孤悬。
   - 低输出为何能全灭、高输出为何逃逸，尚未定论（疑与管道/SIGPIPE 时机有关），修复时应统一按**进程组**回收。
-- **建议修法方向**：`su -c` 前置 `setsid`/`exec` 以便对进程组发信号；或 `kill -2 -<pgid>` 终止整组；并在 `killCurrentProcess` 中放宽 `isTaskRunning` 前置条件（保留进程句柄兜底）；`Process.pid()` 替换反射。
+- **已实施修复（进程组回收，2026-09-11）**：
+  - **根因**：`su -c` 会把命令放进**新的会话/进程组**，组长随即被重挂到 init（ppid=465），
+    应用手上的 `Process` 句柄只对应 `su` 自身 —— 对它发信号既杀不到 `sh -c …`，也杀不到真正的脚本进程。
+    真机验证：`su -c` 下 `$$` 即组长（`pid == pgrp == sid`），子进程留在同组，`kill -2 -- -<pgid>` 可一次回收整组
+    （toybox `kill` 支持负 pid，实测 rc=0 且目标进程消失）。
+  - **执行侧**：`execCmd` 前置 `echo $$ > <应用私有 filesDir>/.run.pgid;`，开跑前先 `delete()` 旧文件并把内存值清零；
+    随后 `scope.launch { runPgid = awaitRunPgid() }` 异步取回（不阻塞输出读取）。**刻意不放在外部可写路径** ——
+    `/data/adb/shso` 实测 0777，若把 pgid 放那里，任何应用都能伪造值让本应用以 root 执行 `kill -9`。
+  - **中断侧**：`sendInterrupt` 优先 `killProcessGroup(2, pgid)`（SIGINT 整组），再对直接子进程兜底 kill。
+  - **结束进程侧**：`killCurrentProcess` 先 `killProcessGroup(9, pgid)`；并**放宽前置条件** ——
+    旧实现首行 `if (!isTaskRunning) return` 使「UI 已显示待命中但子孙仍在跑」时该按钮完全失效，
+    现改为「仍有执行句柄 / 进程组记录 / 任务名」即可兜底回收。
+  - **安全校验（fail-closed，抽成顶层纯函数 `buildProcessGroupKillCommand` 以便单测）**：
+    ① `pgid > 1`；② `/proc/<pgid>/stat` 第 5 字段 == pgid（确为组长）；③ 本应用自身 pgrp != 该 pgid
+    （防止某些 `su` 实现不新建会话时误杀应用自己所在的组）；三者以 `&&` 串联，任一失败即不 kill。
+- **测试**：新增 `RootServiceProcessGroupTest`（3 例，精确等值锁定命令串与三重校验）。
+  说明：`RootService` 是 object 且初始化依赖 Android/Compose，JVM 测试里无法加载（实测 `ExceptionInInitializerError`），
+  故纯函数必须是**文件顶层**声明 —— 这也是本项目既有约定（见 `FileExecutionAnalyzer` / `TextEditorDialog`）。
+- **真机验证**（13:00 版 APK，BIYLBAFQQSS8DA69）：
+  - 高输出 `flood.sh` 运行中点「中断」→ `^C` 回显、状态回「待命中」、**进程全部消失**（修复前：孤儿继续占 10% CPU）。
+  - 高输出 `flood.sh` 运行中点「结束进程」→ **进程全部消失**。
+  - 低输出 `slow.sh` 中断 → 进程全部消失（回归保持）。
+  - 两次均 `logcat -b crash` 无本应用崩溃。
+- **附带更正**：任务 20 批次 6 里「`Process.pid()`（API 26+）替换反射」的建议**不成立** ——
+  Android 的 `java.lang.Process` **没有** `pid()`（实测编译报 `Unresolved reference 'pid'`），
+  反射只能保留并容错；好在中断/回收的正确性已不再依赖该 pid。
+- **遗留小观察**：高输出洪流下 `^C` 回显会被随后 flush 的缓冲输出顶出可见窗口（低输出场景正常显示），
+  属显示顺序问题，不影响进程回收。
 
 ### 26. [BUG·已修复] Root 文件「最后修改时间」恒为 1970（秒当毫秒）
 - **现象**：执行确认框显示 `最后修改时间 = 1970-01-22 00:57`，而设备实际 mtime 为 `2026-09-10 20:49:50 (+0800)`（`stat -c %Y` = `1789044590`）。
@@ -180,7 +207,7 @@
 
 ## ⚠️ 待决事项（需用户确认或外部依赖）
 
-1. **主线选择**：任务 18 已完成；任务 19 已完成 2/4（守卫绕过 + 档位），剩 RootFileManager chmod / 终端 `kill -2`；期间新发现并闭环任务 22（P1 崩溃）。当前仍处 18 → **19** → 20 路径。
+1. **主线选择**：任务 18 已完成；任务 19 已完成 3/4（守卫绕过、0–3 档位、终端 `\n` 与中断）；仅剩文件 chmod 改属。期间闭环任务 22/25/26/27。当前仍处 18 → **19** → 20 路径。
 2. **5a91ac60 历史身份**：2026-09-11 修正——该 ID 自 2026-09-06 后已不在 adb 设备列表,长期被记忆误标为"ROOT 主力机",实际上 BIYLBAFQQSS8DA69 才是 ROOT 真机。历史 daily log 里的 5a91ac60 引用是当时真实接入的设备（与今日不同),保留原状不再回填;但新生成的看板、commit、PR 描述一律以 BIYLBAFQQSS8DA69 为准。
 3. **审计余项处理节奏**：任务 20 是「全做」版（3 批 ~10 项），用户可指派「只做高风险（Zip Slip / overflow / chmod）」或「暂缓」。注意：任务 22/23 说明**原审计清单不完整**——「迁移导致测试脚本失效」与「终端内容 key 崩溃」都不在那 22 项里。
 4. **PR 标题 / 描述模板**：已用于 PR #1（标题「feat: 守卫模块 / 终端洪流进化 / 编辑器优化 / R8 / BUG 闭环」，描述存 `artifacts/pr-body-fix-github-tag-version-check.md`）；用户可随时改。
