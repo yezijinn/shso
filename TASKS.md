@@ -10,8 +10,10 @@
 
 - 性能优化主线已收敛到边际收益 0（真机帧 50th 10-50ms；冷启动 547ms 释放；APK 5.0MB）。
 - 安全链路（守卫模块 / 挡位 / 审计）已全链路打通；App 侧集成任务 8/9/10 [x]。
-- 4 P1 + 4 P2 BUG 已闭环（`e7b3816`）；**144 tests / 0 failures**（124 → +3 任务22 → +7 任务26/27 → +3 任务25 → +7 任务20）。
+- 4 P1 + 4 P2 BUG 已闭环（`e7b3816`）；**146 tests / 0 failures**（124 → +3 任务22 → +7 任务26/27 → +3 任务25 → +7 任务20 → +2 解压端到端）。
 - 任务 19 真机补测 **✅ 全部通过（4/4）**；期间新发现并闭环 **任务 22/25/26/27**。
+- **任务 20 审计余项 ✅ 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `chmod 777`→755 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏，外加 `ChunkedFileReader` 上限加固）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
+- **任务 28（新）**：解压到 `/data/adb/` 下静默失败已定位（SELinux 拦截应用 uid，与我方改动无关），修法待定。
 - **任务 20 审计余项 ✅ 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `chmod 777`→755 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏，外加 `ChunkedFileReader` 上限加固）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
 - 推送状态：分支 `fix/github-tag-version-check` 已推送至 `be6db40`；PR **#1 已 ready for review**。任务 20 的修复**尚未提交**。
 - ROOT 链路：BIYLBAFQQSS8DA69 是**已连接、已确认 ROOT 的真机**（Magisk v30.7、`su -c id` uid=0、守卫模块已装、PATH 注入验证通过）——**此前记忆里 5a91ac60 当 ROOT 机是错的,本机无 ROOT 的说法也是错的**。任务 19 ROOT 链路补测可立即执行。
@@ -96,8 +98,9 @@
   - 旧：仅词法剥离绝对路径与 `../`。词法层**看不到符号链接**，`<target>/link -> 外部目录` 仍可逃逸。
   - 新：双层防御 —— 保留词法层，再加 `canonicalFile` 真实路径校验（解析 `..` 与符号链接），越界即丢弃目录只留文件名；**异常路径同样退化为文件名**（不留 fail-open）。
   - 测试：`ArchiveExtractorZipSlipTest` 3 例（7 种穿越型条目名 / 正常条目保留结构 / **符号链接逃逸**）。旧代码在符号链接用例下会失败。
-  - ⚠️ **端到端 UI 验证未完成（2026-09-11）**：造了恶意 zip（`../evil.txt` + `sub/../../deep.txt` + 正常条目）在文件页点「自动解压文件」，**未产出任何目录**；换**正常** zip 同样无产出 → 说明与本次 `safeDest` 改动无关。中途把 `/data/adb/shso` 临时改回 0777 重测亦无变化 → 也不是 755 所致。再导航到 `/sdcard` 复测因列表虚拟化、滚动定位不可靠而放弃。
-  - **未决**：解压功能在该位置为何无产出尚未查明（可能是应用以自身 uid 写 `/data/adb/` 被 SELinux 拒绝，属既有限制；也可能是 Toast 报了失败但 dump 读不到）。**未定位，不要当作已验证**。建议后续单独开一项排查「解压是否可写 `/data/adb/*`」。
+  - ✅ **端到端验证（已补齐）**：新增 `ArchiveExtractorExtractTest` 2 例，在 JVM + 真实文件系统上直接调 `ArchiveExtractor.extract()`：
+    - 正常 zip → 解压成功并保留 `ok.txt` / `sub/normal.txt` 结构（**证明解压代码本身没问题**）；
+    - 含穿越条目的 zip → 目标目录外的 `../evil.txt`、`sub/../../deep.txt` **均未出现**，被压回目标目录内，正常条目不受影响（**Zip Slip 端到端拦截成立**）。
 - **`ensureShsoDir` chmod 777 → 已修**（真机验证）
   - 改为 **755**：该目录是 root 侧写审计日志与守卫产物的位置，0777 让任意应用可往里塞/改文件（例如伪造审计内容）；目录内写入均由 `su` 以 root 进行，owner 可写已足够。
   - 真机验证：App 启动后 `/data/adb/shso` 由 `drwxrwxrwx`(777) → **`drwxr-xr-x`(755)** ✓
@@ -230,6 +233,20 @@
   2. 抽出**纯函数** `internal fun classifyFileTypeLine(line, ext)` 承载判定逻辑，并**剥掉 `<path>: ` 前缀**——否则路径里的 `data` 会命中 `contains("data")`，把 `/data/adb/...` 误判成「未知二进制」。
 - **测试**：新增 `FileExecutionAnalyzerTest`（5 例），含真机原始输出 `/data/adb/shso/flood.sh: /system/bin/sh script` → `("文本 / 脚本", "明文代码")`，以及「路径含 data 不得污染判定」的回归。
 - **真机验证**（12:34 版 APK）：同一确认框显示 `文件类型 = 文本 / 脚本`、`文件内容 = 明文代码`（修复前为 `Shell Script` + `二进制 / 加密`），SHA-256 不变。
+
+### 28. [待修·UX/健壮性] 解压到 `/data/adb/` 下会静默失败（非本轮引入）
+> 来源：任务 20 回归冒烟时发现「点解压无任何产出」，已定位，见下。
+
+- **现象**：文件页对 `/data/adb/shso/` 下的 zip 点「自动解压文件」→ 不产生任何目录/文件，只有一闪而过的 Toast（uiautomator 读不到）。**正常 zip 与恶意 zip 表现一致**。
+- **根因（已证实，非代码逻辑 bug）**：解压是以**应用自身 uid** 落盘的（`extract()` 里 `File(finalTarget).mkdirs()`，以及 `copyStream` 的 `FileOutputStream`）。而 `/data/adb/` 对应用域有 **SELinux(MAC)** 限制。
+  - 决定性证据：`adb shell run-as com.mixradio.droid sh -c 'mkdir -p /data/adb/shso/zz'` 在目录为 **0755 时失败**，临时改为 **0777 时同样失败**（均 `Permission denied`）→ 说明与 DAC 权限位无关，是 MAC 拦截。
+  - 因此：**本轮 `chmod 777 → 755` 不是回归**（777 下同样失败）。
+- **代码侧佐证**：`ArchiveExtractorExtractTest` 在 JVM 真实文件系统上直接调 `extract()`，正常 zip 解压成功 → 解压逻辑本身正确。
+- **为什么是问题**：UI 没有前置判断，仍向用户暴露「自动解压文件」入口；失败只通过 Toast 反馈，用户难以察觉原因。
+- **可选修法（待用户定）**：
+  1. 目标目录不可写时改用 root 落盘（`su` 建目录 + 以 root 流写入），使 `/data/adb/*` 下也能解压；
+  2. 或检测到目标父目录不可写时**禁用/隐藏该入口**并给出明确提示（改动小、风险低）；
+  3. 或至少把 `mkdirs()` 的返回值纳入失败判定，给出可诊断的错误文案（最小改动）。
 
 ### 21. 新主目标（占位 — 视用户输入）
 - [ ] 用户指定后填充
