@@ -60,9 +60,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.mixradio.droid.data.AnsiParser
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.IncrementalAnsiParser
+import com.mixradio.droid.data.ParsedAnsiResult
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.security.CommandSource
 import com.mixradio.droid.data.security.Finding
@@ -116,37 +116,53 @@ fun TerminalPage(
     // 增量解析器：跨 flush 维护「当前未完成行 / SGR 状态 / \r 光标列 / 截断的 ESC 序列」，
     // 因此每次发布只需解析**新增尾部**，不再全量重扫 250k 窗口。
     // 颜色是解析器的构造参数，换色即重建（key 为 terminalDefaultColor）。
-    val ansiParser = remember(terminalDefaultColor) { IncrementalAnsiParser(terminalDefaultColor) }
+    //
+    // 跨页面重建复用：HorizontalPager 离屏即销毁本页，重进终端会重建全部状态；而日志窗口可达
+    // 250k 字符，同步全量解析实测 ≈200ms+ 卡帧（低端机接近 ANR）。若只缓存「快照」，解析器的
+    // 跨行/SGR 状态仍丢失、只能全量重扫。故连**解析器实例与其进度**一并缓存：重进时直接续用，
+    // 新日志只走增量；首帧也不再在主线程做任何解析。
+    val cachedParse = TerminalParseCache.state?.takeIf { it.color == terminalDefaultColor }
+    val ansiParser = remember(terminalDefaultColor) {
+        cachedParse?.parser ?: IncrementalAnsiParser(terminalDefaultColor)
+    }
     // 已消费的输入前缀，用于判定「本次是追加还是整体替换」。
-    var consumedLog by remember(terminalDefaultColor) { mutableStateOf("") }
-
-    // 首帧同步解析一次（仅进入终端页时发生一次），保证打开即有内容、无空白闪烁。
-    var parsedOutput by remember {
-        mutableStateOf(AnsiParser.parseAnsi(RootService.outputLog, terminalDefaultColor))
+    var consumedLog by remember(terminalDefaultColor) {
+        mutableStateOf(cachedParse?.consumedLog ?: "")
+    }
+    var parsedOutput by remember(terminalDefaultColor) {
+        mutableStateOf(cachedParse?.result ?: ParsedAnsiResult(emptyList()))
     }
 
     // 后续更新必须移出主线程：解析成本与「整个日志窗口」(250k) 成正比，而每次发布都会重解析。
     // 实测留在组合期会占满主线程（主线程 CPU ≈142%，帧耗时 200ms+，界面近乎冻结）。
     // conflate() 保证同一时刻只有一个解析在跑，中间值直接丢弃，不会因高频发布堆积。
     LaunchedEffect(terminalDefaultColor) {
-        ansiParser.reset()
-        consumedLog = ""
+        // 仅「换色 / 首次进入」需要清空重建；复用缓存解析器时保留其状态与进度。
+        if (ansiParser !== cachedParse?.parser) {
+            ansiParser.reset()
+            consumedLog = ""
+        }
         snapshotFlow { RootService.outputLog }
             .conflate()
             .collect { log ->
-                parsedOutput = withContext(Dispatchers.Default) {
-                    if (log.length > consumedLog.length && log.startsWith(consumedLog)) {
+                // 复用缓存时首轮日志常与缓存进度一致，此时无需任何解析。
+                if (log == consumedLog) return@collect
+                val prev = consumedLog
+                val snap = withContext(Dispatchers.Default) {
+                    if (log.length > prev.length && log.startsWith(prev)) {
                         // 追加：只解析新增部分
-                        ansiParser.feed(log.substring(consumedLog.length))
+                        ansiParser.feed(log.substring(prev.length))
                     } else {
-                        // 整体替换（清屏 / 横幅重生成 / 滑动窗口裁剪掉了头部）：
-                        // 此时无法复用状态，回落全量解析。
+                        // 整体替换（清屏 / 横幅重生成 / 滑动窗口裁剪掉了头部）：无法复用状态，回落全量解析。
                         ansiParser.reset()
                         ansiParser.feed(log)
                     }
-                    consumedLog = log
                     ansiParser.snapshot()
                 }
+                // 回主线程再写状态（避免后台线程写 Compose state），并更新缓存供下次重进复用。
+                consumedLog = log
+                parsedOutput = snap
+                TerminalParseCache.state = TerminalParseState(terminalDefaultColor, ansiParser, log, snap)
             }
     }
 
@@ -568,4 +584,22 @@ fun TerminalPage(
             onConfirm = { onConfirmRiskSend() }
         )
     }
+}
+
+/**
+ * 终端解析状态（解析器实例 + 已消费日志进度 + 快照）。
+ * 供 [TerminalParseCache] 在页面被 HorizontalPager 销毁/重建时复用，避免重进终端页重跑全量解析。
+ * [color] 为解析所用默认色，颜色变化即失效（与 `remember(terminalDefaultColor)` 的 key 对齐）。
+ */
+private class TerminalParseState(
+    val color: Color,
+    val parser: IncrementalAnsiParser,
+    val consumedLog: String,
+    val result: ParsedAnsiResult
+)
+
+/** 单例缓存：同一时刻只有终端页在用，故仅保留最近一次 [TerminalParseState]。 */
+private object TerminalParseCache {
+    @Volatile
+    var state: TerminalParseState? = null
 }

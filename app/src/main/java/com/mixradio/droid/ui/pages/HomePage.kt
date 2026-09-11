@@ -341,7 +341,24 @@ fun HomePage(
                 }
             }
 
-            if (shsoFiles.isEmpty()) {
+            if (isScanningShso && shsoFiles.isEmpty()) {
+                // 扫描中且尚无结果：给出加载态。旧实现只写不读 isScanningShso，扫描期或读取失败
+                // 都会直接显示「暂无文件」，与真正的空目录无法区分，看起来像卡死。
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "正在读取目录…",
+                        style = AuroraTextStyles.body2,
+                        fontWeight = FontWeight.Medium,
+                        color = AuroraTokens.TextSecondary
+                    )
+                }
+            } else if (shsoFiles.isEmpty()) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
