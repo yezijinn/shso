@@ -84,28 +84,30 @@ private fun sortedForView(items: List<FileItem>, sortMode: Int): List<FileItem> 
 }
 
 /**
- * 排序方式选择小胶囊按钮（文件列表设置弹窗内）。
+ * 排序方式选项：**纯文本**，无圆角矩形底色容器（与弹窗紧凑风格一致）。
+ *
+ * 仅以选中态区分：选中 = Accent 色 + SemiBold，未选中 = TextSecondary + Normal。
  */
 @Composable
-private fun SortModePillButton(
+private fun SortModeTextOption(
     text: String,
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Button(
-        onClick = onClick,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (selected) AuroraTokens.Accent else AuroraTokens.SurfaceHover,
-            contentColor = if (selected) AuroraTokens.OnAccent else AuroraTokens.Text
-        ),
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+    Box(
         modifier = modifier
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp, horizontal = 2.dp),
+        contentAlignment = Alignment.Center
     ) {
         Text(
             text = text,
             fontSize = 12.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) AuroraTokens.Accent else AuroraTokens.TextSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
@@ -150,14 +152,19 @@ internal fun FileShortcutButton(
 }
 
 /**
- * 「文件列表设置」弹窗：列表字体大小滑杆 / 显示隐藏文件开关 / 四种排序方式。
+ * 「文件列表设置」弹窗：字号一行（字号—拖动条—数值）/ 显示隐藏文件开关 / 四种排序方式（纯文本）/ 全选文件 + 新建文件（同一行）。
  * 绑定传入的 AppSettings，任何入口的修改即时写入同一份偏好。
+ *
+ * @param onSelectAllFilesRequest 全选/取消全选**文件**（不含文件夹）；为 null 表示该入口不支持多选（如文件选择器），不渲染该项。
+ * @param allFilesSelected 当前是否已处于「全选文件」状态；用于把文案切换为「取消全选」。
  */
 @Composable
 internal fun FileListSettingsDialog(
     appSettings: AppSettings,
     onDismissRequest: () -> Unit,
-    onNewFileRequest: () -> Unit
+    onNewFileRequest: () -> Unit,
+    onSelectAllFilesRequest: (() -> Unit)? = null,
+    allFilesSelected: Boolean = false
 ) {
     AuroraWindowDialog(
         show = true,
@@ -170,31 +177,16 @@ internal fun FileListSettingsDialog(
                 .padding(horizontal = 8.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "列表字体大小",
-                    style = AuroraTextStyles.body1,
-                    color = AuroraTokens.Text,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    text = "${appSettings.fileListFontSize.roundToInt()} sp",
-                    style = AuroraTextStyles.footnote1,
-                    color = AuroraTokens.Accent
-                )
-            }
+            // 字号一行：字号 — 拖动条 — 当前数值（不再单独一行标题 + 一行「小—大」标注）
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "小",
-                    style = AuroraTextStyles.footnote2,
-                    color = AuroraTokens.TextSecondary
+                    text = "字号",
+                    style = AuroraTextStyles.body1,
+                    color = AuroraTokens.Text
                 )
                 AuroraThinSlider(
                     value = appSettings.fileListFontSize,
@@ -203,9 +195,9 @@ internal fun FileListSettingsDialog(
                     modifier = Modifier.weight(1f)
                 )
                 Text(
-                    text = "大",
-                    style = AuroraTextStyles.footnote2,
-                    color = AuroraTokens.TextSecondary
+                    text = "${appSettings.fileListFontSize.roundToInt()} sp",
+                    style = AuroraTextStyles.footnote1,
+                    color = AuroraTokens.Accent
                 )
             }
 
@@ -268,25 +260,25 @@ internal fun FileListSettingsDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    SortModePillButton(
+                    SortModeTextOption(
                         text = "名称↓",
                         selected = appSettings.fileSortMode == AppSettings.FILE_SORT_NAME_DESC,
                         onClick = { appSettings.updateFileSortMode(AppSettings.FILE_SORT_NAME_DESC) },
                         modifier = Modifier.weight(1f)
                     )
-                    SortModePillButton(
+                    SortModeTextOption(
                         text = "名称↑",
                         selected = appSettings.fileSortMode == AppSettings.FILE_SORT_NAME_ASC,
                         onClick = { appSettings.updateFileSortMode(AppSettings.FILE_SORT_NAME_ASC) },
                         modifier = Modifier.weight(1f)
                     )
-                    SortModePillButton(
+                    SortModeTextOption(
                         text = "时间↑",
                         selected = appSettings.fileSortMode == AppSettings.FILE_SORT_TIME_ASC,
                         onClick = { appSettings.updateFileSortMode(AppSettings.FILE_SORT_TIME_ASC) },
                         modifier = Modifier.weight(1f)
                     )
-                    SortModePillButton(
+                    SortModeTextOption(
                         text = "时间↓",
                         selected = appSettings.fileSortMode == AppSettings.FILE_SORT_TIME_DESC,
                         onClick = { appSettings.updateFileSortMode(AppSettings.FILE_SORT_TIME_DESC) },
@@ -295,17 +287,37 @@ internal fun FileListSettingsDialog(
                 }
             }
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onNewFileRequest() }
-                    .padding(vertical = 10.dp, horizontal = 4.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    text = "新建文件",
-                    style = AuroraTextStyles.body1,
-                    color = AuroraTokens.Accent
-                )
+                if (onSelectAllFilesRequest != null) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable { onSelectAllFilesRequest() }
+                            .padding(vertical = 10.dp, horizontal = 4.dp)
+                    ) {
+                        Text(
+                            text = if (allFilesSelected) "取消全选" else "全选文件",
+                            style = AuroraTextStyles.body1,
+                            color = AuroraTokens.Accent
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onNewFileRequest() }
+                        .padding(vertical = 10.dp, horizontal = 4.dp)
+                ) {
+                    Text(
+                        text = "新建文件",
+                        style = AuroraTextStyles.body1,
+                        color = AuroraTokens.Accent
+                    )
+                }
             }
         }
     }
