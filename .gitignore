@@ -22,6 +22,7 @@ app/build/
 *.jks
 *.keystore
 .tmp/
+.tmp-guard-test/
 __pycache__/
 .kotlin/
 
