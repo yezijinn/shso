@@ -14,12 +14,12 @@
 - 安全链路（守卫模块 / 挡位 / 审计）已全链路打通；App 侧集成任务 8/9/10 [x]。
 - 4 P1 + 4 P2 BUG 已闭环（`e7b3816`）；**150 tests / 0 failures**（124 → +3 任务22 → +7 任务26/27 → +3 任务25 → +7 任务20 → +2 解压端到端 → +4 任务28）。
 - 任务 19 真机补测 **✅ 全部通过（4/4）**；期间新发现并闭环 **任务 22/25/26/27**。
-- **任务 20 审计余项 ✅ 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `chmod 777`→755 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏，外加 `ChunkedFileReader` 上限加固）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
+- **任务 20 审计余项 ✅ 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏 / `ChunkedFileReader` 上限加固）+ 1 项改后按用户要求回退（`ensureShsoDir` 必须 777）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
 - **任务 28 ✅ 已修**：解压到不可写目录（`/data/adb/` 受 SELinux 拦截）时禁用入口并说明原因（方案 B）。
 - **任务 29 ✅ 已修**：大文件编辑器空白 —— 根因是 `EditorContentArea` 的 `chunkedLines` 漏传（该参数有默认值故静默空白）；已显式传参 + 改为必填，行数 0→21627。
-- **任务 20 审计余项 ✅ 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `chmod 777`→755 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏，外加 `ChunkedFileReader` 上限加固）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
+- **任务 20 审计余项 ✅ 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏 / `ChunkedFileReader` 上限加固）+ 1 项改后按用户要求回退（`ensureShsoDir` 必须 777）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
 - **任务 28（新）**：解压到 `/data/adb/` 下静默失败已定位（SELinux 拦截应用 uid，与我方改动无关），修法待定。
-- **任务 20 审计余项 ✅ 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `chmod 777`→755 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏，外加 `ChunkedFileReader` 上限加固）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
+- **任务 20 审计余项 ✅ 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏 / `ChunkedFileReader` 上限加固）+ 1 项改后按用户要求回退（`ensureShsoDir` 必须 777）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
 - 推送状态：分支 `fix/github-tag-version-check` 已推送至 `be6db40`；PR **#1 已 ready for review**。任务 20 的修复**尚未提交**。
 - ROOT 链路：BIYLBAFQQSS8DA69 是**已连接、已确认 ROOT 的真机**（Magisk v30.7、`su -c id` uid=0、守卫模块已装、PATH 注入验证通过）——**此前记忆里 5a91ac60 当 ROOT 机是错的,本机无 ROOT 的说法也是错的**。任务 19 ROOT 链路补测可立即执行。
 - 审计余项：22 项 BUG 排查已闭环 8 项；剩余 14 项 P2（FilePage key / ChunkedFileReader >2GB overflow / RootService pid reflection / ArchiveExtractor Zip Slip canonical path / chmod 777 / runCommandSync stream close / Bitmap recycle / 等）属次优先级，按用户节奏分批处理。
@@ -106,10 +106,10 @@
   - ✅ **端到端验证（已补齐）**：新增 `ArchiveExtractorExtractTest` 2 例，在 JVM + 真实文件系统上直接调 `ArchiveExtractor.extract()`：
     - 正常 zip → 解压成功并保留 `ok.txt` / `sub/normal.txt` 结构（**证明解压代码本身没问题**）；
     - 含穿越条目的 zip → 目标目录外的 `../evil.txt`、`sub/../../deep.txt` **均未出现**，被压回目标目录内，正常条目不受影响（**Zip Slip 端到端拦截成立**）。
-- **`ensureShsoDir` chmod 777 → 已修**（真机验证）
-  - 改为 **755**：该目录是 root 侧写审计日志与守卫产物的位置，0777 让任意应用可往里塞/改文件（例如伪造审计内容）；目录内写入均由 `su` 以 root 进行，owner 可写已足够。
-  - 真机验证：App 启动后 `/data/adb/shso` 由 `drwxrwxrwx`(777) → **`drwxr-xr-x`(755)** ✓
-  - 注：SELinux 上下文未额外处理 —— Magisk root 域写入正常，加显式上下文无观测收益。
+- **`ensureShsoDir` 权限：结论为「必须 777，不收紧」**（曾改为 755，2026-09-11 按用户要求**回退**）
+  - **用户明确要求**：`/data/adb/shso` 工作区**必须授予 777**。原因：需让其他应用（文件管理器 / MT 管理器等）自由读写其中文件，降权会破坏「把文件放进 shso 目录再用别的工具处理」的场景。
+  - 因此**不要**再把它当安全问题收紧；代码与文档均已标注为硬性要求（`RootFileManager.ensureShsoDir` 注释 + `docs/PROJECT.md` 权限位约定表）。
+  - 注：目录 777 并不意味着应用自身一定能写 —— 应用 uid 对 `/data/adb/` 仍受 SELinux(MAC) 限制，所以解压等以应用 uid 落盘的操作依旧要实测可写性。
 - **`delete` 全走 `rm -rf` → 判定「不成立」**
   - 路径已过 `isUnsafePath` 校验 + `escapeShellArg`（无通配展开），对**文件**而言 `rm -rf` 与 `rm -f` 行为等价；递归只会在目标是目录时发生，而那正是「删除文件夹」的预期语义。
   - 改成「先 `rm -f` 失败再 `rm -rf`」反而多一次 fork 且引入中间态，未改。
