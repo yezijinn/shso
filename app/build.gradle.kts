@@ -153,7 +153,9 @@ dependencies {
     // 不是 APK 体积收益来源。若未来引入 JSON 序列化，恢复 implementation(libs.kotlinx.serialization.core)。
 
     implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.appcompat:appcompat:1.7.0")
+    // androidx.appcompat:appcompat 移除（2026-09-11 排查死依赖）：
+    // 全工程无 AppCompatActivity / AppCompatDialog / android:Theme.AppCompat，主题继承 android:Theme.Material。
+    // Compose 全自研 UI，不依赖 AppCompat。删除后 R8 进一步缩减 dex/APK。
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
 
     // 压缩包解压（zip/tar/tgz/7z 解析；本地 Gradle 缓存已具备 1.27.1，离线可构建）
