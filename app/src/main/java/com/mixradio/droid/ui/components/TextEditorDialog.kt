@@ -819,7 +819,8 @@ private fun ChunkedInfoBar(
 private fun formatBytes(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"
     bytes < 1024 * 1024 -> "${bytes / 1024} KB"
-    bytes < 1024L * 1024 * 1024 -> "${bytes / (1024 * 1024)} MB"
+    // MB 段保留一位小数：整除法会把 2.00MB(2097151B) 显示成「1 MB」，与文件列表的「2.00 MB」自相矛盾。
+    bytes < 1024L * 1024 * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024))
     else -> "%.1f GB".format(bytes / (1024.0 * 1024 * 1024))
 }
 
