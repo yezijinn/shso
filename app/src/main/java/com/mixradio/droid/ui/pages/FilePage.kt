@@ -77,6 +77,7 @@ import com.mixradio.droid.data.MoveDestinationConflict
 import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.displayPath
+import com.mixradio.droid.ui.components.ApkExtractDialog
 import com.mixradio.droid.ui.components.BookmarksDialog
 import com.mixradio.droid.ui.components.BuiltInFilePicker
 import com.mixradio.droid.ui.components.ExecuteConfirmDialog
@@ -179,6 +180,8 @@ fun FilePage(
     var showNewFileDialog by remember { mutableStateOf(false) }
     var newFileName by remember { mutableStateOf("") }
     var newFileExt by remember { mutableStateOf("") }
+    // 「提取 APK」弹窗（设置菜单入口）
+    var showExtractApkDialog by remember { mutableStateOf(false) }
     var showPermissionDialog by remember { mutableStateOf(false) }
     var permissionMetadata by remember { mutableStateOf<FilePermissionMetadata?>(null) }
 
@@ -814,8 +817,22 @@ fun FilePage(
                     feedbackMessage = "已全选 ${filePaths.size} 个文件（不含文件夹）"
                 }
             },
-            allFilesSelected = allFilesSelected
+            allFilesSelected = allFilesSelected,
+            onExtractApkRequest = {
+                showFileSettingsDialog = false
+                showExtractApkDialog = true
+            }
+        )
+    }
 
+    if (showExtractApkDialog) {
+        ApkExtractDialog(
+            onDismissRequest = { showExtractApkDialog = false },
+            onResult = { ok, message ->
+                feedbackMessage = message
+                // 提取产物落在 Download：若当前正浏览该目录则立即刷新出来
+                if (ok) refresh()
+            }
         )
     }
 

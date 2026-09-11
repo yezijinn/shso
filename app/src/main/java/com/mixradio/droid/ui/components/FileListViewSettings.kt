@@ -157,6 +157,7 @@ internal fun FileShortcutButton(
  *
  * @param onSelectAllFilesRequest 全选/取消全选**文件**（不含文件夹）；为 null 表示该入口不支持多选（如文件选择器），不渲染该项。
  * @param allFilesSelected 当前是否已处于「全选文件」状态；用于把文案切换为「取消全选」。
+ * @param onExtractApkRequest 打开「提取 APK」；为 null 表示该入口不提供（如文件选择器复用本弹窗时不渲染）。
  */
 @Composable
 internal fun FileListSettingsDialog(
@@ -164,7 +165,8 @@ internal fun FileListSettingsDialog(
     onDismissRequest: () -> Unit,
     onNewFileRequest: () -> Unit,
     onSelectAllFilesRequest: (() -> Unit)? = null,
-    allFilesSelected: Boolean = false
+    allFilesSelected: Boolean = false,
+    onExtractApkRequest: (() -> Unit)? = null
 ) {
     AuroraWindowDialog(
         show = true,
@@ -283,6 +285,22 @@ internal fun FileListSettingsDialog(
                         selected = appSettings.fileSortMode == AppSettings.FILE_SORT_TIME_DESC,
                         onClick = { appSettings.updateFileSortMode(AppSettings.FILE_SORT_TIME_DESC) },
                         modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            // 「提取 APK」：从已安装应用导出安装包到 Download（仅文件页入口提供）
+            if (onExtractApkRequest != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onExtractApkRequest() }
+                        .padding(vertical = 10.dp, horizontal = 4.dp)
+                ) {
+                    Text(
+                        text = "提取APK",
+                        style = AuroraTextStyles.body1,
+                        color = AuroraTokens.Accent
                     )
                 }
             }

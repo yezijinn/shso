@@ -9,6 +9,12 @@
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- 「提取 APK」需要枚举全部已安装应用：targetSdk 30+ 的包可见性过滤会让
+         getInstalledPackages() 只返回可见包，必须声明 QUERY_ALL_PACKAGES（本应用经 GitHub 分发，
+         不走 Google Play，故无该权限的商店合规限制）。 -->
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
