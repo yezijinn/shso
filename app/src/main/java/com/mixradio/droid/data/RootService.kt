@@ -798,9 +798,11 @@ object RootService {
             } catch (_: Exception) {
             } finally {
                 withContext(Dispatchers.Main) {
-                    // 仅当本轮仍是当前执行协程时才清理状态并恢复横幅；
-                    // 若期间新任务已启动（executionJob 已替换），统一交由新任务线条处理
-                    if (executionJob === targetJob || targetJob == null) {
+                    // 仅当本轮仍是当前执行协程时才清理状态并恢复横幅。
+                    // 不可附加 `|| targetJob == null`：若期间已有新任务启动（executionJob 非 null），
+                    // 该条件会成立并把新任务的状态误清成「待命中」。
+                    // 无任务时 targetJob 与 executionJob 同为 null，此判断本就成立，无需额外兜底。
+                    if (executionJob === targetJob) {
                         isTaskRunning = false
                         currentTaskName = null
                         currentTaskPath = null

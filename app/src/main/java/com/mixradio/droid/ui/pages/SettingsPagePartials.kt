@@ -8,13 +8,19 @@ import android.content.Intent
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.security.SecurityLevels
 import com.mixradio.droid.ui.theme.AuroraArrowPreference
 import com.mixradio.droid.ui.theme.AuroraSwitchPreference
+import com.mixradio.droid.ui.theme.AuroraTextStyles
+import com.mixradio.droid.ui.theme.AuroraTokens
 
 /**
  * 设置页五个权限项的子 Composable。
@@ -45,7 +51,7 @@ fun SettingsPermissionsGroup(
 
     val onStorage = androidx.compose.runtime.remember<() -> Unit>(storage) { {
         if (storage) {
-            Toast.makeText(context, "存储空间权限已获得", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "存储空间权限已获得", Toast.LENGTH_LONG).show()
         } else {
             onRequestStorage()
         }
@@ -53,7 +59,7 @@ fun SettingsPermissionsGroup(
 
     val onBattery = androidx.compose.runtime.remember<() -> Unit>(battery) { {
         if (battery) {
-            Toast.makeText(context, "已获得省电策略豁免（忽略电池优化）", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "已获得省电策略豁免（忽略电池优化）", Toast.LENGTH_LONG).show()
         } else {
             onRequestBattery()
         }
@@ -61,7 +67,7 @@ fun SettingsPermissionsGroup(
 
     val onBackground = androidx.compose.runtime.remember<() -> Unit>(backgroundStart) { {
         if (backgroundStart) {
-            Toast.makeText(context, "已允许后台弹出页面", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "已允许后台弹出页面", Toast.LENGTH_LONG).show()
         } else {
             onRequestBackground()
         }
@@ -69,15 +75,15 @@ fun SettingsPermissionsGroup(
 
     val onRoot = androidx.compose.runtime.remember<() -> Unit>(root) { {
         if (root == true) {
-            Toast.makeText(context, "超级用户授权已获得", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "超级用户授权已获得", Toast.LENGTH_LONG).show()
         } else {
-            Toast.makeText(context, "未检测到 ROOT，请在 Magisk / KernelSU 中为本应用授权后返回自动刷新", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "未检测到 ROOT，请在 Magisk / KernelSU 中为本应用授权后返回自动刷新", Toast.LENGTH_LONG).show()
         }
     } }
 
     val onInstall = androidx.compose.runtime.remember<() -> Unit>(install) { {
         if (install) {
-            Toast.makeText(context, "已允许安装外部来源应用", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "已允许安装外部来源应用", Toast.LENGTH_LONG).show()
         } else {
             onRequestInstall()
         }
@@ -163,7 +169,7 @@ internal object SettingsPermissionIntents {
                 try {
                     context.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
                 } catch (_: Exception) {
-                    Toast.makeText(context, "无法打开系统设置页面", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "无法打开系统设置页面", Toast.LENGTH_LONG).show()
                 }
             }
         } else {
@@ -185,7 +191,7 @@ internal object SettingsPermissionIntents {
             try {
                 context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
             } catch (_: Exception) {
-                Toast.makeText(context, "无法打开电池优化设置页面", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "无法打开电池优化设置页面", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -198,7 +204,7 @@ internal object SettingsPermissionIntents {
                 }
             )
         } catch (_: Exception) {
-            Toast.makeText(context, "无法打开应用详情设置页面", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "无法打开应用详情设置页面", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -213,7 +219,7 @@ internal object SettingsPermissionIntents {
             try {
                 context.startActivity(Intent(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS))
             } catch (_: Exception) {
-                Toast.makeText(context, "无法打开安装未知应用设置", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "无法打开安装未知应用设置", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -245,6 +251,22 @@ fun SettingsSecurityGroup(
         statusSwitchEnabled = false,
         onClick = onLevelClicked
     )
+
+    // 档位 ≤1 时显式点明防护缺口。
+    // 这两个档位不拦截任何高危命令（0 档还不写审计），属排障用的临时状态；
+    // 若不提示，用户误切后会在毫无感知的情况下长期运行在无防护状态。
+    if (currentLevel <= SecurityLevels.AUDIT_ONLY) {
+        Text(
+            text = if (currentLevel <= SecurityLevels.OFF) {
+                "无防护：不拦截、不记录高危操作，仅建议排障时临时使用"
+            } else {
+                "仅审计：高危操作仍会执行，只是会写入审计日志"
+            },
+            style = AuroraTextStyles.footnote2,
+            color = AuroraTokens.Error,
+            modifier = Modifier.padding(start = 4.dp, bottom = 6.dp)
+        )
+    }
     AuroraArrowPreference(
         title = "查看审计日志",
         summary = "最近50条拦截/放行/脚本扫描记录",
