@@ -6,7 +6,6 @@ package com.mixradio.droid.ui.components
 import com.mixradio.droid.data.RootFileManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FilePermissionDialogTest {

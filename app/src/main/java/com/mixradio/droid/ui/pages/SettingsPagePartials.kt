@@ -3,21 +3,15 @@
 
 package com.mixradio.droid.ui.pages
 
+import android.annotation.SuppressLint
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.net.toUri
 import com.mixradio.droid.data.AppSettings
-import com.mixradio.droid.data.PermissionChecker
 import com.mixradio.droid.data.security.SecurityLevels
 import com.mixradio.droid.ui.theme.AuroraArrowPreference
 import com.mixradio.droid.ui.theme.AuroraSwitchPreference
@@ -162,7 +156,7 @@ internal object SettingsPermissionIntents {
             try {
                 context.startActivity(
                     Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                        data = Uri.parse("package:${context.packageName}")
+                        data = "package:${context.packageName}".toUri()
                     }
                 )
             } catch (_: Exception) {
@@ -177,11 +171,14 @@ internal object SettingsPermissionIntents {
         }
     }
 
+    // REQUEST_IGNORE_BATTERY_OPTIMIZATIONS 是 Play 商店受限权限，但本项目经 GitHub 分发、
+    // 且后台执行需要豁免电池优化才能稳定保活，属于本应用的核心能力，故抑制该检查。
+    @SuppressLint("BatteryLife")
     fun openBatterySettings(context: android.content.Context) {
         try {
             context.startActivity(
                 Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                    data = Uri.parse("package:${context.packageName}")
+                    data = "package:${context.packageName}".toUri()
                 }
             )
         } catch (_: Exception) {
@@ -197,7 +194,7 @@ internal object SettingsPermissionIntents {
         try {
             context.startActivity(
                 Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                    data = Uri.parse("package:${context.packageName}")
+                    data = "package:${context.packageName}".toUri()
                 }
             )
         } catch (_: Exception) {
@@ -209,7 +206,7 @@ internal object SettingsPermissionIntents {
         try {
             context.startActivity(
                 Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                    data = Uri.parse("package:${context.packageName}")
+                    data = "package:${context.packageName}".toUri()
                 }
             )
         } catch (_: Exception) {

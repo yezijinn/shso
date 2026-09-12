@@ -401,7 +401,7 @@ class SecurityCoreTest {
     }
 
     @Test fun `terminal wipe is BLOCK CRITICAL`() {
-        // wipe 修复后(RM_LIKE 移除 wipe),PolicyEngine 第 88 行 wipe 分支无条件加 WIPE CRITICAL
+        // wipe 必须无条件判定为 WIPE CRITICAL（不能并入 RM_LIKE 规则）。
         val v = PolicyEngine.evaluate("wipe /data", CommandSource.USER_TERMINAL)
         assertTrue(v is Verdict.Block)
         assertTrue((v as Verdict.Block).findings.any { it.ruleId == "WIPE" })

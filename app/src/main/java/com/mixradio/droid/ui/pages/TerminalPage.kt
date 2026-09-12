@@ -570,7 +570,7 @@ fun TerminalPage(
         )
     }
 
-    // ── 安全：终端高危命令风险确认弹窗 ──
+    // 安全：终端高危命令风险确认弹窗
     if (pendingCommand != null) {
         CommandRiskDialog(
             show = true,

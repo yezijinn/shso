@@ -17,10 +17,10 @@ enum class LineEnding(val literal: String) {
             var lf = 0; var crlf = 0; var cr = 0
             var i = 0
             while (i < text.length) {
-                val c = text[i]
-                if (c == '\r') {
+                val ch = text[i]
+                if (ch == '\r') {
                     if (i + 1 < text.length && text[i + 1] == '\n') { crlf++; i += 2 } else { cr++; i++ }
-                } else if (c == '\n') { lf++; i++ } else { i++ }
+                } else if (ch == '\n') { lf++; i++ } else { i++ }
             }
             // 主导判定（优先 CRLF > LF > CR；混合时取最大）
             val max = maxOf(lf, crlf, cr)

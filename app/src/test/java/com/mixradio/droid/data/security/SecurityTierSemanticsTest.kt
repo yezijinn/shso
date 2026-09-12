@@ -15,19 +15,19 @@ import org.junit.Test
 /**
  * 安全档位（0 关 / 1 仅审计 / 2 标准 / 3 最强）各处**语义**的回归锁。
  *
- * 这些断言锁定的都是曾经真实出错的点：
- * - 档位 3 的「输入 EXECUTE」曾被错误地套用到档位 2（`scanEnabled` 判定），使默认档位强制打字；
- * - 档位 2 在守卫缺失时曾**拒绝一切 root 执行**（连 `ls` 都不行），使默认档位不可用；
- * - `RootFileManager` 的删除/移动/改权曾**完全不过策略、不落审计**，四档位行为一致；
- * - 档位切换后守卫 `policy.conf` 的 `mode` 与 App 档位可能长期不一致。
+ * 这些断言锁定的是各档位语义的关键约束：
+ * - 档位 3 的「输入 EXECUTE」不得套用到档位 2（`scanEnabled` 判定），否则默认档位会被强制打字；
+ * - 档位 2 在守卫缺失时不得**拒绝一切 root 执行**（连 `ls` 都不行），否则默认档位不可用；
+ * - `RootFileManager` 的删除/移动/改权必须**过策略并落审计**，四档位行为应一致；
+ * - 档位切换后守卫 `policy.conf` 的 `mode` 须与 App 档位对齐，否则会长期不一致。
  */
 class SecurityTierSemanticsTest {
 
-    // ───────────────────────── 守卫 PATH 注入 ─────────────────────────
+    // 守卫 PATH 注入
 
     @Test
     fun `档位 0 与 1 不注入守卫 PATH（返回空串而非 null）`() {
-        // 档位 <2 明确表示「不拦截」，返回空串即「行为与旧版一致」；
+        // 档位 <2 明确表示「不拦截」，返回空串即不注入守卫；
         // 返回 null 会被语义化为「守卫不可用」，触发无谓的降级告警。
         assertEquals("", GuardPathPolicy.prefixOrNull(SecurityLevels.OFF, guardReady = false))
         assertEquals("", GuardPathPolicy.prefixOrNull(SecurityLevels.OFF, guardReady = true))
@@ -61,7 +61,7 @@ class SecurityTierSemanticsTest {
         )
     }
 
-    // ───────────────────────── 守卫自动安装时机 ─────────────────────────
+    // 守卫自动安装时机
 
     @Test
     fun `仅在档位 2 及以上才需要安装运行时守卫`() {
@@ -72,7 +72,7 @@ class SecurityTierSemanticsTest {
         assertTrue(GuardModuleInstaller.requiresRuntimeGuard(SecurityLevels.MAXIMUM))
     }
 
-    // ───────────────────────── 档位 → policy.conf mode ─────────────────────────
+    // 档位 → policy.conf mode
 
     @Test
     fun `档位映射到守卫 mode`() {
@@ -89,13 +89,13 @@ class SecurityTierSemanticsTest {
         assertEquals("enforce", GuardModuleInstaller.policyModeFor(Int.MAX_VALUE))
     }
 
-    // ───────────────────────── EXECUTE 闸门档位 ─────────────────────────
+    // EXECUTE 闸门档位
 
     @Test
     fun `输入 EXECUTE 属档位 3 专属能力`() {
         // 档位 3 + CRITICAL → 必须打字
         assertTrue(needTypedExecuteConfirm(SecurityLevels.MAXIMUM, hasCritical = true))
-        // 档位 2 + CRITICAL → 普通确认即可（回归锁：曾被 scanEnabled 误判为需打字）
+        // 档位 2 + CRITICAL → 普通确认即可（约束：不得因 scanEnabled 误判为需打字）
         assertFalse(needTypedExecuteConfirm(SecurityLevels.STANDARD, hasCritical = true))
         assertFalse(needTypedExecuteConfirm(SecurityLevels.AUDIT_ONLY, hasCritical = true))
         assertFalse(needTypedExecuteConfirm(SecurityLevels.OFF, hasCritical = true))
@@ -108,11 +108,11 @@ class SecurityTierSemanticsTest {
         }
     }
 
-    // ───────────────────────── 文件管理危险操作门禁 ─────────────────────────
+    // 文件管理危险操作门禁
 
     @Test
     fun `文件管理危险操作在档位 0 不判定不审计`() {
-        // 档位 0 = 无防护，须与改造前逐字节一致（不判定、不落审计）
+        // 档位 0 = 无防护，必须完全不判定、不落审计。
         assertFalse(RootFileManager.shouldGuardFileOp(SecurityLevels.OFF))
     }
 
@@ -124,7 +124,7 @@ class SecurityTierSemanticsTest {
         assertTrue(RootFileManager.shouldGuardFileOp(SecurityLevels.MAXIMUM))
     }
 
-    // ───────────────────────── 档位常量自身一致性 ─────────────────────────
+    // 档位常量自身一致性
 
     @Test
     fun `档位常量取值与文档一致且可循环`() {

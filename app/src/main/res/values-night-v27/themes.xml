@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- windowLightNavigationBar 仅 API 27+ 生效，隔离在 -v27 目录以避免 minSdk 26 上的 NewApi 告警。
+         parent 必须显式声明：style 名含点号时 AAPT 会把点号前部分当作隐式 parent。 -->
+    <style name="Theme.shso" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

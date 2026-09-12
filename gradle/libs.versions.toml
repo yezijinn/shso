@@ -3,25 +3,31 @@ agp = "9.2.1"
 kotlin = "2.4.0"
 kotlinx-serialization = "1.11.0"
 
-about-libraries = "15.0.3"
+about-libraries = "15.2.0"
 androidx-activity = "1.13.0"
 androidx-collection = "1.6.0"
-androidx-navigation3 = "1.1.4"
+androidx-navigation3 = "1.1.7"
 androidx-navigationevent = "1.1.2"
-jetbrains-compose-multiplatform = "1.11.1"
+jetbrains-compose-multiplatform = "1.12.0"
 jetbrains-compose-window-size = "1.9.0"
-androidx-compose-bom = "2026.08.00"
+androidx-compose-bom = "2026.09.00"
 jetbrains-dokka = "2.2.0"
-jetbrains-compose-hotReload = "1.1.1"
+jetbrains-compose-hotReload = "1.2.0"
 jetbrains-lifecycle = "2.10.0"
 materialKolor-utilities = "4.1.1"
 spotless = "8.8.0"
 
 junit = "1.3.0"
+junit4 = "4.13.2"
+coreKtx = "1.19.0"
+coroutines = "1.10.1"
+commonsCompress = "1.27.1"
+tukaaniXz = "1.9"
+zip4j = "2.11.1"
 espresso-core = "3.7.0"
 uiautomator = "2.4.0"
-benchmark-macro-junit4 = "1.4.1"
-baselineprofile = "1.5.0-alpha07"
+benchmark-macro-junit4 = "1.5.0"
+baselineprofile = "1.5.0"
 profileinstaller = "1.4.1"
 
 [libraries]
@@ -47,8 +53,15 @@ androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = 
 androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
 androidx-compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
 androidx-compose-foundation = { module = "androidx.compose.foundation:foundation" }
-androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version = "2.9.1" }
+androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version = "2.11.0" }
 materialKolor-utilities = { module = "com.materialkolor:material-color-utilities", version.ref = "materialKolor-utilities" }
+
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+commons-compress = { module = "org.apache.commons:commons-compress", version.ref = "commonsCompress" }
+tukaani-xz = { module = "org.tukaani:xz", version.ref = "tukaaniXz" }
+zip4j = { module = "net.lingala.zip4j:zip4j", version.ref = "zip4j" }
+junit4 = { module = "junit:junit", version.ref = "junit4" }
 
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junit" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espresso-core" }

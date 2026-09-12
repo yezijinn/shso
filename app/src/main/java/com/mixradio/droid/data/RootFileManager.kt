@@ -63,7 +63,7 @@ object RootFileManager {
      * 这些操作统一走安全门禁，否则会绕过 L1 静态审查与审计，使安全档位对文件页失效。
      *
      * 档位语义与终端路径保持一致：
-     * - 0 无防护：不判定、不审计，行为与旧版逐字节一致；
+     * - 0 无防护：不拦截、不审计；
      * - 1 仅审计：判定为 Allow，但落一条 ALLOW 审计；
      * - 2/3：完整策略判定 —— Block 直接拒绝；Confirm 视为已放行（UI 侧已由用户弹窗确认），
      *   落 CONFIRM 审计；Allow 落 ALLOW 审计。
@@ -98,7 +98,7 @@ object RootFileManager {
     /**
      * 文件管理危险操作是否进入安全门禁（纯函数，便于单测）。
      *
-     * 档位 0（无防护）不判定、不审计，与旧版行为逐字节一致；档位 1 及以上才走判定
+     * 档位 0（无防护）不拦截、不审计；档位 1 及以上才走判定
      * （档位 1 的判定恒为 Allow，但**要落审计**，故返回值必须包含 1）。
      */
     internal fun shouldGuardFileOp(securityLevel: Int): Boolean = securityLevel > SecurityLevels.OFF
@@ -280,7 +280,7 @@ object RootFileManager {
         // 未授权 ROOT 时跳过 su 探测，直接本地读取，避免无谓的 su 调用与超时。
         if (preferRoot()) {
             val escapedPath = RootService.escapeShellArg(targetPath)
-            // 批量取全部条目：1~2 次 fork/exec 替代原先「每文件 2 次 stat」（2N 次进程创建）。
+            // 批量取全部条目：1~2 次 fork/exec 即可，避免逐文件 stat 产生的 2N 次进程创建开销。
             // find -exec + 由 find 自行分批，不受 ARG_MAX 限制；stat -L 跟随符号链接，行为同旧版 [ -d ] 判断。
             // 输出格式：权限串|字节数|mtime|文件名，权限串首字符 'd' 即目录。
             val primaryCmd =
@@ -289,7 +289,7 @@ object RootFileManager {
             val fallbackCmd =
                 "cd $escapedPath 2>/dev/null && stat -L -c \"%A|%s|%Y|%n\" .* * 2>/dev/null"
 
-            // 注意：不可用 exitCode 判断成败。只要目录内有任一条目 stat 失败（典型如
+            // 约束：不可用 exitCode 判断成败。只要目录内有任一条目 stat 失败（典型如
             // /adb_keys 这类断链符号链接，stat -L 跟随不存在的目标即报错），find/stat
             // 便返回非 0，但其余条目的输出完全有效。这里只以「有无输出、能否解析出条目」为准。
             for (cmd in listOf(primaryCmd, fallbackCmd)) {
@@ -323,10 +323,9 @@ object RootFileManager {
             }
         }
 
-        // 仅去重后返回：展示顺序统一由 UI 层按用户偏好决定（applyFileViewSettings：
-        // 目录恒在前 + 名称/时间升/降序）。此处原先额外做一次「目录在前 + 名称升序」排序，
-        // 结果会被 UI 层立即覆盖，而其比较器内逐次 name.lowercase() 会带来
-        // O(N log N) 次临时字符串分配，属可安全移除的重复计算。
+        // 仅去重后返回：展示顺序由 UI 层（applyFileViewSettings：目录恒在前 + 名称/时间升/降序）
+        // 统一决定，此处不再二次排序——原地排序会被 UI 层立即覆盖，且其比较器内逐次
+        // name.lowercase() 会带来 O(N log N) 次临时字符串分配。
         items.distinctBy { it.path }
     }
 
@@ -610,8 +609,8 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
             if (code == 0) return@withContext Pair(true, "删除成功")
         }
         try {
-            val f = File(path)
-            val ok = if (f.isDirectory) f.deleteRecursively() else f.delete()
+            val targetFile = File(path)
+            val ok = if (targetFile.isDirectory) targetFile.deleteRecursively() else targetFile.delete()
             if (ok) return@withContext Pair(true, "删除成功")
         } catch (_: Exception) {
         }
@@ -696,8 +695,8 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
             if (code == 0) return@withContext Pair(true, fullPath)
         }
         try {
-            val f = File(fullPath)
-            if (f.createNewFile()) return@withContext Pair(true, fullPath)
+            val targetFile = File(fullPath)
+            if (targetFile.createNewFile()) return@withContext Pair(true, fullPath)
         } catch (_: Exception) {
         }
         Pair(false, "创建文件失败")

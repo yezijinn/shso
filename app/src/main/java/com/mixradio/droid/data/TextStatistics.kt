@@ -38,27 +38,27 @@ object TextStatistics {
         var i = 0
         val n = text.length
         while (i < n) {
-            val c = text[i]
+            val ch = text[i]
             // 仅按 '\n' 切分；遇换行即结算当前行长度并归零（与 split 的分段一致）。
-            // 注意：'\n' 仍须计入 symbols（历史语义中它走 else 分支），不可在此提前 continue 跳过分类。
-            if (c == '\n') {
+            // 约束：'\n' 仍须计入 symbols（与既有统计口径保持一致），不可在此提前 continue 跳过分类。
+            if (ch == '\n') {
                 if (currentLen > maxLine) maxLine = currentLen
                 currentLen = 0
                 symbols++
                 i++
                 continue
             }
-            if (c.isHighSurrogate() && i + 1 < n && text[i + 1].isLowSurrogate()) {
-                val cp = Character.toCodePoint(c, text[i + 1])
+            if (ch.isHighSurrogate() && i + 1 < n && text[i + 1].isLowSurrogate()) {
+                val cp = Character.toCodePoint(ch, text[i + 1])
                 if (isChineseCodePoint(cp)) chinese++ else symbols++
                 currentLen += 2
                 i += 2
                 continue
             }
             when {
-                c in 'A'..'Z' || c in 'a'..'z' -> english++
-                c in '0'..'9' -> digits++
-                isChineseCodePoint(c.code) -> chinese++
+                ch in 'A'..'Z' || ch in 'a'..'z' -> english++
+                ch in '0'..'9' -> digits++
+                isChineseCodePoint(ch.code) -> chinese++
                 else -> symbols++
             }
             currentLen += 1
@@ -91,11 +91,11 @@ object TextStatistics {
         var i = 0
         val n = text.length
         while (i < n) {
-            val c = text[i]
-            if (c == '\n') {
+            val ch = text[i]
+            if (ch == '\n') {
                 count++
                 i++
-            } else if (c == '\r') {
+            } else if (ch == '\r') {
                 count++
                 i++
                 if (i < n && text[i] == '\n') i++
@@ -125,20 +125,20 @@ object TextStatistics {
         var i = 0
         val n = text.length
         while (i < n) {
-            val c = text[i]
-            if (c.isHighSurrogate() && i + 1 < n) {
+            val ch = text[i]
+            if (ch.isHighSurrogate() && i + 1 < n) {
                 val low = text[i + 1]
                 if (low.isLowSurrogate()) {
-                    val codePoint = Character.toCodePoint(c, low)
+                    val codePoint = Character.toCodePoint(ch, low)
                     if (isChineseCodePoint(codePoint)) count++
                     i += 2
                     continue
                 }
             }
             // BMP CJK 基本区
-            if (c.code in 0x4E00..0x9FFF ||
-                c.code in 0x3400..0x4DBF ||
-                c.code in 0xF900..0xFAFF) {
+            if (ch.code in 0x4E00..0x9FFF ||
+                ch.code in 0x3400..0x4DBF ||
+                ch.code in 0xF900..0xFAFF) {
                 count++
             }
             i++

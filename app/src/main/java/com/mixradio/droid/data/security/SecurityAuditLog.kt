@@ -32,8 +32,7 @@ object SecurityAuditLog {
     const val MAX_TAIL_LINES = 2_000
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    // DateTimeFormatter 不可变、线程安全；旧的 SimpleDateFormat 是非线程安全的，
-    // 且原实现在 synchronized 块**外**调用它，并发记录时可能抛异常或产生错乱时间戳。
+    // 约束：日志在 IO 协程并发写入，格式化器必须线程安全（DateTimeFormatter 不可变且线程安全）。
     private val dateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
 
     private var entryCounter = 0
@@ -89,16 +88,16 @@ object SecurityAuditLog {
                         // `>>` 会跟随软链，等于以 root 向任意文件追加 —— 写入前先清掉软链/非普通文件。
                         RootService.runCommandSync(
                             "mkdir -p /data/adb/shso; " +
-                                "[ -L $ROOT_LOG_PATH ] && rm -f $ROOT_LOG_PATH; " +
-                                "[ -e $ROOT_LOG_PATH ] && [ ! -f $ROOT_LOG_PATH ] && rm -f $ROOT_LOG_PATH; true",
+                                "[ -L $ROOT_LOG_PATH ] && rm -auditFile $ROOT_LOG_PATH; " +
+                                "[ -e $ROOT_LOG_PATH ] && [ ! -auditFile $ROOT_LOG_PATH ] && rm -auditFile $ROOT_LOG_PATH; true",
                             5_000L
                         )
                         RootService.writeBytesAsRoot(ROOT_LOG_PATH, (line + "\n").toByteArray(Charsets.UTF_8), append = true)
                         if (shouldTrim) trimRootLog()
                     } else {
-                        val f = logFile()
-                        f.appendText(line + "\n", Charsets.UTF_8)
-                        if (shouldTrim && f.length() > MAX_BYTES) trimLocalLog(f)
+                        val auditFile = logFile()
+                        auditFile.appendText(line + "\n", Charsets.UTF_8)
+                        if (shouldTrim && auditFile.length() > MAX_BYTES) trimLocalLog(auditFile)
                     }
                 } catch (_: Exception) {
                     // 审计失败不阻断业务
@@ -140,9 +139,9 @@ object SecurityAuditLog {
                 val (code, out) = RootService.runCommandSync("tail -n $safeMaxLines $ROOT_LOG_PATH", 10_000L)
                 if (code == 0) out else "(读取失败 exit=$code)"
             } else {
-                val f = logFile()
-                if (!f.exists()) "(暂无审计记录)"
-                else f.readLines().takeLast(safeMaxLines).joinToString("\n")
+                val auditFile = logFile()
+                if (!auditFile.exists()) "(暂无审计记录)"
+                else auditFile.readLines().takeLast(safeMaxLines).joinToString("\n")
             }
         } catch (e: Exception) {
             "(读取失败: ${e.message})"

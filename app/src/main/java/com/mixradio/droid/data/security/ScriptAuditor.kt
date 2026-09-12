@@ -122,8 +122,8 @@ object ScriptAuditor {
         val n = content.length.coerceAtMost(8192)
         var binaryChars = 0
         for (i in 0 until n) {
-            val c = content[i]
-            if (c == '\u0000' || c == '\uFFFD') binaryChars++
+            val ch = content[i]
+            if (ch == '\u0000' || ch == '\uFFFD') binaryChars++
         }
         // NUL / 替换符 占比 ≥5%：基本可判定为二进制或错误编码
         if (binaryChars * 100 / n >= 5) return true
@@ -147,12 +147,12 @@ object ScriptAuditor {
      */
     fun readScriptContent(path: String): Pair<String?, String> {
         return try {
-            val f = File(path)
-            if (f.canRead()) {
-                if (f.length() > MAX_SCAN_BYTES) {
-                    return Pair(null, "文件超过 2MB（${f.length()} 字节），无法完整扫描")
+            val file = File(path)
+            if (file.canRead()) {
+                if (file.length() > MAX_SCAN_BYTES) {
+                    return Pair(null, "文件超过 2MB（${file.length()} 字节），无法完整扫描")
                 }
-                return Pair(f.readText(Charsets.UTF_8), "ok")
+                return Pair(file.readText(Charsets.UTF_8), "ok")
             }
             // Root-only：先取真实大小，超限直接拒绝（不再截断扫描）
             val escaped = RootService.escapeShellArg(path)

@@ -104,8 +104,7 @@ class RootFileManagerEscapingTest {
     }
 
     @Test fun `stat 秒值换算为毫秒，避免时间显示成 1970`() {
-        // 真机实测：/data/adb/shso/flood.sh 的 `stat -c %Y` = 1789044590（秒）
-        // 旧实现直接把秒交给 Date(long)（要求毫秒）→ 显示 1970-01-22
+        // 时间戳单位为秒，转 Date 需乘 1000，否则显示 1970 年。
         assertEquals(1789044590000L, RootFileManager.statSecondsToMillis(1789044590L))
         val year = SimpleDateFormat("yyyy", Locale.US).format(Date(1789044590000L))
         assertEquals("2026", year)

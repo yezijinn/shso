@@ -8,14 +8,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -179,7 +176,7 @@ internal fun FileListSettingsDialog(
                 .padding(horizontal = 8.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // 字号一行：字号 — 拖动条 — 当前数值（不再单独一行标题 + 一行「小—大」标注）
+            // 字号一行：字号 — 拖动条 — 当前数值（省去单独标题行与「小—大」标注行）
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,

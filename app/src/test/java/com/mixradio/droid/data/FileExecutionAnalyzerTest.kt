@@ -9,16 +9,15 @@ import org.junit.Test
 /**
  * 回归守卫：`file` 输出行 → 类型/内容判定的纯函数。
  *
- * 背景（真机 BIYLBAFQQSS8DA69 实测，2026-09-11）：
- * - toybox 的 `file` 不支持 `-b`，旧实现把 `file: Unknown option b` 的错误文本当内容分析，
- *   导致 `/data/adb/shso/flood.sh` 被判成「二进制 / 加密」。
- * - 输出带 `<path>: ` 前缀，且路径里的 `data` 会污染关键词匹配，必须先剥前缀。
+ * 背景：toybox 的 `file` 不支持 `-b`，会把 `file: Unknown option b` 的错误文本当作内容分析，
+ * 导致脚本被误判为「二进制 / 加密」。
+ * 另：`file` 输出带 `<path>: ` 前缀，且路径里的 `data` 会污染关键词匹配，必须先剥前缀。
  */
 class FileExecutionAnalyzerTest {
 
     @Test
     fun `真实 toybox 输出的 shell 脚本判为文本脚本而非二进制`() {
-        // 这是本次崩溃/误判的真机原始输出（路径含 "data"，是剥前缀的关键回归点）
+        // 原始输出路径含 "data"，是验证剥前缀逻辑的关键回归点。
         val (type, content) = classifyFileTypeLine(
             "/data/adb/shso/flood.sh: /system/bin/sh script", "sh"
         )

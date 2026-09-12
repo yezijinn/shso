@@ -116,8 +116,7 @@ class AnsiParserIncrementalTest {
 
     @Test
     fun `进度条不再让日志无限增长`() {
-        // 这正是做 \r 原地覆盖的动机：旧语义下 1000 次刷新 = 1000 行，
-        // 日志体积与后续解析成本随刷新次数线性增长。
+        // 进度条用 \r 原地覆盖，应只占一行；否则每次刷新都新增一行，日志体积随刷新次数线性增长。
         val parser = IncrementalAnsiParser(defaultColor)
         repeat(1000) { parser.feed("\rprogress $it%") }
         val lines = parser.snapshot().lines
@@ -137,7 +136,7 @@ class AnsiParserIncrementalTest {
 
     @Test
     fun `finish 把残缺 ESC 当普通文本收尾`() {
-        // 与旧实现「正则不匹配即原文保留」一致；持续运行的终端不应调用 finish。
+        // 残缺 ESC 序列按普通文本收尾；持续运行的终端不应调用 finish。
         val parser = IncrementalAnsiParser(defaultColor)
         parser.feed("a\u001B")
         parser.finish()

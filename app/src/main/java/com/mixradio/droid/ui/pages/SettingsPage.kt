@@ -7,9 +7,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
-import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.ActivityResultLauncher
@@ -45,10 +43,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.core.net.toUri
 import com.mixradio.droid.BuildConfig
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
@@ -65,10 +63,8 @@ import com.mixradio.droid.data.PermissionChecker
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.security.GuardModuleInstaller
 import com.mixradio.droid.data.security.SecurityAuditLog
-import com.mixradio.droid.data.security.SecurityLevels
 import com.mixradio.droid.ui.theme.AuroraAccentBar
 import com.mixradio.droid.ui.theme.AuroraArrowPreference
-import com.mixradio.droid.ui.theme.AuroraSwitchPreference
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraTokens
 import com.mixradio.droid.ui.theme.AuroraWindowDialog
@@ -151,10 +147,8 @@ fun SettingsPage(
         mutableStateOf<Boolean?>(RootService.isRootGranted)
     }
     var permissionInstallGranted by remember {
-        mutableStateOf(
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) true
-            else context.packageManager.canRequestPackageInstalls()
-        )
+        // minSdk 26 即 Android 8，canRequestPackageInstalls 始终可用，无需版本分支
+        mutableStateOf(context.packageManager.canRequestPackageInstalls())
     }
 
     fun refreshPermissionStates() {
@@ -168,8 +162,7 @@ fun SettingsPage(
             // 回写 RootService：统一 ROOT 状态来源，保证终端 banner 与设置页开关一致
             RootService.reportRootState(granted)
         }
-        permissionInstallGranted = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) true
-            else context.packageManager.canRequestPackageInstalls()
+        permissionInstallGranted = context.packageManager.canRequestPackageInstalls()
     }
 
     // 未获得「存储空间」(Android 6-10) 时逐个请求剩余运行时权限
@@ -244,8 +237,8 @@ fun SettingsPage(
 
     fun openInBrowserOnly(url: String) {
         try {
-            val uri = Uri.parse(url)
-            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("http://")).apply {
+            val uri = url.toUri()
+            val browserIntent = Intent(Intent.ACTION_VIEW, "http://".toUri()).apply {
                 addCategory(Intent.CATEGORY_BROWSABLE)
             }
             val resolveInfos = context.packageManager.queryIntentActivities(browserIntent, 0)
@@ -271,7 +264,7 @@ fun SettingsPage(
             }
         } catch (_: Exception) {
             try {
-                val generalIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                val generalIntent = Intent(Intent.ACTION_VIEW, url.toUri()).apply {
                     addCategory(Intent.CATEGORY_BROWSABLE)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
@@ -382,7 +375,7 @@ fun SettingsPage(
                     {
                         val next = (appSettings.securityLevel + 1) % 4
                         appSettings.updateSecurityLevel(next)
-                        // ── 档位即时生效 ──
+                        // 档位即时生效
                         // ① 失效「守卫就绪」缓存，避免 60s TTL 内仍用旧判定；
                         // ② 切到受保护档位（≥2）时确保守卫已安装（未装则用内置 zip 静默安装）；
                         // ③ 把档位同步为守卫 policy.conf 的 mode（0→off / 1→log / 2,3→enforce），

@@ -162,51 +162,51 @@ object CommandParser {
         }
 
         while (i < n) {
-            val c = text[i]
+            val ch = text[i]
             when {
                 // 单引号：全字面
-                c == '\'' -> {
+                ch == '\'' -> {
                     val close = text.indexOf('\'', i + 1)
                     if (close == -1) { current.append(text, i + 1, n); i = n } else {
                         current.append(text, i + 1, close); i = close + 1
                     }
                 }
                 // 双引号：内容保留，但内层命令替换仍需递归
-                c == '"' -> {
+                ch == '"' -> {
                     var j = i + 1
                     var closed = false
                     while (j < n) {
-                        val d = text[j]
+                        val chr = text[j]
                         when {
-                            d == '\\' && j + 1 < n -> { current.append(text[j + 1]); j += 2 }
-                            d == '$' && j + 1 < n && text[j + 1] == '(' -> {
+                            chr == '\\' && j + 1 < n -> { current.append(text[j + 1]); j += 2 }
+                            chr == '$' && j + 1 < n && text[j + 1] == '(' -> {
                                 val inner = extractParen(text, j + 1)
                                 if (inner.first != null) expandSubstitution(inner.first!!, depth, atoms, state)
                                 j = inner.second
                             }
-                            d == '`' -> {
+                            chr == '`' -> {
                                 val close = text.indexOf('`', j + 1)
                                 if (close == -1) { j = n } else {
                                     expandSubstitution(text.substring(j + 1, close), depth, atoms, state)
                                     j = close + 1
                                 }
                             }
-                            d == '"' -> { closed = true; j++ }
-                            else -> { current.append(d); j++ }
+                            chr == '"' -> { closed = true; j++ }
+                            else -> { current.append(chr); j++ }
                         }
                     }
                     i = if (closed) j else n
                 }
                 // 反斜杠转义
-                c == '\\' && i + 1 < n -> { current.append(text[i + 1]); i += 2 }
+                ch == '\\' && i + 1 < n -> { current.append(text[i + 1]); i += 2 }
                 // 命令替换 $(...)（$((...)) 算术：不透明跳过，不产生可执行原子）
-                c == '$' && i + 1 < n && text[i + 1] == '(' -> {
+                ch == '$' && i + 1 < n && text[i + 1] == '(' -> {
                     val inner = extractParen(text, i + 1)
                     if (inner.first != null) expandSubstitution(inner.first!!, depth, atoms, state)
                     i = inner.second
                 }
                 // 反引号替换
-                c == '`' -> {
+                ch == '`' -> {
                     val close = text.indexOf('`', i + 1)
                     if (close == -1) { i = n } else {
                         expandSubstitution(text.substring(i + 1, close), depth, atoms, state)
@@ -214,18 +214,18 @@ object CommandParser {
                     }
                 }
                 // 分隔符：; && || | |& & 换行
-                c == ';' || c == '|' || c == '&' || c == '\n' -> {
-                    if ((c == '|' || c == '&') && i + 1 < n && text[i + 1] == c) i++
+                ch == ';' || ch == '|' || ch == '&' || ch == '\n' -> {
+                    if ((ch == '|' || ch == '&') && i + 1 < n && text[i + 1] == ch) i++
                     endSegment()
                     i++
                 }
                 // 行注释：词首 # （#! 由 parse 调用方剥离，正常不会出现）
-                c == '#' && current.isEmpty() -> {
+                ch == '#' && current.isEmpty() -> {
                     val nl = text.indexOf('\n', i)
                     i = if (nl == -1) n else nl
                 }
-                c.isWhitespace() -> { endToken(); i++ }
-                else -> { current.append(c); i++ }
+                ch.isWhitespace() -> { endToken(); i++ }
+                else -> { current.append(ch); i++ }
             }
         }
         endToken()
@@ -253,28 +253,28 @@ object CommandParser {
         var i = openIndex + 1
         val sb = StringBuilder()
         while (i < text.length) {
-            val c = text[i]
+            val ch = text[i]
             when {
-                c == '\'' -> {
+                ch == '\'' -> {
                     val close = text.indexOf('\'', i + 1)
                     if (close == -1) { sb.append(text, i + 1, text.length); i = text.length } else {
                         sb.append(text, i, close + 1); i = close + 1
                     }
                 }
-                c == '"' -> {
+                ch == '"' -> {
                     val close = text.indexOf('"', i + 1)
                     if (close == -1) { sb.append(text, i, text.length); i = text.length } else {
                         sb.append(text, i, close + 1); i = close + 1
                     }
                 }
-                c == '\\' && i + 1 < text.length -> { sb.append(text[i]).append(text[i + 1]); i += 2 }
-                c == '(' -> { depth++; sb.append(c); i++ }
-                c == ')' -> {
+                ch == '\\' && i + 1 < text.length -> { sb.append(text[i]).append(text[i + 1]); i += 2 }
+                ch == '(' -> { depth++; sb.append(ch); i++ }
+                ch == ')' -> {
                     depth--
                     if (depth == 0) return Pair(sb.toString(), i + 1)
-                    sb.append(c); i++
+                    sb.append(ch); i++
                 }
-                else -> { sb.append(c); i++ }
+                else -> { sb.append(ch); i++ }
             }
         }
         return Pair(sb.toString(), text.length)
@@ -313,10 +313,10 @@ object CommandParser {
         val words = ArrayList<String>(original.size)
         var ri = 0
         while (ri < original.size) {
-            val w = original[ri]
-            val rest = redirectRest(w)
+            val word = original[ri]
+            val rest = redirectRest(word)
             if (rest == null) {
-                words.add(w)
+                words.add(word)
                 ri++
                 continue
             }
@@ -403,12 +403,12 @@ object CommandParser {
             val valueOpts = WRAPPER_VALUE_OPTS[program].orEmpty()
             // 跳过 wrapper 的选项 / 时长 / VAR=value
             while (idx < words.size) {
-                val w = words[idx]
-                val isNum = w.isNotEmpty() && w.all { it.isDigit() }
-                val isAssign = w.indexOf('=') > 0 && !w.startsWith("/")
-                if (w in valueOpts) {
+                val word = words[idx]
+                val isNum = word.isNotEmpty() && word.all { it.isDigit() }
+                val isAssign = word.indexOf('=') > 0 && !word.startsWith("/")
+                if (word in valueOpts) {
                     idx += 2            // 选项 + 其取值
-                } else if (w.startsWith("-") || isNum || isAssign) {
+                } else if (word.startsWith("-") || isNum || isAssign) {
                     idx++
                 } else {
                     break

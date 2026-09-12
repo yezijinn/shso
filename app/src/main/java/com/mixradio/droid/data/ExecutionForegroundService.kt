@@ -3,6 +3,7 @@
 
 package com.mixradio.droid.data
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -11,6 +12,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -35,8 +37,8 @@ import java.util.Locale
  * 实现要点：
  * - 本服务不承载执行逻辑（执行仍完全由 RootService 的 executionJob 负责），只做前台哨兵 +
  *   通知展示，从根上不触碰 RootService 的代际 / 取消 / 清理语义，改动最小。
- * - minSdk 26 起使用 `startForeground`，无需运行时通知权限跳转（通知渠道为 IMPORTANCE_LOW，
- *   系统允许静默展示）。
+ * - Android 13（API 33）起发布通知需要 POST_NOTIFICATIONS 运行时授权，未授权时通知不会在
+ *   通知抽屉展示（前台保活本身不受影响），因此 `notify()` 前需判权限，权限由设置页引导授予。
  * - 服务自行轮询 RootService.isTaskRunning：任务结束（正常退出 / 结束进程 / 重启）后
  *   stopSelf 自我回收，并由 onDestroy 显式移除前台状态与通知。
  */
@@ -90,6 +92,9 @@ class ExecutionForegroundService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
+    // FOREGROUND_SERVICE_TYPE_DATA_SYNC 要求 API 29，但它是编译期内联的 int 常量，
+    // API 26-28 设备上 ServiceCompat 会忽略该类型位，不会触发崩溃或反射查找，故抑制该告警。
+    @SuppressLint("InlinedApi")
     private fun startAsForeground() {
         val notification = buildNotification()
         ServiceCompat.startForeground(
@@ -102,8 +107,16 @@ class ExecutionForegroundService : Service() {
     }
 
     private fun updateNotification() {
+        if (!hasNotificationPermission()) return
         val notification = buildNotification()
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification)
+    }
+
+    /** Android 13 起通知需 POST_NOTIFICATIONS；低版本恒为已授权。 */
+    private fun hasNotificationPermission(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
+        return checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 
     private fun buildNotification(): Notification {

@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 package com.mixradio.droid.ui.components
 
+import android.annotation.SuppressLint
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -76,7 +79,6 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import java.nio.charset.Charset
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.ChunkedFileReader
@@ -89,7 +91,6 @@ import com.mixradio.droid.data.TextStatistics
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraTokens
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -100,11 +101,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// ═══════════════════════════════════════════════════════════════
 //  TextEditorDialog — 文本编辑器完整版
 //  支持：打开/编辑/保存/另存为/新建、大文件分段、未保存提醒、自动保存草稿、行号、
 //  编辑历史、查找替换、字号调节、全文统计、编码检测+切换、换行风格保留。
-// ═══════════════════════════════════════════════════════════════
 @Composable
 fun TextEditorDialog(filePath: String, onDismissRequest: () -> Unit) {
     TextEditorDialogContent(initialFilePath = filePath, isNewFile = false, onDismissRequest = onDismissRequest)
@@ -148,9 +147,8 @@ private fun TextEditorDialogContent(
 
     var fileTotalBytes by remember { mutableLongStateOf(0L) }
     var isLargeFile by remember { mutableStateOf(false) }
-    // 大文件分段模式：append-only 行列表。旧版复用 contentValue.text 累积 loadMore 内容，
-    // 每次新增都触发「整个累积文本」的重新 split，N 次 load → O(N²) 扫描 + 重新分配新 List。
-    // 此处只追加新行，整体 split 工作量降到 O(N) 线性。
+    // 大文件分段模式：append-only 行列表，避免每次 load 都重新 split 整个累积文本
+    //（那样会触发 O(N²) 扫描 + 重新分配新 List）；此处只追加新行，整体 split 降到 O(N) 线性。
     var chunkedLines by remember { mutableStateOf(listOf<String>()) }
     var chunkedOffset by remember { mutableLongStateOf(0L) }
     var chunkedHasMore by remember { mutableStateOf(false) }
@@ -160,7 +158,7 @@ private fun TextEditorDialogContent(
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showFindReplaceDialog by remember { mutableStateOf(false) }
 
-    // ── 文本对比流程状态：选文件 → 选模式 → 执行（带进度/取消）──
+    // 文本对比流程状态：选文件 → 选模式 → 执行（带进度/取消）
     var showDiffPicker by remember { mutableStateOf(false) }
     var diffTargetPath by remember { mutableStateOf<String?>(null) }
     var diffRunning by remember { mutableStateOf(false) }
@@ -188,9 +186,9 @@ private fun TextEditorDialogContent(
             // compute 期间用户可能又改了文本；若已变则丢弃这次结果（collectLatest 也会取消旧 launch，
             // 但 LaunchedEffect 重启不取消已在 IO 线程上跑的 compute，做二次保险）。
             if (t != contentValue.text) return@collectLatest
-            val r = withContext(Dispatchers.Default) { TextStatistics.compute(t) }
+            val outcome = withContext(Dispatchers.Default) { TextStatistics.compute(t) }
             if (t != contentValue.text) return@collectLatest
-            stats = r
+            stats = outcome
         }
     }
 
@@ -219,7 +217,7 @@ private fun TextEditorDialogContent(
                     currentLineEnding = LineEnding.detect(load.text)
                     // 内存统一归一为 LF 后再交给编辑器：Compose 的 BasicTextField 只按 '\n' 断行，
                     // CR-only（旧 Mac）文本若不归一，整篇会被显示成一行、行号恒为 1；CRLF 也会让
-                    // 每行尾部残留一个不可见的 '\r'。保存时由 LineEnding.apply 按 currentLineEnding 还原。
+                    // 每行尾部残留一个不可见的 '\outcome'。保存时由 LineEnding.apply 按 currentLineEnding 还原。
                     val normalized = LineEnding.apply(load.text, LineEnding.LF)
                     contentValue = TextFieldValue(normalized, TextRange(normalized.length))
                     // 进入小文件模式时清空 chunkedLines，避免下次再切回大文件残留上次状态。
@@ -267,8 +265,7 @@ private fun TextEditorDialogContent(
 
     DisposableEffect(initialFilePath) {
         onDispose {
-            // 历史持久保留（类 git 仓库），关闭编辑器不清空。
-            // 旧版在此 clearHistory 导致"永远只有一条历史"的 BUG，已移除。
+            // 历史持久保留（类 git 仓库），关闭编辑器不清空——否则只剩一条历史。
         }
     }
 
@@ -340,22 +337,22 @@ private fun TextEditorDialogContent(
                 scope.launch {
                     val path = currentFilePath!!
                     // 成功: Triple(写盘结果, 错误信息, 最新历史)；历史读写一并放入 IO 线程
-                    val r = withContext(Dispatchers.IO) {
-                        val w = writeTextFile(path, contentValue.text, currentCharset, currentLineEnding, hasBom)
-                        if (w.first) {
+                    val outcome = withContext(Dispatchers.IO) {
+                        val writeResult = writeTextFile(path, contentValue.text, currentCharset, currentLineEnding, hasBom)
+                        if (writeResult.first) {
                             EditHistoryManager.addHistory(path, contentValue.text)
                             Triple(true, null as String?, EditHistoryManager.getHistory(path))
-                        } else Triple(false, w.second, emptyList())
+                        } else Triple(false, writeResult.second, emptyList())
                     }
                     isSaving = false
-                    if (r.first) {
+                    if (outcome.first) {
                         dirty = false; lastSavedAtMs = System.currentTimeMillis()
-                        history = r.third
+                        history = outcome.third
                         toastMessage = "已保存"
-                        // 旧版 saveMessage 在成功路径不清理，导致上一次失败的红字提示在恢复后依旧停留。
-                        // 此处每次成功都强制置空，确保状态栏只剩最新的有效提示。
+                        // 每次保存成功都强制置空 saveMessage，确保状态栏只剩最新的有效提示
+                        //（否则上一次失败的红字提示会在恢复后依旧停留）。
                         saveMessage = null
-                    } else { saveMessage = r.second ?: "保存失败" }
+                    } else { saveMessage = outcome.second ?: "保存失败" }
                 }
             }
         }
@@ -537,7 +534,7 @@ private fun TextEditorDialogContent(
         onDismiss = { showFindReplaceDialog = false }
     )
 
-    // ── 文本对比 ① 选择 2 号文件（复用主页选择器，注入「同后缀 + 排除自身」过滤）──
+    // 文本对比 ① 选择 2 号文件（复用主页选择器，注入「同后缀 + 排除自身」过滤）
     val diffInitialDir = if (currentFilePath != null) {
         File(currentFilePath!!).parent ?: initialDirectory
     } else initialDirectory
@@ -556,7 +553,7 @@ private fun TextEditorDialogContent(
         }
     )
 
-    // ── 文本对比 ② 选择对比模式 ──
+    // 文本对比 ② 选择对比模式
     if (diffTargetPath != null && !diffRunning) {
         DiffModeDialog(
             fileA = currentFilePath ?: "",
@@ -606,7 +603,7 @@ private fun TextEditorDialogContent(
         )
     }
 
-    // ── 文本对比 ③ 进度（可取消）──
+    // 文本对比 ③ 进度（可取消）
     if (diffRunning) {
         DiffProgressDialog(
             progressLines = diffProgressLines,
@@ -683,9 +680,7 @@ private fun TextEditorDialogContent(
     )
 }
 
-// ═══════════════════════════════════════════════════════════════
 //  工具函数
-// ═══════════════════════════════════════════════════════════════
 
 /**
  * 大文件读下一段（追加加载）。
@@ -804,9 +799,7 @@ private suspend fun writeTextFile(
     } catch (e: Exception) { Pair(false, "保存失败: ${e.message}") }
 }
 
-// ═══════════════════════════════════════════════════════════════
 //  EditorTopBar
-// ═══════════════════════════════════════════════════════════════
 @Composable
 private fun EditorTopBar(
     fileName: String, dirty: Boolean,
@@ -886,9 +879,7 @@ private fun EditorToolbarButton(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
 //  ChunkedInfoBar
-// ═══════════════════════════════════════════════════════════════
 @Composable
 private fun ChunkedInfoBar(
     offset: Long, total: Long, hasMore: Boolean, onLoadMore: () -> Unit
@@ -923,17 +914,13 @@ private fun formatBytes(bytes: Long): String = when {
     else -> "%.1f GB".format(bytes / (1024.0 * 1024 * 1024))
 }
 
-// ═══════════════════════════════════════════════════════════════
 //  EditorContentArea
-//  修复版 v2：
-//  · 崩溃根因：旧「静态Text+透明BasicTextField(matchParentSize)叠加」在滚动容器内产生
-//    0 宽 Constraints → IllegalArgumentException 闪退（.sh 高亮路径）。
-//  · 不可见根因：BasicTextField 放在 Row(verticalScroll) 内 weight(1f) 在无界高度
-//    下测量失效（实际约 112px 宽），文字、焦点与输入法均不可用。
-//    Row + weight 与滚动容器嵌套是官方文档明确反对的结构。
-//  · 正解：BasicTextField 自带内部滚动，直接放 weight(1f) 的 Box 中（不在 verticalScroll
-//    内），行号列用同高 Box 平铺，两者各自独立滚动同步（MT/MP-Manager 同款布局）。
-// ═══════════════════════════════════════════════════════════════
+//  约束：BasicTextField 必须自带内部滚动，直接放在 weight(1f) 的 Box 中（不在 verticalScroll
+//  内），行号列用同高 Box 平铺，两者各自独立滚动并同步（MT/MP-Manager 同款布局）。
+//  「静态 Text + 透明 BasicTextField(matchParentSize) 叠加」会在滚动容器内产生 0 宽 Constraints
+//  → IllegalArgumentException 闪退；BasicTextField 放进 Row(verticalScroll) 内 weight(1f) 则在无界高度
+//  下测量失效（约 112px 宽），文字、焦点与输入法均不可用——Row + weight 与滚动容器嵌套是官方文档
+//  明确反对的结构。
 @Composable
 private fun EditorContentArea(
     value: TextFieldValue, onValueChange: (TextFieldValue) -> Unit,
@@ -994,7 +981,7 @@ private fun EditorContentArea(
             val lineNumberWidth = remember(lineCount) { "${lineCount}".length.coerceAtLeast(3) }
 
             Row(modifier = Modifier.fillMaxSize()) {
-                // ── 行号列（与编辑区共享同一 scrollState，纵向同步滚动）──
+                // 行号列（与编辑区共享同一 scrollState，纵向同步滚动）
                 if (showLineNumber) {
                     Box(modifier = Modifier.width((lineNumberWidth * (fontSize.value * 0.7f)).dp + 12.dp)) {
                         EditorLineNumbers(
@@ -1012,7 +999,7 @@ private fun EditorContentArea(
                         modifier = Modifier.padding(horizontal = 4.dp)
                     )
                 }
-                // ── 编辑区：BasicTextField 与行号列共享 scrollState，纵向滚动同步 ──
+                // 编辑区：BasicTextField 与行号列共享 scrollState，纵向滚动同步
                 BasicTextField(
                     value = value,
                     onValueChange = onValueChange,
@@ -1044,11 +1031,10 @@ private fun EditorContentArea(
 /**
  * 编辑模式行号列（独立重组单元）。
  *
- * 旧版实现：非惰性 `Column { for (i in 1..lineCount) Text("$i") }`。
- * 在 200k 行的文件上会一次性把 200k 个 Text 节点塞进组合树，O(N) 内存+ O(N) 首次 measure 开销，
- * 在大型编辑会话中接近 OOM（与 2026-09-10 之前 BasicTextField 全量布局同一量级的隐患）。
+ * 行号列用 LazyColumn 按需组合可见行（约 30-50 行），而非非惰性 `Column` 一次性铺满：
+ * 200k 行的文件上会把 200k 个 Text 节点塞进组合树，带来 O(N) 内存与首次 measure 开销，
+ * 在大型编辑会话中接近 OOM。
  *
- * 新版实现：LazyColumn 按需组合可见行（~30-50 行）。
  * 与编辑区共享同一个 [scrollState]，纵向同步由 `firstVisibleLine` 派生状态驱动
  * `lazyState.scrollToItem(...)`，用户滚动 BasicTextField 时行号列即时跟随。
  *
@@ -1140,15 +1126,15 @@ private fun LineScrollBar(
                 detectDragGestures(
                     onDragStart = { offset ->
                         dragging = true
-                        val f = ((offset.y - thumbHPx / 2f).coerceIn(0f, maxTop)) / maxTop.coerceAtLeast(1f)
-                        dragFrac = f
-                        setFractionState.value(f)
+                        val thumbOffset = ((offset.y - thumbHPx / 2f).coerceIn(0f, maxTop)) / maxTop.coerceAtLeast(1f)
+                        dragFrac = thumbOffset
+                        setFractionState.value(thumbOffset)
                     },
                     onDrag = { change, _ ->
                         change.consume()
-                        val f = ((change.position.y - thumbHPx / 2f).coerceIn(0f, maxTop)) / maxTop.coerceAtLeast(1f)
-                        dragFrac = f
-                        setFractionState.value(f)
+                        val thumbOffset = ((change.position.y - thumbHPx / 2f).coerceIn(0f, maxTop)) / maxTop.coerceAtLeast(1f)
+                        dragFrac = thumbOffset
+                        setFractionState.value(thumbOffset)
                     },
                     onDragEnd = { dragging = false }
                 )
@@ -1179,9 +1165,7 @@ private fun LineScrollBar(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
 //  EditorStatusBar
-// ═══════════════════════════════════════════════════════════════
 @Composable
 private fun EditorStatusBar(
     stats: TextStatistics.Stats, filePath: String?, isLargeFile: Boolean,
@@ -1228,13 +1212,13 @@ private val EDITOR_CHARSETS: List<Pair<Charset, String>> = listOf(
     Charsets.ISO_8859_1 to "ISO-8859-1", Charsets.US_ASCII to "ASCII"
 ).distinctBy { it.second }
 
-// ═══════════════════════════════════════════════════════════════
 //  FindReplaceDialog — 查找/替换（半透明紧凑版 v4）
 //  · 40% 半透明暗色面板：能隐约看清底部编辑区文本；无标题、无矩形框
 //  · 极光渐变彩色文字；关闭按钮偏红渐变
 //  · 布局：查找框 → 替换框 → 动作行(查找下一个|替换|全部替换) → 关闭
 //  · 点击动作按钮强制收起输入法（逻辑在 Dialog 内部，作用于 Dialog 自己的窗口）
-// ═══════════════════════════════════════════════════════════════
+// lint 误报：Int.toDrawable 用于资源 id，此处传入的是颜色值，无 KTX 等价写法。
+@SuppressLint("UseKtx")
 @Composable
 private fun FindReplaceDialog(
     text: String, currentSelectionStart: Int,
@@ -1284,7 +1268,7 @@ private fun FindReplaceDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        // ⚠ 所有焦点/IME 操作必须在此 Dialog 内容作用域内进行：
+        // 约束：所有焦点/IME 操作必须在此 Dialog 内容作用域内进行：
         // LocalFocusManager / LocalView 在这里拿到的是 Dialog 自己的焦点体系与窗口，
         // 之前版本在 Dialog 外部获取导致 IME 永远收不起来（作用对象错成 Activity 窗口）。
         val dialogWindow = (LocalView.current.parent
@@ -1298,9 +1282,7 @@ private fun FindReplaceDialog(
         androidx.compose.runtime.SideEffect {
             try {
                 dialogWindow?.apply {
-                    setBackgroundDrawable(
-                        android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)
-                    )
+                    setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
                     setDimAmount(0f)
                 }
             } catch (_: Throwable) { }
@@ -1423,7 +1405,7 @@ private fun FindReplaceDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     val enabledNext = findText.isNotEmpty() && matchCount > 0
-                    // ⚠ 禁用态也用彩色渐变（仅 alpha 50%），严禁灰——灰字看不清
+                    // 约束：禁用态也用彩色渐变（仅 alpha 50%），严禁灰——灰字看不清
                     val nextBrush = remember(enabledNext) {
                         androidx.compose.ui.graphics.Brush.horizontalGradient(
                             if (enabledNext) listOf(
@@ -1515,15 +1497,13 @@ private fun FindReplaceDialog(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
 //  EditorSettingsDialog — 紧凑纯文本设置面板
 //  规格（用户定制）：
 //  · 入口项：编码 / 换行 / 另存为 / 显示行号 / 字号 / 自动保存 / 全文统计
 //  · 全部控件禁止矩形背景（无 background 色块、无 Button），一律纯文本 + 贴边紧凑行
-//  · 编码 / 换行以页内二级列表展开（不复套弹窗），选中项右侧 ✓
+// · 编码 / 换行以页内二级列表展开（不复套弹窗），选中项右侧 对勾
 //  · 全文统计：仅在「打开设置面板」时计算一次（非实时，不随输入重算），
 //    输出 英文 / 中文 / 数字 三项，计算在 Dispatchers.Default 执行
-// ═══════════════════════════════════════════════════════════════
 @Composable
 private fun EditorSettingsDialog(
     text: String,
@@ -1559,8 +1539,8 @@ private fun EditorSettingsDialog(
     // 打开设置面板时统计一次（点击「设置」即触发），此后不随文本变化重算
     LaunchedEffect(Unit) {
         statBusy = true
-        val r = withContext(Dispatchers.Default) { TextStatistics.compute(text) }
-        statResult = r
+        val result = withContext(Dispatchers.Default) { TextStatistics.compute(text) }
+        statResult = result
         statBusy = false
     }
 
@@ -1596,7 +1576,7 @@ private fun EditorSettingsDialog(
                 HorizontalDivider(color = AuroraTokens.Stroke, thickness = 0.5.dp, modifier = Modifier.padding(vertical = 6.dp))
 
                 when (page) {
-                    // ── 编码：二级列表 ──
+                    // 编码：二级列表
                     "charset" -> {
                         EDITOR_CHARSETS.forEach { (cs, name) ->
                             CompactOptionRow(
@@ -1606,7 +1586,7 @@ private fun EditorSettingsDialog(
                         }
                         CompactBackRow { page = "root" }
                     }
-                    // ── 换行：二级列表 ──
+                    // 换行：二级列表
                     "lineEnding" -> {
                         LineEnding.entries.forEach { le ->
                             CompactOptionRow(
@@ -1616,7 +1596,7 @@ private fun EditorSettingsDialog(
                         }
                         CompactBackRow { page = "root" }
                     }
-                    // ── 根页 ──
+                    // 根页
                     else -> {
                         CompactSettingRow("编码", charset.displayName()) { page = "charset" }
                         CompactSettingRow("换行", lineEnding.displayName()) { page = "lineEnding" }
@@ -1670,22 +1650,22 @@ private fun EditorSettingsDialog(
                             }
                         }
                         HorizontalDivider(color = AuroraTokens.Stroke, thickness = 0.5.dp, modifier = Modifier.padding(vertical = 6.dp))
-                        // ── 全文统计：打开设置面板时已统计一次，此处只展示 ──
+                        // 全文统计：打开设置面板时已统计一次，此处只展示
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text("全文统计", style = AuroraTextStyles.body2, color = AuroraTokens.Text)
                         }
-                        val r = statResult
-                        if (r != null) {
+                        val result = statResult
+                        if (result != null) {
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                StatItem("英文", "${r.english}")
-                                StatItem("中文", "${r.chinese}")
-                                StatItem("数字", "${r.digits}")
+                                StatItem("英文", "${result.english}")
+                                StatItem("中文", "${result.chinese}")
+                                StatItem("数字", "${result.digits}")
                             }
                         } else if (statBusy) {
                             Text(
@@ -1702,9 +1682,7 @@ private fun EditorSettingsDialog(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
 //  DiffModeDialog — 对比模式选择（紧凑纯文本，无矩形背景）
-// ═══════════════════════════════════════════════════════════════
 @Composable
 private fun DiffModeDialog(
     fileA: String, fileB: String,
@@ -1749,9 +1727,7 @@ private fun DiffModeDialog(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
 //  DiffProgressDialog — 对比进度（可取消）
-// ═══════════════════════════════════════════════════════════════
 @Composable
 private fun DiffProgressDialog(progressLines: Long, onCancel: () -> Unit) {
     Dialog(
@@ -1857,12 +1833,10 @@ private fun StatItem(label: String, value: String) {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
 //  HistoryDialog — 类 git 版本历史（可回退 20 个版本）
 //  · 每条历史 = 一个版本快照（时间 + 行数 + 预览）
 //  · 点版本 → 回退到该版本（当前内容自动存为新版本，可再撤回）
 //  · 最新版本在顶部
-// ═══════════════════════════════════════════════════════════════
 @Composable
 private fun HistoryDialog(
     history: List<EditHistoryManager.HistoryEntry>,
@@ -1919,9 +1893,7 @@ private fun HistoryDialog(
     )
 }
 
-// ═══════════════════════════════════════════════════════════════
 //  SaveAsDialog
-// ═══════════════════════════════════════════════════════════════
 @Composable
 private fun SaveAsDialog(
     initialDirectory: String, onSave: (String) -> Unit, onDismiss: () -> Unit
@@ -1956,9 +1928,7 @@ private fun SaveAsDialog(
     )
 }
 
-// ═══════════════════════════════════════════════════════════════
 //  UnsavedChangesDialog
-// ═══════════════════════════════════════════════════════════════
 @Composable
 private fun UnsavedChangesDialog(
     onSave: () -> Unit, onDiscard: () -> Unit, onCancel: () -> Unit
@@ -1975,9 +1945,7 @@ private fun UnsavedChangesDialog(
     )
 }
 
-// ═══════════════════════════════════════════════════════════════
 //  LineEnding 扩展
-// ═══════════════════════════════════════════════════════════════
 private fun LineEnding.displayName(): String = when (this) {
     LineEnding.LF -> "LF"
     LineEnding.CRLF -> "CRLF"

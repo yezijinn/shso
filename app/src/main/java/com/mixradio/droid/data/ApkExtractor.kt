@@ -5,7 +5,6 @@ package com.mixradio.droid.data
 
 import android.content.Context
 import android.content.pm.ApplicationInfo
-import android.content.pm.PackageManager
 import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Process

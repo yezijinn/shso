@@ -22,7 +22,7 @@ object ChunkedFileReader {
      * 大于 **128KB** 的文件强制分段（只读 LazyColumn）加载。
      *
      * 阈值依据：Compose 的 BasicTextField 会对整段文本做全量 StaticLayout，开销随体积快速放大。
-     * 低端机（BIYLBAFQQSS8DA69）实测：32KB 秒开，256KB 主线程持续约 30 秒，2MB 数分钟无响应。
+     * 实测（低端机）：32KB 秒开，256KB 主线程持续约 30 秒，2MB 数分钟无响应。
      * 因此阈值取 128KB，超过即走按行懒加载的只读路径（不可编辑）。
      */
     const val LARGE_FILE_THRESHOLD = 128L * 1024L
@@ -92,9 +92,9 @@ object ChunkedFileReader {
                 val buf = ByteArray(headBytes)
                 var read = 0
                 while (read < headBytes) {
-                    val r = fis.read(buf, read, headBytes - read)
-                    if (r <= 0) break
-                    read += r
+                    val bytesRead = fis.read(buf, read, headBytes - read)
+                    if (bytesRead <= 0) break
+                    read += bytesRead
                 }
                 if (read > 0) buf.copyOf(read) else ByteArray(0)
             }

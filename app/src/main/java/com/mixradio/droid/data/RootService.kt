@@ -3,7 +3,6 @@
 
 package com.mixradio.droid.data
 
-import android.os.Build
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -15,20 +14,17 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
-import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 import com.mixradio.droid.data.security.CommandSource
 import com.mixradio.droid.data.security.GuardModuleInstaller
 import com.mixradio.droid.data.security.GuardPathPolicy
-import com.mixradio.droid.data.security.PolicyEngine
 import com.mixradio.droid.data.security.RiskLevel
 import com.mixradio.droid.data.security.RootCommandGateway
 import com.mixradio.droid.data.security.ScriptAuditor
@@ -129,9 +125,9 @@ object RootService {
      * 将当前输出置为「纯引擎横幅」；横幅关闭时置空。
      */
     private fun refreshPristineBanner(statusText: String = "工作中") {
-        val showBanner = appSettings?.showHyperCoreBanner ?: true
-        pristineBannerRoot = if (showBanner) isRootGranted else null
-        outputLog = if (showBanner) HyperCore.generateEngineBanner(statusText, isRootGranted) else ""
+        val showHyperCoreBanner = appSettings?.showHyperCoreBanner ?: true
+        pristineBannerRoot = if (showHyperCoreBanner) isRootGranted else null
+        outputLog = if (showHyperCoreBanner) HyperCore.generateEngineBanner(statusText, isRootGranted) else ""
         outputIsPristineBanner = true
     }
 
@@ -143,8 +139,8 @@ object RootService {
     fun reportRootState(granted: Boolean) {
         isRootGranted = granted
         if (isTaskRunning || !outputIsPristineBanner) return
-        val showBanner = appSettings?.showHyperCoreBanner ?: true
-        if (!showBanner) return
+        val showHyperCoreBanner = appSettings?.showHyperCoreBanner ?: true
+        if (!showHyperCoreBanner) return
         // 在分页/拖动期间 outputLog 最大 250k 字符，== 仍是 O(N) 字节扫描。
         // 这里先把生成的 banner 缓存一次，再加长度快速短路：长度不等 ⇒ 一定不是当前横幅；
         // 长度相等再做一次完整 equals。在 250k 字符串场景下把最坏比较降到 1 次长度读取。
@@ -267,8 +263,8 @@ object RootService {
      * 档位要求运行时守卫、但守卫不可用时的降级处理。
      *
      * 策略（用户已确认「自动安装 + 不再阻断」）：**不阻断，只告警**。
-     * 原因：档位 2 是默认档位，早期实现下守卫未安装会拒绝一切 root 执行
-     * （连 `ls` 都跑不了），使默认档位实际不可用。配合 `GuardModuleInstaller.ensureInstalled()`
+     * 原因：档位 2 是默认档位；若守卫缺失就拒绝一切 root 执行（连 `ls` 都跑不了），
+     * 默认档位将完全不可用，故此处只告警不阻断。配合 `GuardModuleInstaller.ensureInstalled()`
      * 的启动期自动安装，正常情况下守卫就是就绪的；此处只处理安装失败的兜底。
      *
      * 每次都会落审计（ruleId=GUARD_UNAVAILABLE_DEGRADED），便于事后追溯到
@@ -350,15 +346,15 @@ object RootService {
             killCurrentProcess()
         }
 
-        // ── 安全门控：脚本内容扫描（自动执行等未经确认框的链路） ──
+        // 安全门控：脚本内容扫描（自动执行等未经确认框的链路）
         if (level >= SecurityLevels.STANDARD && !riskApproved && isSh) {
             val (content, note) = ScriptAuditor.readScriptContent(filePath)
             if (content != null) {
                 val report = ScriptAuditor.audit(content)
                 // 判定收敛到纯函数：CRITICAL 命中 **或** 扫描不完整（truncated）都必须拒绝。
-                // 旧写法在本行用 `critical.isNotEmpty() || report.truncated`，但紧接着用了
-                // `critical.first()` —— 一旦 truncated 单独成立（critical 为空）就会抛
-                // NoSuchElementException。这里连同 reason/ruleId 一起按「可能为空」处理。
+                // 此时 critical 可能为空（truncated 单独成立时），故 reason/ruleId 一并按
+                // 「可能为空」处理，不可直接调用 `critical.first()`，否则会抛
+                // NoSuchElementException。
                 if (ScriptAuditor.blocksUnattendedExecution(report)) {
                     val shown = ScriptAuditor.blockingFindingsFor(report)
                     val reasons = shown
@@ -388,8 +384,8 @@ object RootService {
         lastExecutedPath = filePath
 
         HyperCore.clearBatchQueue()
-        val showHyperCore = appSettings?.showHyperCoreBanner ?: true
-        val showShso = appSettings?.showShsoBanner ?: true
+        val showHyperCoreBanner = appSettings?.showHyperCoreBanner ?: true
+        val showShsoBanner = appSettings?.showShsoBanner ?: true
 
         refreshPristineBanner("工作中")
         isTaskRunning = true
@@ -407,8 +403,8 @@ object RootService {
         } catch (_: Exception) {
         }
 
-        if (showShso) {
-            appendOutputDirect(HyperCore.generateTaskHeader(fileName, filePath, parentDir, showHyperCore))
+        if (showShsoBanner) {
+            appendOutputDirect(HyperCore.generateTaskHeader(fileName, filePath, parentDir, showHyperCoreBanner))
         }
         appendOutputDirect("[shso Engine] 执行身份: ${if (useRoot) "Root" else "非 Root（档位 ${SecurityLevels.nameOf(level)}）"}\n")
 
@@ -431,8 +427,8 @@ object RootService {
                 // 开跑前清掉上一轮的记录并作废内存值，确保随后读到的 pgid 一定来自本次执行。
                 runCatching { runPgidFile?.delete() }
                 runPgid = 0
-                // 把本次执行的「进程组组长 pid」落盘：su 会新建会话，`$$` 即组长 pid（真机已验证
-                // `pid == pgrp == sid`）。仅 root 路径记录 —— 非 root 走 ProcessBuilder("sh")，
+                // 把本次执行的「进程组组长 pid」落盘：su 会新建会话，`$$` 即组长 pid
+                //（组长同时是进程组组长与会话组长）。仅 root 路径记录 —— 非 root 走 ProcessBuilder("sh")，
                 // 子进程沿用应用自身进程组，记录后会诱导误杀本应用所在的组。
                 val pgidRecorder = if (useRoot) {
                     runPgidFile?.let { "echo " + "\$\$" + " > " + escapeShellArg(it.absolutePath) + "; " } ?: ""
@@ -556,7 +552,7 @@ object RootService {
         scope.launch(Dispatchers.IO) {
             try {
                 if (isTaskRunning && processWriter != null) {
-                    // ── 交互态：硬规则拦截（fail on critical），其余放行 + 审计 ──
+                    // 交互态：硬规则拦截（fail on critical），其余放行 + 审计
                     if (!confirmed) {
                         val hard = RootCommandGateway.checkInteractiveHardRules(text)
                         if (hard != null) {
@@ -576,7 +572,7 @@ object RootService {
                     processWriter?.write(text + "\n")
                     processWriter?.flush()
                 } else if (text.isNotEmpty()) {
-                    // ── 一次性命令：完整策略判定 ──
+                    // 一次性命令：完整策略判定
                     if (!confirmed) {
                         when (val v = RootCommandGateway.check(text, CommandSource.USER_TERMINAL)) {
                             is Verdict.Block -> {
@@ -714,8 +710,8 @@ object RootService {
     /** 有界轮询等待本轮 pgid 落盘（脚本刚启动时文件可能尚未写出）。 */
     private suspend fun awaitRunPgid(): Int {
         repeat(15) {
-            val v = readRunPgidFile()
-            if (v > 1) return v
+            val value = readRunPgidFile()
+            if (value > 1) return value
             delay(100)
         }
         return 0
@@ -744,9 +740,8 @@ object RootService {
                     withContext(Dispatchers.Main) {
                         appendOutputDirect("^C\n")
                     }
-                    // ProcessBuilder 起的子进程没有 TTY，\u0003 (\u0003) 经 stdin 写入只是普通字符，
-                    // 不会触发 SIGINT；真正能中断的是下方 `kill`。旧版两个都写会误导后来阅读
-                    // 代码的人以为 ETX 起了作用，这里明确移除冗余 IO。
+                    // ProcessBuilder 起的子进程没有 TTY，经 stdin 写入 ETX(0x03) 只是普通字符，
+                    // 不会触发 SIGINT；真正能中断的是下方的 `kill`，故此处只写换行、不写 ETX。
                     targetWriter?.write("\n")
                     targetWriter?.flush()
 

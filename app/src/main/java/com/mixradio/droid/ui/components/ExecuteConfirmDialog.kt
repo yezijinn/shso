@@ -102,7 +102,7 @@ fun ExecuteConfirmDialog(
     val report = scanReport
     val hasCritical = report != null && report.findings.any { it.level == RiskLevel.CRITICAL }
     // 「输入 EXECUTE」属**档位 3 专属**能力：档位 2 只需普通确认（点「确认执行」即可）。
-    // 早期实现用 scanEnabled（档位 ≥2）判定，使档位 2 也强制打字 —— 与文档语义不符，已收归到档位 3。
+    // 判定依据必须是档位 3（而非档位 ≥2 的 scanEnabled），否则档位 2 会被强制打字，与文档语义不符。
     val needTypedConfirm = needTypedExecuteConfirm(securityLevel, hasCritical)
     val typedOk = !needTypedConfirm || typedConfirm.trim() == "EXECUTE"
 
@@ -272,7 +272,7 @@ fun ExecuteConfirmDialog(
  * 「CRITICAL 需输入 EXECUTE」是否生效（纯函数，便于单测）。
  *
  * 仅**档位 3（最强防护）**+ 扫描发现 CRITICAL 时才要求打字确认；
- * 档位 2（标准防护）走普通确认框即可。档位 ≤1 不做脚本扫描，故 never 触发。
+ * 档位 2（标准防护）走普通确认框即可。档位 ≤1 不做脚本扫描，故不会触发。
  */
 internal fun needTypedExecuteConfirm(securityLevel: Int, hasCritical: Boolean): Boolean =
     securityLevel >= SecurityLevels.MAXIMUM && hasCritical

@@ -4,6 +4,7 @@ package com.mixradio.droid.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import com.mixradio.droid.ShsoApplication
 import org.json.JSONArray
 import org.json.JSONObject
@@ -72,7 +73,7 @@ object EditHistoryManager {
     @Synchronized
     fun clearHistory(filePath: String) {
         ensureMigrated()
-        prefs.edit().remove(keyFor(filePath)).apply()
+        prefs.edit { remove(keyFor(filePath)) }
     }
 
     private fun keyFor(filePath: String) = KEY_PREFIX + filePath
@@ -82,8 +83,8 @@ object EditHistoryManager {
         return try {
             val arr = JSONArray(raw)
             (0 until arr.length()).mapNotNull { i ->
-                val o = arr.optJSONObject(i) ?: return@mapNotNull null
-                HistoryEntry(o.optString("content", ""), o.optLong("timestamp", 0L))
+                val obj = arr.optJSONObject(i) ?: return@mapNotNull null
+                HistoryEntry(obj.optString("content", ""), obj.optLong("timestamp", 0L))
             }.sortedByDescending { it.timestamp }
         } catch (_: Throwable) {
             emptyList()
@@ -91,7 +92,7 @@ object EditHistoryManager {
     }
 
     private fun writeFile(filePath: String, entries: List<HistoryEntry>) {
-        prefs.edit().putString(keyFor(filePath), entriesToJson(entries).toString()).apply()
+        prefs.edit { putString(keyFor(filePath), entriesToJson(entries).toString()) }
     }
 
     private fun entriesToJson(entries: List<HistoryEntry>): JSONArray {
@@ -112,27 +113,28 @@ object EditHistoryManager {
     @Synchronized
     private fun ensureMigrated() {
         if (!prefs.contains(KEY_LEGACY)) return
-        val edit = prefs.edit()
         val legacy = prefs.getString(KEY_LEGACY, null)
-        if (!legacy.isNullOrBlank()) {
-            try {
-                val arr = JSONArray(legacy)
-                val byFile = LinkedHashMap<String, MutableList<HistoryEntry>>()
-                for (i in 0 until arr.length()) {
-                    val o = arr.optJSONObject(i) ?: continue
-                    val path = o.optString("filePath")
-                    if (path.isEmpty()) continue
-                    byFile.getOrPut(path) { mutableListOf() }
-                        .add(HistoryEntry(o.optString("content", ""), o.optLong("timestamp", 0L)))
+        prefs.edit {
+            if (!legacy.isNullOrBlank()) {
+                try {
+                    val arr = JSONArray(legacy)
+                    val byFile = LinkedHashMap<String, MutableList<HistoryEntry>>()
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val path = obj.optString("filePath")
+                        if (path.isEmpty()) continue
+                        byFile.getOrPut(path) { mutableListOf() }
+                            .add(HistoryEntry(obj.optString("content", ""), obj.optLong("timestamp", 0L)))
+                    }
+                    for ((path, list) in byFile) {
+                        val trimmed = list.sortedByDescending { it.timestamp }.take(MAX_HISTORY_PER_FILE)
+                        putString(keyFor(path), entriesToJson(trimmed).toString())
+                    }
+                } catch (_: Throwable) {
+                    // 旧数据损坏：直接丢弃，不阻断使用
                 }
-                for ((path, list) in byFile) {
-                    val trimmed = list.sortedByDescending { it.timestamp }.take(MAX_HISTORY_PER_FILE)
-                    edit.putString(keyFor(path), entriesToJson(trimmed).toString())
-                }
-            } catch (_: Throwable) {
-                // 旧数据损坏：直接丢弃，不阻断使用
             }
+            remove(KEY_LEGACY)
         }
-        edit.remove(KEY_LEGACY).apply()
     }
 }

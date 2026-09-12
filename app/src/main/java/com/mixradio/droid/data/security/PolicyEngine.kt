@@ -142,19 +142,19 @@ object PolicyEngine {
 
         // 1) 未解析变量：破坏性程序 + 变量 = 目标不可静态判定
         if (atom.hasUnresolvedVar) {
-            val p = atom.program
-            if (p in CRITICAL_UNRESOLVED || p.startsWith("mkfs")) {
+            val program = atom.program
+            if (program in CRITICAL_UNRESOLVED || program.startsWith("mkfs")) {
                 findings.add(
                     Finding(
                         "UNRESOLVED_DESTRUCTIVE", RiskLevel.CRITICAL,
-                        "高危命令的操作目标含未解析变量，无法判定影响范围: $p", snippet, line
+                        "高危命令的操作目标含未解析变量，无法判定影响范围: $program", snippet, line
                     )
                 )
-            } else if (p in DANGEROUS_UNRESOLVED) {
+            } else if (program in DANGEROUS_UNRESOLVED) {
                 findings.add(
                     Finding(
                         "UNRESOLVED_DESTRUCTIVE_CONFIRM", RiskLevel.DANGEROUS,
-                        "命令的操作目标含未解析变量（$p），执行前请确认实际路径", snippet, line
+                        "命令的操作目标含未解析变量（$program），执行前请确认实际路径", snippet, line
                     )
                 )
             }
@@ -206,8 +206,7 @@ object PolicyEngine {
 
     /**
      * cp / install / ln / rsync：**目标**是系统或设备路径 → 等于往系统里写文件。
-     * 静态层此前完全没有这类规则，只能靠运行时守卫的 PATH 包装器兜底 ——
-     * 脚本自动执行链路里就漏了。
+     * 静态层必须在此拦截：仅靠运行时守卫的 PATH 包装器无法覆盖脚本自动执行链路。
      */
     private fun evaluateCopyLike(atom: CommandParser.Atom, line: Int?, snippet: String, findings: ArrayList<Finding>) {
         val target = atom.operands.lastOrNull() ?: return
@@ -518,11 +517,11 @@ object PolicyEngine {
 
     /** 文本中是否出现「解码器」特征（大小写不敏感）。 */
     private fun containsDecoderMarker(text: String): Boolean {
-        val t = text.lowercase()
-        return t.contains("base64") || t.contains("b64decode") || t.contains("b64encode") ||
-            t.contains("frombase64") || t.contains("atob(") || t.contains("unhexlify") ||
-            t.contains("xxd -r") || t.contains("openssl enc") || t.contains("\\x") ||
-            t.contains("bytes.fromhex") || t.contains("codecs.decode")
+        val lowered = text.lowercase()
+        return lowered.contains("base64") || lowered.contains("b64decode") || lowered.contains("b64encode") ||
+            lowered.contains("frombase64") || lowered.contains("atob(") || lowered.contains("unhexlify") ||
+            lowered.contains("xxd -r") || lowered.contains("openssl enc") || lowered.contains("\\x") ||
+            lowered.contains("bytes.fromhex") || lowered.contains("codecs.decode")
     }
 
     /** 当前安全档位（读 AppSettings；未初始化时保守取 STANDARD）。 */

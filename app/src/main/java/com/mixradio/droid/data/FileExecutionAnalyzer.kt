@@ -129,8 +129,8 @@ private fun computeSha256(path: String, file: File, readable: Boolean): String {
             "文件过大 (>50MB) 未计算"
         } else {
             val (_, out) = RootService.runCommandSync("sha256sum " + RootService.escapeShellArg(path))
-            val m = Regex("""^\s*([0-9a-fA-F]{64})""").find(out)
-            m?.groupValues?.get(1)?.uppercase() ?: "计算失败（无 Root 或无法读取）"
+            val match = Regex("""^\s*([0-9a-fA-F]{64})""").find(out)
+            match?.groupValues?.get(1)?.uppercase() ?: "计算失败（无 Root 或无法读取）"
         }
     } catch (e: Exception) {
         "计算失败：${e.message?.take(40) ?: "未知错误"}"

@@ -77,7 +77,7 @@ fun BookmarksDialog(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
             ) {
-                // ── ① 标题栏（贴顶边）──
+                // ① 标题栏（贴顶边）
                 Text(
                     text = "书签",
                     style = AuroraTextStyles.title3,
@@ -91,7 +91,7 @@ fun BookmarksDialog(
                     modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
                 )
 
-                // ── ② 书签列表（纯文本紧凑视图：无底色、0 行间隔、贴边）──
+                // ② 书签列表（纯文本紧凑视图：无底色、0 行间隔、贴边）
                 // 弹窗整体高度固定（Surface.height），列表区用 weight 占满剩余空间，
                 // 高度恒为「60% 屏高 − 标题区 − 底栏」，添加/删除书签时窗口尺寸不再变化，
                 // 消除 Dialog 居中位置在尺寸切换瞬间的错位闪烁。
@@ -146,7 +146,7 @@ fun BookmarksDialog(
                     }
                 }
 
-                // ── ③ 底栏（仅「添加书签」按钮，贴底边；功能 = 收藏当前目录）──
+                // ③ 底栏（仅「添加书签」按钮，贴底边；功能 = 收藏当前目录）
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

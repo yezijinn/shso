@@ -12,8 +12,8 @@ import org.junit.Test
 /**
  * 守卫测试：解压入口的可写性判定（`ArchiveExtractor.canExtractTo`）。
  *
- * 背景（任务 28）：解压以应用自身 uid 落盘，`/data/adb/` 受 SELinux 限制，
- * 即使 `chmod 777` 也写不进去 —— 旧实现仍暴露「自动解压文件」入口，点了只会冒一个 Toast。
+ * 背景：解压以应用自身 uid 落盘，`/data/adb/` 受 SELinux 限制，
+ * 即使 `chmod 777` 也写不进去，因此解压入口不得指向该路径。
  */
 class ArchiveExtractorCanExtractTest {
 

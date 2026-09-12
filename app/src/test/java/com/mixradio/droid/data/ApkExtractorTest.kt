@@ -49,8 +49,8 @@ class ApkExtractorTest {
         assertEquals("/storage/emulated/0/Download", ApkExtractor.DOWNLOAD_DIR)
     }
 
-    // ── 产物规划（单包 / 分包）────────────────────────────────────────────
-    // 本机实测无任何分包应用（全量扫描为空），故分包分支靠这里的纯函数覆盖。
+    // 产物规划（单包 / 分包）
+    // 本机扫描未遇到任何分包应用，故分包分支靠纯函数单测覆盖。
 
     @Test
     fun `单包应用只产出一个基础包文件`() {

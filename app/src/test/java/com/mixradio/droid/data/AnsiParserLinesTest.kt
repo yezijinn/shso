@@ -48,7 +48,7 @@ class AnsiParserLinesTest {
     @Test
     fun zeroThenColorAppliesRemainingCodes() {
         // 回归守卫：`\e[0;32m` 是先复位再设绿，大量 CLI 会这样输出。
-        // 旧实现在 codes.contains(0) 时直接 reset 并 return，把 32 一并丢掉，渲染成默认色。
+        // 约束：codes 含 0（复位）后仍需继续处理后续码，不得提前 return 丢弃 32（否则渲染成默认色）。
         val result = AnsiParser.parseAnsi("\u001B[0;32mgreen", defaultColor)
         assertEquals(1, result.lines.size)
         assertEquals("green", result.lines[0].text)

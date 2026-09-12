@@ -37,7 +37,7 @@ import com.mixradio.droid.ui.theme.auroraTextFieldColors
  * 终端高危命令风险确认弹窗（方案 §5.4 escalation）。
  *
  * - 展示 [Finding] 列表（规则 / 等级 / 描述 / 命中片段）；
- * - CRITICAL 级需输入 EXECUTE 才能确认（防手滑）；
+ * - CRITICAL 级需输入 EXECUTE 才能确认（防手滑）：**精确匹配大写**，输入前会 `trim()`；
  * - [不要执行] / [确认执行] 双按钮。
  */
 @Composable
@@ -64,6 +64,7 @@ fun CommandRiskDialog(
         )
         Spacer(modifier = Modifier.height(8.dp))
 
+        // 最多展示 8 项：弹窗高度受限，其余折叠为计数，避免长列表把按钮挤出视口
         findings.take(8).forEach { f ->
             Column(modifier = Modifier.padding(vertical = 3.dp)) {
                 Text(
