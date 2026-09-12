@@ -4,6 +4,8 @@
 
 - 功能与用法：[`README.md`](../README.md)
 - 变更记录：[`更新日志.md`](../更新日志.md)
+- 编写规范：[`docs/文档规范.md`](文档规范.md)
+- 命名规范：[`docs/命名规范.md`](命名规范.md)
 - 守卫模块：[`module/shso_guard/README.md`](../module/shso_guard/README.md)
 - 在线编译：`docs/在线编译.md`
 
@@ -220,6 +222,34 @@ python build_apk.py             # Windows 一键脚本（含 --skip-check）
 - `Process.pid()` 在 Android 上不存在，取子进程 pid 只能反射；
   中断正确性由进程组回收保证。
 
+## 排错速查
+
+| 现象 | 原因与处理 |
+|---|---|
+| 构建报 `RectangleShape` 未解析 | foundation 缓存制品无该符号，改用 `RoundedCornerShape(0.dp)` |
+| Release 构建报 keystore 找不到 | keystore 在仓库外，路径由环境变量 `KEYSTORE_FILE` 或 `local.properties` 提供；新环境可用 debug 签名兜底 |
+| 列表底部出现约 48dp 空白带 | 列表 Box 上多加了 `navigationBarsPadding()`，与 Scaffold inset 重复计算 |
+| 文件行透过 DockBar 穿帮 | 列表 Box 少了 `padding(bottom = 56.dp)` |
+| 桌面图标边缘被裁 | 前景图未缩进中心安全区（直径 ≤72dp / 108dp 画布） |
+| 文件列表属性异常（链接误判为文件） | `stat` 漏 `-L`，未跟随符号链接 |
+| 文件列表加载慢 | 在 shell 循环里逐条 `stat`，改为 `find ... -exec stat -L -c ... {} +` |
+| 安全策略未拦截 | 检查档位是否 ≥2；`wipe` 必须走 `PolicyEngine` 独立分支，不能并入 `RM_LIKE` |
+| 改了守卫源码但行为没变 | 未重新生成包装器并重打 `assets/shso_guard.zip`，或未升 `module.prop` 版本号 |
+| Gradle 测试报 `CreateProcess error=740` | 陈旧 daemon 的安全上下文问题，`./gradlew --stop` 后重跑 |
+
+## 术语
+
+| 术语 | 含义 |
+|---|---|
+| shso | 本项目；设备端工作目录 `/data/adb/shso` |
+| Aurora | 自研极光玻璃暗色主题（`ui/theme/Aurora*`） |
+| 档位 / SecurityLevel | 安全防护强度 0–3，设置页切换，即时生效 |
+| 守卫 / shso_guard | 配套 ROOT 模块，PATH 前置，运行时拦截高危命令 |
+| Verdict | 安全判定结果：`Allow` / `Confirm` / `Block` |
+| CommandSource | 调用者身份：`INTERNAL_APP` / `USER_TERMINAL` / `SCRIPT_FILE` |
+| fail-closed | 策略异常时按最高风险处理，绝不静默放行 |
+| HyperCore | 执行引擎的横幅与日志批处理模块 |
+
 ## 文档维护约定
 
 | 文档 | 职责 | 不写 |
@@ -228,7 +258,10 @@ python build_apk.py             # Windows 一键脚本（含 --skip-check）
 | `更新日志.md` | 变更清单，一行一条，日期倒序 | 实现细节 |
 | `docs/PROJECT.md`（本文件） | 技术栈、架构、安全子系统、构建约束、已知注意点 | 重复 README 的功能清单 |
 | `module/shso_guard/README.md` | 守卫模块原理、策略、覆盖范围、能力边界 | App 侧静态审查细节 |
-| `docs/在线编译.md` | GitHub Actions 自定义包名编译步骤与 FAQ | 本地构建 |
+| `docs/文档规范.md` | Markdown 写作准则、格式约定、文档职责边界 | 项目内容 |
+| `docs/命名规范.md` | Kotlin / Compose 命名约定、项目词汇表、禁止项 | 代码实现细节 |
+
+统一遵循 `docs/文档规范.md`：结论先行、表格优先、无 emoji 与过程叙事、数据标注出处。
 
 - 改动功能后的同步顺序：代码 → 单测 → `更新日志.md` → `README.md` / 本文件
   （仅当影响用法或约束时）→ 提交。

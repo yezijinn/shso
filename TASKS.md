@@ -1,32 +1,24 @@
 # shso 任务看板 (TASKS.md)
 
+> 过程记录，不参与对外文档同步；现行说明见 `README.md`、`docs/PROJECT.md`、`更新日志.md`。
 > 建立时间：2026-09-11（上一版归档为 `TASKS-old-20260911-v18final.md`）
 > 状态规范：`[ ]` 待办 | `[/]` 执行中 | `[x]` 完成 | `[!]` 阻塞/需人工确认
 
 ---
 
-## 📌 版本规则（2026-09-11 起生效，不再用旧规则）
+## 版本规则
 
-| 项 | 规则 | 生成位置 |
-|---|---|---|
-| `versionCode` | **构建当日日期**纯数字 `YYYYMMDD`（如 `20260911`） | `app/build.gradle.kts` → `buildDateVersionCode`（`BASIC_ISO_DATE`） |
-| `versionName` | **`Jinn`**（固定展示名） | `app/build.gradle.kts` 硬编码 |
-| Release Tag | **纯日期**（如 `20260911`），与 `versionCode` 对齐 | `.github/workflows/publish-release.yml` |
+`versionCode` = 构建当日日期（`YYYYMMDD`），`versionName` = `Jinn`，Release Tag 与 `versionCode` 对齐；升级判定只认 `versionCode`。完整规则见 `README.md` § 版本规则。
 
-- 升级判定只认 `versionCode`；应用内「检查更新」抓取 GitHub tags 的纯数字标签取最大值比对。
-- `build_apk.py` 用 `aapt2` 校验产物是否符合上述规则（仅告警不阻断，跨零点构建可能差一天）。
-
-> 守卫模块 `module/shso_guard` 有独立版本：当前 **v1.2.0**（`module.prop` 的 `version=`）。
-> 新增/修改包装器或 `common.sh` 后必须：重新生成包装器 → 重打包 `assets/shso_guard.zip` → 同步
-> `GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES` → 升 `module.prop` 版本（否则已装用户不会升级）。
+守卫模块独立版本：当前 **v1.2.0**（`module.prop` 的 `version=`）。新增或修改包装器、`common.sh` 后必须按序执行：重新生成包装器 → 重打包 `assets/shso_guard.zip` → 同步 `GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES` → 升 `module.prop` 版本，否则已装用户不会升级。
 
 ---
 
-## 📊 当前状态速览
+## 当前状态速览
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`（本次提交后待推送；上一批 `0f2cbf9` 已同步） |
+| 分支 | `main`，与 `origin/main` 同步，HEAD `770af32` |
 | 单元测试 | **220 tests / 0 failures**（本轮新增 70 条，起点 150） |
 | 守卫模块 | **v1.2.0**（真机已装并验证拦截） |
 | 真机 | BIYLBAFQQSS8DA69（PacM00，Magisk，`su -c id` uid=0）|
@@ -35,7 +27,7 @@
 
 ---
 
-## 📋 待办
+## 待办
 
 ### A. 立即动作
 
@@ -62,7 +54,7 @@
 
 ---
 
-## ✅ 本轮已完成（2026-09-11 代码审查 + 安全加固）
+## 本轮已完成（2026-09-11 代码审查 + 安全加固）
 
 ### 批次一：全量代码审查后修复（`65c4f8f`，11 项）
 
@@ -93,6 +85,24 @@
 - `HorizontalPager` 保留 4 页：切标签不再丢终端输入 / 文件页多选·滚动 / 风险确认弹窗
 - 编辑历史改为**每文件一个 key** + 旧数据自动迁移
 
+### 批次四：安全加固（第 7 项，`42e725e` + `7301745` + `27c1b18` + `f34eecb`）
+
+- **解析层**：wrapper 选项绕过（`timeout 5`/`sudo -u root`/`stdbuf -o0`）、重定向目标提取、`programUnresolved`（`$IFS` 拼命令）、`eval` 载荷展开、`xargs` 派发
+- **拦截规则**：加密/混淆（解码管道、`eval`+解码器、解释器内联解码、超长 base64、NUL 内容）、格机原语（分区表/刷机/mkfs/truncate/tee/sysrq-trigger）、`cp/mv/install` 写系统路径、重定向写块设备
+- **分级按来源**：脚本 `CRITICAL`（自动执行直接拒）/ 终端 `DANGEROUS`（可确认）
+- **fail-closed**：解析超限、>2MB 不可完整扫描、疑似加密 → 自动执行一律拒绝
+- **守卫 v1.2.0**：新增 9 个包装器；安装改**原子替换 + 失败回滚**；冷启动同步 `policy.conf` 的 `mode`；审计改用线程安全 formatter 并在写入前清除软链
+
+### 批次五：新增「提取 APK」（文件页设置菜单）
+
+- 文件页「设置」弹窗内新增 **「提取APK」**：列出已安装应用 → 导出安装包到内部存储 `Download/`
+- 命名（**后缀大写**）：基础包 `<应用名>-<版本号>.APK`；分包应用追加 `-split1.APK`、`-split2.APK`…
+- 默认只列用户应用，可切「含系统应用」；应用名非法字符净化；读取 `/data/app/...` 需 ROOT
+- 清单新增 `QUERY_ALL_PACKAGES`（否则 targetSdk 30+ 下 `getInstalledPackages()` 列表残缺）
+- 新增 `ApkExtractorTest` 7 例（命名 / 净化 / 单包与分包产物规划）
+- 真机验证：提取 `com.reveny.vbmetafix.service` → `Download/com.reveny.vbmetafix.service-1.APK`（3.15MB，魔数 `PK\x03\x04` 有效）
+- **未覆盖**：本机全量扫描无分包应用，分包分支由纯函数单测覆盖
+
 ### 批次六：分包 APK 可直接安装（修复「提取出来却装不上」）
 
 - **根因**：点 `.APK` 走单文件 `pm install`，分包应用必失败（`INSTALL_FAILED_MISSING_SPLIT`）；
@@ -105,24 +115,6 @@
 - 真机验证：`WhatsApp-263507522.APK` + 3 个 `-splitN.APK`（92MB）经 shso 安装成功，
   `pm path com.whatsapp` 返回 base + `split_config.armeabi_v7a` + `split_config.xhdpi` + `split_i18n_ko`
 - 验证后已 `pm uninstall` 还原设备（测试前该应用本就未安装）
-
-### 批次五：新增「提取 APK」（文件页设置菜单）
-
-- 文件页「设置」弹窗内新增 **「提取APK」**：列出已安装应用 → 导出安装包到内部存储 `Download/`
-- 命名（用户指定，**后缀大写**）：基础包 `<应用名>-<版本号>.APK`；分包应用追加 `-split1.APK`、`-split2.APK`…
-- 默认只列用户应用，可切「含系统应用」；应用名非法字符净化；读取 `/data/app/...` 需 ROOT
-- 清单新增 `QUERY_ALL_PACKAGES`（否则 targetSdk 30+ 下 `getInstalledPackages()` 列表残缺）
-- 新增 `ApkExtractorTest` 7 例（命名 / 净化 / 单包与分包产物规划）
-- 真机验证：提取 `com.reveny.vbmetafix.service` → `Download/com.reveny.vbmetafix.service-1.APK`（3.15MB，魔数 `PK\x03\x04` 有效）
-- **未覆盖**：本机全量扫描无任何分包应用，分包分支由纯函数单测覆盖
-
-### 批次四：安全加固（第 7 项，`42e725e` + `7301745` + `27c1b18` + `f34eecb`）
-
-- **解析层**：wrapper 选项绕过（`timeout 5`/`sudo -u root`/`stdbuf -o0`）、重定向目标提取、`programUnresolved`（`$IFS` 拼命令）、`eval` 载荷展开、`xargs` 派发
-- **拦截规则**：加密/混淆（解码管道、`eval`+解码器、解释器内联解码、超长 base64、NUL 内容）、格机原语（分区表/刷机/mkfs/truncate/tee/sysrq-trigger）、`cp/mv/install` 写系统路径、重定向写块设备
-- **分级按来源**：脚本 `CRITICAL`（自动执行直接拒）/ 终端 `DANGEROUS`（可确认）
-- **fail-closed**：解析超限、>2MB 不可完整扫描、疑似加密 → 自动执行一律拒绝
-- **守卫 v1.2.0**：新增 9 个包装器；安装改**原子替换 + 失败回滚**；冷启动同步 `policy.conf` 的 `mode`；审计改用线程安全 formatter 并在写入前清除软链
 
 ### 验证（真机闭环）
 
@@ -137,7 +129,7 @@
 
 ---
 
-## 🔒 已定结论（避免反复推翻）
+## 已定结论（避免反复推翻）
 
 1. **`/data/adb/shso` 必须 777** —— 需让其他应用自由读写；曾改 755，用户明确要求回退。
 2. **大文件阈值 128KB** —— 按低端机实测定（32/64KB 秒开；256KB 约 30s；2MB 数分钟无响应）。
@@ -154,14 +146,14 @@
 
 ---
 
-## ⚠️ 待决事项（需用户确认）
+## 待决事项（需用户确认）
 
 1. 设备上的安全档位现为 **0**（测试后还原）。若要实际启用防护，请在设置中切到 **2/3**。
 2. `/data/adb/shso` 下用户自带的测试文件（`test.number.sh`、`num_*.txt` 2MB/1MB）是否清理 —— **未动**，等确认。
 
 ---
 
-## 🧪 真机与环境备忘
+## 真机与环境备忘
 
 ### 真机操作（BIYLBAFQQSS8DA69，**性能较弱**）
 
@@ -200,19 +192,24 @@ python build_apk.py --variant Debug --skip-check                                
 
 ---
 
-## 📂 旧看板索引
+## 旧看板
+
+过程记录，仅供追溯：
 
 | 文件 | 涵盖范围 |
 |---|---|
-| `TASKS-old-20260911-v18final.md` | 任务 18–31 全量过程与证据 |
-| `TASKS-old-20260911-v17final.md` | 更早一版（17 项，含 R8 / 守卫 / 终端 / 编辑器优化） |
+| `docs/archive/TASKS-old-20260911-v18final.md` | 任务 18–31 全量过程与证据 |
+| `docs/archive/TASKS-old-20260911-v17final.md` | 更早一版（17 项，含 R8 / 守卫 / 终端 / 编辑器优化） |
 
 ---
 
-## 🗂️ 相关文档
+## 相关文档
 
-- `README.md` —— 功能总览、安全与防护说明、更新日志、版本号规则、在线编译指引
-- `docs/PROJECT.md` —— 技术栈、目录结构、架构模式、**安全子系统与已知注意点**
-- `module/shso_guard/README.md` —— 守卫模块说明（策略语法、包装器生成、测试脚本）
-- `.github/workflows/publish-release.yml` —— 纯日期标签发布
-- `.github/workflows/build-apk.yml` —— 在线编译（自定义包名）
+| 文件 | 用途 |
+|---|---|
+| `README.md` | 功能总览、安全模型、版本规则、在线编译入口 |
+| `更新日志.md` | 变更清单，一行一条 |
+| `docs/PROJECT.md` | 技术栈、目录结构、架构、安全子系统与已知注意点 |
+| `module/shso_guard/README.md` | 守卫模块：策略语法、包装器生成、测试脚本 |
+| `.github/workflows/publish-release.yml` | 纯日期标签发布 |
+| `.github/workflows/build-apk.yml` | 在线编译（自定义包名） |
