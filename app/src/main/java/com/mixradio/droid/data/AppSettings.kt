@@ -14,6 +14,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.core.content.edit
 
 /**
  * 全部 var 都是 mutableStateOf（Compose 读取会自动订阅其变化），
@@ -100,133 +101,133 @@ class AppSettings private constructor(context: Context) {
 
     fun setIndependentFolder(enable: Boolean) {
         useIndependentFolder = enable
-        prefs.edit().putBoolean(KEY_USE_INDEPENDENT_FOLDER, enable).apply()
+        prefs.edit { putBoolean(KEY_USE_INDEPENDENT_FOLDER, enable) }
     }
 
     fun setAutoDelete(enable: Boolean) {
         autoDeleteAfterAdding = enable
-        prefs.edit().putBoolean(KEY_AUTO_DELETE_AFTER_ADDING, enable).apply()
+        prefs.edit { putBoolean(KEY_AUTO_DELETE_AFTER_ADDING, enable) }
     }
 
     fun setAutoExecute(enable: Boolean) {
         autoExecuteAfterAdding = enable
-        prefs.edit().putBoolean(KEY_AUTO_EXECUTE_AFTER_ADDING, enable).apply()
+        prefs.edit { putBoolean(KEY_AUTO_EXECUTE_AFTER_ADDING, enable) }
     }
 
     fun setTerminalColor(color: Color) {
         val argb = color.toArgb().toLong() and 0xFFFFFFFFL
         terminalTextColor = argb
-        prefs.edit().putLong(KEY_TERMINAL_TEXT_COLOR, argb).apply()
+        prefs.edit { putLong(KEY_TERMINAL_TEXT_COLOR, argb) }
     }
 
     fun setDarkMode(option: Int) {
         darkModeOption = option
-        prefs.edit().putInt(KEY_DARK_MODE, option).apply()
+        prefs.edit { putInt(KEY_DARK_MODE, option) }
     }
 
     fun setCustomFontEnabled(enable: Boolean) {
         useCustomFont = enable
-        prefs.edit().putBoolean(KEY_CUSTOM_FONT_ENABLED, enable).apply()
+        prefs.edit { putBoolean(KEY_CUSTOM_FONT_ENABLED, enable) }
     }
 
     fun setCustomFont(path: String, name: String) {
         customFontPath = path
         customFontName = name
         useCustomFont = true
-        prefs.edit()
-            .putString(KEY_CUSTOM_FONT_PATH, path)
-            .putString(KEY_CUSTOM_FONT_NAME, name)
-            .putBoolean(KEY_CUSTOM_FONT_ENABLED, true)
-            .apply()
+        prefs.edit {
+            putString(KEY_CUSTOM_FONT_PATH, path)
+            putString(KEY_CUSTOM_FONT_NAME, name)
+            putBoolean(KEY_CUSTOM_FONT_ENABLED, true)
+        }
     }
 
     fun useBuiltInFont() {
         customFontPath = ""
         customFontName = "内置字体"
         useCustomFont = true
-        prefs.edit()
-            .remove(KEY_CUSTOM_FONT_PATH)
-            .putString(KEY_CUSTOM_FONT_NAME, "内置字体")
-            .putBoolean(KEY_CUSTOM_FONT_ENABLED, true)
-            .apply()
+        prefs.edit {
+            remove(KEY_CUSTOM_FONT_PATH)
+            putString(KEY_CUSTOM_FONT_NAME, "内置字体")
+            putBoolean(KEY_CUSTOM_FONT_ENABLED, true)
+        }
     }
 
     fun resetCustomFont() {
         customFontPath = ""
         customFontName = ""
         useCustomFont = true
-        prefs.edit()
-            .remove(KEY_CUSTOM_FONT_PATH)
-            .remove(KEY_CUSTOM_FONT_NAME)
-            .putBoolean(KEY_CUSTOM_FONT_ENABLED, true)
-            .apply()
+        prefs.edit {
+            remove(KEY_CUSTOM_FONT_PATH)
+            remove(KEY_CUSTOM_FONT_NAME)
+            putBoolean(KEY_CUSTOM_FONT_ENABLED, true)
+        }
     }
 
     fun setHyperCoreBanner(enable: Boolean) {
         showHyperCoreBanner = enable
-        prefs.edit().putBoolean(KEY_SHOW_HYPERCORE_BANNER, enable).apply()
+        prefs.edit { putBoolean(KEY_SHOW_HYPERCORE_BANNER, enable) }
     }
 
     fun setShsoBanner(enable: Boolean) {
         showShsoBanner = enable
-        prefs.edit().putBoolean(KEY_SHOW_SHSO_BANNER, enable).apply()
+        prefs.edit { putBoolean(KEY_SHOW_SHSO_BANNER, enable) }
     }
 
     fun updateFileListFontSize(size: Float) {
         val clamped = size.coerceIn(MIN_FILE_LIST_FONT_SIZE, MAX_FILE_LIST_FONT_SIZE)
         fileListFontSize = clamped
-        prefs.edit().putFloat(KEY_FILE_LIST_FONT_SIZE, clamped).apply()
+        prefs.edit { putFloat(KEY_FILE_LIST_FONT_SIZE, clamped) }
     }
 
     fun updateTerminalFontSize(size: Float) {
         val clamped = size.coerceIn(MIN_TERMINAL_FONT_SIZE, MAX_TERMINAL_FONT_SIZE)
         terminalFontSize = clamped
-        prefs.edit().putFloat(KEY_TERMINAL_FONT_SIZE, clamped).apply()
+        prefs.edit { putFloat(KEY_TERMINAL_FONT_SIZE, clamped) }
     }
 
     fun updateRememberDirectory(enable: Boolean) {
         rememberDirectory = enable
-        prefs.edit().putBoolean(KEY_REMEMBER_DIRECTORY, enable).apply()
+        prefs.edit { putBoolean(KEY_REMEMBER_DIRECTORY, enable) }
     }
 
     fun updateEditorAutoSaveInterval(seconds: Int) {
         val clamped = seconds.coerceIn(0, 600)
         editorAutoSaveInterval = clamped
-        prefs.edit().putInt(KEY_EDITOR_AUTOSAVE_INTERVAL, clamped).apply()
+        prefs.edit { putInt(KEY_EDITOR_AUTOSAVE_INTERVAL, clamped) }
     }
 
     fun updateEditorShowLineNumber(show: Boolean) {
         editorShowLineNumber = show
-        prefs.edit().putBoolean(KEY_EDITOR_SHOW_LINE_NUMBER, show).apply()
+        prefs.edit { putBoolean(KEY_EDITOR_SHOW_LINE_NUMBER, show) }
     }
 
     fun updateEditorFontSize(size: Float) {
         val clamped = size.coerceIn(MIN_EDITOR_FONT_SIZE, MAX_EDITOR_FONT_SIZE)
         editorFontSize = clamped
-        prefs.edit().putFloat(KEY_EDITOR_FONT_SIZE, clamped).apply()
+        prefs.edit { putFloat(KEY_EDITOR_FONT_SIZE, clamped) }
     }
 
     fun updateShowHiddenFiles(enable: Boolean) {
         showHiddenFiles = enable
-        prefs.edit().putBoolean(KEY_SHOW_HIDDEN_FILES, enable).apply()
+        prefs.edit { putBoolean(KEY_SHOW_HIDDEN_FILES, enable) }
     }
 
     fun updateFileSortMode(mode: Int) {
         fileSortMode = mode
-        prefs.edit().putInt(KEY_FILE_SORT_MODE, mode).apply()
+        prefs.edit { putInt(KEY_FILE_SORT_MODE, mode) }
     }
 
     fun updateSecurityLevel(level: Int) {
         val clamped = level.coerceIn(SECURITY_OFF, SECURITY_MAXIMUM)
         securityLevel = clamped
-        prefs.edit().putInt(KEY_SECURITY_LEVEL, clamped).apply()
+        prefs.edit { putInt(KEY_SECURITY_LEVEL, clamped) }
     }
 
     fun addBookmark(path: String) {
         val normalized = path.trim().trimEnd('/').ifEmpty { "/" }
         bookmarkPaths.add(normalized)
         bookmarks = bookmarkPaths.toList()
-        prefs.edit().putStringSet(KEY_BOOKMARKS, bookmarkPaths).apply()
+        prefs.edit { putStringSet(KEY_BOOKMARKS, bookmarkPaths) }
     }
 
     fun removeBookmark(path: String) {
@@ -234,7 +235,7 @@ class AppSettings private constructor(context: Context) {
         bookmarkPaths.remove(normalized)
         bookmarkPaths.remove(path.trim()) // 兼容旧数据或未归一化路径
         bookmarks = bookmarkPaths.toList()
-        prefs.edit().putStringSet(KEY_BOOKMARKS, bookmarkPaths).apply()
+        prefs.edit { putStringSet(KEY_BOOKMARKS, bookmarkPaths) }
     }
 
     fun isBookmarked(path: String): Boolean {

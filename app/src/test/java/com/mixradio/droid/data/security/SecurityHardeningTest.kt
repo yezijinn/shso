@@ -29,7 +29,7 @@ class SecurityHardeningTest {
     }
 
     // ========================================================================
-    // 1) wrapper 选项绕过（旧实现把 `5` / `root` 当程序名，rm 规则完全不评估）
+    // 1) wrapper 选项绕过（timeout/sudo/stdbuf/env 等前缀不得当作程序名，否则 rm 等规则不被评估）
     // ========================================================================
 
     @Test fun `timeout 前缀不再绕过高危命令`() {
@@ -47,7 +47,7 @@ class SecurityHardeningTest {
     }
 
     // ========================================================================
-    // 2) 重定向写入（旧实现完全漏检：不经 dd 的块设备/系统写入）
+    // 2) 重定向写入：块设备与系统路径的写入须被拦截，不经 dd 也不能漏检。
     // ========================================================================
 
     @Test fun `重定向写块设备被硬拦`() {
@@ -177,7 +177,7 @@ class SecurityHardeningTest {
     // ========================================================================
 
     @Test fun `脚本里变量拼出的程序名按最高危拒绝`() {
-        // r$IFSm → 真实是 rm。旧实现 basename 得到 "rm$IFS-rf$IFS/system"→"system"，完全绕过规则
+        // r$IFSm 实际是 rm；变量拼接出的程序名须按解析后的真实程序名评估，不得只取 basename。
         assertBlocked("r\$IFSm -rf /system", "UNRESOLVED_PROGRAM", CommandSource.SCRIPT_FILE)
         assertBlocked("rm\$IFS-rf\$IFS/system", "UNRESOLVED_PROGRAM", CommandSource.SCRIPT_FILE)
     }
@@ -262,8 +262,7 @@ class SecurityHardeningTest {
     }
 
     @Test fun `只有 truncated 时待展示风险项为空（调用方不得直接 first）`() {
-        // 旧实现：`if (critical.isNotEmpty() || truncated)` 之后直接 `critical.first()`，
-        // 一旦 truncated 单独成立就会 NoSuchElementException。抽出该函数后按空列表处理。
+        // 约束：仅 truncated 而无 CRITICAL 时，阻塞风险项应为空列表，不得对空列表取 first()（否则 NoSuchElementException）。
         val r = report(findings = emptyList(), truncated = true)
         assertTrue(ScriptAuditor.blockingFindingsFor(r).isEmpty())
     }

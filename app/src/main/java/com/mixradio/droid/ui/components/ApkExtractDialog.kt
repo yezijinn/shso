@@ -96,7 +96,7 @@ internal fun ApkExtractDialog(
                 .height(maxContentHeight)
         ) {
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-                // ── 标题 ──
+                // 标题
                 Text(
                     text = "提取 APK",
                     style = AuroraTextStyles.title4,
@@ -110,7 +110,7 @@ internal fun ApkExtractDialog(
                     color = AuroraTokens.TextSecondary
                 )
 
-                // ── 含系统应用开关 ──
+                // 含系统应用开关
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -128,7 +128,7 @@ internal fun ApkExtractDialog(
                     )
                 }
 
-                // ── 状态行（加载 / 错误 / 上次结果） ──
+                // 状态行（加载 / 错误 / 上次结果）
                 val infoLine = when {
                     loading -> "正在读取应用列表…"
                     loadError != null -> loadError
@@ -142,7 +142,7 @@ internal fun ApkExtractDialog(
                     modifier = Modifier.padding(vertical = 8.dp)
                 )
 
-                // ── 应用列表（仅此区滚动） ──
+                // 应用列表（仅此区滚动）
                 LazyColumn(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(0.dp)
@@ -157,10 +157,10 @@ internal fun ApkExtractDialog(
                                     extractingPkg = app.packageName
                                     statusMessage = null
                                     scope.launch {
-                                        val r = ApkExtractor.extract(context, app)
+                                        val result = ApkExtractor.extract(context, app)
                                         extractingPkg = null
-                                        statusMessage = r.message
-                                        onResult(r.ok, r.message)
+                                        statusMessage = result.message
+                                        onResult(result.ok, result.message)
                                     }
                                 }
                                 .padding(vertical = 8.dp),
@@ -196,7 +196,7 @@ internal fun ApkExtractDialog(
                     }
                 }
 
-                // ── 底部关闭 ──
+                // 底部关闭
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
                     horizontalArrangement = Arrangement.Center

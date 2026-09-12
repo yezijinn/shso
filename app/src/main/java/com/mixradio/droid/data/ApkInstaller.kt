@@ -3,19 +3,19 @@
 
 package com.mixradio.droid.data
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.Intent.FLAG_ACTIVITY_NEW_TASK
 import android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
+import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.lingala.zip4j.ZipFile
-import net.lingala.zip4j.model.FileHeader
 import org.json.JSONObject
 import java.io.File
 
@@ -97,11 +97,12 @@ object ApkInstaller {
      *
      * @param xapkPath  .xapk/.apks/.aspk/.apkm 文件路径
      */
+    @SuppressLint("SdCardPath")
     suspend fun installXapk(context: Context, xapkPath: String): InstallResult = withContext(Dispatchers.IO) {
         val file = File(xapkPath)
         if (!file.exists()) return@withContext InstallResult.Failure("文件不存在: $xapkPath")
 
-        // ── 1. 解压 XAPK（zip4j，zip 条目名可能含中文，需 UTF-8）──
+        // 1. 解压 XAPK（zip4j，zip 条目名可能含中文，需 UTF-8）
         val stagingDir = File(File(xapkPath).parentFile ?: File(TMP_DIR), ".shso_xapk_${System.currentTimeMillis()}")
         try {
             if (!stagingDir.exists()) stagingDir.mkdirs()
@@ -148,7 +149,8 @@ object ApkInstaller {
                 return@withContext InstallResult.Failure("XAPK 中未找到任何 APK 文件")
             }
 
-            // ── 2. OBB 数据落位 /sdcard/Android/obb/<包名>/ ──
+            // 2. OBB 数据落位 /sdcard/Android/obb/<包名>/
+            // 该路径由 ROOT shell 侧使用（mkdir/cp），非 Java 文件 API，故不能用 Environment 构造。
             // Android 规范：OBB 文件名必须为 main.<versionCode>.<packageName>.obb
             val packageName = manifestJson?.optString("package_name")?.takeIf { it.isNotBlank() }
             val versionCode = manifestJson?.optString("version_code")?.takeIf { it.isNotBlank() } ?: "1"
@@ -168,7 +170,7 @@ object ApkInstaller {
                 }
             }
 
-            // ── 3. 单 APK 直接装；多 APK（split）走会话流 ──
+            // 3. 单 APK 直接装；多 APK（split）走会话流
             return@withContext if (apkFiles.size == 1) {
                 installApk(context, apkFiles[0].absolutePath)
             } else {
@@ -182,14 +184,12 @@ object ApkInstaller {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════
     //  安装套件识别（基础包 + 分包）
     //
     //  为什么需要：单文件 `pm install` 对分包应用必定失败（INSTALL_FAILED_MISSING_SPLIT）。
     //  分包安装必须走 `pm install-create/-write/-commit` 会话流，且**分片要先拷到
     //  /data/local/tmp** —— `install-write` 直接读 /storage 会被 SELinux 拒绝
     //  （avc denied sdcardfs，system_server 无权读 emulated 存储）。
-    // ══════════════════════════════════════════════════════════════════════
 
     /** 一个「安装套件」：基础包 + 其分包（单包应用 splits 为空）。 */
     internal data class ApkSet(val base: String, val splits: List<String>) {
@@ -318,7 +318,7 @@ object ApkInstaller {
     private suspend fun installSplitApks(apkPaths: List<String>): InstallResult = withContext(Dispatchers.IO) {
         if (apkPaths.isEmpty()) return@withContext InstallResult.Failure("没有可安装的 APK")
 
-        // ── 1. 拷贝所有分片到 /data/local/tmp（sdcard 直读可能受限）──
+        // 1. 拷贝所有分片到 /data/local/tmp（sdcard 直读可能受限）
         val tmpFiles = mutableListOf<String>()
         try {
             for ((i, path) in apkPaths.withIndex()) {
@@ -331,7 +331,7 @@ object ApkInstaller {
                 tmpFiles.add(tmp)
             }
 
-            // ── 2. 计算总大小并创建会话 ──
+            // 2. 计算总大小并创建会话
             val totalSize = apkPaths.sumOf { File(it).length() }
             val createCmd = "pm install-create -r -d -S $totalSize"
             val (createCode, createOut) = RootService.runCommandSync(createCmd, INSTALL_TIMEOUT_MS)
@@ -343,7 +343,7 @@ object ApkInstaller {
             val sessionId = SESSION_ID_REGEX.find(createOut)?.groupValues?.get(1)
                 ?: return@withContext InstallResult.Failure("无法解析安装会话 ID: ${createOut.trim()}")
 
-            // ── 3. 写入分片 ──
+            // 3. 写入分片
             for ((i, tmp) in tmpFiles.withIndex()) {
                 val size = File(tmp).length()
                 val writeCmd = "pm install-write -S $size $sessionId split$i ${RootService.escapeShellArg(tmp)}"
@@ -354,7 +354,7 @@ object ApkInstaller {
                 }
             }
 
-            // ── 4. 提交 ──
+            // 4. 提交
             val commitCmd = "pm install-commit $sessionId"
             val (commitCode, commitOut) = RootService.runCommandSync(commitCmd, INSTALL_TIMEOUT_MS)
             if (commitCode != 0 || (!commitOut.contains("Success") && !commitOut.contains("success"))) {
@@ -390,22 +390,21 @@ object ApkInstaller {
 
         // Android 8+ 要求声明并动态授权 REQUEST_INSTALL_PACKAGES。
         // 未授权时系统安装器会直接 finish，表现为“点了安装但没有任何反应”。
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val canInstall = context.packageManager.canRequestPackageInstalls()
-            Log.i(TAG, "canRequestPackageInstalls=$canInstall, path=$apkPath")
-            if (!canInstall) {
-                return try {
-                    val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                        data = Uri.parse("package:${context.packageName}")
-                        addFlags(FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(intent)
-                    Log.i(TAG, "已跳转设置页请求 REQUEST_INSTALL_PACKAGES")
-                    InstallResult.Failure("需要允许 shso 安装未知来源应用，请先在设置中开启后再试")
-                } catch (e: Exception) {
-                    Log.e(TAG, "跳转设置页失败", e)
-                    InstallResult.Failure("需要允许 shso 安装未知来源应用: ${e.message}")
+        // minSdk 26 即 Android 8，该判断恒真，无需保留版本分支。
+        val canInstall = context.packageManager.canRequestPackageInstalls()
+        Log.i(TAG, "canRequestPackageInstalls=$canInstall, path=$apkPath")
+        if (!canInstall) {
+            return try {
+                val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                    data = "package:${context.packageName}".toUri()
+                    addFlags(FLAG_ACTIVITY_NEW_TASK)
                 }
+                context.startActivity(intent)
+                Log.i(TAG, "已跳转设置页请求 REQUEST_INSTALL_PACKAGES")
+                InstallResult.Failure("需要允许 shso 安装未知来源应用，请先在设置中开启后再试")
+            } catch (e: Exception) {
+                Log.e(TAG, "跳转设置页失败", e)
+                InstallResult.Failure("需要允许 shso 安装未知来源应用: ${e.message}")
             }
         }
 

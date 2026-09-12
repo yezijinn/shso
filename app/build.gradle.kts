@@ -122,6 +122,14 @@ android {
         buildConfig = true
     }
 
+    lint {
+        // 只打包 arm64-v8a 是既定取舍（其余 ABI 原生库合计约 1.4MB，目标设备为 arm 真机），
+        // 不为 ChromeOS 增加 x86_64。
+        disable += "ChromeOsAbiSupport"
+        // targetSdk 升级牵涉前台服务类型、通知权限、存储分区等行为变更，需完整真机回归后再动。
+        disable += "OldTargetApi"
+    }
+
     packaging {
         resources {
             excludes += setOf(
@@ -158,24 +166,24 @@ dependencies {
     // 无 @Serializable 与 kotlinx.serialization 引用，故不直接依赖 serialization-core；
     // androidx.savedstate 仍会传递引入。需要 JSON 序列化时再恢复该依赖。
 
-    implementation("androidx.core:core-ktx:1.15.0")
+    implementation(libs.androidx.core.ktx)
     // 无 AppCompatActivity / AppCompatDialog / Theme.AppCompat，主题继承 android:Theme.Material，
     // 不依赖 appcompat。
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
+    implementation(libs.kotlinx.coroutines.android)
 
     // 压缩包解压（zip/tar/tgz/7z 解析；本地 Gradle 缓存已具备 1.27.1，离线可构建）
-    implementation("org.apache.commons:commons-compress:1.27.1")
-    implementation("org.tukaani:xz:1.9")
+    implementation(libs.commons.compress)
+    implementation(libs.tukaani.xz)
 
     // ZIP 加密解密（zip4j 支持 ZipCrypto + WinZip AES，char[] 密码天然支持中文）
-    implementation("net.lingala.zip4j:zip4j:2.11.1")
+    implementation(libs.zip4j)
 
     // 不使用 zstd：zstd-jni 的 AAR 为 4 个 ABI 各带一份原生库，合计约 1.9MB。
     // 受影响的格式只有 .zst / .tar.zst，其余 12 种不受影响。
 
     // JVM 单元测试（JUnit 4，验证 CommandParser / PathClassifier / PolicyEngine / SecurityModels 纯逻辑拦截路径,
     // 不依赖设备,可在无 ROOT 真机环境下覆盖 ROOT 链路清单 #7-10 项拦截规则）
-    testImplementation("junit:junit:4.13.2")
+    testImplementation(libs.junit4)
 }
 
 // 启动守卫模块 zip 需要打包进 APK

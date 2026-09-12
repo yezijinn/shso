@@ -185,9 +185,7 @@ object TextCompare {
 
     private fun hashCapacity(expected: Int): Int = (expected / 0.75f).toInt() + 1
 
-    // ─────────────────────────────────────────────────────────────
     //  行解析 / 字节比较
-    // ─────────────────────────────────────────────────────────────
 
     /** 定长字节比较：逐行对比的主路径，避免解码开销。 */
     private fun bytesEqual(
@@ -233,9 +231,7 @@ object TextCompare {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────
     //  内存映射文件源
-    // ─────────────────────────────────────────────────────────────
     private class MappedFile private constructor(
         private val channel: FileChannel,
         val buffer: MappedByteBuffer,
@@ -248,13 +244,13 @@ object TextCompare {
             fun open(tempDir: String, path: String): MappedFile {
                 // ① APP 自身可读 → 直接 mmap（零拷贝，最快路径）
                 runCatching {
-                    val f = File(path)
-                    if (f.isFile && f.canRead()) {
-                        val ch = FileInputStream(f).channel
+                    val file = File(path)
+                    if (file.isFile && file.canRead()) {
+                        val ch = FileInputStream(file).channel
                         val len = ch.size()
                         if (len > Int.MAX_VALUE) {
                             ch.close()
-                            throw CompareException("文件过大（>${Int.MAX_VALUE / 1024 / 1024}MB）: ${f.name}")
+                            throw CompareException("文件过大（>${Int.MAX_VALUE / 1024 / 1024}MB）: ${file.name}")
                         }
                         if (len > 0L) {
                             val buf = ch.map(FileChannel.MapMode.READ_ONLY, 0, len) as MappedByteBuffer
@@ -278,9 +274,9 @@ object TextCompare {
                     val ch = FileInputStream(tmp).channel
                     val len = ch.size()
                     // 进入「已产出 tmp」阶段后，任何失败都必须清掉临时文件：
-                    // 成功路径由 MappedFile.close() 负责删除（tmp 会随对象一起传给调用方），
-                    // 但下面几处 throw 与 mmap 异常原先都不删 —— 大文件对比本身吃空间，
-                    // 残留的 _shso_cmp_*.tmp 不易被察觉。
+                    // 成功路径由 MappedFile.close() 负责删除（tmp 会随对象一起传给调用方）；
+                    // 下方 throw 与 mmap 异常也必须删除临时文件，否则大文件对比残留的
+                    // _shso_cmp_*.tmp 不易被察觉、持续占用空间。
                     try {
                         if (len <= 0L) { ch.close(); throw CompareException("文件为空或不可读: ${File(path).name}") }
                         if (len > Int.MAX_VALUE) {
@@ -322,9 +318,7 @@ object TextCompare {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────
     //  输出
-    // ─────────────────────────────────────────────────────────────
     private fun writeHeader(sb: StringBuilder, mode: Mode, pathA: String, pathB: String) {
         val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
         sb.append("# 文本对比结果\n")
@@ -358,9 +352,7 @@ object TextCompare {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────
     //  命名与过滤
-    // ─────────────────────────────────────────────────────────────
 
     /** 结果文件名：`文本对比_YYYYMMDD_n<ext>`，n 从 0 起按目录内已存在文件递增。 */
     suspend fun nextOutputPath(dir: String, currentFilePath: String): String {

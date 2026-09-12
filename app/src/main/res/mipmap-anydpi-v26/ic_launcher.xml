@@ -2,4 +2,7 @@
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@drawable/ic_launcher_background" />
     <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <!-- Android 13 主题图标：系统只取 monochrome 层的 alpha 通道做蒙版，颜色由主题色替换，
+         故直接复用前景图（其非透明区域即图标主体轮廓）。 -->
+    <monochrome android:drawable="@mipmap/ic_launcher_foreground" />
 </adaptive-icon>

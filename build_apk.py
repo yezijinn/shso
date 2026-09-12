@@ -33,13 +33,11 @@ shso 一键编译脚本
 签名密码由 app/build.gradle.kts 从 KEYSTORE_PASSWORD / KEY_ALIAS_PASSWORD
 或被 Git 忽略的 local.properties 读取；本脚本不保存签名密码。
 
-依赖（本机环境，见 C:\\ENVIRONMENT.md）：
-    - JDK 17      : C:\\Program Files\\Eclipse Adoptium\\jdk-17.0.20+8   （运行 Gradle）
-    - Android SDK : C:\\Android\\sdk                                     （platforms;android-37.0 / build-tools;37.0.0）
-    - 原生控件    : 100% 采用 AndroidX Compose Material 3 原生控件（自包含工程，无仓库外 UI 组件库）
-     - 签名密钥    : 本地 keystore（仓库外，alias: com.mixradio.droid，V2+V3）
-
-作者：Jinn
+依赖（本机环境，见 C:\AI_WORKSPACE\GLOBAL\ENVIRONMENT.md）：
+    - JDK 17      : Eclipse Temurin 17（运行 Gradle）。默认取 DEFAULT_JAVA_HOME，
+                    该路径不存在时按 Adoptium 安装目录下的 jdk-17* 自动发现
+    - Android SDK : C:\Android\sdk（platforms;android-37.0 / build-tools;37.0.0）
+    - 签名密钥    : 仓库外 keystore（alias com.mixradio.droid，V2+V3）
 """
 
 from __future__ import annotations

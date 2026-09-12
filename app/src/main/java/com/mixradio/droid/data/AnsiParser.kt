@@ -59,12 +59,12 @@ private fun ansi256ToColor(index: Int): Color {
         in 0..7 -> COLOR_MAP.getValue(30 + index)
         in 8..15 -> COLOR_MAP.getValue(90 + index - 8)
         in 16..231 -> {
-            val v = index - 16
+            val value = index - 16
             val component = { x: Int -> if (x == 0) 0 else 55 + x * 40 }
             Color(
-                component(v / 36),
-                component((v / 6) % 6),
-                component(v % 6)
+                component(value / 36),
+                component((value / 6) % 6),
+                component(value % 6)
             )
         }
         else -> {
@@ -177,7 +177,7 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
         return ParsedAnsiResult(all)
     }
 
-    // ────────────────────────────── 扫描 ──────────────────────────────
+    // 扫描
 
     private fun feedInternal(input: String) {
         val n = input.length
@@ -239,7 +239,7 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
         return -1
     }
 
-    // ────────────────────────── 当前行写入 ──────────────────────────
+    // 当前行写入
 
     private fun writeSegment(s: String, from: Int, to: Int) {
         if (from >= to) return
@@ -334,7 +334,7 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
         return AnnotatedString(str, spanStyles = ranges)
     }
 
-    // ────────────────────────────── SGR ──────────────────────────────
+    // SGR
 
     private fun applySgr(codeStr: String) {
         val codes = codeStr.split(";").mapNotNull { it.toIntOrNull() }
