@@ -290,7 +290,7 @@ fun FilePage(
 
     LaunchedEffect(feedbackMessage) {
         feedbackMessage?.let {
-            Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
             feedbackMessage = null
         }
     }
@@ -1438,10 +1438,10 @@ fun FilePage(
                                 val destFile = File(context.filesDir, "custom_app_font.ttf")
                                 File(targetItem.path).copyTo(destFile, overwrite = true)
                                 appSettings.setCustomFont(destFile.absolutePath, targetItem.name)
-                                Toast.makeText(context, "已成功应用为软件字体: ${targetItem.name}", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "已成功应用为软件字体: ${targetItem.name}", Toast.LENGTH_LONG).show()
                                 showFontPreviewDialog = false
                             } catch (e: Exception) {
-                                Toast.makeText(context, "应用字体失败: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "应用字体失败: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
                             }
                         },
                         colors = ButtonDefaults.buttonColors(

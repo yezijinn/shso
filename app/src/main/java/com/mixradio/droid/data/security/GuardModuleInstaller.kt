@@ -5,7 +5,10 @@ package com.mixradio.droid.data.security
 
 import android.content.Context
 import com.mixradio.droid.data.RootService
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -114,19 +117,55 @@ object GuardModuleInstaller {
     @Volatile
     private var guardReadyAt: Long = 0
 
+    /** 后台刷新作用域：缓存过期时异步重探，避免占用调用线程。 */
+    private val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    @Volatile
+    private var refreshing = false
+
+    /**
+     * 探测守卫 bin 目录是否就绪（结果缓存 60s）。
+     *
+     * 本函数会被 `RootService.guardPathPrefix()` 在 **UI 线程**调用（executeFile 由点击触发），
+     * 而探测需要起 su 进程（最长 5s）——同步执行会直接造成 ANR。
+     * 因此缓存过期时不再同步重探，而是「立即返回上次结果 + 后台刷新」；
+     * 只有首次（无缓存）或显式 [forceRefresh] 才同步探测，而后者的调用方都在 IO 线程。
+     */
     fun guardBinDirReady(forceRefresh: Boolean = false): Boolean {
         val now = System.currentTimeMillis()
-        if (!forceRefresh && guardReadyCache != null && now - guardReadyAt < 60_000) {
-            return guardReadyCache!!
+        val cached = guardReadyCache
+        if (!forceRefresh) {
+            if (cached != null && now - guardReadyAt < 60_000) return cached
+            if (cached != null) {
+                scheduleRefresh()
+                return cached
+            }
         }
+        return probeGuardBinDir()
+    }
+
+    /** 同步探测一次并写回缓存。 */
+    private fun probeGuardBinDir(): Boolean {
         val ready = try {
             RootService.runCommandSync("test -x $GUARD_BIN_DIR/rm", 5_000L).first == 0
         } catch (_: Exception) {
             false
         }
         guardReadyCache = ready
-        guardReadyAt = now
+        guardReadyAt = System.currentTimeMillis()
         return ready
+    }
+
+    private fun scheduleRefresh() {
+        if (refreshing) return
+        refreshing = true
+        refreshScope.launch {
+            try {
+                probeGuardBinDir()
+            } finally {
+                refreshing = false
+            }
+        }
     }
 
     /**

@@ -13,7 +13,7 @@ import org.json.JSONObject
  * 文本编辑器编辑历史记录管理器。
  *
  * **存储布局**：每个文件一个 SharedPreferences key（`history:<绝对路径>`），值为该文件的 JSON 数组。
- *  - 每文件最多 20 条历史记录，单条 content 上限 50 万字
+ *  - 每文件最多 20 条、单条上限 20 万字、单文件总体积上限 100 万字
  *  - 每条记录：content + timestamp，按时间戳降序（最新在前）
  *
  * 按文件分 key 存储：若所有文件共用单个 key，每次读写都要解析并重写整份历史
@@ -25,7 +25,23 @@ object EditHistoryManager {
     private const val KEY_LEGACY = "edit_history"
     private const val KEY_PREFIX = "history:"
     private const val MAX_HISTORY_PER_FILE = 20
-    private const val MAX_CONTENT_CHARS = 500_000  // 单条历史上限 50 万字
+
+    /**
+     * 单条历史上限 20 万字。
+     * 超过此长度的内容取末尾保留（编辑器已允许编辑任意大小文件，故仍需截断保护）。
+     * 取更小值可显著降低每次保存时的 JSON 序列化开销。
+     */
+    private const val MAX_CONTENT_CHARS = 200_000
+
+    /**
+     * 单文件历史**总体积**上限 100 万字。
+     *
+     * 存储载体是 SharedPreferences：应用首次访问该 prefs 时必须把整个 XML 全量解析进内存，
+     * 且每次写入都要重新序列化该 key 的全部条目。若只按「条数 × 单条上限」约束，
+     * 理论上限达 20 × 50 万字，会把 prefs 撑到数十 MB，直接拖慢启动并造成内存膨胀。
+     * 超出预算时从最旧开始丢弃（最新一条永不丢）。
+     */
+    private const val MAX_TOTAL_CHARS_PER_FILE = 1_000_000
 
     private val prefs: SharedPreferences by lazy {
         ShsoApplication.appContext.getSharedPreferences("shso_editor", Context.MODE_PRIVATE)
@@ -64,7 +80,29 @@ object EditHistoryManager {
 
         // 内容级去重：相同内容的历史只保留最新一条；留 1 个位置给新条目
         val kept = entries.filter { it.content != safeContent }.take(MAX_HISTORY_PER_FILE - 1)
-        writeFile(filePath, listOf(HistoryEntry(safeContent, System.currentTimeMillis())) + kept)
+        writeFile(
+            filePath,
+            trimToBudget(listOf(HistoryEntry(safeContent, System.currentTimeMillis())) + kept)
+        )
+    }
+
+    /**
+     * 按总体积预算裁剪历史（输入需已按时间降序）。
+     * 从最旧开始丢弃，最新一条无条件保留 —— 否则历史功能本身失去意义。
+     */
+    private fun trimToBudget(entries: List<HistoryEntry>): List<HistoryEntry> {
+        if (entries.size <= 1) return entries
+        if (entries.sumOf { it.content.length } <= MAX_TOTAL_CHARS_PER_FILE) return entries
+        val kept = ArrayList<HistoryEntry>(entries.size)
+        var total = 0
+        entries.forEachIndexed { index, entry ->
+            val next = total + entry.content.length
+            if (index == 0 || next <= MAX_TOTAL_CHARS_PER_FILE) {
+                kept += entry
+                total = next
+            }
+        }
+        return kept
     }
 
     /**

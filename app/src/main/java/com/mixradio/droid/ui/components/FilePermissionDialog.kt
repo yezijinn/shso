@@ -12,11 +12,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,11 +31,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.mixradio.droid.data.OwnerCandidates
 import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraTokens
@@ -86,6 +95,8 @@ fun FilePermissionDialog(
     var group by remember(path, initialGroup) { mutableStateOf(initialGroup) }
     var bits by remember(path, initialMode) { mutableStateOf(octalToPermissionBits(initialMode)) }
     var message by remember(path) { mutableStateOf<String?>(null) }
+    // 账户选择器目标：null=关闭，"owner"=选所有者，"group"=选用户组
+    var pickerTarget by remember(path) { mutableStateOf<String?>(null) }
     var submitting by remember(path) { mutableStateOf(false) }
 
     fun updateBits(index: Int, checked: Boolean) {
@@ -124,7 +135,11 @@ fun FilePermissionDialog(
                 .clip(RoundedCornerShape(0.dp))
         )
         Spacer(modifier = Modifier.height(8.dp))
-        Text("所有者", style = AuroraTextStyles.body2, color = AuroraTokens.Text)
+        OwnerLabelRow(
+            label = "所有者",
+            enabled = !submitting,
+            onPick = { pickerTarget = "owner" }
+        )
         Spacer(modifier = Modifier.height(4.dp))
         TextField(
             value = owner,
@@ -138,7 +153,11 @@ fun FilePermissionDialog(
                 .clip(RoundedCornerShape(0.dp))
         )
         Spacer(modifier = Modifier.height(6.dp))
-        Text("用户组", style = AuroraTextStyles.body2, color = AuroraTokens.Text)
+        OwnerLabelRow(
+            label = "用户组",
+            enabled = !submitting,
+            onPick = { pickerTarget = "group" }
+        )
         Spacer(modifier = Modifier.height(4.dp))
         TextField(
             value = group,
@@ -188,6 +207,19 @@ fun FilePermissionDialog(
             }
         }
     }
+
+    // 账户选择器：系统账户 + 已安装应用（应用回填数字 uid，因其不在 passwd 中）
+    OwnerPickerDialog(
+        show = pickerTarget != null,
+        title = if (pickerTarget == "group") "选择用户组" else "选择所有者",
+        current = if (pickerTarget == "group") group else owner,
+        onPick = { picked ->
+            if (pickerTarget == "group") group = picked else owner = picked
+            message = null
+            pickerTarget = null
+        },
+        onDismiss = { pickerTarget = null }
+    )
 }
 
 @Composable
@@ -245,5 +277,119 @@ private fun PresetButton(text: String, enabled: Boolean = true, onClick: () -> U
         modifier = Modifier.auroraFilledButton()
     ) {
         Text(text)
+    }
+}
+
+
+/**
+ * 「所有者 / 用户组」标题行：右侧给出账户列表入口。
+ * 只保留手输时用户必须自己记住 `u0_a216` 这类账户名或 uid，实际几乎不可用。
+ */
+@Composable
+private fun OwnerLabelRow(label: String, enabled: Boolean, onPick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, style = AuroraTextStyles.body2, color = AuroraTokens.Text)
+        Spacer(modifier = Modifier.weight(1f))
+        Text(
+            text = "选择",
+            style = AuroraTextStyles.footnote2,
+            color = if (enabled) AuroraTokens.Accent else AuroraTokens.TextDisabled,
+            modifier = Modifier
+                .clickable(enabled = enabled, onClick = onPick)
+                .padding(horizontal = 4.dp, vertical = 2.dp)
+        )
+    }
+}
+
+/**
+ * 账户选择器：系统账户 + 已安装应用，支持按账户名 / uid / 应用名搜索。
+ *
+ * 选中应用时回填**数字 uid** —— 应用账户不在 `/system/etc/passwd` 中，`chown u0_a216` 会报
+ * unknown user，而 `chown 10216` 一定可用。列表仍展示约定账户名与 uid 便于识别。
+ */
+@Composable
+private fun OwnerPickerDialog(
+    show: Boolean,
+    title: String,
+    current: String,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    if (!show) return
+    val context = LocalContext.current
+    var entries by remember { mutableStateOf<List<OwnerCandidates.Entry>>(emptyList()) }
+    var query by remember { mutableStateOf("") }
+
+    // PackageManager 枚举需在 IO 线程执行（load 内部已 withContext(Dispatchers.IO)）
+    LaunchedEffect(title, current) {
+        entries = OwnerCandidates.load(context, current)
+    }
+    val filtered = remember(entries, query) {
+        val keyword = query.trim()
+        if (keyword.isEmpty()) entries
+        else entries.filter {
+            it.accountName.contains(keyword, ignoreCase = true) ||
+                it.uid.toString().contains(keyword) ||
+                it.label.contains(keyword, ignoreCase = true)
+        }
+    }
+
+    AuroraWindowDialog(
+        show = true,
+        title = title,
+        summary = "共 ${entries.size} 个账户；应用将以数字 uid 填入",
+        onDismissRequest = onDismiss
+    ) {
+        TextField(
+            value = query,
+            onValueChange = { query = it },
+            label = { Text("搜索账户名 / uid / 应用名") },
+            singleLine = true,
+            colors = auroraTextFieldColors(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(0.dp))
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 300.dp)
+        ) {
+            items(filtered, key = { it.uid.toString() + "|" + it.name }) { entry ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onPick(entry.name) }
+                        .padding(horizontal = 4.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = entry.accountName,
+                        style = AuroraTextStyles.footnote2,
+                        color = if (entry.name == current.trim()) AuroraTokens.Accent else AuroraTokens.Text,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "(${entry.uid})",
+                        style = AuroraTextStyles.footnote2,
+                        color = AuroraTokens.TextSecondary
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    Text(
+                        text = entry.label,
+                        style = AuroraTextStyles.footnote2,
+                        color = AuroraTokens.TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
     }
 }
