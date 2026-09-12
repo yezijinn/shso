@@ -273,7 +273,7 @@ fun SettingsPage(
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                 val clip = ClipData.newPlainText("URL", url)
                 clipboard?.setPrimaryClip(clip)
-                Toast.makeText(context, "未能调起浏览器，链接已复制到剪贴板", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "未能调起浏览器，链接已复制到剪贴板", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -394,7 +394,7 @@ fun SettingsPage(
                             AppSettings.SECURITY_MAXIMUM -> "最高：脚本默认非 Root 执行 + 全档收口"
                             else -> ""
                         }
-                        Toast.makeText(context, tip, Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, tip, Toast.LENGTH_LONG).show()
                     }
                 },
                 onShowAuditLogClicked = remember(Unit) {
@@ -410,7 +410,7 @@ fun SettingsPage(
                     {
                         // 守卫已就绪：直接吐司提示，不触发安装逻辑（避免覆盖已部署模块）
                         if (guardInstalled) {
-                            Toast.makeText(context, "模块已就绪", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "模块已就绪", Toast.LENGTH_LONG).show()
                         } else {
                             installingGuard = true
                             scope.launch {
@@ -421,7 +421,7 @@ fun SettingsPage(
                                     context,
                                     if (ok) "守卫模块已部署，PATH 已生效"
                                     else "部署失败：${msg.take(120)}",
-                                    if (ok) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+                                    Toast.LENGTH_LONG
                                 ).show()
                             }
                         }

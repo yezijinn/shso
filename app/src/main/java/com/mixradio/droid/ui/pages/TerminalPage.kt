@@ -8,6 +8,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -31,6 +32,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material3.Icon
@@ -58,6 +60,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mixradio.droid.data.AppSettings
@@ -102,6 +105,10 @@ fun TerminalPage(
 ) {
     val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
+    // 命令历史：仅本次会话内存保留，不落盘 —— 命令常含密码/token 等敏感参数，
+    // 写入 SharedPreferences 会以明文长期留在设备上。
+    var cmdHistory by remember { mutableStateOf(listOf<String>()) }
+    var showCmdHistory by remember { mutableStateOf(false) }
     var pendingCommand by remember { mutableStateOf<String?>(null) }
     var pendingFindings by remember { mutableStateOf<List<Finding>>(emptyList()) }
     val listState = rememberLazyListState()
@@ -186,6 +193,13 @@ fun TerminalPage(
         }
     }
 
+    /** 记录一条已执行的命令：相邻去重（连续重复只留一条），最多保留 50 条。 */
+    fun rememberCommand(cmd: String) {
+        val trimmed = cmd.trim()
+        if (trimmed.isEmpty() || cmdHistory.firstOrNull() == trimmed) return
+        cmdHistory = (listOf(trimmed) + cmdHistory).take(50)
+    }
+
     fun handleSend(textToSend: String = inputText) {
         val text = textToSend.trim()
         if (text.isEmpty()) {
@@ -204,6 +218,7 @@ fun TerminalPage(
             }
             Verdict.Allow -> {
                 RootService.sendInput(text, confirmed = true)
+                rememberCommand(text)
                 inputText = ""
             }
         }
@@ -212,6 +227,7 @@ fun TerminalPage(
     fun onConfirmRiskSend() {
         val cmd = pendingCommand ?: return
         RootService.sendInput(cmd, confirmed = true)
+        rememberCommand(cmd)
         pendingCommand = null
         pendingFindings = emptyList()
         inputText = ""
@@ -228,9 +244,9 @@ fun TerminalPage(
             val textToCopy = parsedOutput.plainText
             val clip = ClipData.newPlainText("TerminalOutput", textToCopy)
             clipboard?.setPrimaryClip(clip)
-            Toast.makeText(context, "终端输出已复制到剪贴板", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "终端输出已复制到剪贴板", Toast.LENGTH_LONG).show()
         } catch (_: Exception) {
-            Toast.makeText(context, "复制失败", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "复制失败", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -442,6 +458,15 @@ fun TerminalPage(
                 )
 
                 Text(
+                    text = "历史",
+                    fontSize = 12.sp,
+                    color = if (cmdHistory.isEmpty()) AuroraTokens.TextUnselected else AuroraTokens.Text,
+                    modifier = Modifier
+                        .clickable(enabled = cmdHistory.isNotEmpty()) { showCmdHistory = true }
+                        .padding(horizontal = 2.dp, vertical = 6.dp)
+                )
+
+                Text(
                     text = "Enter",
                     fontSize = 12.sp,
                     color = AuroraTokens.Text,
@@ -557,6 +582,44 @@ fun TerminalPage(
                 onCheckedChange = { appSettings.setShsoBanner(it) }
             )
         }
+    }
+
+
+    AuroraWindowDialog(
+        show = showCmdHistory,
+        title = "命令历史",
+        summary = "本次会话内执行过的命令（最多 50 条，仅存内存）",
+        onDismissRequest = { showCmdHistory = false }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 360.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            cmdHistory.forEach { cmd ->
+                Text(
+                    text = cmd,
+                    style = AuroraTextStyles.footnote2,
+                    color = AuroraTokens.Text,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { inputText = cmd; showCmdHistory = false }
+                        .padding(horizontal = 4.dp, vertical = 10.dp)
+                )
+            }
+        }
+        Text(
+            text = "清空历史",
+            style = AuroraTextStyles.footnote2,
+            color = AuroraTokens.Error,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { cmdHistory = emptyList(); showCmdHistory = false }
+                .padding(horizontal = 4.dp, vertical = 10.dp)
+        )
     }
 
     if (showColorDialog) {
