@@ -27,7 +27,7 @@ import java.util.Locale
  * - 单文件压缩型：gz / xz / bz2 / lz4（直接解压为原文件名）
  *
  * rar 为专有商业格式（UnRAR 许可证限制），不支持、不识别、不做任何处理。
- * zstd（.zst / .tar.zst）自 2026-09-11 起移除：zstd-jni 需为 4 个 ABI 各打一份原生库（约 1.9MB），
+ * zstd（.zst / .tar.zst）已移除：zstd-jni 需为 4 个 ABI 各打一份原生库（约 1.9MB），
  * 占 release 包近一半体积，与使用场景不匹配。
  *
  * 智能解压算法（归档型）：
@@ -42,7 +42,7 @@ import java.util.Locale
  * - 重名冲突：目标路径已存在同名路径 → 自动追加数字后缀（如 xxx_1）。
  * - 加密压缩包：zip 条目加密/7z 头加密时返回 [ExtractResult.NeedPassword]，由 UI 弹窗收集密码后重试。
  *   - zip 使用 zip4j（支持 ZipCrypto + WinZip AES，char[] 密码天然支持中文，UTF-8 密码开关）。
- *   - 7z 使用 commons-compress SevenZFile(file, password.toCharArray())。
+ *   - 7z 使用 commons-compress SevenZFile.Builder（setFile / setPassword）。
  */
 object ArchiveExtractor {
 
@@ -121,14 +121,14 @@ object ArchiveExtractor {
                 }
             }
             Kind.SEVENZ -> {
-                org.apache.commons.compress.archivers.sevenz.SevenZFile(File(path)).use { sevenZ ->
+                org.apache.commons.compress.archivers.sevenz.SevenZFile.Builder().setFile(File(path)).get().use { sevenZ ->
                     val names = mutableSetOf<String>()
                     val dirs = mutableSetOf<String>()
-                    for (e in sevenZ.entries) {
-                        val first = firstSegment(e.name)
+                    for (entry in sevenZ.entries) {
+                        val first = firstSegment(entry.name)
                         if (first.isEmpty()) continue
                         names.add(first)
-                        if (e.isDirectory) dirs.add(first)
+                        if (entry.isDirectory) dirs.add(first)
                     }
                     RootPeek(names, dirs)
                 }
@@ -137,11 +137,11 @@ object ArchiveExtractor {
                 val names = mutableSetOf<String>()
                 val dirs = mutableSetOf<String>()
                 while (true) {
-                    val e = tarIn.nextEntry ?: break
-                    val first = firstSegment(e.name)
+                    val entry = tarIn.nextEntry ?: break
+                    val first = firstSegment(entry.name)
                     if (first.isEmpty()) continue
                     names.add(first)
-                    if (e.isDirectory) dirs.add(first)
+                    if (entry.isDirectory) dirs.add(first)
                 }
                 RootPeek(names, dirs)
             }
@@ -213,7 +213,7 @@ object ArchiveExtractor {
             // 若 7z 且无密码，先尝试以无密码打开确认是否为加密导致，是则返回 NeedPassword。
             if (kind == Kind.SEVENZ && password.isNullOrEmpty() && rootPeek.topLevel.isEmpty()) {
                 val sevenZ = try {
-                    org.apache.commons.compress.archivers.sevenz.SevenZFile(File(archivePath))
+                    org.apache.commons.compress.archivers.sevenz.SevenZFile.Builder().setFile(File(archivePath)).get()
                 } catch (_: Exception) {
                     null
                 }
@@ -240,7 +240,8 @@ object ArchiveExtractor {
                 Kind.ZIP -> extractZip(archivePath, finalTarget, password, stripPrefix)
                 Kind.SEVENZ -> extract7z(archivePath, finalTarget, password, stripPrefix)
                 Kind.TAR -> extractTar(archivePath, finalTarget, stripPrefix)
-                else -> ExtractResult.Failure("暂不支持解压该格式")
+                // SINGLE 已在此前提前返回，此处不可达；显式列出以保持枚举穷尽且避免 NoWhenBranchMatchedException
+                Kind.SINGLE -> ExtractResult.Failure("暂不支持解压该格式")
             }
 
             when (result) {
@@ -348,9 +349,9 @@ object ArchiveExtractor {
         return try {
             val file = File(path)
             val archive = if (password.isNullOrEmpty()) {
-                org.apache.commons.compress.archivers.sevenz.SevenZFile(file)
+                org.apache.commons.compress.archivers.sevenz.SevenZFile.Builder().setFile(file).get()
             } else {
-                org.apache.commons.compress.archivers.sevenz.SevenZFile(file, password.toCharArray())
+                org.apache.commons.compress.archivers.sevenz.SevenZFile.Builder().setFile(file).setPassword(password.toCharArray()).get()
             }
             archive.use { sevenZ ->
                 while (true) {
@@ -409,8 +410,8 @@ object ArchiveExtractor {
      * `File.canWrite()` 底层走 `access(W_OK)` 系统调用，能同时反映 MAC 限制。
      */
     internal fun canExtractTo(dirPath: String): Boolean = runCatching {
-        val d = File(dirPath)
-        d.isDirectory && d.canWrite()
+        val file = File(dirPath)
+        file.isDirectory && file.canWrite()
     }.getOrDefault(false)
 
     /**

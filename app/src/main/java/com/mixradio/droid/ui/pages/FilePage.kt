@@ -236,7 +236,7 @@ fun FilePage(
                 // 仅最新一代收尾：否则被取消的旧刷新会误清新刷新的加载态（cancel 的 finally 异步执行）
                 if (gen == refreshGenRef[0]) {
                     isLoading = false
-                    // 用户手动点击「⟳」时给出明确反馈，避免「点了没反应」的错觉
+                    // 用户手动点击「刷新」时给出明确反馈，避免「点了没反应」的错觉
                     if (showToast) feedbackMessage = "已刷新"
                 }
             }
@@ -283,7 +283,7 @@ fun FilePage(
         // 滚动位置由上面的 `remember(currentDirectory) { LazyListState() }` 自动归零，无挂起调用。
         multiSelectMode = false
         selectedPaths.clear()
-        // 建目录与列目录无关，改为后台并行，不再串行阻塞列表首屏加载
+        // 建目录与列目录并行执行，避免阻塞列表首屏加载。
         launch { RootFileManager.ensureShsoDir() }
         refresh()
     }
@@ -673,7 +673,7 @@ fun FilePage(
                                     }
                                 }
 
-                                // 多选模式选中标记：极光渐变 ✓（无底色方块，纯文字）
+                                // 多选模式选中标记：极光渐变对勾（无底色方块，纯文字）
                                 if (isSelected) {
                                     Text(
                                         text = "✓",
@@ -1566,7 +1566,7 @@ fun FilePage(
         )
     }
 
-    // ── 多选模式：长按文件弹出的「进入/退出多选模式」 ──
+    // 多选模式：长按文件弹出的「进入/退出多选模式」
     if (showModeDialog && selectedItem != null) {
         val item = selectedItem!!
         AuroraWindowDialog(
@@ -1593,7 +1593,7 @@ fun FilePage(
         }
     }
 
-    // ── 多选模式：批量操作菜单（删除 / 拷贝 / 重命名） ──
+    // 多选模式：批量操作菜单（删除 / 拷贝 / 重命名）
     if (showBatchDialog) {
         AuroraWindowDialog(
             show = true,
@@ -1659,7 +1659,7 @@ fun FilePage(
         }
     }
 
-    // ── 多选批量重命名：统一名称 + _n，保留原扩展名 ──
+    // 多选批量重命名：统一名称 + _n，保留原扩展名
     if (showBatchRenameDialog) {
         AuroraWindowDialog(
             show = true,
@@ -1705,8 +1705,8 @@ fun FilePage(
                             showBatchRenameDialog = false
                             scope.launch {
                                 selectedPaths.toList().forEachIndexed { i, p ->
-                                    val f = File(p)
-                                    val ext = f.extension
+                                    val file = File(p)
+                                    val ext = file.extension
                                     val suffix = if (ext.isNotEmpty()) ".$ext" else ""
                                     RootFileManager.rename(p, "${base}_$i$suffix")
                                 }
@@ -1867,18 +1867,18 @@ private fun ListScrollBar(
                 detectDragGestures(
                     onDragStart = { offset ->
                         dragging = true
-                        val f = ((offset.y - thumbHPx / 2f).coerceIn(0f, maxTop)) / maxTop.coerceAtLeast(1f)
-                        dragFrac = f
+                        val thumbOffset = ((offset.y - thumbHPx / 2f).coerceIn(0f, maxTop)) / maxTop.coerceAtLeast(1f)
+                        dragFrac = thumbOffset
                         scope.launch {
-                            listState.scrollToItem((f * (itemCount - 1)).toInt().coerceAtLeast(0))
+                            listState.scrollToItem((thumbOffset * (itemCount - 1)).toInt().coerceAtLeast(0))
                         }
                     },
                     onDrag = { change, _ ->
                         change.consume()
-                        val f = ((change.position.y - thumbHPx / 2f).coerceIn(0f, maxTop)) / maxTop.coerceAtLeast(1f)
-                        dragFrac = f
+                        val thumbOffset = ((change.position.y - thumbHPx / 2f).coerceIn(0f, maxTop)) / maxTop.coerceAtLeast(1f)
+                        dragFrac = thumbOffset
                         scope.launch {
-                            listState.scrollToItem((f * (itemCount - 1)).toInt().coerceAtLeast(0))
+                            listState.scrollToItem((thumbOffset * (itemCount - 1)).toInt().coerceAtLeast(0))
                         }
                     },
                     onDragEnd = { dragging = false }

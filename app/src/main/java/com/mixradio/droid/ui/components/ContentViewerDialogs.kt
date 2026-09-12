@@ -6,46 +6,25 @@ package com.mixradio.droid.ui.components
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,35 +32,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.mixradio.droid.data.ChunkedFileReader
-import com.mixradio.droid.data.LineEnding
-import com.mixradio.droid.data.RootService
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraTokens
-import com.mixradio.droid.ui.theme.auroraTextFieldColors
 import java.io.File
-import java.nio.charset.Charset
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
  * 图片浏览弹窗（jpg/jpeg/png/bmp/gif/webp/ico/tiff/tif）：
  * - 伪全屏设计：四周 1px 黑色边距，填满屏幕 98%
- * - 右上角：✕ 关闭按钮
- * - 右下角：← 上一张 / → 下一张 / ↻ 顺时针旋转 90°
+ * - 右上角：关闭按钮
+ * - 右下角：← 上一张 / → 下一张 / 顺时针旋转 90°
  * - 双指缩放 / 拖动平移（transformable）
  * - 大图降采样（≤2048px）防 OOM
  * - 矩形化铁律：零圆角
@@ -96,7 +61,7 @@ fun ImageViewerDialog(
     initialIndex: Int,
     onDismiss: () -> Unit
 ) {
-    // ── 状态 ───────────────────────────────────────────────
+    // 状态
     var currentIndex by remember { mutableIntStateOf(initialIndex.coerceIn(0, images.lastIndex)) }
     var bitmap by remember(images.getOrNull(currentIndex) ?: "") { mutableStateOf<android.graphics.Bitmap?>(null) }
     var decodeError by remember(images.getOrNull(currentIndex) ?: "") { mutableStateOf<String?>(null) }
@@ -107,7 +72,7 @@ fun ImageViewerDialog(
 
     val currentPath = images.getOrNull(currentIndex) ?: ""
 
-    // ── 加载图片（路径或索引变化时触发） ────────────────────
+    // 加载图片（路径或索引变化时触发）
     LaunchedEffect(currentPath) {
         bitmap = null
         decodeError = null
@@ -128,7 +93,7 @@ fun ImageViewerDialog(
         }
     }
 
-    // ── 重置变换（换图时） ──────────────────────────────────
+    // 重置变换（换图时）
     LaunchedEffect(currentPath) {
         scale = 1f
         offsetX = 0f
@@ -136,7 +101,8 @@ fun ImageViewerDialog(
         // rotation 保留，用户手动旋转的状态跨图片保持
     }
 
-    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+    // 首参 centroid 为变换中心点；本视图以图片中心为锚点，忽略该值以保持原有缩放/平移手感。
+    val transformState = rememberTransformableState { _, zoomChange, panChange, _ ->
         scale = (scale * zoomChange).coerceIn(0.5f, 8f)
         offsetX += panChange.x
         offsetY += panChange.y
@@ -171,7 +137,7 @@ fun ImageViewerDialog(
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
 
-                // ── 图片区域（撑满） ──────────────────────────
+                // 图片区域（撑满）
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -214,9 +180,9 @@ fun ImageViewerDialog(
                     }
                 }
 
-                // （右上角 ✕ 已按用户要求删除，关闭通过右下角 ✕ 完成）
+                // 关闭入口统一在右下角按钮行，右上角不另设关闭按钮
 
-                // ── 右下角：← → ↻ ✕ + 计数（纯透明背景，极光渐变色） ──
+                // 右下角操作行：上一张 / 下一张 / 顺时针旋转 90° / 关闭 + 计数（透明背景，极光渐变文字）
                 Row(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
@@ -266,7 +232,7 @@ fun ImageViewerDialog(
                             .padding(horizontal = 8.dp, vertical = 8.dp)
                     )
 
-                    // ↻ 顺时针旋转 90°
+                    // 顺时针旋转 90°
                     Text(
                         text = "↻",
                         style = iconStyle,
@@ -277,7 +243,7 @@ fun ImageViewerDialog(
                             .padding(horizontal = 8.dp, vertical = 8.dp)
                     )
 
-                    // ✕ 右下角关闭（快捷关闭）
+                    // 右下角关闭（快捷关闭）
                     Text(
                         text = "✕",
                         style = iconStyle,

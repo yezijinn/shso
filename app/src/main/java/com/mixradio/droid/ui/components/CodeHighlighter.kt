@@ -84,6 +84,7 @@ object CodeHighlighter {
         val (lineComment, blockCommentStart) = COMMENT_LINE[lang] ?: (null to null)
         val strDelims = STRING_DELIMS[lang] ?: charArrayOf('"','\'')
 
+        // 先按基础色整体 append，再逐段叠加样式：AnnotatedString 后添加的 SpanStyle 覆盖先添加的
         withStyle(SpanStyle(color = baseColor)) {
             append(text)
         }
@@ -92,7 +93,7 @@ object CodeHighlighter {
         var i = 0
         val n = text.length
         while (i < n) {
-            val c = text[i]
+            val ch = text[i]
 
             // 行注释
             if (lineComment != null && text.startsWith(lineComment, i)) {
@@ -117,11 +118,12 @@ object CodeHighlighter {
                 continue
             }
             // 字符串
-            if (c in strDelims) {
-                val quote = c
+            if (ch in strDelims) {
+                val quote = ch
                 var j = i + 1
                 while (j < n) {
                     val cj = text[j]
+                    // 反斜杠转义：跳过被转义的字符，使 \" 不被当作字符串结束
                     if (cj == '\\' && j + 1 < n) { j += 2; continue }
                     if (cj == quote) { j++; break }
                     j++
@@ -131,7 +133,7 @@ object CodeHighlighter {
                 continue
             }
             // 数字
-            if (c.isDigit()) {
+            if (ch.isDigit()) {
                 var j = i + 1
                 while (j < n && (text[j].isLetterOrDigit() || text[j] == '.' || text[j] == '_')) j++
                 addStyle(SpanStyle(color = ColorNumber), i, j)
@@ -139,10 +141,11 @@ object CodeHighlighter {
                 continue
             }
             // 标识符（关键字）
-            if (c.isLetter() || c == '_') {
+            if (ch.isLetter() || ch == '_') {
                 var j = i + 1
                 while (j < n && (text[j].isLetterOrDigit() || text[j] == '_')) j++
                 val word = text.substring(i, j)
+                // 同时比对大写形式：SQL 关键字表按大写录入，源码里常写成小写
                 if (word in keywords || word.uppercase() in keywords) {
                     addStyle(SpanStyle(color = ColorKeyword), i, j)
                 }

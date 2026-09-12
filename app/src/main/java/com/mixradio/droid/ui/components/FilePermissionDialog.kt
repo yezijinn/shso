@@ -3,7 +3,6 @@
 
 package com.mixradio.droid.ui.components
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -13,7 +12,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -27,7 +25,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -45,6 +42,12 @@ import kotlinx.coroutines.withContext
 
 private const val PERMISSION_BIT_COUNT = 9
 
+/**
+ * 八进制权限串转 9 位开关：每组按 rwx 顺序对应 4 / 2 / 1 位。
+ *
+ * 只取末三位：首位为特殊位（setuid / setgid / sticky），不在开关矩阵内，回写时由调用方保留。
+ * 非法输入返回全 false，交由上层校验提示。
+ */
 internal fun octalToPermissionBits(mode: String): List<Boolean> {
     if (!RootFileManager.isValidPermissionMode(mode)) return List(PERMISSION_BIT_COUNT) { false }
     val digits = mode.takeLast(3)
@@ -54,6 +57,7 @@ internal fun octalToPermissionBits(mode: String): List<Boolean> {
     }
 }
 
+/** 9 位开关转八进制串。`specialMode` 为特殊位前缀（单字符 0–7），为空时输出三位。 */
 internal fun permissionBitsToOctal(bits: List<Boolean>, specialMode: String = ""): String {
     require(bits.size == PERMISSION_BIT_COUNT)
     require(specialMode.isEmpty() || (specialMode.length == 1 && specialMode[0] in '0'..'7'))
@@ -86,6 +90,7 @@ fun FilePermissionDialog(
 
     fun updateBits(index: Int, checked: Boolean) {
         bits = bits.toMutableList().also { it[index] = checked }
+        // 回写时保留特殊位：四位模式的首位是 setuid / setgid / sticky，不来自开关矩阵
         val prefix = if (mode.length == 4 && mode.first().isDigit()) mode.take(1) else ""
         mode = permissionBitsToOctal(bits, prefix)
         message = null
@@ -200,6 +205,7 @@ private fun PermissionMatrix(bits: List<Boolean>, onToggle: (Int, Boolean) -> Un
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(permission, style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary, modifier = Modifier.weight(1f))
                 repeat(3) { column ->
+                    // 行 = 读 / 写 / 执行，列 = 用户 / 用户组 / 其他，与 octalToPermissionBits 的位序一致
                     val index = row * 3 + column
                     Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
                         PermissionToggle(bits[index], { onToggle(index, it) })

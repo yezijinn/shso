@@ -48,6 +48,12 @@ val DOCK_TABS = listOf(
     DockTabItem("设置", Icons.Filled.Settings)
 )
 
+/**
+ * 底部四 Tab 导航（主页 / 终端 / 文件 / 设置），透明玻璃叠层。
+ *
+ * 约束：高度固定 56.dp，页面侧的底部预留必须与之相等（`FilePage` 列表的
+ * `padding(bottom = 56.dp)`）。改动本值需同步所有预留，否则文件行会透过导航栏穿帮。
+ */
 @Composable
 fun DockBar(
     selectedPage: Int,
@@ -77,6 +83,7 @@ fun DockBar(
         ) {
             DOCK_TABS.forEachIndexed { index, tab ->
                 val isSelected = selectedPage == index
+                // 索引 1 = 终端页，与 MainContainer 的 Pager 页序绑定
                 val isTerminalLocked = index == 1 && terminalLocked
                 val contentColor = when {
                     isTerminalLocked -> AuroraTokens.Error
@@ -93,6 +100,7 @@ fun DockBar(
                     modifier = Modifier
                         .weight(1f)
                         .clickable(
+                            // 取消水波纹：本工程无圆角容器，矩形涟漪与整体风格冲突
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null
                         ) {

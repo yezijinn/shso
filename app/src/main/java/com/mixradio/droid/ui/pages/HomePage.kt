@@ -430,23 +430,23 @@ fun HomePage(
     // ===== 执行确认弹窗：点击「立即执行」必须先经风险确认 =====
     // 优先复用 shso 列表中的真实 FileItem（含正确大小/时间），否则按输入路径构造
     val execItem = remember(pendingExecutePath) {
-        pendingExecutePath?.let { p ->
-            shsoFiles.firstOrNull { it.path == p }
-                ?: FileItem(name = File(p).name, path = p, isDirectory = false)
+        pendingExecutePath?.let { targetPath ->
+            shsoFiles.firstOrNull { it.path == targetPath }
+                ?: FileItem(name = File(targetPath).name, path = targetPath, isDirectory = false)
         }
     }
     ExecuteConfirmDialog(
         show = pendingExecutePath != null,
         fileItem = execItem,
-        // 批次6 修复：实参传当前档位，与 FilePage 一致（避免默认值 STANDARD=2 覆盖用户实际档位）
+        // 实参传当前档位，与 FilePage 一致——否则默认值 STANDARD=2 会覆盖用户实际档位
         securityLevel = RootService.currentSecurityLevel(),
         onDismiss = { pendingExecutePath = null },
         onConfirm = { runAsRoot ->
             // 关键：透传确认框里用户的实际选择与「已获风险确认」，
             // 否则档位 3 的「脚本默认非 Root + 用户可勾选以 Root」是死代码。
-            val p = pendingExecutePath
+            val targetPath = pendingExecutePath
             pendingExecutePath = null
-            if (p != null) execute(p, runAsRoot = runAsRoot, riskApproved = true)
+            if (targetPath != null) execute(targetPath, runAsRoot = runAsRoot, riskApproved = true)
         }
     )
 }
@@ -463,7 +463,7 @@ private class FileItemSortKey(val item: FileItem, val key: String)
 @Composable
 private fun ElapsedRunningTimeText() {
     var elapsedSeconds by remember { mutableLongStateOf(0L) }
-    // 行为与改造前严格一致（原计时逻辑逐字迁移）：仅在任务运行中刷新，不加归零、不设 else 分支。
+    // 仅在任务运行中刷新，不加归零、不设 else 分支。
     // 本组件仅在有任务进行中时才出现在组合树内，故这里的唯一收益是「把每秒重组限制在本节点」，
     // 不再牵连主页文件列表等无关内容。
     LaunchedEffect(RootService.isTaskRunning, RootService.taskStartTime) {

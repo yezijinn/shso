@@ -32,7 +32,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -78,6 +77,11 @@ private val PRESET_COLOR_GROUPS = listOf(
     PresetColorItem("极光白", Color(0xFFFFFFFF))
 )
 
+/**
+ * 终端文字颜色选择器：色相条 + 明暗条 + 预设网格。
+ *
+ * 约束：本工程全局零圆角，所有显式 shape 一律 `RoundedCornerShape(0.dp)`，不随主题令牌变化。
+ */
 @Composable
 fun ColorWheelDialog(
     show: Boolean,
@@ -100,6 +104,7 @@ fun ColorWheelDialog(
     var value by remember { mutableFloatStateOf(initialHsv[2]) }
 
     val currentColor = remember(hue, saturation, value) {
+        // 饱和与明度下限 0.01：Color.hsv 在 0f 处会退化为黑色，导致预览看不出选择
         Color.hsv(hue, saturation.coerceIn(0.01f, 1f), value.coerceIn(0.01f, 1f))
     }
 
@@ -191,6 +196,7 @@ fun ColorWheelDialog(
                             fun updateHue(x: Float, maxWidthPx: Float) {
                                 val clampedX = x.coerceIn(0f, maxWidthPx)
                                 hue = (clampedX / maxWidthPx) * 360f
+                                // 接近灰或黑时抬到满饱和满明度，否则拖动色相在预览上看不出变化
                                 if (saturation < 0.2f) saturation = 1.0f
                                 if (value < 0.3f) value = 1.0f
                             }
@@ -204,6 +210,7 @@ fun ColorWheelDialog(
                                 change.consume()
                                 val clampedX = change.position.x.coerceIn(0f, size.width.toFloat())
                                 hue = (clampedX / size.width.toFloat()) * 360f
+                                // 同 updateHue：避免低饱和 / 低明度下拖动色相无可见变化
                                 if (saturation < 0.2f) saturation = 1.0f
                                 if (value < 0.3f) value = 1.0f
                             }
@@ -256,6 +263,7 @@ fun ColorWheelDialog(
                             fun updateBrightness(x: Float, maxWidthPx: Float) {
                                 val clampedX = x.coerceIn(0f, maxWidthPx)
                                 val ratio = clampedX / maxWidthPx
+                                // 明度下限 0.2：终端文字在纯黑下不可读，故映射到 [0.2, 1]
                                 value = (0.2f + ratio * 0.8f).coerceIn(0.2f, 1f)
                             }
 
@@ -268,6 +276,7 @@ fun ColorWheelDialog(
                                 change.consume()
                                 val clampedX = change.position.x.coerceIn(0f, size.width.toFloat())
                                 val ratio = clampedX / size.width.toFloat()
+                                // 同 updateBrightness：明度区间为 [0.2, 1]
                                 value = (0.2f + ratio * 0.8f).coerceIn(0.2f, 1f)
                             }
                         }
@@ -309,6 +318,7 @@ fun ColorWheelDialog(
                         .height(130.dp)
                 ) {
                     items(PRESET_COLOR_GROUPS) { item ->
+                        // 按 HEX 字符串判定选中：Color 分量为浮点，直接等值比较会因转换误差漏判
                         val isSelected = hexString == String.format("#%06X", 0xFFFFFF and item.color.toArgb())
 
                         Row(

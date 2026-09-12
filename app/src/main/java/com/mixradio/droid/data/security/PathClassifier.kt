@@ -3,6 +3,7 @@
 
 package com.mixradio.droid.data.security
 
+import android.annotation.SuppressLint
 /**
  * 路径分级（方案 §5.3）：词法归一化 + 四级分级。
  *
@@ -16,18 +17,18 @@ object PathClassifier {
 
     /** 词法归一化：剥引号残留、解析 . 与 ..、折叠多斜杠、去尾部斜杠。 */
     fun normalize(rawPath: String): String {
-        var p = rawPath.trim()
+        var path = rawPath.trim()
             .removePrefix("'").removeSuffix("'")
             .removePrefix("\"").removeSuffix("\"")
-        val hasGlob = p.contains('*') || p.contains('?')
+        val hasGlob = path.contains('*') || path.contains('?')
         // 通配符：取基路径（/data/media/* → /data/media）
         if (hasGlob) {
-            val cut = p.indexOfFirst { it == '*' || it == '?' }
-            if (cut > 0) p = p.substring(0, cut)
+            val cut = path.indexOfFirst { it == '*' || it == '?' }
+            if (cut > 0) path = path.substring(0, cut)
         }
-        if (!p.startsWith("/")) return p
+        if (!path.startsWith("/")) return path
         val parts = ArrayList<String>()
-        for (seg in p.split('/')) {
+        for (seg in path.split('/')) {
             when (seg) {
                 "", "." -> {}
                 ".." -> if (parts.isNotEmpty()) parts.removeAt(parts.size - 1)
@@ -44,18 +45,18 @@ object PathClassifier {
      * 升级映射:SAFE→WARNING,WARNING→DANGEROUS,DANGEROUS/CRITICAL→CRITICAL（已达上限）。
      */
     fun classify(rawPath: String): PathClass {
-        val p = rawPath.trim()
-        if (p.isEmpty()) return PathClass.WARNING
+        val path = rawPath.trim()
+        if (path.isEmpty()) return PathClass.WARNING
         // 变量 / 未解析替换：无法预判，保守 WARNING
-        if (p.startsWith("$") || p.contains("${'$'}")) return PathClass.WARNING
+        if (path.startsWith("$") || path.contains("${'$'}")) return PathClass.WARNING
         // 相对路径：依赖 cwd，无法判定
-        if (!p.startsWith("/")) return PathClass.WARNING
+        if (!path.startsWith("/")) return PathClass.WARNING
 
-        val n = normalize(p)
+        val n = normalize(path)
         if (n == "/") return PathClass.CRITICAL
 
         // 通配符本身意味着批量操作：先按基路径分级，再统一提一级
-        val hasGlob = p.contains('*') || p.contains('?')
+        val hasGlob = path.contains('*') || path.contains('?')
 
         val base = when {
             matchesPrefix(n, SAFE_PREFIXES) -> PathClass.SAFE
@@ -78,6 +79,9 @@ object PathClassifier {
     private fun matchesPrefix(path: String, prefixes: Array<String>): Boolean =
         prefixes.any { path == it || path.startsWith("$it/") }
 
+    // 路径前缀必须按字面量匹配：分类输入是 shell 侧传来的字符串（含 ROOT 视角的绝对路径），
+    // 不能用 Environment.getExternalStorageDirectory() 构造，故抑制该检查。
+    @SuppressLint("SdCardPath")
     private val SAFE_PREFIXES = arrayOf(
         "/sdcard", "/storage", "/mnt/media_rw", "/mnt/user",
         "/data/media",        // /data 的用户存储映射（豁免 /data 整体危险级）

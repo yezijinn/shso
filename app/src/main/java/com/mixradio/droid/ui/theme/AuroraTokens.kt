@@ -113,7 +113,7 @@ object AuroraTokens {
  *
  * 由 `MainActivity` 通过 `MaterialTheme(colorScheme = AuroraColorScheme, ...)` 注入。
  *
- * ⚠️ 两个必须知道的约束：
+ * 两个必须遵守的约束：
  * 1. `background` 设为 `Color.Transparent` —— 让 `Scaffold` / `TopAppBar` / 页面
  *    容器的默认背景透出极光（`Modifier.auroraBackground()` 提供屏幕背景）。
  *    对话框不依赖 `background`，显式用 [AuroraTokens.DialogBg]（见 [AuroraWindowDialog]）。

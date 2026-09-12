@@ -10,7 +10,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileInputStream
 import java.util.zip.ZipInputStream
 
 /**
@@ -45,15 +44,14 @@ object GuardModuleInstaller {
         "guard/mkfs.ext4",
         "guard/mkfs.f2fs",
         "guard/mkfs.vfat",
-        // v1.1.0 新增覆盖面：多二进制派发 + 高频破坏原语。
-        // 缺任何一个即说明打包异常（或用户手里是旧包），安装前会被直接拒绝。
+        // 多二进制派发 + 高频破坏原语：缺任何一个即说明打包异常，安装前会被直接拒绝。
         "guard/toybox",
         "guard/busybox",
         "guard/mv",
         "guard/cp",
         "guard/find",
         "guard/sed",
-        // v1.2.0 新增：权限崩坏 / 分区表 / 刷机 这类「格机」原语
+        // 权限崩坏 / 分区表 / 刷机 这类「格机」原语
         "guard/chmod",
         "guard/chown",
         "guard/chgrp",
@@ -215,8 +213,8 @@ object GuardModuleInstaller {
 
     /** 就绪缓存是否已确定（未探测或已过期返回 false）。 */
     fun hasFreshReadyCache(): Boolean {
-        val c = guardReadyCache ?: return false
-        return c && System.currentTimeMillis() - guardReadyAt < 60_000
+        val cache = guardReadyCache ?: return false
+        return cache && System.currentTimeMillis() - guardReadyAt < 60_000
     }
 
     /**
@@ -277,10 +275,9 @@ object GuardModuleInstaller {
      *
      * 调用时机：档位 ≥2（进入 App / 切换到受保护档位）。
      *
-     * **升级判定**：早期实现只要 `guard/rm` 存在就认为「已就绪」直接返回，
-     * 导致已装过旧版的用户**永远拿不到 APK 内置的新版守卫**（本轮新增的
-     * toybox/busybox/mv/cp/find/sed 包装器与 P0 修复全部失效）。
-     * 因此比对 APK 内置 `module.prop` 的 `version=` 与已装模块版本，不一致即重装。
+     * **升级判定**：不能仅凭 `guard/rm` 存在就判定已就绪，否则版本过旧时不会更新到
+     * APK 内置的新版守卫（新增的 toybox/busybox/mv/cp/find/sed 包装器将失效）。
+     * 故比对 APK 内置 `module.prop` 的 `version=` 与已装模块版本，不一致即重装。
      *
      * 并发：一次档位变更会被 MainActivity 与 SettingsPage 同时触发本函数，
      * 两个 `install()` 并发 `rm -rf $MODULE_DIR` + `cp -R` 会互相破坏

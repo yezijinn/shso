@@ -84,8 +84,8 @@ $rootLine
     ) {
         batchFlushJob?.cancel()
         batchFlushJob = scope.launch(Dispatchers.Main) {
-            // 保留 16ms tick 去 drain 队列（防止队列无界增长），但累积到 pending，
-            // 满足阈值（距上次发布 ≥ 48ms，或累积 ≥ 8192 字符）才发布一次，降低重组频率。
+            // 保留 16ms tick 去 drain 队列（防止队列无界增长），但先累积到 pending，
+            // 满足阈值（距上次发布 ≥ minIntervalMs，或累积 ≥ backlogChars）才发布一次，降低重组频率。
             val pending = StringBuilder()
             var lastFlushMs = System.currentTimeMillis()
             // 发布节流：每次发布都有固定主线程开销（组合 + 可见行布局 + 重绘失效），
@@ -96,7 +96,6 @@ $rootLine
             val backlogChars = 400_000
             try {
                 while (isActive && isTaskRunningProvider()) {
-                    // 2026-09-09: delay(Long) → kotlin.time.Duration
                     delay(16.milliseconds)
                     if (logBatchQueue.isNotEmpty()) {
                         while (true) {
@@ -134,6 +133,10 @@ $rootLine
         }
     }
 
+    /**
+     * 追加日志并按滑动窗口裁剪：超过 `MAX_LOG_LENGTH` 时保留尾部 `PRUNE_TARGET_LENGTH`，
+     * 裁剪点对齐到换行（找不到换行则按长度硬截），避免半行 ANSI 序列残留。
+     */
     fun appendWithSlidingWindow(currentLog: String, newText: String): String {
         val updated = currentLog + newText
         return if (updated.length > MAX_LOG_LENGTH) {
