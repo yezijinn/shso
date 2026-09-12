@@ -192,7 +192,7 @@ App 侧 `SecurityAuditLog` 另有字节级环形滚动（超过 512KB 裁剪保�
 | KernelSU | 是 | 模块不使用 `system/`，无需 metamodule |
 | APatch | 是 | — |
 
-模块为纯脚本档位：仅 `module.prop` + `customize.sh` + `service.sh` +
+模块为纯脚本模块：仅 `module.prop` + `customize.sh` + `service.sh` +
 `uninstall.sh` + `guard/` + `policy.conf`，零 `system/` 依赖，三种方案行为一致。
 
 ## 目录结构
