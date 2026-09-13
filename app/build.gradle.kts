@@ -147,7 +147,10 @@ android {
                 "assets/**",
                 "assets/dexopt/**",
                 // commons-codec 的语音匹配词典（120 个 txt，约 96KB），本应用不使用。
-                "org/apache/commons/codec/language/bm/**"
+                "org/apache/commons/codec/language/bm/**",
+                // jcodings（joni → regex-lib-oniguruma 的传递依赖）的 648 个编码转换表（约 2.9MB），
+                // 仅在转录遗留编码时需要；Monarch 语法匹配只用 UTF-8/ASCII-8BIT（内建编码，不查表）。
+                "tables/**"
             )
         }
     }
