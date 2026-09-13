@@ -84,6 +84,7 @@ import com.mixradio.droid.data.ChunkedFileReader
 import com.mixradio.droid.data.SparseLineIndex
 import com.mixradio.droid.data.IndexedLineProvider
 import com.mixradio.droid.data.FileSizeClass
+import com.mixradio.droid.data.syntax.SyntaxPackTags
 import com.mixradio.droid.data.CharsetDetector
 import com.mixradio.droid.data.EditHistoryManager
 import com.mixradio.droid.data.LineEnding
@@ -352,8 +353,13 @@ private fun TextEditorDialogContent(
     val grammarFileName by remember(currentFilePath) {
         derivedStateOf { currentFilePath?.let { File(it).name } }
     }
-    val language by remember(currentFilePath) {
-        derivedStateOf { currentFilePath?.let { CodeHighlighter.languageOf(File(it).name) } }
+    // 顶栏语言名：优先取已导入语法包（覆盖 187 个扩展名 + 无扩展名文件），
+    // 未导入时退回内置枚举；两者都没有则不显示徽标。
+    val languageLabel by remember(currentFilePath, syntaxRevision) {
+        derivedStateOf {
+            SyntaxPackTags.displayNameFor(context, grammarFileName)
+                ?: currentFilePath?.let { CodeHighlighter.languageOf(File(it).name)?.displayName }
+        }
     }
     // 语法高亮改由编辑器引擎自绘（Sora 的可视区增量高亮），不再走 Compose `VisualTransformation`：
     // 旧方案需对全文做 AnnotatedString 计算且与输入文本逐帧校验，大文本是纯开销。
@@ -426,7 +432,7 @@ private fun TextEditorDialogContent(
                     fileName = currentFilePath?.let { File(it).name }
                         ?: if (isNewFile) "新建${defaultNewExtension.uppercase()}" else "",
                     dirty = dirty,
-                    language = language, hasBom = hasBom,
+                    languageLabel = languageLabel, hasBom = hasBom,
                     onSettingsClick = { syncSnapshot(); showSettingsDialog = true },
                     onFindClick = {
                         // 巨型文件走只读浏览，正文未载入内存，查找必然无效，先说明原因。
@@ -893,7 +899,7 @@ private suspend fun writeTextFile(
 @Composable
 private fun EditorTopBar(
     fileName: String, dirty: Boolean,
-    language: CodeHighlighter.Language?, hasBom: Boolean,
+    languageLabel: String?, hasBom: Boolean,
     onSettingsClick: () -> Unit, onFindClick: () -> Unit,
     onCompareClick: () -> Unit, onSaveClick: () -> Unit,
     onHistoryClick: () -> Unit, historyCount: Int,
@@ -911,9 +917,9 @@ private fun EditorTopBar(
                     style = AuroraTextStyles.title3, color = AuroraTokens.Text
                 )
                 if (dirty) Text("●", style = AuroraTextStyles.body2, color = AuroraTokens.Accent)
-                if (language != null) {
+                if (languageLabel != null) {
                     Text(
-                        text = language.displayName, style = AuroraTextStyles.footnote2,
+                        text = languageLabel, style = AuroraTextStyles.footnote2,
                         color = AuroraTokens.TextSecondary,
                         modifier = Modifier
                             .background(AuroraTokens.SurfaceHover, RoundedCornerShape(0.dp))

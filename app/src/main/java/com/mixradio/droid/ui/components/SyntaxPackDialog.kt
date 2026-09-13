@@ -75,11 +75,40 @@ fun SyntaxPackDialog(
         Column(modifier = Modifier.fillMaxWidth()) {
             if (packs.isEmpty()) {
                 Text(
-                    "暂无外部语法包。内置语法始终可用。",
+                    "暂无外部语法包：编辑器按纯文本处理，可从下方直链或本地 zip 导入。",
                     style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary,
                     modifier = Modifier.padding(vertical = 8.dp)
                 )
             } else {
+                // 汇总 + 批量操作：62 个包逐个点开关不现实
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "已导入 ${packs.size} 个 · 启用 ${packs.count { it.enabled }} 个",
+                        style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            "全部启用",
+                            style = AuroraTextStyles.footnote2, color = AuroraTokens.Accent,
+                            modifier = Modifier.clickable {
+                                SyntaxPackStore.setAllEnabled(context, true)
+                                refresh("已启用全部 ${packs.size} 个语法包")
+                            }.padding(horizontal = 4.dp)
+                        )
+                        Text(
+                            "全部停用",
+                            style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary,
+                            modifier = Modifier.clickable {
+                                SyntaxPackStore.setAllEnabled(context, false)
+                                refresh("已停用全部语法包")
+                            }.padding(horizontal = 4.dp)
+                        )
+                    }
+                }
                 LazyColumn(modifier = Modifier.fillMaxWidth().height(200.dp)) {
                     items(packs, key = { it.id }) { pack ->
                         PackRow(

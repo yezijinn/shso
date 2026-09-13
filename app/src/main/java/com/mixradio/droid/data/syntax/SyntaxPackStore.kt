@@ -128,6 +128,28 @@ object SyntaxPackStore {
         }
     }
 
+    @Volatile
+    private var cachedKeys: Map<String, String>? = null
+
+    /**
+     * 匹配表的内存缓存。列表渲染会**逐行**查询语言标签，不能每行都读清单文件。
+     * 任何增删改（导入/删除/启停）都要调用 [invalidateCache]。
+     */
+    fun keyOverridesCached(ctx: Context): Map<String, String> =
+        cachedKeys ?: synchronized(this) { cachedKeys ?: keyOverrides(ctx).also { cachedKeys = it } }
+
+    fun invalidateCache() {
+        cachedKeys = null
+    }
+
+    /** 文件名 → 语言 id（先全名匹配、再扩展名匹配）；未导入对应语法包时返回 null。 */
+    fun languageIdFor(ctx: Context, fileName: String?): String? {
+        val name = fileName?.substringAfterLast('/')?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+        val map = keyOverridesCached(ctx)
+        val ext = name.substringAfterLast('.', "")
+        return map[name] ?: ext.takeIf { it.isNotEmpty() }?.let { map[it] }
+    }
+
     /**
      * 从本地文件导入。支持两种形态：
      *  - `.zip` 语法包压缩档（内含 `index.json` + 语法 JSON，整体导入）；
@@ -167,10 +189,19 @@ object SyntaxPackStore {
     fun remove(ctx: Context, id: String) {
         fileFor(ctx, id).delete()
         save(ctx, list(ctx).filterNot { it.id == id })
+        invalidateCache()
     }
 
     fun setEnabled(ctx: Context, id: String, enabled: Boolean) {
         save(ctx, list(ctx).map { if (it.id == id) it.copy(enabled = enabled) else it })
+        invalidateCache()
+    }
+
+    /** 批量启停：一次写入清单（逐个调用会写 N 次文件）。 */
+    fun setAllEnabled(ctx: Context, enabled: Boolean) {
+        val packs = list(ctx).map { if (it.enabled != enabled) it.copy(enabled = enabled) else it }
+        save(ctx, packs)
+        invalidateCache()
     }
 
     private fun download(url: String): ByteArray {
@@ -266,6 +297,7 @@ object SyntaxPackStore {
                 )
             }
             save(ctx, packs)
+            invalidateCache()
         } catch (e: Throwable) {
             // 落盘失败：回收已写入文件，避免留下"有文件无清单"的僵尸语法。
             written.forEach { runCatching { it.delete() } }
@@ -303,6 +335,7 @@ object SyntaxPackStore {
             sizeBytes = bytes.size.toLong(), addedAtMs = System.currentTimeMillis(), enabled = true
         )
         save(ctx, list(ctx).filterNot { it.id == id } + pack)
+        invalidateCache()
         return pack
     }
 

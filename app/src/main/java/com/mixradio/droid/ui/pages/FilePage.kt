@@ -74,6 +74,7 @@ import com.mixradio.droid.data.FilePermissionMetadata
 import com.mixradio.droid.data.INTERNAL_STORAGE_LABEL
 import com.mixradio.droid.data.INTERNAL_STORAGE_PATH
 import com.mixradio.droid.data.MoveDestinationConflict
+import com.mixradio.droid.data.syntax.SyntaxPackTags
 import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.displayPath
@@ -614,6 +615,7 @@ fun FilePage(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                 // 类型图标：无底色方框、左右零间隙，直接裸文字
+                                // 文本文件优先显示**具体语言**（由已导入语法包决定），无法识别时才用通用 TXT
                                 Text(
                                     text = when {
                                         item.isDirectory -> "📁"
@@ -622,7 +624,7 @@ fun FilePage(
                                         item.isInstallable -> "APK"
                                         isFontFile -> if (item.name.endsWith(".otf", ignoreCase = true)) "OTF" else "TTF"
                                         item.isViewableImage -> "IMG"
-                                        item.isEditableText -> "TXT"
+                                        item.isEditableText -> SyntaxPackTags.tagFor(context, item.name) ?: "TXT"
                                         else -> "📄"
                                     },
                                     fontSize = if (item.isDirectory || (!isExecutable && !isFontFile && !item.isInstallable && !item.isViewableImage && !item.isEditableText)) 16.sp else 11.sp,
