@@ -142,6 +142,9 @@ shso-main/
   未匹配的令牌会落回黑色（深底不可读）；主题不可用时降级为「不启用语法」。
 - 文本超过 `HIGHLIGHT_MAX_CHARS`（20 万字符）时不设语法，仅保留基础配色。
 - 未导入语法包时编辑器为无高亮的纯文本，功能不受影响。
+- **编译期红线**：`app/build.gradle.kts` 的 `verifyReleasePayload` 任务在 `assembleRelease` 后强制校验——
+  APK 内不得出现 `assets/sora-grammars/**`、`syntax-packs*`、`tables/**`（jcodings 编码表）以及任何含
+  `"tokenizer"` 的 JSON，且体积不得超过 2.2MB；违反即中断构建。语法高亮包只能由用户导入，不得随 APK 分发。
 
 ### 巨型文件只读（稀疏索引 + 虚拟滚动）
 
