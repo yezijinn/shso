@@ -205,24 +205,21 @@ tasks.matching {
 }
 
 /**
- * release 体积红线（编译期强制，不做静默降级）。
+ * release 产物内容校验（编译期强制，不做静默降级）。
  *
  * 约定：**APK 不携带任何语法高亮包**——语法由用户在线下载后导入（见 ui/components/SyntaxPackDialog.kt），
  * 编译产物中只允许存在配色主题。同时禁止把无关的数据表打进包（jcodings 的 648 个编码转换表曾贡献 1.24MB）。
- * 体积上限用于在无意引入大依赖时中断构建，确需上调请连同理由一起改本常量。
+ * 体积不做上限限制（按用户要求：编译 APK 不限制体积）。
  */
-// 2026-09-13 上调至 2.4MB：20260913 功能批次（编辑历史来源、文件搜索、语法包外置管理/按需加载、原子保存、编码严格、替换修复等）使 dex 增长，release 基线升至约 2.20MB；2.4MB 留 ~0.2MB 余量，且仍远低于语法包/编码表误打包会带来的 +1.24MB，故该内容校验不因此失效。
-val releasePayloadMaxBytes = 2_400_000L
 val releaseApkFile = layout.buildDirectory.file("outputs/apk/release/app-release.apk")
 
 val verifyReleasePayload = tasks.register("verifyReleasePayload") {
     group = "verification"
-    description = "校验 release APK 不携带语法包/无关数据表，且体积不超红线"
+    description = "校验 release APK 不携带语法包/无关数据表"
     // 校验逻辑在 doLast 里读取 APK 内容，闭包会引用脚本对象，故声明为配置缓存不兼容
     // （仅在执行 assembleRelease 时触发，代价是本次构建不复用配置缓存）。
     notCompatibleWithConfigurationCache("校验任务读取 APK 内容，闭包引用脚本对象")
     inputs.file(releaseApkFile).withPropertyName("apk").optional()
-    inputs.property("maxBytes", releasePayloadMaxBytes)
     doLast {
         val apk = releaseApkFile.get().asFile
         if (!apk.exists()) {
@@ -245,17 +242,13 @@ val verifyReleasePayload = tasks.register("verifyReleasePayload") {
                 }
             }
         }
-        val size = apk.length()
-        if (size > releasePayloadMaxBytes) {
-            problems += "体积 ${"%.2f".format(size / 1048576.0)}MB 超过红线 ${"%.2f".format(releasePayloadMaxBytes / 1048576.0)}MB"
-        }
         if (problems.isNotEmpty()) {
             throw GradleException(
                 "release 产物校验失败：\n" + problems.joinToString("\n") { "  - $it" } +
                     "\n语法高亮包必须由用户导入，不得随 APK 分发。"
             )
         }
-        println("verifyReleasePayload: 通过（体积 ${"%.2f".format(size / 1048576.0)}MB，无语法包、无数据表）")
+        println("verifyReleasePayload: 通过（无语法包、无数据表）")
     }
 }
 

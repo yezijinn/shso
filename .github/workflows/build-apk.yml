@@ -103,7 +103,7 @@ jobs:
           KEYSTORE_FILE: ${{ runner.temp }}/release.jks
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-        run: ./gradlew assembleRelease -PoverridePackage="${{ steps.validate.outputs.package }}"
+        run: ./gradlew assembleRelease -PoverridePackage="${{ steps.validate.outputs.package }}" --no-configuration-cache
 
       - name: 上传 APK 产物
         uses: actions/upload-artifact@v7.0.1
