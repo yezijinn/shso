@@ -127,10 +127,21 @@ shso-main/
 承载见 `ui/components/SoraTextEditor.kt`，编排见 `ui/components/TextEditorDialog.kt`。
 实测（22127RK46C / Android 16，debug）：4.0 MB / 50002 行打开 841ms。
 
-语法高亮由 **Monarch** 提供：语法定义在本项目 `assets/sora-grammars/*.json`（sh/py/kt/java/js/c/sql/lua/bat/ps1），
-配色主题在 `assets/sora-themes/shso-dark.json`，加载与注册见 `ui/components/SoraMonarchGrammars.kt`。
-约束：Monarch 的令牌色来自主题，**无主题时令牌色为 0（文本不可见）**，故启用语法必须同时套用 `MonarchColorScheme`；
-文本超过 `HIGHLIGHT_MAX_CHARS`（20 万字符）时不设语法，仅保留基础配色。
+语法高亮由 **Monarch** 提供，且**语法包不入 APK**（体积优先）：编辑器只内置配色主题
+`assets/sora-themes/shso-dark.json`，语法定义全部来自用户导入的语法包，存于
+`filesDir/syntax/grammars/<id>.json`，元数据在 `filesDir/syntax/index.tsv`。
+
+- 生成：`tools/gen_syntax_packs.py` 产出 **62 种语言 / 187 个扩展名**（纯 Monarch JSON），
+  同时写入仓库根 `syntax-packs/` 与整包 `syntax-packs.zip`（内含 `index.json`，声明各语法的适用扩展名）。
+- 导入：`ui/components/SyntaxPackDialog.kt`（编辑器「设置 → 语法包」）支持本地 zip/单个 JSON 与 https 直链；
+  直链为仓库 tag 永固地址（`SyntaxPackUrls.PACK_ZIP`）。
+- 校验：单文件 ≤512KB、整包 ≤2MB、SHA-256 可选、必须为含 `tokenizer` 的合法 JSON；整包任一失败即整体拒绝。
+- 注册：`ui/components/SoraMonarchGrammars.kt`。**解析器顺序不可颠倒**：应用私有目录在前、assets 在后；
+  `AssetsFileResolver.resolve` 对缺失路径不捕获异常，排在前面会让其抛错中断 provider 链、导致全部语法加载失败。
+- 约束：Monarch 的令牌色来自主题，**主题必须覆盖语法用到的全部作用域**（含 `identifier`、`attribute`），
+  未匹配的令牌会落回黑色（深底不可读）；主题不可用时降级为「不启用语法」。
+- 文本超过 `HIGHLIGHT_MAX_CHARS`（20 万字符）时不设语法，仅保留基础配色。
+- 未导入语法包时编辑器为无高亮的纯文本，功能不受影响。
 
 ### 巨型文件只读（稀疏索引 + 虚拟滚动）
 
@@ -152,7 +163,7 @@ UI 层全部使用 `androidx.compose.material3` + `material-icons-extended`，
 - 仓库回退源：本项目环境下 `repo1.maven.org` 对相当一部分制品返回 404（Sora 系、moshi/okio、
   `kotlin-stdlib-jdk8` 等），`settings.gradle.kts` 因此把 Google 官方 Maven Central 镜像
   （`maven-central.storage-download.googleapis.com`）作为通用回退源（内容与中央仓库一致）。
-- 产物体积：编辑器引擎与语法高亮使 release APK 由约 1.84MB 增至约 3.78MB（2026-09-12 实测）。
+- 产物体积：编辑器引擎使 release APK 由约 1.84MB 增至约 3.40MB（2026-09-12 实测）；**语法包不入 APK**。
 
 ## 构建与产物
 
