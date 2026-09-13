@@ -52,6 +52,27 @@ class SoraEditorController {
     fun replaceAll(replacement: String) { editor?.searcher?.replaceAll(replacement) }
     fun replaceCurrentMatch(replacement: String) { editor?.searcher?.replaceCurrentMatch(replacement) }
     fun stopSearch() { editor?.searcher?.stopSearch() }
+
+    /**
+     * 全部替换并在**主线程**回调完成。
+     *
+     * `replaceAll` 在后台线程执行（自带进度框）：完成后才能读取新文本（同步惰性快照、刷新匹配数），
+     * 故必须走完成回调；回调线程由 Sora 决定，这里统一切回主线程再执行 [onDone]。
+     */
+    fun replaceAll(replacement: String, onDone: () -> Unit) {
+        val searcher = editor?.searcher ?: return
+        searcher.replaceAll(replacement) { MAIN.post(onDone) }
+    }
+
+    private val MAIN = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /**
+     * Sora 检索器的**已完成**匹配数。检索在后台线程执行，结果集只在检索结束时一次性写入
+     * （见 `EditorSearcher$SearchRunnable`：仅当 `localThread === currentThread` 时 `putfield lastResults`），
+     * 故 `> 0` 是「检索已完成」的可靠信号——替换必须在检索完成后调用，否则 Sora 判定
+     * `isResultValid() == false` 直接 Toast 后返回（表现为「点了替换没反应」）。
+     */
+    fun searcherMatchCount(): Int = editor?.searcher?.matchedPositionCount ?: 0
 }
 
 /** 依据 Aurora 暗色令牌构建 Sora 配色（底为 Darcula 预设，仅覆盖关键槽位）。 */
