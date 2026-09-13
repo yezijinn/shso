@@ -83,8 +83,8 @@ fun SoraTextEditor(
     resetKey: Any?,
     fontSize: TextUnit,
     showLineNumbers: Boolean,
-    /** 文件名原始扩展名：用于选取 Monarch 语法（null 表示无高亮）。 */
-    languageExt: String?,
+    /** 当前文件名（含扩展名，大小写不敏感）：用于选取 Monarch 语法（null 表示无高亮）。 */
+    fileName: String?,
     /** 语法包变更计数：变化时重新取语法（用于导入/删除语法包后即时生效）。 */
     syntaxRevision: Int = 0,
     modifier: Modifier = Modifier,
@@ -95,8 +95,8 @@ fun SoraTextEditor(
     val context = androidx.compose.ui.platform.LocalContext.current
     // 语法按扩展名缓存；超大文本不启用高亮：Monarch 分析虽按可视区增量执行，
     // 但超大文本的首次分析仍会抢占主线程，收益低于代价（与统计跳过阈值同量级）。
-    val editorLanguage = remember(languageExt, initialText.length, syntaxRevision) {
-        if (initialText.length <= HIGHLIGHT_MAX_CHARS) SoraMonarchGrammars.languageFor(context, languageExt) else null
+    val editorLanguage = remember(fileName, initialText.length, syntaxRevision) {
+        if (initialText.length <= HIGHLIGHT_MAX_CHARS) SoraMonarchGrammars.languageFor(context, fileName) else null
     }
     // 语法生效时必须同时套用 Monarch 主题配色：无主题时令牌色为 0，文本会渲染成不可见。
     val monarchScheme = remember(editorLanguage) {

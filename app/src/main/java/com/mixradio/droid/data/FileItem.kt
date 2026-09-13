@@ -15,6 +15,7 @@ val INSTALLABLE_EXTENSIONS = setOf("apk", "xapk", "apks", "aspk", "apkm")
  *  来源 docs/2026-09-05_00-43-02.txt：纯文本/代码/前端标记/Shell/系统配置。
  */
 val TEXT_EXTENSIONS = setOf(
+
     // 纯文本
     "txt", "log", "text", "csv", "ini", "cfg", "conf", "properties", "env",
     // 代码
@@ -28,7 +29,26 @@ val TEXT_EXTENSIONS = setOf(
     // 系统/配置
     "rc", "gradle", "cmake", "mk", "makefile",
     // 已有保留
-    "tsv", "kts", "smali", "gitignore"
+    "tsv", "kts", "smali", "gitignore",
+
+    // 语法包覆盖的其余扩展名（与仓库 syntax-packs 保持一致，避免「能高亮却打不开」）
+    "asm", "aux", "babelrc", "bas", "bib", "c++", "cginc", "cjs",
+    "cls", "comp", "containerfile", "cron", "crontab", "csx", "cts", "cxx",
+    "dart", "ddl", "desktop", "diff", "dml", "dockerfile", "erl", "err",
+    "eslintrc", "ex", "exs", "fish", "frag", "fx", "fxh", "gemspec",
+    "geom", "gitattributes", "gitconfig", "gitmodules", "glsl", "groovy", "gvy", "h++",
+    "hcl", "hh", "hlsl", "hlslinc", "hosts", "hrl", "hs", "hxx",
+    "iml", "ino", "jl", "json5", "jsonc", "jsp", "ksh", "latex",
+    "lhs", "lock", "m", "mak", "manifest", "masm", "matlab", "mdown",
+    "meson", "mjs", "mm", "mount", "mts", "nasm", "nginx", "nginxconf",
+    "nim", "nimble", "nims", "out", "patch", "path", "php5", "phtml",
+    "plist", "pm", "pod", "proto", "psd1", "psm1", "pyi", "pyw",
+    "pyx", "rake", "reg", "regex", "regexp", "rmd", "ru", "s",
+    "sas", "sass", "sbt", "sc", "scala", "scope", "service", "shader",
+    "slice", "socket", "sol", "sty", "svelte", "svg", "swap", "t",
+    "target", "tcc", "tesc", "tese", "tex", "tf", "tfstate", "tfvars",
+    "timer", "unit", "usf", "ush", "vb", "vbs", "vert", "vue",
+    "wrap", "xhtml", "xsd", "xsl", "xslt", "zig", "zon",
 )
 
 /** 可浏览的常见图片扩展名（小写；比较前先 lowercase）。 */
@@ -72,7 +92,18 @@ data class FileItem(
 
     /** 是否常见文本文档（可编辑保存）。 */
     val isEditableText: Boolean
-        get() = !isDirectory && realExtension in TEXT_EXTENSIONS
+        get() = !isDirectory && (realExtension in TEXT_EXTENSIONS || isExtensionlessText)
+
+    /**
+     * 无扩展名（`Dockerfile`、`Makefile`、`hosts`、`crontab`）或点开头的隐藏配置（`.gitignore`）
+     * 按文本处理——这类文件在扩展名白名单里查不到，但绝大多数是纯文本。
+     */
+    private val isExtensionlessText: Boolean
+        get() {
+            if (isDirectory) return false
+            val dots = name.count { it == '.' }
+            return dots == 0 || (name.startsWith(".") && dots == 1)
+        }
 
     /** 是否常见图片（可浏览）。 */
     val isViewableImage: Boolean

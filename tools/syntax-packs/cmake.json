@@ -1,0 +1,54 @@
+{
+  "extensions": [
+    "cmake"
+  ],
+  "ignoreCase": true,
+  "tokenizer": {
+    "root": [
+      [
+        "\\s+",
+        "white"
+      ],
+      [
+        "#.*$",
+        "comment"
+      ],
+      [
+        "#\\[\\[[\\s\\S]*?\\]\\]",
+        "comment"
+      ],
+      [
+        "\"(\\\\.|[^\"\\\\])*\"",
+        "string"
+      ],
+      [
+        "\\$\\{[^}]*\\}",
+        "variable"
+      ],
+      [
+        "\\b(cmake_minimum_required|project|set|add_executable|add_library|target_link_libraries|include_directories|find_package|if|else|elseif|endif|foreach|endforeach|while|endwhile|function|endfunction|macro|endmacro|option|install|enable_testing|add_test|message|return|break|continue)\\b",
+        "keyword"
+      ],
+      [
+        "\\b(ON|OFF|TRUE|FALSE)\\b",
+        "constant"
+      ],
+      [
+        "(0[xXbBoO][0-9a-fA-F_]+|[0-9][0-9_]*\\.?[0-9_]*([eE][+-]?[0-9]+)?)",
+        "number"
+      ],
+      [
+        "[A-Za-z_][A-Za-z0-9_]*",
+        "identifier"
+      ],
+      [
+        "[{}()\\[\\]]",
+        "delimiter"
+      ],
+      [
+        "[=+\\-*/%<>!&|^~?:]+",
+        "operator"
+      ]
+    ]
+  }
+}

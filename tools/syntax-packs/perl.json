@@ -1,0 +1,56 @@
+{
+  "extensions": [
+    "pl",
+    "pm",
+    "t",
+    "pod"
+  ],
+  "tokenizer": {
+    "root": [
+      [
+        "\\s+",
+        "white"
+      ],
+      [
+        "#.*$",
+        "comment"
+      ],
+      [
+        "\"(\\\\.|[^\"\\\\])*\"",
+        "string"
+      ],
+      [
+        "'(\\\\.|[^'\\\\])*'",
+        "string"
+      ],
+      [
+        "[$@%][A-Za-z_][A-Za-z0-9_:]*",
+        "variable"
+      ],
+      [
+        "\\b(if|elsif|else|unless|while|until|for|foreach|do|last|next|redo|return|my|our|local|sub|package|use|no|require|given|when|default|say|print)\\b",
+        "keyword"
+      ],
+      [
+        "\\b(undef|true|false)\\b",
+        "constant"
+      ],
+      [
+        "(0[xXbBoO][0-9a-fA-F_]+|[0-9][0-9_]*\\.?[0-9_]*([eE][+-]?[0-9]+)?)",
+        "number"
+      ],
+      [
+        "[A-Za-z_][A-Za-z0-9_]*",
+        "identifier"
+      ],
+      [
+        "[{}()\\[\\]]",
+        "delimiter"
+      ],
+      [
+        "[=+\\-*/%<>!&|^~?:]+",
+        "operator"
+      ]
+    ]
+  }
+}

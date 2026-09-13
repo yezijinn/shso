@@ -27,6 +27,8 @@ data class SyntaxPack(
     val id: String,
     /** 适用的文件扩展名（小写，不含点）；为空时等同于 [id]。 */
     val exts: List<String>,
+    /** 无扩展名的常见文件名（小写，如 `dockerfile`、`cmakelists.txt`）。 */
+    val filenames: List<String>,
     val sha256: String,
     val source: String,
     val sizeBytes: Long,
@@ -71,18 +73,30 @@ object SyntaxPackStore {
         return runCatching {
             f.readLines().filter { it.isNotBlank() }.mapNotNull { line ->
                 val c = line.split('\t')
-                if (c.size < 7) return@mapNotNull null
-                val exts = c[1].split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }
-                SyntaxPack(
-                    id = c[0], exts = exts.ifEmpty { listOf(c[0]) },
-                    sha256 = c[2], source = c[3],
-                    sizeBytes = c[4].toLongOrNull() ?: 0L,
-                    addedAtMs = c[5].toLongOrNull() ?: 0L,
-                    enabled = c[6] == "1"
-                )
+                // 8 列 = 当前格式（含 filenames）；7 列 = 早期版本写入（无 filenames），按旧布局解析以兼容升级。
+                when {
+                    c.size >= 8 -> SyntaxPack(
+                        id = c[0], exts = splitKeys(c[1]).ifEmpty { listOf(c[0]) }, filenames = splitKeys(c[2]),
+                        sha256 = c[3], source = c[4],
+                        sizeBytes = c[5].toLongOrNull() ?: 0L,
+                        addedAtMs = c[6].toLongOrNull() ?: 0L,
+                        enabled = c[7] == "1"
+                    )
+                    c.size == 7 -> SyntaxPack(
+                        id = c[0], exts = splitKeys(c[1]).ifEmpty { listOf(c[0]) }, filenames = emptyList(),
+                        sha256 = c[2], source = c[3],
+                        sizeBytes = c[4].toLongOrNull() ?: 0L,
+                        addedAtMs = c[5].toLongOrNull() ?: 0L,
+                        enabled = c[6] == "1"
+                    )
+                    else -> null
+                }
             }
         }.getOrDefault(emptyList())
     }
+
+    private fun splitKeys(raw: String): List<String> =
+        raw.split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }
 
     private fun save(ctx: Context, packs: List<SyntaxPack>) {
         val f = indexFile(ctx)
@@ -92,6 +106,7 @@ object SyntaxPackStore {
                 listOf(
                     p.id,
                     p.exts.joinToString(","),
+                    p.filenames.joinToString(","),
                     p.sha256,
                     p.source,
                     p.sizeBytes.toString(),
@@ -102,10 +117,14 @@ object SyntaxPackStore {
         )
     }
 
-    /** 启用的语法包：扩展名 → 语法 id（一个包可覆盖多个扩展名）。 */
-    fun extOverrides(ctx: Context): Map<String, String> = buildMap {
+    /**
+     * 启用的语法包：**匹配键 → 语法 id**。
+     * 键同时包含扩展名与无扩展名文件名（如 `dockerfile`），均由编辑器传入的小写键匹配。
+     */
+    fun keyOverrides(ctx: Context): Map<String, String> = buildMap {
         list(ctx).filter { it.enabled }.forEach { p ->
-            p.exts.forEach { put(it.lowercase(), p.id) }
+            p.exts.forEach { put(it, p.id) }
+            p.filenames.forEach { put(it, p.id) }
         }
     }
 
@@ -188,6 +207,7 @@ object SyntaxPackStore {
      */
     private fun importZip(ctx: Context, bytes: ByteArray, source: String): Int {
         val indexExts = HashMap<String, List<String>>()
+        val indexNames = HashMap<String, List<String>>()
         val grammars = LinkedHashMap<String, ByteArray>()
         ZipInputStream(ByteArrayInputStream(bytes)).use { zin ->
             var entry = zin.nextEntry
@@ -204,12 +224,11 @@ object SyntaxPackStore {
                             for (i in 0 until arr.length()) {
                                 val o = arr.optJSONObject(i) ?: continue
                                 val id = sanitize(o.optString("id"))
-                                val exts = mutableListOf<String>()
-                                val ea = o.optJSONArray("exts")
-                                for (j in 0 until ea.length()) {
-                                    ea.optString(j).trim().lowercase().takeIf { it.isNotEmpty() }?.let { exts.add(it) }
-                                }
-                                if (id.isNotEmpty()) indexExts[id] = exts.ifEmpty { listOf(id) }
+                                if (id.isEmpty()) continue
+                                val exts = readStringArray(o.optJSONArray("exts"))
+                                val names = readStringArray(o.optJSONArray("filenames"))
+                                indexExts[id] = exts.ifEmpty { listOf(id) }
+                                indexNames[id] = names
                             }
                         }
                         name.lowercase().endsWith(".json") -> {
@@ -233,17 +252,31 @@ object SyntaxPackStore {
         }
 
         val packs = list(ctx).filterNot { p -> grammars.containsKey(p.id) }.toMutableList()
-        for ((id, data, digest) in validated) {
-            val file = fileFor(ctx, id)
-            file.parentFile?.mkdirs()
-            file.writeBytes(data)
-            packs += SyntaxPack(
-                id = id, exts = indexExts[id] ?: listOf(id), sha256 = digest, source = source,
-                sizeBytes = data.size.toLong(), addedAtMs = System.currentTimeMillis(), enabled = true
-            )
+        val written = mutableListOf<File>()
+        try {
+            for ((id, data, digest) in validated) {
+                val file = fileFor(ctx, id)
+                file.parentFile?.mkdirs()
+                file.writeBytes(data)
+                written += file
+                packs += SyntaxPack(
+                    id = id, exts = indexExts[id] ?: listOf(id), filenames = indexNames[id] ?: emptyList(),
+                    sha256 = digest, source = source,
+                    sizeBytes = data.size.toLong(), addedAtMs = System.currentTimeMillis(), enabled = true
+                )
+            }
+            save(ctx, packs)
+        } catch (e: Throwable) {
+            // 落盘失败：回收已写入文件，避免留下"有文件无清单"的僵尸语法。
+            written.forEach { runCatching { it.delete() } }
+            throw e
         }
-        save(ctx, packs)
         return grammars.size
+    }
+
+    private fun readStringArray(arr: JSONArray?): List<String> {
+        if (arr == null) return emptyList()
+        return (0 until arr.length()).mapNotNull { arr.optString(it).trim().lowercase().takeIf { s -> s.isNotEmpty() } }
     }
 
     private fun ingest(
@@ -258,16 +291,15 @@ object SyntaxPackStore {
         val text = String(bytes, Charsets.UTF_8)
         val json = runCatching { JSONObject(text) }.getOrElse { throw IllegalArgumentException("不是合法 JSON") }
         require(json.has("tokenizer")) { "缺少 tokenizer 字段，不是 Monarch 语法" }
-        // 语法 JSON 可用顶层 "extensions" 声明适用的扩展名（缺省 = 语法 id 本身）。
-        val resolved = runCatching {
-            val arr = json.optJSONArray("extensions")
-            (0 until arr.length()).map { arr.optString(it).trim().lowercase() }.filter { it.isNotEmpty() }
-        }.getOrDefault(emptyList())
+        // 语法 JSON 可用顶层 "extensions"/"filenames" 声明匹配键（缺省 = 语法 id 本身）。
+        val resolved = runCatching { readStringArray(json.optJSONArray("extensions")) }.getOrDefault(emptyList())
+        val names = runCatching { readStringArray(json.optJSONArray("filenames")) }.getOrDefault(emptyList())
         val file = fileFor(ctx, id)
         file.parentFile?.mkdirs()
         file.writeBytes(bytes)
         val pack = SyntaxPack(
-            id = id, exts = exts ?: resolved.ifEmpty { listOf(id) }, sha256 = digest, source = source,
+            id = id, exts = exts ?: resolved.ifEmpty { listOf(id) }, filenames = names,
+            sha256 = digest, source = source,
             sizeBytes = bytes.size.toLong(), addedAtMs = System.currentTimeMillis(), enabled = true
         )
         save(ctx, list(ctx).filterNot { it.id == id } + pack)

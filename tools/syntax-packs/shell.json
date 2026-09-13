@@ -1,0 +1,61 @@
+{
+  "extensions": [
+    "sh",
+    "bash",
+    "zsh",
+    "ksh",
+    "fish"
+  ],
+  "tokenizer": {
+    "root": [
+      [
+        "\\s+",
+        "white"
+      ],
+      [
+        "#.*$",
+        "comment"
+      ],
+      [
+        "\"(\\\\.|[^\"\\\\])*\"",
+        "string"
+      ],
+      [
+        "'(\\\\.|[^'\\\\])*'",
+        "string"
+      ],
+      [
+        "\\$(\\{[A-Za-z_][A-Za-z0-9_]*\\}|[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?!$])",
+        "variable"
+      ],
+      [
+        "\\b(if|then|else|elif|fi|for|while|until|do|done|case|esac|function|select|time|return|exit|break|continue|local|export|declare|readonly|read|echo|printf|set|unset|shift|source|trap|in)\\b",
+        "keyword"
+      ],
+      [
+        "\\b(true|false)\\b",
+        "constant"
+      ],
+      [
+        "(0[xXbBoO][0-9a-fA-F_]+|[0-9][0-9_]*\\.?[0-9_]*([eE][+-]?[0-9]+)?)",
+        "number"
+      ],
+      [
+        "[A-Za-z_][A-Za-z0-9_]*",
+        "identifier"
+      ],
+      [
+        "[{}()\\[\\]]",
+        "delimiter"
+      ],
+      [
+        "[=+\\-*/%<>!&|^~?:]+",
+        "operator"
+      ],
+      [
+        "[|&;><]+",
+        "operator"
+      ]
+    ]
+  }
+}

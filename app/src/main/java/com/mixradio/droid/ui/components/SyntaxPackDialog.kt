@@ -58,6 +58,7 @@ fun SyntaxPackDialog(
     var showFilePicker by remember { mutableStateOf(false) }
     var showUrlInput by remember { mutableStateOf(false) }
     var urlPrefill by remember { mutableStateOf("") }
+    var pendingRemove by remember { mutableStateOf<SyntaxPack?>(null) }
 
     fun refresh(msg: String?) {
         packs = SyntaxPackStore.list(context)
@@ -87,10 +88,7 @@ fun SyntaxPackDialog(
                                 SyntaxPackStore.setEnabled(context, pack.id, !pack.enabled)
                                 refresh("已${if (pack.enabled) "停用" else "启用"} ${pack.id}")
                             },
-                            onRemove = {
-                                SyntaxPackStore.remove(context, pack.id)
-                                refresh("已删除 ${pack.id}")
-                            }
+                            onRemove = { pendingRemove = pack }
                         )
                     }
                 }
@@ -144,6 +142,19 @@ fun SyntaxPackDialog(
         }
     }
 
+    // 删除为破坏性操作：先确认再执行（可重新导入，但误删会立即失去该语言的着色）
+    pendingRemove?.let { pack ->
+        ConfirmRemoveDialog(
+            pack = pack,
+            onDismiss = { pendingRemove = null },
+            onConfirm = {
+                SyntaxPackStore.remove(context, pack.id)
+                pendingRemove = null
+                refresh("已删除 ${pack.id}")
+            }
+        )
+    }
+
     if (showFilePicker) {
         BuiltInFilePicker(
             appSettings = com.mixradio.droid.data.AppSettings.getInstance(context),
@@ -190,10 +201,16 @@ private fun PackRow(pack: SyntaxPack, onToggle: () -> Unit, onRemove: () -> Unit
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                "${pack.id}  ·  .${pack.id}",
+                pack.id,
                 style = AuroraTextStyles.body2,
                 color = if (pack.enabled) AuroraTokens.Text else AuroraTokens.TextDisabled,
                 maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            // 展示真实匹配范围：多扩展名/无扩展名文件（如 cpp 覆盖 hpp/ino、cmake 覆盖 CMakeLists.txt）
+            Text(
+                (pack.exts.map { ".$it" } + pack.filenames).joinToString(" "),
+                style = AuroraTextStyles.footnote2, color = AuroraTokens.Accent,
+                maxLines = 2, overflow = TextOverflow.Ellipsis
             )
             Text(
                 "${pack.sizeBytes} B  ·  ${pack.source}",
@@ -251,11 +268,50 @@ private fun UrlImportDialog(prefillUrl: String, onDismiss: () -> Unit, onConfirm
  * 语法包压缩档的**永固直链**：指向仓库 `syntax-packs.zip`（整包：index.json + 全部语法）。
  * 直链通过 git tag 固定（`refs/tags/<tag>/...`），仓库后续更新不影响已发布的链接。
  */
+/** 删除确认：破坏性操作不静默执行。 */
+@Composable
+private fun ConfirmRemoveDialog(pack: SyntaxPack, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AuroraWindowDialog(
+        show = true,
+        title = "删除语法包",
+        summary = "删除后该语言将失去语法着色（可再次导入恢复）",
+        onDismissRequest = onDismiss
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Text(pack.id, style = AuroraTextStyles.body2, color = AuroraTokens.Text, maxLines = 1)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                (pack.exts.map { ".$it" } + pack.filenames).joinToString(" "),
+                style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary, maxLines = 2
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(
+                    onClick = onConfirm,
+                    colors = ButtonDefaults.buttonColors(containerColor = AuroraTokens.Error)
+                ) { Text("删除") }
+                Button(
+                    onClick = onDismiss,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = AuroraTokens.SurfaceHover, contentColor = AuroraTokens.Text
+                    )
+                ) { Text("取消") }
+            }
+        }
+    }
+}
+
+/**
+ * 语法包压缩档的**永固直链**：指向仓库 `syntax-packs.zip`（整包：index.json + 全部语法）。
+ * 直链通过 git tag 固定（`refs/tags/<tag>/...`），仓库后续更新不影响已发布的链接。
+ *
+ * **更新语法包时**：重新生成 zip → 打新 tag（v2/v3…）→ 只改这里的 [TAG]，旧链接继续可用。
+ */
 object SyntaxPackUrls {
     private const val REPO = "yezijinn/shso"
-    private const val TAG = "syntaxpacks-v1"
+    private const val TAG = "syntaxpacks-v2"
 
-    /** 整包 zip（62 种语言 / 187 个扩展名）。 */
+    /** 整包 zip（62 种语言 / 187 个扩展名 + 无扩展名文件名匹配）。 */
     const val PACK_ZIP = "https://raw.githubusercontent.com/$REPO/refs/tags/$TAG/syntax-packs.zip"
 
     /** 弹窗里展示的快捷导入项：(说明, 直链)。 */
