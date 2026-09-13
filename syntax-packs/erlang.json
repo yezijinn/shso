@@ -1,0 +1,58 @@
+{
+  "extensions": [
+    "erl",
+    "hrl"
+  ],
+  "tokenizer": {
+    "root": [
+      [
+        "\\s+",
+        "white"
+      ],
+      [
+        "%.*$",
+        "comment"
+      ],
+      [
+        "\"(\\\\.|[^\"\\\\])*\"",
+        "string"
+      ],
+      [
+        "'(\\\\.|[^'\\\\])?'",
+        "string"
+      ],
+      [
+        "[A-Z][A-Za-z0-9_]*|_",
+        "variable"
+      ],
+      [
+        "-[A-Za-z_][A-Za-z0-9_]*",
+        "attribute"
+      ],
+      [
+        "\\b(after|andalso|and|band|begin|bnot|bor|bsl|bsr|bxor|case|catch|cond|div|end|fun|if|let|of|orelse|or|query|receive|rem|try|when|xor)\\b",
+        "keyword"
+      ],
+      [
+        "\\b(true|false)\\b",
+        "constant"
+      ],
+      [
+        "(0[xXbBoO][0-9a-fA-F_]+|[0-9][0-9_]*\\.?[0-9_]*([eE][+-]?[0-9]+)?)",
+        "number"
+      ],
+      [
+        "[A-Za-z_][A-Za-z0-9_]*",
+        "identifier"
+      ],
+      [
+        "[{}()\\[\\]]",
+        "delimiter"
+      ],
+      [
+        "[=+\\-*/%<>!&|^~?:]+",
+        "operator"
+      ]
+    ]
+  }
+}

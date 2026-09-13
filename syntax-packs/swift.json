@@ -1,0 +1,69 @@
+{
+  "extensions": [
+    "swift"
+  ],
+  "tokenizer": {
+    "root": [
+      [
+        "\\s+",
+        "white"
+      ],
+      [
+        "/\\*",
+        "comment",
+        "@comment"
+      ],
+      [
+        "//.*$",
+        "comment"
+      ],
+      [
+        "\"(\\\\.|[^\"\\\\])*\"",
+        "string"
+      ],
+      [
+        "@[A-Za-z_][A-Za-z0-9_.]*",
+        "attribute"
+      ],
+      [
+        "\\b(as|associatedtype|break|case|catch|class|continue|default|defer|deinit|didSet|do|else|enum|extension|fallthrough|for|func|get|guard|if|import|in|indirect|init|inout|internal|is|lazy|let|mutating|nonmutating|open|operator|private|protocol|public|repeat|required|rethrows|return|self|set|static|struct|subscript|super|switch|throw|throws|try|typealias|var|weak|where|while|willSet|unowned|fileprivate)\\b",
+        "keyword"
+      ],
+      [
+        "\\b(Any|AnyObject|Bool|Character|Double|Float|Int|Int8|Int16|Int32|Int64|UInt|UInt8|UInt16|UInt32|UInt64|String|Array|Dictionary|Set|Optional|Void|Data|Date|URL|Result)\\b",
+        "type"
+      ],
+      [
+        "\\b(true|false|nil|self)\\b",
+        "constant"
+      ],
+      [
+        "(0[xXbBoO][0-9a-fA-F_]+|[0-9][0-9_]*\\.?[0-9_]*([eE][+-]?[0-9]+)?)",
+        "number"
+      ],
+      [
+        "[A-Za-z_][A-Za-z0-9_]*",
+        "identifier"
+      ],
+      [
+        "[{}()\\[\\]]",
+        "delimiter"
+      ],
+      [
+        "[=+\\-*/%<>!&|^~?:]+",
+        "operator"
+      ]
+    ],
+    "comment": [
+      [
+        ".*?\\*/",
+        "comment",
+        "@pop"
+      ],
+      [
+        ".*",
+        "comment"
+      ]
+    ]
+  }
+}

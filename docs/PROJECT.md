@@ -118,11 +118,41 @@ shso-main/
 即便 `chmod 777` 仍可能 `Permission denied`。以应用 uid 落盘的操作（如解压）
 会实测目标可写性，不可写时禁用入口并标注原因。
 
+### 文本编辑器（Sora Editor）
+
+编辑器内核为 **Sora Editor 0.23.6**（`io.github.Rosemoe.sora-editor:editor`，LGPL-2.1；MP-Manager 同款）：
+自绘 `CodeEditor` View + 行索引增量 `Content`，只渲染可视区。**打开即可编辑，不区分「只读 / 编辑」**。
+文本驻留在编辑器内部，仅在保存 / 查找 / 对比 / 统计 / 历史时按需快照到 `contentValue`，
+避免逐键把整篇文本折回 Compose State（那是 O(n) 拷贝）。
+承载见 `ui/components/SoraTextEditor.kt`，编排见 `ui/components/TextEditorDialog.kt`。
+实测（22127RK46C / Android 16，debug）：4.0 MB / 50002 行打开 841ms。
+
+语法高亮由 **Monarch** 提供：语法定义在本项目 `assets/sora-grammars/*.json`（sh/py/kt/java/js/c/sql/lua/bat/ps1），
+配色主题在 `assets/sora-themes/shso-dark.json`，加载与注册见 `ui/components/SoraMonarchGrammars.kt`。
+约束：Monarch 的令牌色来自主题，**无主题时令牌色为 0（文本不可见）**，故启用语法必须同时套用 `MonarchColorScheme`；
+文本超过 `HIGHLIGHT_MAX_CHARS`（20 万字符）时不设语法，仅保留基础配色。
+
+### 巨型文件只读（稀疏索引 + 虚拟滚动）
+
+超过 `ChunkedFileReader.MAX_LOAD_BYTES`（32MB）的文件无法全文入内存，退回只读浏览，
+由稀疏行索引接管渲染，内存为 O(行数 / 1024) + O(窗口)，与文件体积无关。
+关键类型：`data/SparseLineIndex.kt`（`SparseLineIndex` / `ChunkedDocument` / `IndexedLineProvider`）、
+`data/FileSizeClass.kt`。方案与阈值见 [`docs/大文件只读方案.md`](大文件只读方案.md)。
+
 ## 外部依赖
 
 UI 层全部使用 `androidx.compose.material3` + `material-icons-extended`，
 无仓库外组合构建依赖，clone 后可直接构建。插件能力由官方 AGP / Compose 编译器插件与
 `org.gradle.toolchains.foojay-resolver-convention` 提供。
+
+- 文本编辑器引擎：`io.github.Rosemoe.sora-editor:editor` + `language-monarch`（**LGPL-2.1**），
+  仅作库依赖使用、不改其源码；分发需随附 LGPL-2.1 许可声明。
+  `language-monarch` 传递引入 `io.github.dingyi222666.monarch` / `regex-lib`（Apache-2.0）、
+  `com.squareup.moshi`、`okio`，并含 oniguruma 原生库（仅打包 arm64-v8a）。
+- 仓库回退源：本项目环境下 `repo1.maven.org` 对相当一部分制品返回 404（Sora 系、moshi/okio、
+  `kotlin-stdlib-jdk8` 等），`settings.gradle.kts` 因此把 Google 官方 Maven Central 镜像
+  （`maven-central.storage-download.googleapis.com`）作为通用回退源（内容与中央仓库一致）。
+- 产物体积：编辑器引擎与语法高亮使 release APK 由约 1.84MB 增至约 3.78MB（2026-09-12 实测）。
 
 ## 构建与产物
 

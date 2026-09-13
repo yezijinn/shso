@@ -1,0 +1,74 @@
+{
+  "extensions": [
+    "java",
+    "jsp"
+  ],
+  "tokenizer": {
+    "root": [
+      [
+        "\\s+",
+        "white"
+      ],
+      [
+        "/\\*",
+        "comment",
+        "@comment"
+      ],
+      [
+        "//.*$",
+        "comment"
+      ],
+      [
+        "\"(\\\\.|[^\"\\\\])*\"",
+        "string"
+      ],
+      [
+        "'(\\\\.|[^'\\\\])?'",
+        "string"
+      ],
+      [
+        "@[A-Za-z_][A-Za-z0-9_.]*",
+        "attribute"
+      ],
+      [
+        "\\b(abstract|assert|break|case|catch|class|const|continue|default|do|else|enum|extends|final|finally|for|goto|if|implements|import|instanceof|interface|native|new|package|private|protected|public|return|static|strictfp|super|switch|synchronized|this|throw|throws|transient|try|volatile|while|record|sealed|permits|yields|var)\\b",
+        "keyword"
+      ],
+      [
+        "\\b(void|boolean|byte|char|short|int|long|float|double|String|Object|Integer|Long|Double|Float|Boolean|Character|List|ArrayList|Map|HashMap|Set|HashSet|Optional|Stream|StringBuilder|Iterable)\\b",
+        "type"
+      ],
+      [
+        "\\b(true|false|null)\\b",
+        "constant"
+      ],
+      [
+        "(0[xXbBoO][0-9a-fA-F_]+|[0-9][0-9_]*\\.?[0-9_]*([eE][+-]?[0-9]+)?)",
+        "number"
+      ],
+      [
+        "[A-Za-z_][A-Za-z0-9_]*",
+        "identifier"
+      ],
+      [
+        "[{}()\\[\\]]",
+        "delimiter"
+      ],
+      [
+        "[=+\\-*/%<>!&|^~?:]+",
+        "operator"
+      ]
+    ],
+    "comment": [
+      [
+        ".*?\\*/",
+        "comment",
+        "@pop"
+      ],
+      [
+        ".*",
+        "comment"
+      ]
+    ]
+  }
+}

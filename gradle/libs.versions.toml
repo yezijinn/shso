@@ -24,6 +24,9 @@ coroutines = "1.10.1"
 commonsCompress = "1.27.1"
 tukaaniXz = "1.9"
 zip4j = "2.11.1"
+# 文本编辑器引擎（MP-Manager 同款）：自绘 CodeEditor View + 行索引增量 Content，源 Maven Central。
+# 许可为 LGPL-2.1：仅作库依赖使用，不改动其源码；分发需随附其许可声明。
+soraEditor = "0.23.6"
 espresso-core = "3.7.0"
 uiautomator = "2.4.0"
 benchmark-macro-junit4 = "1.5.0"
@@ -62,6 +65,12 @@ commons-compress = { module = "org.apache.commons:commons-compress", version.ref
 tukaani-xz = { module = "org.tukaani:xz", version.ref = "tukaaniXz" }
 zip4j = { module = "net.lingala.zip4j:zip4j", version.ref = "zip4j" }
 junit4 = { module = "junit:junit", version.ref = "junit4" }
+
+# Sora Editor（LGPL-2.1）：文本编辑器引擎
+sora-editor-bom = { module = "io.github.Rosemoe.sora-editor:bom", version.ref = "soraEditor" }
+sora-editor = { module = "io.github.Rosemoe.sora-editor:editor" }
+# Monarch 语法高亮（引擎，语法定义由本项目内置 JSON 提供）
+sora-language-monarch = { module = "io.github.Rosemoe.sora-editor:language-monarch" }
 
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junit" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espresso-core" }

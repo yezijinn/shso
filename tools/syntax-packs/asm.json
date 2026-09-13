@@ -1,0 +1,61 @@
+{
+  "extensions": [
+    "asm",
+    "s",
+    "nasm",
+    "masm"
+  ],
+  "ignoreCase": true,
+  "tokenizer": {
+    "root": [
+      [
+        "\\s+",
+        "white"
+      ],
+      [
+        ";.*$",
+        "comment"
+      ],
+      [
+        "#.*$",
+        "comment"
+      ],
+      [
+        "\"(\\\\.|[^\"\\\\])*\"",
+        "string"
+      ],
+      [
+        "'(\\\\.|[^'\\\\])*'",
+        "string"
+      ],
+      [
+        "\\.[A-Za-z_][A-Za-z0-9_]*",
+        "attribute"
+      ],
+      [
+        "\\b(mov|lea|push|pop|call|ret|jmp|je|jne|jz|jnz|jg|jl|jge|jle|ja|jb|cmp|test|add|sub|mul|div|inc|dec|and|or|xor|not|shl|shr|nop|hlt|int|syscall|section|global|extern|db|dw|dd|dq|equ|times)\\b",
+        "keyword"
+      ],
+      [
+        "\\b(rax|rbx|rcx|rdx|rsi|rdi|rbp|rsp|r8|r9|r10|r11|r12|r13|r14|r15|eax|ebx|ecx|edx|esi|edi|ebp|esp|ax|bx|cx|dx|al|bl|cl|dl)\\b",
+        "type"
+      ],
+      [
+        "(0[xXbBoO][0-9a-fA-F_]+|[0-9][0-9_]*\\.?[0-9_]*([eE][+-]?[0-9]+)?)",
+        "number"
+      ],
+      [
+        "[A-Za-z_][A-Za-z0-9_]*",
+        "identifier"
+      ],
+      [
+        "[{}()\\[\\]]",
+        "delimiter"
+      ],
+      [
+        "[=+\\-*/%<>!&|^~?:]+",
+        "operator"
+      ]
+    ]
+  }
+}

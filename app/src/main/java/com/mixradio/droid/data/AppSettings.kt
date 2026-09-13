@@ -91,13 +91,47 @@ class AppSettings private constructor(context: Context) {
     var securityLevel by mutableIntStateOf(prefs.getInt(KEY_SECURITY_LEVEL, SECURITY_STANDARD))
         private set
 
-    // 书签（永久存储的文件路径列表，按添加顺序）
-    private val bookmarkPaths: MutableSet<String> = LinkedHashSet(
-        prefs.getStringSet(KEY_BOOKMARKS, emptySet()) ?: emptySet()
-    )
+    // 书签（永久存储，按添加顺序）
+    private val bookmarkPaths: MutableSet<String> = LinkedHashSet(loadBookmarks())
 
     var bookmarks by mutableStateOf(bookmarkPaths.toList())
         private set
+
+    init {
+        seedDefaultBookmarks()
+    }
+
+    /**
+     * 读取书签。
+     *
+     * 用「换行分隔字符串」而不是 `StringSet` 持久化：`SharedPreferences` 的 Set 无序，
+     * 重启后顺序会漂移，与「按添加顺序」的语义不符。首次读取时从旧的 Set 键迁移。
+     */
+    private fun loadBookmarks(): List<String> {
+        prefs.getString(KEY_BOOKMARKS_ORDERED, null)?.let { ordered ->
+            return ordered.split('\n').filter { it.isNotEmpty() }
+        }
+        return (prefs.getStringSet(KEY_BOOKMARKS, emptySet()) ?: emptySet()).toList()
+    }
+
+    private fun persistBookmarks() {
+        prefs.edit {
+            putString(KEY_BOOKMARKS_ORDERED, bookmarkPaths.joinToString("\n"))
+            remove(KEY_BOOKMARKS)
+        }
+    }
+
+    /** 首次运行预置常用 ROOT 目录；用户删除后不再自动加回（由 seeded 标志保证只执行一次）。 */
+    private fun seedDefaultBookmarks() {
+        if (prefs.getBoolean(KEY_BOOKMARKS_SEEDED, false)) return
+        bookmarkPaths.addAll(DEFAULT_BOOKMARKS)
+        bookmarks = bookmarkPaths.toList()
+        prefs.edit {
+            putString(KEY_BOOKMARKS_ORDERED, bookmarkPaths.joinToString("\n"))
+            remove(KEY_BOOKMARKS)
+            putBoolean(KEY_BOOKMARKS_SEEDED, true)
+        }
+    }
 
     fun setIndependentFolder(enable: Boolean) {
         useIndependentFolder = enable
@@ -227,7 +261,7 @@ class AppSettings private constructor(context: Context) {
         val normalized = path.trim().trimEnd('/').ifEmpty { "/" }
         bookmarkPaths.add(normalized)
         bookmarks = bookmarkPaths.toList()
-        prefs.edit { putStringSet(KEY_BOOKMARKS, bookmarkPaths) }
+        persistBookmarks()
     }
 
     fun removeBookmark(path: String) {
@@ -235,7 +269,7 @@ class AppSettings private constructor(context: Context) {
         bookmarkPaths.remove(normalized)
         bookmarkPaths.remove(path.trim()) // 兼容旧数据或未归一化路径
         bookmarks = bookmarkPaths.toList()
-        prefs.edit { putStringSet(KEY_BOOKMARKS, bookmarkPaths) }
+        persistBookmarks()
     }
 
     fun isBookmarked(path: String): Boolean {
@@ -283,7 +317,17 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_SHOW_HYPERCORE_BANNER = "show_hypercore_banner"
         private const val KEY_SHOW_SHSO_BANNER = "show_shso_banner"
         private const val KEY_REMEMBER_DIRECTORY = "remember_directory"
+        /** 旧键（无序 StringSet）：仅用于首次迁移，迁移后删除。 */
         private const val KEY_BOOKMARKS = "bookmarks"
+
+        /** 书签（有序，换行分隔）。 */
+        private const val KEY_BOOKMARKS_ORDERED = "bookmarks_ordered"
+
+        /** 预置书签是否已写入（保证只执行一次，用户删除后不再自动加回）。 */
+        private const val KEY_BOOKMARKS_SEEDED = "bookmarks_seeded"
+
+        /** 首次运行预置的常用 ROOT 目录。 */
+        private val DEFAULT_BOOKMARKS = listOf("/data/adb", "/data/adb/modules")
         private const val KEY_EDITOR_AUTOSAVE_INTERVAL = "editor_autosave_interval"
         private const val KEY_EDITOR_SHOW_LINE_NUMBER = "editor_show_line_number"
         private const val KEY_EDITOR_FONT_SIZE = "editor_font_size"

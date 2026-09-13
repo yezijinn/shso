@@ -29,6 +29,10 @@ dependencyResolutionManagement {
             }
         }
         mavenCentral()
+        // Google 官方 Maven Central 镜像：本环境下 repo1.maven.org 对相当一部分制品返回 404
+        // （Sora 系、moshi/okio、kotlin-stdlib-jdk8、joni/re2j 等），该镜像可达。作为通用回退源，
+        // 仅在 mavenCentral 解析失败时生效，内容与中央仓库一致。
+        maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }
     }
 }
 
