@@ -19,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -161,6 +162,7 @@ internal fun FileShortcutButton(
  *
  * @param onSelectAllFilesRequest 全选/取消全选**文件**（不含文件夹）；为 null 表示该入口不支持多选（如文件选择器），不渲染该项。
  * @param allFilesSelected 当前是否已处于「全选文件」状态；用于把文案切换为「取消全选」。
+ * @param onSearchRequest 打开名称过滤栏（仅文件页提供）；为 null 表示该入口不提供（如文件选择器复用本弹窗时不渲染）。
  * @param onExtractApkRequest 打开「提取 APK」；为 null 表示该入口不提供（如文件选择器复用本弹窗时不渲染）。
  */
 @Composable
@@ -170,6 +172,7 @@ internal fun FileListSettingsDialog(
     onNewFileRequest: () -> Unit,
     onSelectAllFilesRequest: (() -> Unit)? = null,
     allFilesSelected: Boolean = false,
+    onSearchRequest: (() -> Unit)? = null,
     onExtractApkRequest: (() -> Unit)? = null
 ) {
     AuroraWindowDialog(
@@ -226,7 +229,8 @@ internal fun FileListSettingsDialog(
                 Switch(
                     checked = appSettings.showHiddenFiles,
                     onCheckedChange = { appSettings.updateShowHiddenFiles(it) },
-                    colors = auroraSwitchColors()
+                    colors = auroraSwitchColors(),
+                    modifier = Modifier.scale(0.5f)
                 )
             }
 
@@ -249,7 +253,8 @@ internal fun FileListSettingsDialog(
                 Switch(
                     checked = appSettings.rememberDirectory,
                     onCheckedChange = { appSettings.updateRememberDirectory(it) },
-                    colors = auroraSwitchColors()
+                    colors = auroraSwitchColors(),
+                    modifier = Modifier.scale(0.5f)
                 )
             }
 
@@ -293,53 +298,47 @@ internal fun FileListSettingsDialog(
                 }
             }
 
-            // 「提取 APK」：从已安装应用导出安装包到 Download（仅文件页入口提供）
-            if (onExtractApkRequest != null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onExtractApkRequest() }
-                        .padding(vertical = 10.dp, horizontal = 4.dp)
-                ) {
-                    Text(
-                        text = "提取APK",
-                        style = AuroraTextStyles.body1,
-                        color = AuroraTokens.Accent
-                    )
+            // 功能入口（2 列栅格，固定顺序）：
+            //   新建文件  全选文件
+            //   搜索文件  提取APK
+            // 仅文件页提供搜索 / 全选 / 提取；文件选择器只暴露「新建文件」。
+            // null 入口渲染为占位空格，保住 2×2 栅格布局。
+            @Composable
+            fun ActionCell(label: String?, onClick: (() -> Unit)?, modifier: Modifier = Modifier) {
+                if (label != null && onClick != null) {
+                    Box(
+                        modifier = modifier
+                            .clickable { onClick() }
+                            .padding(vertical = 10.dp, horizontal = 4.dp)
+                    ) {
+                        Text(
+                            text = label,
+                            style = AuroraTextStyles.body1,
+                            color = AuroraTokens.Accent
+                        )
+                    }
+                } else {
+                    Box(modifier = modifier)
                 }
             }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                if (onSelectAllFilesRequest != null) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { onSelectAllFilesRequest() }
-                            .padding(vertical = 10.dp, horizontal = 4.dp)
-                    ) {
-                        Text(
-                            text = if (allFilesSelected) "取消全选" else "全选文件",
-                            style = AuroraTextStyles.body1,
-                            color = AuroraTokens.Accent
-                        )
-                    }
-                }
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable { onNewFileRequest() }
-                        .padding(vertical = 10.dp, horizontal = 4.dp)
-                ) {
-                    Text(
-                        text = "新建文件",
-                        style = AuroraTextStyles.body1,
-                        color = AuroraTokens.Accent
-                    )
-                }
+                ActionCell("新建文件", onNewFileRequest, Modifier.weight(1f))
+                ActionCell(
+                    if (allFilesSelected) "取消全选" else "全选文件",
+                    onSelectAllFilesRequest,
+                    Modifier.weight(1f)
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ActionCell("搜索文件", onSearchRequest, Modifier.weight(1f))
+                ActionCell("提取APK", onExtractApkRequest, Modifier.weight(1f))
             }
         }
     }
