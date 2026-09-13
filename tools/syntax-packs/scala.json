@@ -1,0 +1,75 @@
+{
+  "extensions": [
+    "scala",
+    "sbt",
+    "sc"
+  ],
+  "tokenizer": {
+    "root": [
+      [
+        "\\s+",
+        "white"
+      ],
+      [
+        "/\\*",
+        "comment",
+        "@comment"
+      ],
+      [
+        "//.*$",
+        "comment"
+      ],
+      [
+        "\"(\\\\.|[^\"\\\\])*\"",
+        "string"
+      ],
+      [
+        "'(\\\\.|[^'\\\\])?'",
+        "string"
+      ],
+      [
+        "@[A-Za-z_][A-Za-z0-9_.]*",
+        "attribute"
+      ],
+      [
+        "\\b(abstract|case|catch|class|def|do|else|extends|false|final|finally|for|forSome|if|implicit|import|lazy|match|new|null|object|override|package|private|protected|requires|return|sealed|super|this|throw|trait|try|true|type|val|var|while|with|yield)\\b",
+        "keyword"
+      ],
+      [
+        "\\b(Any|AnyRef|Boolean|Byte|Char|Double|Float|Int|Long|Short|String|Unit|Nothing|Option|Some|None|List|Seq|Map|Set|Future|Either|Try)\\b",
+        "type"
+      ],
+      [
+        "\\b(true|false|null|None)\\b",
+        "constant"
+      ],
+      [
+        "(0[xXbBoO][0-9a-fA-F_]+|[0-9][0-9_]*\\.?[0-9_]*([eE][+-]?[0-9]+)?)",
+        "number"
+      ],
+      [
+        "[A-Za-z_][A-Za-z0-9_]*",
+        "identifier"
+      ],
+      [
+        "[{}()\\[\\]]",
+        "delimiter"
+      ],
+      [
+        "[=+\\-*/%<>!&|^~?:]+",
+        "operator"
+      ]
+    ],
+    "comment": [
+      [
+        ".*?\\*/",
+        "comment",
+        "@pop"
+      ],
+      [
+        ".*",
+        "comment"
+      ]
+    ]
+  }
+}

@@ -250,6 +250,7 @@ add(id="sql", exts=["sql","ddl","dml"], ignoreCase=True,
     builtin="true false null current_date current_timestamp now".split())
 
 add(id="makefile", exts=["mk","mak"], ignoreCase=False,
+    names=["makefile","gnumakefile"],
     pre=[["^\\s*#.*$", "comment"]], strings=['"', "'"],
     variable="\\$\\([^)]*\\)|\\$[A-Za-z_][A-Za-z0-9_]*",
     keyword="include ifeq ifneq ifdef ifndef else endif define endef export unexport override vpath".split(),
@@ -282,6 +283,7 @@ add(id="vb", exts=["vb","vbs","bas"], ignoreCase=True, pre=[["'.*$", "comment"]]
 
 # ── 配置 / DevOps / 其它格式 ──────────────────────────────────────────
 add(id="dockerfile", exts=["dockerfile","containerfile"], ignoreCase=True,
+    names=["dockerfile","containerfile"],
     pre=[["^\\s*#.*$", "comment"]], strings=['"', "'"],
     keyword="FROM RUN CMD LABEL MAINTAINER EXPOSE ENV ADD COPY ENTRYPOINT VOLUME USER WORKDIR ARG ONBUILD STOPSIGNAL HEALTHCHECK SHELL AS".split(),
     builtin="true false".split(),
@@ -319,6 +321,7 @@ add(id="systemd", exts=["service","socket","timer","mount","target","unit","slic
     extra=[["^\\[[^\\]]*\\]", "type"]])
 
 add(id="gitconfig", exts=["gitconfig","gitattributes","gitignore","gitmodules"],
+    names=["gitignore","gitattributes","gitmodules","gitconfig"],
     pre=[["#.*$", "comment"]], strings=['"'],
     keyword="core user remote branch alias push pull merge rebase diff color status fetch filter include if hasconfig".split(),
     extra=[["^\\[[^\\]]*\\]", "type"], ["^\\s*[-+!*/]", "operator"]])
@@ -334,10 +337,12 @@ add(id="log", exts=["log","out","err"],
     extra=[["\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?", "number"]])
 
 add(id="hosts", exts=["hosts"],
+    names=[],
     pre=[["#.*$", "comment"]],
     extra=[["^\\s*\\d+\\.\\d+\\.\\d+\\.\\d+", "number"], ["[A-Za-z0-9_.-]+", "identifier"]])
 
 add(id="crontab", exts=["cron","crontab"],
+    names=["crontab"],
     pre=[["#.*$", "comment"]], strings=['"', "'"],
     keyword="MAILTO PATH SHELL HOME".split(),
     extra=[["^@[a-z]+", "keyword"], ["^[0-9@*,/-]+", "number"]])
@@ -353,12 +358,14 @@ add(id="latex", exts=["tex","latex","cls","sty","bib","aux"],
     extra=[["\\$[^$]*\\$", "string"], ["[{}\\[\\]]", "delimiter"]])
 
 add(id="cmake", exts=["cmake"], ignoreCase=True,
+    names=["cmakelists.txt"],
     pre=[["#.*$", "comment"], ["#\\[\\[[\\s\\S]*?\\]\\]", "comment"]], strings=['"'],
     variable="\\$\\{[^}]*\\}",
     keyword="cmake_minimum_required project set add_executable add_library target_link_libraries include_directories find_package if else elseif endif foreach endforeach while endwhile function endfunction macro endmacro option install enable_testing add_test message return break continue".split(),
     builtin="ON OFF TRUE FALSE".split())
 
 add(id="meson", exts=["meson","wrap"],
+    names=["meson.build"],
     pre=[["#.*$", "comment"]], strings=["'''", '"', "'"],
     keyword="project executable library static_library shared_library dependency declare_dependency include_directories add_project_arguments subdir if elif else endif foreach endforeach message error warning install_data configure_file".split(),
     builtin="true false".split())
@@ -421,7 +428,12 @@ def main():
         payload = json.dumps(gram, ensure_ascii=False, indent=2) + "\n"
         with open(os.path.join(OUT, spec["id"] + ".json"), "w", encoding="utf-8", newline="\n") as f:
             f.write(payload)
-        index.append({"id": spec["id"], "grammar": spec["id"] + ".json", "exts": spec["exts"]})
+        index.append({
+            "id": spec["id"],
+            "grammar": spec["id"] + ".json",
+            "exts": spec["exts"],
+            "filenames": spec.get("names") or [],
+        })
         written.append((spec["id"], spec["exts"], len(payload.encode("utf-8"))))
 
     # 语法包压缩档（应用整体导入用）：index.json 在根、语法文件在根。
