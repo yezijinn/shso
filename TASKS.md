@@ -14,13 +14,14 @@
 
 ---
 
-## 当前状态速览（2026-09-13）
+## 当前状态速览（2026-09-14）
 
 | 项 | 值 |
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步，HEAD `3de5623` |
-| 单元测试 | 242 tests / 0 failures |
-| release 体积 | 2.09 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
+| 单元测试 | 275 tests / 0 failures |
+| release 体积 | 2.10 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
+| 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
 | 编辑器内核 | Sora Editor 0.23.6（打开即可编辑；语法由外置语法包提供） |
 | 语法包 | 62 语言 / 187 扩展名，`syntax-packs.zip`(37KB)，永固直链 tag `syntaxpacks-v2` |
 | 守卫模块 | v1.2.0（真机已装并验证拦截） |
@@ -65,7 +66,21 @@
 
 ---
 
-## 本轮已完成（2026-09-12 ~ 09-13：编辑器引擎与语法高亮系列）
+## 本轮已完成（2026-09-14：终端专项审查与修复，4 轮）
+
+- [x] **第一轮：终端功能审查（6 项）** —— 覆盖启动同名脚本被 `pkill -9 -f <文件名>` 误杀、「重启终端」不回收进程组、
+      拦截高危命令不落审计（`reportBlockedInput` 成死代码）、「Enter」清空输入却不发送、私有模式 CSI 泄漏为文本、
+      一次性命令无运行状态 / 不可中断 / 无流式输出。逐项真机复验。
+- [x] **第二轮：控制序列补齐 + 状态健壮性（7 项）** —— OSC（窗口标题 / 超链接）、两字符 ESC 序列、`` 退格、
+      `ESC[K` 行内擦除、C0 控制字符过滤、转义缓冲 1KB 上限；旋转屏幕保留输入 / 历史 / 待确认高危命令；
+      输出顺序（先停发布循环再写退出码）；终端命令超时 120s → 30min；>5s 命令前台保活；进程组 pid 按代际回填。
+- [x] **第三轮：渲染成本与解析进度（3 项）** —— **单行超长输出 ANR**（单行 10 万字符 → 主线程排版 20s、
+      `Skipped 1210 frames`、`Davey! 20182ms`）以「渲染投影 4000 字符上限」修复，模型保持全文；
+      解析进度随 feed 原子落定（修重复行）；滑动窗口硬截不切代理对。
+- [x] **第四轮：交互跟随（1 项）+ 3 项负结果** —— 上翻读日志时发命令「看起来没反应」改为发命令 / 清屏自动回尾部；
+      负结果：横屏按钮未被挤掉（uiautomator 零 bounds 是假象）、四个对话框均可滚动可达、发送后输入框保持焦点。
+
+## 上一轮已完成（2026-09-12 ~ 09-13：编辑器引擎与语法高亮系列）
 
 ### 批次 A：编辑器内核替换（Sora Editor）
 
@@ -117,6 +132,14 @@
 
 ## 已定结论（避免反复推翻）
 
+- **终端「当前活动进程」只有一个槽位**：一次性命令与脚本任务共用 `isTaskRunning` / `activeProcess` / `processPid` / `runPgid`，
+  状态清理一律按**代际计数**判断（`terminalCommandGeneration`）；同时刻只受理一条命令（并发会让先启动那条失去回收句柄）。
+- **停止任务必须整组回收**：`kill -<sig> -- -<pgid>`，且每条停止入口（中断 / 结束进程 / 重启终端 / 覆盖启动前的清理）都要走同一套；
+  兜底 `pkill` 只在进程组不可用时使用，且按**完整路径**匹配（按文件名会误杀同名重跑的新任务）。
+- **日志类 UI 的渲染成本受单行长度支配**：LazyColumn 只做项级虚拟化，必须给单行加渲染上限（当前 4000 字符），
+  模型层保持全文；新增任何「整行渲染」入口都要过 `renderableLine()`。
+- **终端显示必须消化非 SGR 序列**：私有模式 CSI / OSC / `` / `ESC[K` 都要吞掉，未识别即会变成可见乱码。
+
 1. **`/data/adb/shso` 必须 777** —— 需让其他应用自由读写；曾改 755，用户明确要求回退。
 2. **release 已开启 R8 + shrinkResources** —— 资源会被重命名为随机短名，不要按 APK 内资源名反查源码资源。
 3. **`Process.pid()` 在 Android 不存在** —— 取子进程 pid 只能反射；中断正确性由进程组回收保证。
@@ -144,7 +167,7 @@
 export MSYS_NO_PATHCONV=1
 export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot'
 
-./gradlew :app:testDebugUnitTest :app:assembleDebug          # 基线 233 tests / 0 failures
+./gradlew :app:testDebugUnitTest :app:assembleDebug          # 基线 275 tests / 0 failures
 ./gradlew :app:assembleRelease                               # 含 verifyReleasePayload 红线校验
 python tools/gen_syntax_packs.py                             # 重新生成语法包（syntax-packs/ + syntax-packs.zip）
 
@@ -178,6 +201,10 @@ adb -s BIYLBAFQQSS8DA69 shell "su -c 'grep ^version= /data/adb/modules/shso_guar
 | uiautomator dump 不含视口外内容 | 长列表超出视口的内容不会出现在 dump 里，据此判断「列表被截断」是误报 |
 | uiautomator bounds 对 Compose 文本按钮纵向偏上（实测约 70px） | 报 `[x1,521][x2,624]`，实际命中区在 590–610；按 bounds 中心点击会「点了没反应」，先做 y 方向小范围扫描再判定 |
 | 用 `su -c` 传含 `$`/`\` 的脚本内容 | 多层引号会被吃掉 → 改用「本地写文件 → push → `cp`」 |
+| `su -c "wc -l < /data/adb/…"` | `<` 重定向由**外层 shell**（shell 用户）执行 → `Permission denied`；写 `adb shell "su -c 'wc -l /路径'"` |
+| uiautomator 把每行**最后一个**控件报成 `bounds="[0,0][0,0]"` | 顶栏「设置」/ 动作行「发送」在横屏下被误判成「被挤没了」——实际正常渲染，**零 bounds 不能作为不可见证据**，用截图复核 |
+| `settings put system user_rotation` 强制横屏 | ColorOS 上会**静默回弹**（脚本里"设横屏→截图"可能拿到竖屏）→ 每步用 `dumpsys window \| grep mCurrentRotation` 校验；模拟矮视口改用 `wm size` |
+| 横屏下点击屏幕右边缘（2280 宽屏 x≥2150） | 落进系统返回手势区 → **把 App 直接退出**（无崩溃日志），因此该轮坐标扫描全部失效；扫描前先 `ps` 确认 App 仍在台前 |
 | Windows 控制台显示 Gradle 中文输出为乱码 | 仅显示问题，日志文件本身是 UTF-8；用 Python 读日志核对 |
 
 ---

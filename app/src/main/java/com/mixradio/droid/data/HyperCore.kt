@@ -7,6 +7,7 @@ import android.os.Build
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -134,20 +135,33 @@ $rootLine
     }
 
     /**
+     * 停止批量发布循环，并等待它把本地积压（`pending`）刷出去。
+     *
+     * 顺序很关键：命令/任务结束时必须**先停循环、再写总结行**（退出码、已结束等）。
+     * 循环持有最多 `minIntervalMs` 的未发布文本，若只在 finally 里自然退出，
+     * 这段残留会落在总结行**之后**——日志读起来就是「退出码打在了最后几行输出前面」。
+     */
+    suspend fun stopBatchFlushLoop() {
+        batchFlushJob?.cancelAndJoin()
+        batchFlushJob = null
+    }
+
+    /**
      * 追加日志并按滑动窗口裁剪：超过 `MAX_LOG_LENGTH` 时保留尾部 `PRUNE_TARGET_LENGTH`，
      * 裁剪点对齐到换行（找不到换行则按长度硬截），避免半行 ANSI 序列残留。
      */
     fun appendWithSlidingWindow(currentLog: String, newText: String): String {
         val updated = currentLog + newText
-        return if (updated.length > MAX_LOG_LENGTH) {
-            val cutIndex = updated.indexOf('\n', updated.length - PRUNE_TARGET_LENGTH)
-            if (cutIndex != -1 && cutIndex < updated.length) {
-                updated.substring(cutIndex + 1)
-            } else {
-                updated.substring(updated.length - PRUNE_TARGET_LENGTH)
-            }
-        } else {
-            updated
+        if (updated.length <= MAX_LOG_LENGTH) return updated
+        val cutIndex = updated.indexOf('\n', updated.length - PRUNE_TARGET_LENGTH)
+        if (cutIndex != -1 && cutIndex < updated.length) {
+            // 对齐换行裁剪：新起点必然是一行的开头，不会切到转义序列或代理对
+            return updated.substring(cutIndex + 1)
         }
+        // 找不到换行（整段没有换行的超大输出）只能硬截：避免从代理对中间切开，
+        // 否则头部会出现半个字符（渲染成替换符）。
+        var hardCut = updated.length - PRUNE_TARGET_LENGTH
+        if (hardCut > 0 && updated[hardCut].isLowSurrogate()) hardCut--
+        return updated.substring(hardCut)
     }
 }
