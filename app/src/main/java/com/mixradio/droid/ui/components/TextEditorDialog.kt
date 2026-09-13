@@ -82,6 +82,7 @@ import java.nio.charset.Charset
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.ChunkedFileReader
 import com.mixradio.droid.data.SparseLineIndex
+import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.TextEncoder
 import com.mixradio.droid.data.IndexedLineProvider
 import com.mixradio.droid.data.FileSizeClass
@@ -173,6 +174,8 @@ private fun TextEditorDialogContent(
     var toastMessage by remember { mutableStateOf<String?>(null) }
     var showUnsavedDialog by remember { mutableStateOf(false) }
     var showSaveAsDialog by remember { mutableStateOf(false) }
+    // 另存为的目标已存在时，先确认再覆盖（静默覆盖是数据丢失的经典路径）
+    var pendingOverwritePath by remember { mutableStateOf<String?>(null) }
 
     var fileTotalBytes by remember { mutableLongStateOf(0L) }
     var isLargeFile by remember { mutableStateOf(false) }
@@ -331,12 +334,15 @@ private fun TextEditorDialogContent(
         }
     }
 
-    // 自动保存草稿
+    // 草稿快照（设置项文案为「草稿快照」，**不写原文件**）：按间隔把当前内容存入编辑历史。
+    // 守卫与保存一致：加载中 / 读取失败 / 分段只读时编辑器内容为空或仅首块，
+    // 此时抓取会写入空草稿——用户在「历史」里恢复空草稿即等于清空内容，属数据安全隐患。
     LaunchedEffect(autoSaveSeconds, dirty, currentFilePath) {
         if (autoSaveSeconds <= 0) return@LaunchedEffect
         while (true) {
             delay(1000L)
             if (currentFilePath == null || !dirty) continue
+            if (isLoading || loadError != null || isLargeFile) continue
             val now = System.currentTimeMillis()
             if (now - lastAutoSaveAt >= autoSaveSeconds * 1000L) {
                 lastAutoSaveAt = now
@@ -364,6 +370,21 @@ private fun TextEditorDialogContent(
     }
     // 语法高亮改由编辑器引擎自绘（Sora 的可视区增量高亮），不再走 Compose `VisualTransformation`：
     // 旧方案需对全文做 AnnotatedString 计算且与输入文本逐帧校验，大文本是纯开销。
+    // 另存为的落盘动作：抽成局部函数，供「直接保存」与「确认覆盖后保存」共用。
+    val performSaveAs: (String) -> Unit = { newPath ->
+        scope.launch {
+            val (ok, msg) = withContext(Dispatchers.IO) {
+                writeTextFile(newPath, contentValue.text, currentCharset, currentLineEnding, hasBom)
+            }
+            if (ok) {
+                currentFilePath = newPath; dirty = false; lastSavedAtMs = System.currentTimeMillis()
+                EditHistoryManager.addHistory(newPath, contentValue.text)
+                history = EditHistoryManager.getHistory(newPath)
+                toastMessage = "已保存"
+            } else { toastMessage = msg ?: "保存失败" }
+        }
+    }
+
     val doSave: () -> Unit = save@{
         // 连点保护：保存中忽略后续点击。保存本身是幂等的，多点几次不会产生额外写入，
         // 但并发写同一文件会出现「后写的覆盖先写的」，故直接忽略进行中的重复请求。
@@ -746,6 +767,27 @@ private fun TextEditorDialogContent(
         onDismiss = { showHistoryDialog = false }
     )
 
+    pendingOverwritePath?.let { targetPath ->
+        AlertDialog(
+            onDismissRequest = { pendingOverwritePath = null },
+            title = { Text("覆盖已有文件？", style = AuroraTextStyles.title3) },
+            text = {
+                Column {
+                    Text("目标文件已存在，覆盖后原内容不可恢复。", style = AuroraTextStyles.body1, color = AuroraTokens.TextSecondary)
+                    Spacer(Modifier.height(6.dp))
+                    Text(targetPath, style = AuroraTextStyles.footnote2, color = AuroraTokens.Accent, maxLines = 3)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { val p = targetPath; pendingOverwritePath = null; performSaveAs(p) },
+                    colors = ButtonDefaults.buttonColors(containerColor = AuroraTokens.Error)
+                ) { Text("覆盖保存") }
+            },
+            dismissButton = { TextButton(onClick = { pendingOverwritePath = null }) { Text("取消") } }
+        )
+    }
+
     if (showSaveAsDialog) SaveAsDialog(
         initialDirectory = currentFilePath?.let { File(it).parent } ?: initialDirectory,
         onSave = { newPath ->
@@ -755,17 +797,15 @@ private fun TextEditorDialogContent(
                 showSaveAsDialog = false
                 return@SaveAsDialog
             }
+            showSaveAsDialog = false
             scope.launch {
-                val (ok, msg) = withContext(Dispatchers.IO) {
-                    writeTextFile(newPath, contentValue.text, currentCharset, currentLineEnding, hasBom)
+                // 目标已存在且不是当前文件 → 先确认（root 路径经 su 探测，普通路径走 File.exists）
+                val exists = RootFileManager.pathExists(newPath)
+                if (exists && newPath != currentFilePath) {
+                    pendingOverwritePath = newPath
+                } else {
+                    performSaveAs(newPath)
                 }
-                if (ok) {
-                    currentFilePath = newPath; dirty = false; lastSavedAtMs = System.currentTimeMillis()
-                    EditHistoryManager.addHistory(newPath, contentValue.text)
-                    history = EditHistoryManager.getHistory(newPath)
-                    toastMessage = "已保存"
-                } else { toastMessage = msg ?: "保存失败" }
-                showSaveAsDialog = false
             }
         },
         onDismiss = { showSaveAsDialog = false }
@@ -1314,7 +1354,7 @@ private fun EditorStatusBar(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (autoSaveSeconds > 0) {
-                Text(text = "自动保存 ${autoSaveSeconds}s", style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary)
+                Text(text = "草稿快照 ${autoSaveSeconds}s", style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary)
             }
             if (lastSavedAtMs > 0) {
                 Text(text = "已保存 ${df.format(Date(lastSavedAtMs))}", style = AuroraTextStyles.footnote2, color = AuroraTokens.Success)
@@ -1836,7 +1876,7 @@ private fun EditorSettingsDialog(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("自动保存", style = AuroraTextStyles.body2, color = AuroraTokens.Text)
+                            Text("草稿快照", style = AuroraTextStyles.body2, color = AuroraTokens.Text)
                             Spacer(Modifier.weight(1f))
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 listOf(0, 30, 60, 120, 300).forEach { sec ->
@@ -1849,6 +1889,10 @@ private fun EditorSettingsDialog(
                                 }
                             }
                         }
+                        Text(
+                            "按间隔把当前内容存入「历史」，用于误改后回退；**不写入原文件**（保存仍需点顶部「保存」）。",
+                            style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary
+                        )
                         HorizontalDivider(color = AuroraTokens.Stroke, thickness = 0.5.dp, modifier = Modifier.padding(vertical = 6.dp))
                         // 全文统计：打开设置面板时已统计一次，此处只展示
                         Row(
