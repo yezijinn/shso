@@ -221,7 +221,7 @@ internal fun FileListSettingsDialog(
                         color = AuroraTokens.Text
                     )
                     Text(
-                        text = "关闭后将隐藏以 \".\" 开头的文件",
+                        text = "以小数点.开头的文件",
                         style = AuroraTextStyles.footnote2,
                         color = AuroraTokens.TextSecondary
                     )
@@ -245,7 +245,7 @@ internal fun FileListSettingsDialog(
                         color = AuroraTokens.Text
                     )
                     Text(
-                        text = "打开后保留上次浏览的目录，关闭则每次回到初始目录",
+                        text = "还进上次浏览目录/固定进初始目录",
                         style = AuroraTextStyles.footnote2,
                         color = AuroraTokens.TextSecondary
                     )
@@ -263,7 +263,7 @@ internal fun FileListSettingsDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    text = "排序方式",
+                    text = "文件排序方式",
                     style = AuroraTextStyles.body1,
                     color = AuroraTokens.Text
                 )
