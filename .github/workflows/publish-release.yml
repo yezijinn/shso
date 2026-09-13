@@ -89,7 +89,7 @@ jobs:
           KEYSTORE_FILE: ${{ runner.temp }}/release.jks
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleRelease --no-configuration-cache
 
       - name: 生成 Release 说明
         run: |

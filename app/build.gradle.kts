@@ -211,7 +211,8 @@ tasks.matching {
  * 编译产物中只允许存在配色主题。同时禁止把无关的数据表打进包（jcodings 的 648 个编码转换表曾贡献 1.24MB）。
  * 体积上限用于在无意引入大依赖时中断构建，确需上调请连同理由一起改本常量。
  */
-val releasePayloadMaxBytes = 2_200_000L
+// 2026-09-13 上调至 2.4MB：20260913 功能批次（编辑历史来源、文件搜索、语法包外置管理/按需加载、原子保存、编码严格、替换修复等）使 dex 增长，release 基线升至约 2.20MB；2.4MB 留 ~0.2MB 余量，且仍远低于语法包/编码表误打包会带来的 +1.24MB，故该内容校验不因此失效。
+val releasePayloadMaxBytes = 2_400_000L
 val releaseApkFile = layout.buildDirectory.file("outputs/apk/release/app-release.apk")
 
 val verifyReleasePayload = tasks.register("verifyReleasePayload") {
