@@ -10,6 +10,8 @@ Android ROOT 环境下的图形化执行工具：运行 `.sh` 脚本与 `.so` / 
 压缩包解压、APK 提取与安装。界面为等宽字体 + 直角矩形深色主题，
 冷启动直接进入主页四 Tab（主页 / 终端 / 文件 / 设置）。
 
+> **可自定义包名 · GitHub 在线编译**：默认包名 `com.mixradio.droid` 可改为你自己的包名，用 GitHub Actions 在线一键编译 APK，无需本地环境。步骤见 [`docs/在线编译.md`](docs/在线编译.md)。
+
 包名 `com.mixradio.droid`，版本名 `Jinn`，版本号为构建当日日期（如 `20260911`），
 默认工作目录 `/data/adb/shso`。
 
