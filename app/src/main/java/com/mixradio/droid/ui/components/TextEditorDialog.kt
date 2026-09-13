@@ -347,11 +347,10 @@ private fun TextEditorDialogContent(
         }
     }
 
-    // 原始扩展名：语法包可引入内置语言表之外的新扩展名，故不走 CodeHighlighter 的枚举。
-    val fileExtension by remember(currentFilePath) {
-        derivedStateOf {
-            currentFilePath?.let { File(it).name.substringAfterLast('.', "").lowercase() }?.takeIf { it.isNotEmpty() }
-        }
+    // 语法匹配用**完整文件名**：语法包按扩展名匹配（cpp/rs/py…），也按无扩展名的常见文件名匹配
+    // （Dockerfile / CMakeLists.txt / Makefile），故不经过 CodeHighlighter 的扩展名枚举。
+    val grammarFileName by remember(currentFilePath) {
+        derivedStateOf { currentFilePath?.let { File(it).name } }
     }
     val language by remember(currentFilePath) {
         derivedStateOf { currentFilePath?.let { CodeHighlighter.languageOf(File(it).name) } }
@@ -516,7 +515,7 @@ private fun TextEditorDialogContent(
                                 resetKey = editorResetKey,
                                 fontSize = fontSize.sp,
                                 showLineNumbers = showLineNumber,
-                                languageExt = fileExtension,
+                                fileName = grammarFileName,
                                 syntaxRevision = syntaxRevision,
                                 controller = soraEditor,
                                 onChanged = { dirty = true; textRevision++ }
