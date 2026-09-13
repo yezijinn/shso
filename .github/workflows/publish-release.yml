@@ -29,6 +29,10 @@ jobs:
 
       - name: 计算发布标签
         id: tag
+        # 默认标签取「构建当日日期」，必须按东八区：runner 是 UTC，
+        # 北京时间 00:00–08:00 之间 `date +%Y%m%d` 会取到前一天。
+        env:
+          TZ: Asia/Shanghai
         run: |
           set -euo pipefail
           T="${{ github.event.inputs.tag }}"
@@ -90,6 +94,23 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: ./gradlew assembleRelease --no-configuration-cache
+
+      - name: 校验产物 versionCode 与发布标签一致
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          AAPT="$(ls "$ANDROID_HOME"/build-tools/*/aapt2 2>/dev/null | sort | tail -1 || true)"
+          if [ -z "$AAPT" ]; then
+            echo "::warning::未找到 aapt2，跳过 versionCode 校验"
+            exit 0
+          fi
+          APK="app/build/outputs/apk/release/app-release.apk"
+          CODE="$("$AAPT" dump badging "$APK" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -1)"
+          echo "产物 versionCode=$CODE，发布标签=$TAG"
+          if [ "$CODE" != "$TAG" ]; then
+            echo "::error::产物 versionCode($CODE) 与发布标签($TAG) 不一致：构建时区不对（应为东八区）"
+            exit 1
+          fi
 
       - name: 生成 Release 说明
         run: |
