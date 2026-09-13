@@ -18,7 +18,7 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 `origin/main` 同步，HEAD `3de5623` |
+| 分支 | `main`，HEAD `e3af469`（终端专项，推送后与 `origin/main` 同步） |
 | 单元测试 | 275 tests / 0 failures |
 | release 体积 | 2.10 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
