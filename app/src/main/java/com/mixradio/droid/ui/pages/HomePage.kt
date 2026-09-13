@@ -558,21 +558,14 @@ private fun ShsoFileRow(
         }
 
         if (!fileItem.isDirectory) {
-            // 紧贴文本的小容器：无 Material Button 的 64dp 最小宽度，零圆角（项目矩形化铁律）
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(0.dp))
-                    .background(if (isSelected) AuroraTokens.Accent else AuroraTokens.SurfaceHover)
-                    .clickable(onClick = onSelect)
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    text = if (isSelected) "已选择" else "选择",
-                    fontSize = 12.sp,
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                    color = if (isSelected) AuroraTokens.OnAccent else AuroraTokens.Text
-                )
-            }
+            // 无底部容器：仅文本，加粗橘红（选中态用 Accent 青区分）
+            Text(
+                text = if (isSelected) "已选择" else "选择",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (isSelected) AuroraTokens.Accent else AuroraTokens.AccentOrange,
+                modifier = Modifier.clickable(onClick = onSelect)
+            )
         }
     }
 }

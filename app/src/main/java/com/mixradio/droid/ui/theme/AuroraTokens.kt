@@ -78,6 +78,8 @@ object AuroraTokens {
     val AccentBright = Color(0xFF4DD8FF)
     val AccentViolet = Color(0xFF9D8CFF)
     val AccentVioletDark = Color(0xFF6C5CE7)
+    /** 橘红（主页文件列表「选择」动作文本等强调用）。 */
+    val AccentOrange = Color(0xFFFF5722)
     val OnAccent = Color(0xFF04222E)
     val OnViolet = Color(0xFF0E0A1F)
 
