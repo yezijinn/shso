@@ -29,11 +29,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.offset
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -67,7 +65,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -84,6 +81,9 @@ import com.mixradio.droid.ui.theme.AuroraWindowDialog
 import java.nio.charset.Charset
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.ChunkedFileReader
+import com.mixradio.droid.data.SparseLineIndex
+import com.mixradio.droid.data.IndexedLineProvider
+import com.mixradio.droid.data.FileSizeClass
 import com.mixradio.droid.data.CharsetDetector
 import com.mixradio.droid.data.EditHistoryManager
 import com.mixradio.droid.data.LineEnding
@@ -130,8 +130,15 @@ private fun TextEditorDialogContent(
 
     var currentFilePath by remember { mutableStateOf(initialFilePath) }
     var contentValue by remember { mutableStateOf(TextFieldValue("")) }
-    val editorScroll = rememberScrollState()
-    val hScroll = rememberScrollState()
+
+    // Sora 编辑器（MP-Manager 同款引擎）：文本驻留在 CodeEditor 内部（行索引增量 Content），
+    // **不回折 Compose State**。旧实现把整篇文本放进 TextFieldValue，每次按键都要 O(n) 拷贝 —— 大文本必然卡顿。
+    val soraEditor = remember { com.mixradio.droid.ui.components.SoraEditorController() }
+    // 内容变更计数：只递增计数、不携带文本，作为「惰性快照」的触发源。
+    var textRevision by remember { mutableIntStateOf(0) }
+    // 编辑器重置：仅在「加载 / 整体替换」时递增（连同 seed 文本），避免把逐键改动当成重置而清空用户输入。
+    var editorResetKey by remember { mutableIntStateOf(0) }
+    var editorSeedText by remember { mutableStateOf("") }
 
     var isLoading by remember { mutableStateOf(!isNewFile) }
     var loadError by remember { mutableStateOf<String?>(null) }
@@ -140,16 +147,25 @@ private fun TextEditorDialogContent(
     var hasBom by remember { mutableStateOf(false) }
     var overrideCharset by remember { mutableStateOf<Charset?>(null) }
 
+    // 打开即可编辑，不区分「只读 / 编辑」（对齐 MP-Manager：其编辑器基于 Sora，无模式切换）。
     var dirty by remember { mutableStateOf(isNewFile) }
-    // 进入编辑器一律是只读态：打开文件即编辑会让用户在无意间改动内容（尤其在看日志/配置时）。
-    // 需显式点顶栏「只读/编辑」进入编辑态后才可改，且仅编辑态才产生历史快照与自动保存。
-    var userReadOnly by remember { mutableStateOf(true) }
-    // 大文件是否已加载全文进入编辑：分段只读与「可编辑」是两件事，
-    // 用户主动点「只读/编辑」后不再按体积拒绝（卡顿可接受），但只有在全文完整读入后才允许切换。
-    var editingLarge by remember { mutableStateOf(false) }
-    // 超大文件的编辑风险确认（同一文件本会话内确认一次即可，不反复打扰）
-    var pendingLargeEditConfirm by remember { mutableStateOf(false) }
-    var largeEditConfirmed by remember { mutableStateOf(false) }
+
+    /** 把编辑器当前全文同步到 [contentValue]（按需调用：保存 / 查找 / 对比 / 统计 / 历史）。 */
+    fun syncSnapshot() {
+        val t = soraEditor.text()
+        if (t != contentValue.text) contentValue = TextFieldValue(t, TextRange(t.length))
+    }
+
+    /** 以 [newText] 重置编辑器内容（加载、整体替换、历史回退）。[markDirty]=false 用于刚载入的磁盘内容。 */
+    fun setEditorContent(newText: String, markDirty: Boolean) {
+        editorSeedText = newText
+        editorResetKey++
+        contentValue = TextFieldValue(newText, TextRange(newText.length))
+        // 统计/历史的触发源是 textRevision：程序化换文同样要递增，
+        // 否则打开文件后统计不刷新，状态栏行数恒为 0（直到用户敲键）。
+        textRevision++
+        if (markDirty) dirty = true
+    }
     var isSaving by remember { mutableStateOf(false) }
     var saveMessage by remember { mutableStateOf<String?>(null) }
     var toastMessage by remember { mutableStateOf<String?>(null) }
@@ -158,22 +174,26 @@ private fun TextEditorDialogContent(
 
     var fileTotalBytes by remember { mutableLongStateOf(0L) }
     var isLargeFile by remember { mutableStateOf(false) }
+    // 文件体积档位（对齐 MP-Manager FileSizeClass §6.2/§9.1）：驱动「只读虚拟滚动」与 HUGE 只读预览策略。
+    var fileSizeClass by remember { mutableStateOf(FileSizeClass.SMALL) }
     // 大文件分段模式：append-only 行列表，避免每次 load 都重新 split 整个累积文本
     //（那样会触发 O(N²) 扫描 + 重新分配新 List）；此处只追加新行，整体 split 降到 O(N) 线性。
     var chunkedLines by remember { mutableStateOf(listOf<String>()) }
     var chunkedOffset by remember { mutableLongStateOf(0L) }
     var chunkedHasMore by remember { mutableStateOf(false) }
+    // 稀疏行索引（巨型文件只读虚拟滚动）：建立后接管行渲染；重新加载时清空。
+    var chunkedIndex by remember { mutableStateOf<SparseLineIndex?>(null) }
+    var chunkedIndexing by remember { mutableStateOf(false) }
 
     var history by remember { mutableStateOf<List<EditHistoryManager.HistoryEntry>>(emptyList()) }
     var showHistoryDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var showSyntaxPacks by remember { mutableStateOf(false) }
+    /** 语法包变更计数：变化时编辑器重新取语法（导入/删除语法包后即时生效）。 */
+    var syntaxRevision by remember { mutableIntStateOf(0) }
     var showFindReplaceDialog by remember { mutableStateOf(false) }
-    /**
-     * 查找游标（仅原生通道使用）。
-     * 原生通道下 Compose 侧的 selection 由回写统一置为文末，用它做「查找下一个」的起点
-     * 会导致每次都从文末开始环绕查找；改用独立游标，每次命中后推进。
-     */
-    var findCursor by remember { mutableStateOf(0) }
+    /** 当前 Sora 检索词：查找词变化时重新检索，否则跳下一个匹配。 */
+    var findQuery by remember { mutableStateOf("") }
 
     // 文本对比流程状态：选文件 → 选模式 → 执行（带进度/取消）
     var showDiffPicker by remember { mutableStateOf(false) }
@@ -196,56 +216,21 @@ private fun TextEditorDialogContent(
     val statsEmpty = TextStatistics.Stats(0, 0, 0, 0, 0, 0, 0, 0)
     var stats by remember { mutableStateOf(statsEmpty) }
     LaunchedEffect(Unit) {
-        snapshotFlow { contentValue.text }.collectLatest { t ->
+        // 触发源是 textRevision（只递增计数），文本按需从 Sora 读取 —— 不再逐键把整串折进 Compose State。
+        snapshotFlow { textRevision }.collectLatest {
+            if (textRevision == 0) { stats = statsEmpty; return@collectLatest }
+            // 防抖：连按结束后再取一次文本统计。
+            delay(600L)
+            val t = soraEditor.text()
             if (t.isEmpty()) { stats = statsEmpty; return@collectLatest }
-            // 超大文本放弃统计：compute 单遍全字段扫描 + toByteArray，512KB 级别每次输入都要跑，
-            // 结果写回 state 还会再触发一轮重组。状态栏保留上次数字，换输入流畅度。
+            // 超大文本放弃统计：compute 单遍全字段扫描 + toByteArray，大文本每次输入都跑会拖慢输入。
             if (t.length > LARGE_EDIT_STATS_SKIP_CHARS) return@collectLatest
-            val wasLarge = t.length > 64 * 1024
-            if (wasLarge) delay(600L)
-            // compute 期间用户可能又改了文本；若已变则丢弃这次结果（collectLatest 也会取消旧 launch，
-            // 但 LaunchedEffect 重启不取消已在 IO 线程上跑的 compute，做二次保险）。
-            if (t != contentValue.text) return@collectLatest
-            val outcome = withContext(Dispatchers.Default) { TextStatistics.compute(t) }
-            if (t != contentValue.text) return@collectLatest
-            stats = outcome
+            stats = withContext(Dispatchers.Default) { TextStatistics.compute(t) }
         }
     }
 
-    /**
-     * 为大文件加载全文以便编辑。
-     *
-     * 不按体积拒绝（用户已明确要编辑），但必须防住两点：
-     * ① 读取失败/被截断时**绝不进入编辑态** —— contentValue 不完整的话，一次保存就会截断原文件；
-     * ② 超出 ChunkedFileReader 的读取上限时明确报错，而不是等 OOM 崩溃。
-     */
-    suspend fun enterEditForLargeFile(): Boolean {
-        val path = currentFilePath ?: return false
-        return try {
-            val load = withContext(Dispatchers.IO) { ChunkedFileReader.loadAll(path) }
-            currentCharset = overrideCharset ?: load.charset
-            hasBom = load.hasBom
-            currentLineEnding = LineEnding.detect(load.text)
-            val normalized = LineEnding.apply(load.text, LineEnding.LF)
-            contentValue = TextFieldValue(normalized, TextRange(normalized.length))
-            chunkedLines = emptyList()
-            // 刚载入的内容与磁盘一致，不应被判定为未保存修改
-            dirty = false
-            editingLarge = true
-            true
-        } catch (e: Exception) {
-            toastMessage = "无法进入编辑：${e.message ?: "读取失败"}"
-            false
-        }
-    }
-
-    // 说明：overrideCharset 变化会重跑上面的加载 LaunchedEffect，其中已重置 editingLarge，
-    // 因此重载后一律回到「分段浏览 + 只读」，需再次点「只读/编辑」才能编辑。
     fun replaceEditorText(newText: String) {
-        if (newText != contentValue.text) {
-            contentValue = TextFieldValue(newText, TextRange(newText.length))
-            dirty = true
-        }
+        if (newText != soraEditor.text()) setEditorContent(newText, markDirty = true)
     }
 
     // 加载文件
@@ -254,26 +239,32 @@ private fun TextEditorDialogContent(
         val path = initialFilePath ?: return@LaunchedEffect
         isLoading = true
         loadError = null
+        val openStartMs = System.currentTimeMillis()
         withContext(Dispatchers.IO) {
             try {
                 val total = ChunkedFileReader.fileSize(path)
                 fileTotalBytes = total
-                isLargeFile = total > ChunkedFileReader.LARGE_FILE_THRESHOLD
-                // 任何重新加载都作废「大文件已进入编辑」：文本被重新读成首块，
-                // 若保留该标记，编辑区会拿空的 contentValue 渲染出空白。
-                editingLarge = false
-                if (!isLargeFile) {
+                fileSizeClass = FileSizeClass.of(total)
+                // 重新加载作废旧行索引：编码/内容已变，旧偏移不再有效。
+                chunkedIndex = null
+                chunkedIndexing = false
+                // 打开即可编辑（对齐 MP-Manager）：未超可载入上限的文件一律全文载入 Sora 编辑器；
+                // 仅超过上限的巨型文件退回「稀疏行索引只读浏览」（全文入内存会 OOM，无法编辑）。
+                val editable = total <= ChunkedFileReader.MAX_LOAD_BYTES
+                isLargeFile = !editable          // 仅表示「巨型只读浏览」，驱动分段 UI
+                if (editable) {
                     val load = ChunkedFileReader.loadAll(path)
                     currentCharset = overrideCharset ?: load.charset
                     hasBom = load.hasBom
                     currentLineEnding = LineEnding.detect(load.text)
-                    // 内存统一归一为 LF 后再交给编辑器：Compose 的 BasicTextField 只按 '\n' 断行，
-                    // CR-only（旧 Mac）文本若不归一，整篇会被显示成一行、行号恒为 1；CRLF 也会让
-                    // 每行尾部残留一个不可见的 '\outcome'。保存时由 LineEnding.apply 按 currentLineEnding 还原。
+                    // 统一归一为 LF 再交给编辑器（Sora 的 Content 亦按 '\n' 断行）；保存时按 currentLineEnding 还原。
                     val normalized = LineEnding.apply(load.text, LineEnding.LF)
-                    contentValue = TextFieldValue(normalized, TextRange(normalized.length))
-                    // 进入小文件模式时清空 chunkedLines，避免下次再切回大文件残留上次状态。
+                    setEditorContent(normalized, markDirty = false)
+                    // 刚载入的内容与磁盘一致：显式清零脏标记（setText 派发的变更事件可能已把它置脏）。
+                    dirty = false
                     chunkedLines = emptyList()
+                    chunkedOffset = total
+                    chunkedHasMore = false
                 } else {
                     val raw = ChunkedFileReader.readHead(path, ChunkedFileReader.CHUNK_BYTES.toInt())
                     val detected = CharsetDetector.detect(raw)
@@ -293,8 +284,24 @@ private fun TextEditorDialogContent(
                     }
                     chunkedOffset = (if (alignedEnd >= 0) alignedEnd else raw.size).toLong()
                     chunkedHasMore = chunkedOffset < total
+                    // 后台建立稀疏行索引，接管行渲染，释放 chunkedLines 的无限累积（防滚到底 OOM）。
+                    chunkedIndexing = true
+                    val built = SparseLineIndex.build(path, currentCharset)
+                    if (built != null) {
+                        chunkedIndex = built
+                        chunkedLines = emptyList()   // 索引接管后不再需要首块行列表
+                        chunkedOffset = total
+                        chunkedHasMore = false
+                    }
+                    chunkedIndexing = false
                 }
                 history = EditHistoryManager.getHistory(path)
+                if (com.mixradio.droid.BuildConfig.DEBUG) {
+                    android.util.Log.i(
+                        "shso-perf",
+                        "editor open $path size=$total cost=${System.currentTimeMillis() - openStartMs}ms"
+                    )
+                }
             } catch (e: Exception) { loadError = "读取失败: ${e.message}" }
             finally { isLoading = false }
         }
@@ -302,16 +309,15 @@ private fun TextEditorDialogContent(
 
     // 类 git 自动快照：编辑停顿 2.5s 且内容与最近版本不同 → 自动记录一条历史。
     // 保存(手动/另存为)时也会记录。上限 20 条由 EditHistoryManager 淘汰最旧。
-    LaunchedEffect(contentValue.text, currentFilePath, userReadOnly) {
-        // 只读态不记录历史：用户没在编辑，文本不可能变化，避免打开文件即产生一条无意义快照。
-        if (userReadOnly) return@LaunchedEffect
+    LaunchedEffect(textRevision, currentFilePath) {
         if (currentFilePath == null || !dirty) return@LaunchedEffect
         delay(2500L)
         val path = currentFilePath ?: return@LaunchedEffect
         withContext(Dispatchers.IO) {
+            val t = soraEditor.text()
             val latest = EditHistoryManager.getHistory(path).firstOrNull()
-            if (latest == null || latest.content != contentValue.text) {
-                EditHistoryManager.addHistory(path, contentValue.text)
+            if (latest == null || latest.content != t) {
+                EditHistoryManager.addHistory(path, t)
                 history = EditHistoryManager.getHistory(path)
             }
         }
@@ -324,134 +330,52 @@ private fun TextEditorDialogContent(
     }
 
     // 自动保存草稿
-    LaunchedEffect(autoSaveSeconds, dirty, currentFilePath, userReadOnly) {
+    LaunchedEffect(autoSaveSeconds, dirty, currentFilePath) {
         if (autoSaveSeconds <= 0) return@LaunchedEffect
         while (true) {
             delay(1000L)
-            // 只读态不自动保存：未进入编辑则跳过，避免开了自动保存后仅浏览也写历史。
-            if (userReadOnly) continue
             if (currentFilePath == null || !dirty) continue
             val now = System.currentTimeMillis()
             if (now - lastAutoSaveAt >= autoSaveSeconds * 1000L) {
                 lastAutoSaveAt = now
                 withContext(Dispatchers.IO) {
-                    EditHistoryManager.addHistory(currentFilePath!!, contentValue.text)
+                    val t = soraEditor.text()
+                    EditHistoryManager.addHistory(currentFilePath!!, t)
                     history = EditHistoryManager.getHistory(currentFilePath!!)
                 }
             }
         }
     }
 
+    // 原始扩展名：语法包可引入内置语言表之外的新扩展名，故不走 CodeHighlighter 的枚举。
+    val fileExtension by remember(currentFilePath) {
+        derivedStateOf {
+            currentFilePath?.let { File(it).name.substringAfterLast('.', "").lowercase() }?.takeIf { it.isNotEmpty() }
+        }
+    }
     val language by remember(currentFilePath) {
         derivedStateOf { currentFilePath?.let { CodeHighlighter.languageOf(File(it).name) } }
     }
-    // 语法高亮经 visualTransformation 在 BasicTextField 内部渲染。
-    // 不能用「静态 Text + 透明 BasicTextField(matchParentSize)」叠加：
-    // 在 Row(verticalScroll) 内会产生 0 宽 Constraints，导致 IllegalArgumentException 闪退，
-    // 或使普通分支 fillMaxSize 拿到 0 宽而内容不可见。
-    // 语法高亮不在组合期同步计算：每次按键都会在主线程重组里全量跑 CodeHighlighter
-    // （对每个标识符做 substring，上限 10 万字符），连续输入会掉帧。
-    // 改为输入停顿 120ms 后在后台线程重算。
-    //
-    // 关键正确性约束：VisualTransformation 返回的文本必须与输入文本一致，否则会把**陈旧文本**渲染到
-    // 输入框里。因此下面按 `hl.text == text.text` 校验：不等则回退为无高亮（仅短暂失色，文本与光标
-    // 始终正确），待新高亮算完再套用。
-    var highlightedText by remember { mutableStateOf<AnnotatedString?>(null) }
-    LaunchedEffect(contentValue.text, language) {
-        val lang = language
-        val text = contentValue.text
-        if (lang == null || text.isEmpty() || text.length > 100_000) {
-            highlightedText = null
-            return@LaunchedEffect
-        }
-        delay(120L)
-        highlightedText = withContext(Dispatchers.Default) {
-            CodeHighlighter.highlight(text, lang.ext, AuroraTokens.Text)
-        }
-    }
-    val highlightTransformation = remember(highlightedText) {
-        val hl = highlightedText
-        if (hl == null) androidx.compose.ui.text.input.VisualTransformation.None
-        else androidx.compose.ui.text.input.VisualTransformation { text ->
-            if (hl.text == text.text) {
-                androidx.compose.ui.text.input.TransformedText(hl, androidx.compose.ui.text.input.OffsetMapping.Identity)
-            } else {
-                androidx.compose.ui.text.input.TransformedText(text, androidx.compose.ui.text.input.OffsetMapping.Identity)
-            }
-        }
-    }
-    // 保存（工具栏「保存」/ 未保存提醒共用）：无路径时转「另存为」，无改动时提示。
-    /**
-     * 进入编辑态。
-     *
-     * - 大文件（分段浏览中）必须先全文载入成功再切换：半截内容一旦被保存会覆盖原文件；
-     * - 加载中 / 保存中不接受切换，避免同一份文本被并发修改；
-     * - 已在编辑态时是空操作（重复点击不产生副作用）。
-     */
-    fun enterEditMode() {
-        if (!userReadOnly || isLoading || isSaving) return
-        if (isLargeFile && !editingLarge) {
-            // 超大文件先确认：该体量的全量布局会把主线程占满数十秒，直接进入等于无预警卡死。
-            if (fileTotalBytes > LARGE_EDIT_WARN_BYTES && !largeEditConfirmed) {
-                pendingLargeEditConfirm = true
-                return
-            }
-            scope.launch {
-                isLoading = true
-                val ok = enterEditForLargeFile()
-                isLoading = false
-                if (ok) userReadOnly = false
-            }
-        } else {
-            userReadOnly = false
-        }
-    }
-
-    /**
-     * 切回只读态。
-     *
-     * 不丢内容、不自动保存：修改留在内存里，再次点「编辑」可继续编辑与保存。
-     * 有未保存修改时明确提示，避免用户以为「切回只读」等于已保存。
-     */
-    fun exitEditMode() {
-        if (userReadOnly || isSaving) return
-        if (dirty) {
-            toastMessage = "已切回只读；修改未保存，可直接点「保存」落盘"
-        }
-        userReadOnly = true
-    }
-
-    /**
-     * 只读态的写操作统一拦截：替换 / 历史回退 / 文本处理等入口都必须先过这里。
-     * 返回 true 表示可以继续执行。
-     */
-    fun allowMutation(action: String): Boolean {
-        if (userReadOnly) {
-            toastMessage = "只读模式：点击顶栏「只读/编辑」后$action"
-            return false
-        }
-        return true
-    }
-
+    // 语法高亮改由编辑器引擎自绘（Sora 的可视区增量高亮），不再走 Compose `VisualTransformation`：
+    // 旧方案需对全文做 AnnotatedString 计算且与输入文本逐帧校验，大文本是纯开销。
     val doSave: () -> Unit = save@{
         // 连点保护：保存中忽略后续点击。保存本身是幂等的，多点几次不会产生额外写入，
         // 但并发写同一文件会出现「后写的覆盖先写的」，故直接忽略进行中的重复请求。
         if (isSaving) return@save
+        // 落盘前强制从编辑器取一次全文：contentValue 是惰性快照，刚输入完可能还没同步。
+        syncSnapshot()
         when {
             // 顺序即优先级，覆盖所有组合：
             // ⓪ 加载中：contentValue 可能仍为空或只有首块，此时写盘必然损坏文件
             isLoading -> toastMessage = "正在加载，请稍候再保存"
             // ① 读取失败 → 编辑器里的内容不是完整原文，保存会截断/覆盖原文件
             loadError != null -> toastMessage = "文件读取失败，已阻止保存以防损坏原文件"
-            // ② 分段浏览（未载全文）→ contentValue 只有首块，保存会把文件截成一小段
-            isLargeFile && !editingLarge -> toastMessage = "分段内容不完整，请先点「编辑」加载全文再保存"
-            // ③ 新建文件（无路径）：无论只读还是编辑，都需要先确定保存位置
+            // ② 巨型文件（只读浏览）未载入全文 → contentValue 为空或只有首块，保存会截断文件
+            isLargeFile -> toastMessage = "文件超过可编辑上限，仅支持只读浏览，无法保存"
+            // ③ 新建文件（无路径）：需先确定保存位置
             currentFilePath == null -> showSaveAsDialog = true
             // ④ 内容未变
             !dirty -> toastMessage = "无改动"
-            // 说明：只读态**不**拦截保存。只读约束的是「不接收输入」，
-            // 而非「不允许落盘已有改动」——否则用户先编辑再切回只读后，
-            // 改动既存不了、关闭时又被提示未保存，只能被迫再点一次「编辑」，纯属绕路。
             else -> {
                 isSaving = true
                 scope.launch {
@@ -485,7 +409,11 @@ private fun TextEditorDialogContent(
     val dialogHeight = (LocalConfiguration.current.screenHeightDp * 0.9f).dp
 
     Dialog(
-        onDismissRequest = { if (dirty) showUnsavedDialog = true else onDismissRequest() },
+        onDismissRequest = {
+            // 关闭前先取一次最新全文：未保存对话框的「保存并关闭」直接读 contentValue。
+            syncSnapshot()
+            if (dirty) showUnsavedDialog = true else onDismissRequest()
+        },
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
@@ -499,41 +427,46 @@ private fun TextEditorDialogContent(
                     fileName = currentFilePath?.let { File(it).name }
                         ?: if (isNewFile) "新建${defaultNewExtension.uppercase()}" else "",
                     dirty = dirty,
-                    editing = !userReadOnly,
-                    onReadOnlyClick = { exitEditMode() },
-                    onEditClick = { enterEditMode() },
-                    switchEnabled = !isLoading && !isSaving,
                     language = language, hasBom = hasBom,
-                    onSettingsClick = { showSettingsDialog = true },
+                    onSettingsClick = { syncSnapshot(); showSettingsDialog = true },
                     onFindClick = {
-                        // 分段浏览时正文未载入内存（contentValue 为空），查找必然无效，先说明原因。
-                        if (isLargeFile && !editingLarge) {
-                            toastMessage = "分段浏览模式未载入全文，点「编辑」后即可查找"
+                        // 巨型文件走只读浏览，正文未载入内存，查找必然无效，先说明原因。
+                        if (isLargeFile) {
+                            toastMessage = "文件超过可编辑上限，仅支持只读浏览，无法查找"
                         } else {
+                            // contentValue 是惰性快照：打开查找前先取一次最新全文，避免用陈旧文本。
+                            syncSnapshot()
                             showFindReplaceDialog = true
                         }
                     },
                     onCompareClick = {
                         if (currentFilePath == null) {
                             toastMessage = "请先保存文件后再对比"
-                        } else if (isLargeFile && !editingLarge) {
-                            // 分段浏览时正文只在 chunkedLines 里，contentValue 为空，比对结果是无意义的。
-                            toastMessage = "分段浏览模式未载入全文，点「编辑」后即可对比"
+                        } else if (isLargeFile) {
+                            // 只读浏览态正文只在 chunkedLines 里，contentValue 为空，比对结果无意义。
+                            toastMessage = "文件超过可编辑上限，仅支持只读浏览，无法对比"
                         } else {
                             showDiffPicker = true
                         }
                     },
                     onSaveClick = doSave,
-                    onHistoryClick = { showHistoryDialog = true },
+                    onHistoryClick = { syncSnapshot(); showHistoryDialog = true },
                     historyCount = history.size,
-                    onDismissRequest = { if (dirty) showUnsavedDialog = true else onDismissRequest() }
+                    onDismissRequest = {
+                        syncSnapshot()
+                        if (dirty) showUnsavedDialog = true else onDismissRequest()
+                    }
                 )
 
                 // 大文件提示条
-                if (isLargeFile && !editingLarge) {
+                if (isLargeFile) {
                     ChunkedInfoBar(
                         offset = chunkedOffset, total = fileTotalBytes, hasMore = chunkedHasMore,
+                        indexing = chunkedIndexing, indexedLines = chunkedIndex?.totalLines,
+                        sizeClass = fileSizeClass,
                         onLoadMore = {
+                            // 已建立稀疏行索引后全文件虚拟滚动，无需再分段累积行列表。
+                            if (chunkedIndex != null) return@ChunkedInfoBar
                             scope.launch {
                                 loadNextChunk(
                                     filePath = currentFilePath ?: return@launch, fromOffset = chunkedOffset,
@@ -565,46 +498,47 @@ private fun TextEditorDialogContent(
                         loadError != null -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(loadError!!, style = AuroraTextStyles.body1, color = AuroraTokens.Error)
                         }
-                        else -> EditorContentArea(
-                            value = contentValue,
-                            onValueChange = { contentValue = it; dirty = true },
-                            highlightTransformation = if (isLargeFile) {
-                                androidx.compose.ui.text.input.VisualTransformation.None
-                            } else highlightTransformation,
-                            // 两种情况下不显示行号列：
-                            //  ① 超大文本（>20 万字符）：行号列自身是 LazyColumn + 逐帧滚动同步，纯属额外负担；
-                            //  ② 走原生 EditText 通道（>6.4 万字符）：行号列与原生控件是两套滚动体系，
-                            //     无法同步 —— 显示出来就是错的，必须收起。
-                            showLineNumber = showLineNumber &&
-                                contentValue.text.length <= NATIVE_EDITOR_THRESHOLD,
-                            fontSize = fontSize.sp,
-                            scrollState = editorScroll, hScroll = hScroll,
-                            // 分段模式正文来自 chunkedLines，必须显式传入：
-                            // 漏传时只读 LazyColumn 会渲染空列表，表现为打开大文件一片空白。
-                            chunkedLines = chunkedLines,
-                            chunked = isLargeFile && !editingLarge,
-                            editable = !userReadOnly
-                        )
+                        else -> if (isLargeFile) {
+                            // 巨型文件（> 可载入上限）：稀疏行索引只读浏览。全文入内存会 OOM，无法编辑。
+                            ChunkedReadOnlyArea(
+                                chunkedLines = chunkedLines,
+                                chunkedIndex = chunkedIndex,
+                                chunkedFilePath = currentFilePath ?: "",
+                                chunkedCharset = currentCharset,
+                                showLineNumber = showLineNumber,
+                                fontSize = fontSize.sp
+                            )
+                        } else {
+                            // 打开即可编辑：单一 Sora 编辑器（MP-Manager 同款引擎），文本驻留在其内部。
+                            // onChanged 只置脏并递增修订号 —— 不回传整串，避免逐键 O(n) 拷贝。
+                            com.mixradio.droid.ui.components.SoraTextEditor(
+                                initialText = editorSeedText,
+                                resetKey = editorResetKey,
+                                fontSize = fontSize.sp,
+                                showLineNumbers = showLineNumber,
+                                languageExt = fileExtension,
+                                syntaxRevision = syntaxRevision,
+                                controller = soraEditor,
+                                onChanged = { dirty = true; textRevision++ }
+                            )
+                        }
                     }
                 }
 
                 // 状态栏
-                // 超大文本跳过了全字段统计（见 LARGE_EDIT_STATS_SKIP_CHARS），此时 stats 不会更新，
-                // 直接把 0 行显示给用户是错的。这里只补一个行数：单遍扫描且用 remember 缓存，
-                // 文本变化时才重算一次（512KB 约 0.5ms），不构成输入负担。
-                val bigTextLineCount = remember(contentValue.text) {
-                    if (contentValue.text.length > LARGE_EDIT_STATS_SKIP_CHARS) {
-                        contentValue.text.count { it == '\n' } + 1
-                    } else null
+                // 超大文本跳过全字段统计（见 LARGE_EDIT_STATS_SKIP_CHARS），此时 stats 不更新，
+                // 直接把 0 行显示给用户是错的。行数改从编辑器直接取（Content 的长度与行数均为 O(1)），
+                // 以 textRevision 为触发源，编辑后即时正确，且不再依赖可能陈旧的 contentValue 快照。
+                val bigTextLineCount = remember(textRevision) {
+                    if (soraEditor.charCount() > LARGE_EDIT_STATS_SKIP_CHARS) soraEditor.lineCount() else null
                 }
                 EditorStatusBar(
                     stats = bigTextLineCount?.let { statsEmpty.copy(lines = it) } ?: stats,
-                    filePath = currentFilePath,
-                    chunkedMode = isLargeFile && !editingLarge,
+                    chunkedMode = isLargeFile,
                     statsSkipped = bigTextLineCount != null,
                     fileTotalBytes = fileTotalBytes, chunkedOffset = chunkedOffset,
-                    // 大文件模式下 contentValue 为空，行数必须取自 chunkedLines。
-                    chunkedLineCount = chunkedLines.size,
+                    // 大文件模式下 contentValue 为空，行数取自分段计数；建立稀疏行索引后取索引总行数。
+                    chunkedLineCount = chunkedIndex?.totalLines ?: chunkedLines.size,
                     lastSavedAtMs = lastSavedAtMs, autoSaveSeconds = autoSaveSeconds, dirty = dirty
                 )
 
@@ -619,14 +553,13 @@ private fun TextEditorDialogContent(
     // 子弹窗
     if (showSettingsDialog) EditorSettingsDialog(
         text = contentValue.text,
-        onTextChange = change@{ newText ->
-            if (!allowMutation("才能修改文本")) return@change
+        onTextChange = { newText ->
             replaceEditorText(newText)
         },
         showLineNumber = showLineNumber,
         onShowLineNumberChange = { showLineNumber = it; appSettings.updateEditorShowLineNumber(it) },
         hasBom = hasBom, onHasBomChange = { hasBom = it },
-        chunkedBrowsing = isLargeFile && !editingLarge,
+        chunkedBrowsing = isLargeFile,
         fontSize = fontSize, onFontSizeChange = { fontSize = it; appSettings.updateEditorFontSize(it) },
         autoSaveSeconds = autoSaveSeconds,
         onAutoSaveChange = { autoSaveSeconds = it; appSettings.updateEditorAutoSaveInterval(it) },
@@ -639,69 +572,56 @@ private fun TextEditorDialogContent(
                 toastMessage = "有未保存的修改，请先保存后再切换编码"
             } else if (cs != currentCharset) {
                 currentCharset = cs; overrideCharset = cs
-                if (!isNewFile) { contentValue = TextFieldValue(""); isLoading = true }
+                if (!isNewFile) { setEditorContent("", markDirty = false); isLoading = true }
             }
         },
         lineEnding = currentLineEnding,
         onLineEndingChange = { le -> currentLineEnding = le },
-        onSaveAsClick = { showSaveAsDialog = true },
+        onSyntaxPacksClick = { showSyntaxPacks = true },
+        onSaveAsClick = { syncSnapshot(); showSaveAsDialog = true },
         onDismiss = { showSettingsDialog = false }
     )
 
+    // 语法包管理：导入/删除后使语法缓存失效并触发编辑器重新取语法。
+    if (showSyntaxPacks) SyntaxPackDialog(
+        show = true,
+        onDismissRequest = { showSyntaxPacks = false },
+        onChanged = {
+            SoraMonarchGrammars.invalidate(context)
+            syntaxRevision++
+        }
+    )
+
     if (showFindReplaceDialog) FindReplaceDialog(
-        text = contentValue.text, currentSelectionStart = contentValue.selection.start,
+        text = contentValue.text,
         onFindNext = { findText ->
-            // 从「上次命中之后」继续查找并选中（找不到则环绕）。
-            // 起点选择：原生通道用 findCursor（Compose 侧 selection 被回写为文末，不可信）；
-            // Compose 通道用真实光标位置，符合「从光标处往下找」的直觉。
-            val text = contentValue.text
-            val nativeChannel = text.length > NATIVE_EDITOR_THRESHOLD
-            if (findText.isNotEmpty() && text.isNotEmpty()) {
-                val start = (if (nativeChannel) findCursor else contentValue.selection.end)
-                    .coerceIn(0, text.length)
-                var idx = text.indexOf(findText, start)
-                if (idx < 0) idx = text.indexOf(findText)  // 环绕查找
-                if (idx >= 0) {
-                    if (nativeChannel) findCursor = idx + findText.length
-                    contentValue = TextFieldValue(text, TextRange(idx, idx + findText.length))
-                }
-            }
-        },
-        onReplace = replace@{ original, replacement ->
-            if (!allowMutation("才能替换")) return@replace
-            // 文本即将改变，旧游标位置不再可信：归零，使下一次「查找下一个」从头开始。
-            findCursor = 0
-            // 仅替换当前选中的匹配项（若选中内容 == 查找词）
-            val sel = contentValue.selection
-            if (sel.max - sel.min == original.length) {
-                val selText = contentValue.text.substring(sel.min, sel.min + original.length)
-                if (selText == original) {
-                    val newText = contentValue.text.replaceRange(sel.min, sel.min + original.length, replacement)
-                    contentValue = TextFieldValue(newText, TextRange(sel.min + replacement.length)); dirty = true
+            // 查找/替换交给 Sora 内置检索器：异步全文匹配 + 命中高亮 + 自动滚动到命中处。
+            if (findText.isNotEmpty()) {
+                if (findText != findQuery) {
+                    findQuery = findText
+                    soraEditor.search(findText, caseInsensitive = false)
                 } else {
-                    // 未选中匹配项：替换第一个
-                    val idx = contentValue.text.indexOf(original)
-                    if (idx >= 0) {
-                        val newText = contentValue.text.replaceRange(idx, idx + original.length, replacement)
-                        contentValue = TextFieldValue(newText, TextRange(idx + replacement.length)); dirty = true
-                    }
-                }
-            } else {
-                val idx = contentValue.text.indexOf(original)
-                if (idx >= 0) {
-                    val newText = contentValue.text.replaceRange(idx, idx + original.length, replacement)
-                    contentValue = TextFieldValue(newText, TextRange(idx + replacement.length)); dirty = true
+                    soraEditor.gotoNextMatch()
                 }
             }
         },
-        onReplaceAll = replaceAll@{ original, replacement ->
-            if (!allowMutation("才能替换")) return@replaceAll
-            // 全文替换后长度与位置全变，游标归零。
-            findCursor = 0
-            val newText = contentValue.text.replace(original, replacement)
-            contentValue = TextFieldValue(newText, TextRange(newText.length)); dirty = true
+        onReplace = { original, replacement ->
+            if (findQuery != original) {
+                findQuery = original
+                soraEditor.search(original, caseInsensitive = false)
+            }
+            soraEditor.replaceCurrentMatch(replacement)
+            dirty = true; textRevision++
         },
-        onDismiss = { showFindReplaceDialog = false }
+        onReplaceAll = { original, replacement ->
+            if (findQuery != original) {
+                findQuery = original
+                soraEditor.search(original, caseInsensitive = false)
+            }
+            soraEditor.replaceAll(replacement)
+            dirty = true; textRevision++
+        },
+        onDismiss = { soraEditor.stopSearch(); showFindReplaceDialog = false }
     )
 
     // 文本对比 ① 选择 2 号文件（复用主页选择器，注入「同后缀 + 排除自身」过滤）
@@ -781,51 +701,9 @@ private fun TextEditorDialogContent(
         )
     }
 
-    AuroraWindowDialog(
-        show = pendingLargeEditConfirm,
-        title = "超大文件编辑提示",
-        summary = "文件 ${formatBytes(fileTotalBytes)}，超过 ${formatBytes(LARGE_EDIT_WARN_BYTES)}",
-        onDismissRequest = { pendingLargeEditConfirm = false }
-    ) {
-        Text(
-            "该体积的文本会让编辑器把主线程占满数十秒（实测约 30 秒，期间界面无响应，输入会排队），"
-                + "这是编辑控件对超长文本的全量排版开销，与手机性能无关。",
-            style = AuroraTextStyles.footnote2,
-            color = AuroraTextStyles.footnote2.color.copy(alpha = 1f),
-            modifier = Modifier.padding(bottom = 6.dp)
-        )
-        Text(
-            "建议：用只读浏览查看内容；确需修改时，优先裁剪出要改的片段单独编辑。",
-            style = AuroraTextStyles.footnote2,
-            color = AuroraTokens.TextSecondary,
-            modifier = Modifier.padding(bottom = 10.dp)
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
-        ) {
-            Button(
-                onClick = { pendingLargeEditConfirm = false },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = AuroraTokens.SurfaceHover,
-                    contentColor = AuroraTokens.Text
-                )
-            ) { Text("取消") }
-            Button(
-                onClick = {
-                    largeEditConfirmed = true
-                    pendingLargeEditConfirm = false
-                    enterEditMode()
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = AuroraTokens.Accent)
-            ) { Text("仍要编辑") }
-        }
-    }
-
     if (showHistoryDialog) HistoryDialog(
         history = history,
-        onRestore = restore@{ entry ->
-            if (!allowMutation("才能恢复历史版本")) return@restore
+        onRestore = { entry ->
             // 类 git 回退：恢复到所选历史版本。当前内容若与该版本不同，
             // 先把当前内容存为新历史（保证可再撤回），再恢复。
             scope.launch {
@@ -836,7 +714,7 @@ private fun TextEditorDialogContent(
                     }
                 }
                 history = EditHistoryManager.getHistory(currentFilePath ?: "")
-                contentValue = TextFieldValue(entry.content, TextRange(entry.content.length)); dirty = true
+                setEditorContent(entry.content, markDirty = true)
                 showHistoryDialog = false
             }
         },
@@ -852,10 +730,9 @@ private fun TextEditorDialogContent(
     if (showSaveAsDialog) SaveAsDialog(
         initialDirectory = currentFilePath?.let { File(it).parent } ?: initialDirectory,
         onSave = { newPath ->
-            // 只有「未加载全文的分段浏览」才不能另存为：此时 contentValue 只有首块，
-            // 另存出去会得到残缺文件。已点「只读/编辑」加载全文的大文件不受此限。
-            if (isLargeFile && !editingLarge) {
-                toastMessage = "分段浏览模式内容不完整，请先点「只读/编辑」加载全文"
+            // 巨型文件（只读浏览）未载入全文，另存出去会得到残缺文件。
+            if (isLargeFile) {
+                toastMessage = "文件超过可编辑上限，仅支持只读浏览，无法另存为"
                 showSaveAsDialog = false
                 return@SaveAsDialog
             }
@@ -1017,12 +894,6 @@ private suspend fun writeTextFile(
 @Composable
 private fun EditorTopBar(
     fileName: String, dirty: Boolean,
-    /** 当前是否为编辑态：用于「只读 / 编辑」两个按钮的选中高亮。 */
-    editing: Boolean = false,
-    onReadOnlyClick: () -> Unit = {},
-    onEditClick: () -> Unit = {},
-    /** 加载/保存进行中时禁止切换模式，避免同一份文本被并发改动。 */
-    switchEnabled: Boolean = true,
     language: CodeHighlighter.Language?, hasBom: Boolean,
     onSettingsClick: () -> Unit, onFindClick: () -> Unit,
     onCompareClick: () -> Unit, onSaveClick: () -> Unit,
@@ -1061,26 +932,7 @@ private fun EditorTopBar(
             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            // 只读 / 编辑为两个独立按钮，当前状态高亮（Accent + 加粗），另一个为次要色。
-            // 用户一眼可分辨当前处于哪个状态，而不是靠猜一个合并开关的含义。
-            EditorToolbarButton(
-                "只读", null, { if (switchEnabled) onReadOnlyClick() },
-                tint = when {
-                    !switchEnabled -> AuroraTokens.TextDisabled
-                    editing -> AuroraTokens.TextSecondary
-                    else -> AuroraTokens.Accent
-                },
-                emphasized = !editing
-            )
-            EditorToolbarButton(
-                "编辑", null, { if (switchEnabled) onEditClick() },
-                tint = when {
-                    !switchEnabled -> AuroraTokens.TextDisabled
-                    editing -> AuroraTokens.Accent
-                    else -> AuroraTokens.TextSecondary
-                },
-                emphasized = editing
-            )
+            // 打开即可编辑（对齐 MP-Manager）：无「只读 / 编辑」切换按钮。
             EditorToolbarButton("查找", null, onFindClick)
             EditorToolbarButton("对比", null, onCompareClick)
             EditorToolbarButton("历史", if (historyCount > 0) "$historyCount" else null, onHistoryClick)
@@ -1135,7 +987,14 @@ private fun EditorToolbarButton(
 //  ChunkedInfoBar
 @Composable
 private fun ChunkedInfoBar(
-    offset: Long, total: Long, hasMore: Boolean, onLoadMore: () -> Unit
+    offset: Long, total: Long, hasMore: Boolean,
+    /** 稀疏行索引建立中：提示用户正在建索引，期间不显示「加载更多」。 */
+    indexing: Boolean = false,
+    /** 已建立稀疏行索引时的总行数；非 null 表示进入虚拟只读浏览，无需分段累积。 */
+    indexedLines: Int? = null,
+    /** 文件体积档位（MP-Manager FileSizeClass §6.2/§9.1）：HUGE 显式标注「只读预览」策略。 */
+    sizeClass: FileSizeClass = FileSizeClass.SMALL,
+    onLoadMore: () -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth()
@@ -1144,19 +1003,35 @@ private fun ChunkedInfoBar(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            // 只显示加载进度：「只读/编辑」状态已由顶栏两个按钮表达，此处再标「只读」属重复。
-            text = "分段加载 ${formatBytes(offset)} / ${formatBytes(total)}",
-            style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary
-        )
-        if (hasMore) {
+        when {
+            indexing -> Text(
+                text = "正在建立全文行索引…",
+                style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary
+            )
+            indexedLines != null -> Text(
+                text = "已索引 · 共 ${indexedLines} 行（只读·虚拟滚动）",
+                style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary
+            )
+            else -> Text(
+                // 只显示加载进度：操作入口已在顶栏，此处再标注状态属重复。
+                text = "分段加载 ${formatBytes(offset)} / ${formatBytes(total)}",
+                style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary
+            )
+        }
+        if (hasMore && indexedLines == null && !indexing) {
             Text(
                 text = "加载更多 →", style = AuroraTextStyles.footnote2, color = AuroraTokens.Accent,
                 modifier = Modifier.clickable(onClick = onLoadMore).padding(4.dp)
             )
-        } else {
+        } else if (indexedLines != null) {
+            // LARGE/HUGE 由稀疏行索引只读虚拟滚动接管：显式标注只读预览策略（对齐 MP-Manager §7.1）。
+            val browseHint = when (sizeClass) {
+                FileSizeClass.HUGE -> "全文可浏览 · HUGE 只读预览"
+                FileSizeClass.LARGE -> "全文可浏览 · 只读预览"
+                else -> "全文可浏览"
+            }
             Text(
-                text = "全文已加载",
+                text = browseHint,
                 style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary
             )
         }
@@ -1171,34 +1046,27 @@ private fun formatBytes(bytes: Long): String = when {
     else -> "%.1f GB".format(bytes / (1024.0 * 1024 * 1024))
 }
 
-//  EditorContentArea
-//  约束：BasicTextField 必须自带内部滚动，直接放在 weight(1f) 的 Box 中（不在 verticalScroll
-//  内），行号列用同高 Box 平铺，两者各自独立滚动并同步（MT/MP-Manager 同款布局）。
-//  「静态 Text + 透明 BasicTextField(matchParentSize) 叠加」会在滚动容器内产生 0 宽 Constraints
-//  → IllegalArgumentException 闪退；BasicTextField 放进 Row(verticalScroll) 内 weight(1f) 则在无界高度
-//  下测量失效（约 112px 宽），文字、焦点与输入法均不可用——Row + weight 与滚动容器嵌套是官方文档
-//  明确反对的结构。
+//  巨型文件只读浏览区
+//  超过可载入上限（ChunkedFileReader.MAX_LOAD_BYTES）的文件无法全文入内存，只读渲染：
+//  稀疏行索引已建立时走虚拟滚动（按行号按需 readRange），索引建立失败时退回已加载行的 LazyColumn。
 @Composable
-private fun EditorContentArea(
-    value: TextFieldValue, onValueChange: (TextFieldValue) -> Unit,
-    highlightTransformation: androidx.compose.ui.text.input.VisualTransformation,
-    showLineNumber: Boolean, fontSize: androidx.compose.ui.unit.TextUnit,
-    scrollState: androidx.compose.foundation.ScrollState, hScroll: androidx.compose.foundation.ScrollState,
-    // 刻意不给默认值：漏传时会静默渲染空白，必填可在编译期暴露问题。
+private fun ChunkedReadOnlyArea(
     chunkedLines: List<String>,
-    /** 大文件分段模式：走 LazyColumn 懒加载渲染（与「只读」是两件事，不可合并）。 */
-    chunked: Boolean = false,
-    /** 是否允许编辑。false 时仍用 BasicTextField 渲染（可选词复制），只是不接受输入。 */
-    editable: Boolean = true
+    chunkedIndex: SparseLineIndex?,
+    chunkedFilePath: String,
+    chunkedCharset: java.nio.charset.Charset,
+    showLineNumber: Boolean, fontSize: androidx.compose.ui.unit.TextUnit
 ) {
     val scope = rememberCoroutineScope()
-    // 编辑区 + 右侧细拖动条（贴紧边缘）：拖动可快速跳到目标行号。
     Box(modifier = Modifier.fillMaxSize()) {
-        if (chunked) {
-            // 大文件（分段模式）：用 LazyColumn 按行懒加载渲染，只布局可见行。
-            // chunkedLines 由调用方 append-only 维护，本组件直接消费、不再 split → 避开旧版
-            // 「每次 loadMore 重新分配整段累积文本 + 全量 split」的 O(N²) 退化。
-            // 加 stable key = index：append 时旧行索引未变，LazyColumn 跳过其重组，仅新增 N 行更新。
+        if (chunkedIndex != null && chunkedFilePath.isNotEmpty()) {
+            // 稀疏行索引：按行号按需 readRange，内存恒定 O(窗口)，不会滚到底 OOM。
+            IndexedChunkedView(
+                index = chunkedIndex, filePath = chunkedFilePath, charset = chunkedCharset,
+                showLineNumber = showLineNumber, fontSize = fontSize, scope = scope
+            )
+        } else {
+            // 索引建立失败时的兜底：已加载行用 LazyColumn 懒加载渲染（append-only 行列表）。
             val lines = chunkedLines
             val lazyState = rememberLazyListState()
             LazyColumn(
@@ -1236,241 +1104,74 @@ private fun EditorContentArea(
                 },
                 modifier = Modifier.align(Alignment.CenterEnd)
             )
-        } else {
-            val lineCount = remember(value.text) { value.text.count { it == '\n' } + 1 }
-            val lineNumberWidth = remember(lineCount) { "${lineCount}".length.coerceAtLeast(3) }
+        }
+    }
+}
 
-            Row(modifier = Modifier.fillMaxSize()) {
-                // 行号列（与编辑区共享同一 scrollState，纵向同步滚动）
-                if (showLineNumber) {
-                    Box(modifier = Modifier.width((lineNumberWidth * (fontSize.value * 0.7f)).dp + 12.dp)) {
-                        EditorLineNumbers(
-                            lineCount = lineCount,
-                            fontSize = fontSize,
-                            scrollState = scrollState
+/**
+ * 超大文件只读虚拟滚动视图。
+ *
+ * 由 [SparseLineIndex] 驱动：LazyColumn 只布局可见行，每行文本经 [IndexedLineProvider]
+ * 按行号按需 `readRange` + 按 charset 解码，结果缓存在有界 LRU 中。内存恒定 O(窗口)，
+ * 与文档「稀疏行索引 + 虚拟滚动」一致，滚到底也不会把全文件行字符串累积进内存。
+ */
+@Composable
+private fun IndexedChunkedView(
+    index: SparseLineIndex, filePath: String, charset: java.nio.charset.Charset,
+    showLineNumber: Boolean, fontSize: androidx.compose.ui.unit.TextUnit,
+    scope: kotlinx.coroutines.CoroutineScope
+) {
+    val total = index.totalLines
+    if (total <= 0) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("（空文件）", style = AuroraTextStyles.body2, color = AuroraTokens.TextSecondary)
+        }
+        return
+    }
+    val lazyState = rememberLazyListState()
+    val provider = remember(index, filePath, charset) { IndexedLineProvider(index, filePath, charset) }
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = lazyState,
+            modifier = Modifier.fillMaxSize().padding(start = 4.dp, top = 4.dp, bottom = 4.dp, end = 10.dp),
+            horizontalAlignment = Alignment.Start
+        ) {
+            items(total, key = { it }) { i ->
+                // peek 命中 LRU 时首帧即有文本；否则 LaunchedEffect 后台加载后回填。
+                var text by remember(i) { mutableStateOf(provider.peek(i)) }
+                LaunchedEffect(i) { if (text == null) text = provider.load(i) }
+                Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                    if (showLineNumber) {
+                        Text(
+                            text = "${i + 1}",
+                            style = AuroraTextStyles.monospace.copy(fontSize = fontSize),
+                            color = AuroraTokens.TextDisabled,
+                            modifier = Modifier.padding(end = 8.dp, top = 1.dp)
                         )
                     }
-                    // 竖直分隔线：必须用 VerticalDivider（fillMaxHeight）。
-                    // 不可用 HorizontalDivider——其内部强制 fillMaxWidth()，在横向 Row 里会
-                    // 吃掉几乎全部宽度，把 weight(1f) 的 BasicTextField 压成 ~112px 窄条
-                    // （文字不可见 / 无法聚焦 / 输入法不弹的共同根因）。
-                    androidx.compose.material3.VerticalDivider(
-                        color = AuroraTokens.Stroke, thickness = 0.5.dp,
-                        modifier = Modifier.padding(horizontal = 4.dp)
+                    Text(
+                        text = text ?: "",
+                        style = AuroraTextStyles.monospace.copy(fontSize = fontSize),
+                        color = AuroraTokens.Text,
+                        modifier = Modifier.padding(end = 200.dp),
+                        softWrap = false
                     )
                 }
-                // 编辑区：BasicTextField 与行号列共享 scrollState，纵向滚动同步。
-                // 超长文本改走原生 EditText（排版量级差异见 NATIVE_EDITOR_THRESHOLD 说明）。
-                // 条件只看文本量、不看是否可编辑：否则「编辑大文件后切回只读」会切回 Compose 通道，
-                // 又触发一次整段排版（512KB 约 30–46s），表现为第二次卡死。
-                if (value.text.length > NATIVE_EDITOR_THRESHOLD) {
-                    NativeTextEditor(
-                        text = value.text,
-                        readOnly = !editable,
-                        onTextChange = { newText ->
-                            // 光标与选区完全由 EditText 自管：这里只回写文本。
-                            // 回写后外层重组会再次进入本分支，但 NativeTextEditor 内部比对文本相等后
-                            // 不做 setText，因此不会打断原生光标。
-                            onValueChange(TextFieldValue(newText, TextRange(newText.length)))
-                        },
-                        fontSize = fontSize,
-                        modifier = Modifier.weight(1f).fillMaxHeight()
-                            .padding(start = 4.dp, end = 10.dp, top = 4.dp, bottom = 4.dp)
-                    )
-                } else {
-                BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    // 只读态仍渲染 BasicTextField（可用手选中/复制），但不接受输入：
-                    // 若改成静态 Text，会丢掉选区与滚动同步，且行号列对齐会漂移。
-                    readOnly = !editable,
-                    textStyle = AuroraTextStyles.monospace.copy(
-                        fontSize = fontSize,
-                        // 显式行高，与行号列同步算法取同一系数（1.4）。
-                        // 不指定时 Compose 需逐行做字体度量，行数上万（512KB ≈ 8192 行）时
-                        // 该开销随行数线性累加，是首次布局卡顿的主要来源之一。
-                        lineHeight = fontSize * 1.4f,
-                        color = AuroraTokens.Text
-                    ),
-                    cursorBrush = SolidColor(AuroraTokens.Accent),
-                    visualTransformation = highlightTransformation,
-                    modifier = Modifier.weight(1f).fillMaxHeight()
-                        .padding(start = 4.dp, end = 10.dp, top = 4.dp, bottom = 4.dp)
-                        .verticalScroll(scrollState)
-                )
-                }
-            }
-            // 原生 EditText 通道下不显示自家滚动条：它绑定的是 Compose 的 scrollState，
-            // 与原生控件的滚动互不相干 —— 拖动无效且位置错误（同「行号列」的两套滚动体系问题）。
-            if (value.text.length <= NATIVE_EDITOR_THRESHOLD) {
-                LineScrollBar(
-                    lineCount = lineCount,
-                    getFraction = {
-                        if (scrollState.maxValue == 0) 0f else scrollState.value.toFloat() / scrollState.maxValue
-                    },
-                    setFraction = { f ->
-                        scope.launch { scrollState.scrollTo((f * scrollState.maxValue).toInt().coerceAtLeast(0)) }
-                    },
-                    modifier = Modifier.align(Alignment.CenterEnd)
-                )
             }
         }
+        LineScrollBar(
+            lineCount = total,
+            getFraction = {
+                if (total <= 1) 0f else lazyState.firstVisibleItemIndex.toFloat() / (total - 1)
+            },
+            setFraction = { f ->
+                scope.launch { lazyState.scrollToItem((f * (total - 1)).toInt().coerceAtLeast(0)) }
+            },
+            modifier = Modifier.align(Alignment.CenterEnd)
+        )
     }
 }
 
-/**
- * 编辑模式行号列（独立重组单元）。
- *
- * 行号列用 LazyColumn 按需组合可见行（约 30-50 行），而非非惰性 `Column` 一次性铺满：
- * 200k 行的文件上会把 200k 个 Text 节点塞进组合树，带来 O(N) 内存与首次 measure 开销，
- * 在大型编辑会话中接近 OOM。
- *
- * 与编辑区共享同一个 [scrollState]，纵向同步由 `firstVisibleLine` 派生状态驱动
- * `lazyState.scrollToItem(...)`，用户滚动 BasicTextField 时行号列即时跟随。
- *
- * @param lineCount 文件总行数（由 value.text.count('\n')+1 派生）
- * @param scrollState 与 BasicTextField 共用的滚动状态
- */
-/**
- * 编辑态的原生长文本编辑器。
- *
- * 用途与取舍见 [NATIVE_EDITOR_THRESHOLD]：Compose 的 BasicTextField 对全文做整段排版，
- * 超长文本会占满主线程数十秒且每次输入重排；原生 EditText 走 DynamicLayout 增量排版，
- * 同体量在秒级可用。代价是没有 Compose 侧语法高亮（该体量文本本已超出高亮上限）。
- *
- * 状态协作（关键，避免死循环与光标跳动）：
- *  - 文本由 [text] 单向驱动，仅在 EditText 内容与之不等时才 setText；
- *  - 输入经 [onTextChange] 回写，外围 state 始终是唯一数据源；
- *  - 回写触发的重组会再次进入同步逻辑，此时文本已相等 → 不 setText → 原生光标不被打断。
- */
-@Composable
-private fun NativeTextEditor(
-    text: String,
-    onTextChange: (String) -> Unit,
-    fontSize: androidx.compose.ui.unit.TextUnit,
-    /** 只读：禁止输入但保留滚动与选词复制（不置灰，视觉与编辑态一致）。 */
-    readOnly: Boolean = false,
-    modifier: Modifier = Modifier
-) {
-    val currentText by androidx.compose.runtime.rememberUpdatedState(text)
-    val currentOnChange by androidx.compose.runtime.rememberUpdatedState(onTextChange)
-
-    androidx.compose.ui.viewinterop.AndroidView(
-        modifier = modifier,
-        factory = { ctx ->
-            android.widget.EditText(ctx).apply {
-                // 视觉对齐 Compose 编辑区：透明背景、等宽字体、主题前景色、零内边距。
-                setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                typeface = android.graphics.Typeface.MONOSPACE
-                setPadding(0, 0, 0, 0)
-                includeFontPadding = false
-                // 行高系数与 Compose 通道（1.4）一致，切换通道时段落节奏不跳。
-                setLineSpacing(0f, 1.4f)
-                setTextColor(AuroraTokens.Text.toArgb())
-                setHintTextColor(AuroraTokens.TextSecondary.toArgb())
-                // 关闭拼写建议：代码与日志不应被输入法改写。
-                inputType = android.text.InputType.TYPE_CLASS_TEXT or
-                    android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-                    android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-                gravity = android.view.Gravity.TOP or android.view.Gravity.START
-                setHorizontallyScrolling(false)
-                isVerticalScrollBarEnabled = true
-                addTextChangedListener(object : android.text.TextWatcher {
-                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
-                    override fun afterTextChanged(s: android.text.Editable?) {
-                        val newText = s?.toString() ?: return
-                        if (newText != currentText) currentOnChange(newText)
-                    }
-                })
-            }
-        },
-        update = { ed ->
-            ed.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, fontSize.value)
-            // 只读用「清 keyListener + 关闭自动弹输入法」而不是 isEnabled=false：
-            // 后者会连带禁用滚动并使文字变灰；前者可滚动、可长按选词复制，视觉不变。
-            if (readOnly) {
-                if (ed.keyListener != null) ed.keyListener = null
-                ed.showSoftInputOnFocus = false
-                ed.isCursorVisible = false
-                ed.setTextIsSelectable(true)
-            } else {
-                if (ed.keyListener == null) {
-                    ed.inputType = android.text.InputType.TYPE_CLASS_TEXT or
-                        android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-                        android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-                    ed.showSoftInputOnFocus = true
-                }
-                ed.isCursorVisible = true
-                ed.setTextIsSelectable(false)
-            }
-            // 引用比较短路：重组频繁，避免每次都做 O(N) 的 toString 比对（512KB 约 0.5ms/次）。
-            if (ed.tag !== text) {
-                ed.tag = text
-                if (ed.text?.toString() != text) {
-                    val selection = ed.selectionStart.coerceAtLeast(0)
-                    ed.setText(text)
-                    ed.setSelection(selection.coerceAtMost(ed.text?.length ?: 0))
-                }
-            }
-        }
-    )
-}
-
-@Composable
-private fun EditorLineNumbers(
-    lineCount: Int,
-    fontSize: androidx.compose.ui.unit.TextUnit,
-    scrollState: androidx.compose.foundation.ScrollState,
-    modifier: Modifier = Modifier
-) {
-    if (lineCount <= 0) return
-    val lazyState = rememberLazyListState()
-    // 行高 ≈ fontSize × 1.4（Material/M3 默认 lineHeight 系数）。
-    // 与 BasicTextField 内部排版存在亚像素级偏差，sync 时按整行滚动（scrollToItem），
-    // 让 LazyListState 自带的「贴齐 item」行为吸收偏差，最终在视觉上完全一致。
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val fontSizePx = with(density) { fontSize.toPx() }
-    val lineHeightPx = (fontSizePx * 1.4f).coerceAtLeast(1f)
-
-    // editor scrollState 像素偏移 → 行号列的「首个可见行」。
-    val firstVisibleLine by remember(lineCount, lineHeightPx) {
-        derivedStateOf {
-            if (lineCount <= 0) 0
-            else (scrollState.value / lineHeightPx).toInt().coerceIn(0, lineCount - 1)
-        }
-    }
-    LaunchedEffect(firstVisibleLine) {
-        // 仅当分歧 ≥1 行时 scrollToItem，避免每像素都触发滚动动画造成 churn。
-        val cur = lazyState.firstVisibleItemIndex
-        if (kotlin.math.abs(firstVisibleLine - cur) >= 1) {
-            lazyState.scrollToItem(firstVisibleLine)
-        }
-    }
-
-    Box(modifier = modifier.fillMaxSize()) {
-        LazyColumn(state = lazyState, modifier = Modifier.fillMaxSize()) {
-            items(lineCount, key = { it }) { i ->
-                Text(
-                    text = (i + 1).toString(),
-                    style = AuroraTextStyles.monospace.copy(
-                        fontSize = fontSize,
-                        color = AuroraTokens.TextDisabled
-                    ),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 4.dp)
-                )
-            }
-        }
-    }
-}
-
-/**
- * 编辑区右侧贴边细拖动条：拖动快速跳到目标行号。
- * 轨道细（6dp），拖动时显示目标行号；用 [getFraction]/[setFraction] 与上层滚动状态双向绑定。
- */
 @Composable
 private fun LineScrollBar(
     lineCount: Int,
@@ -1544,7 +1245,7 @@ private fun LineScrollBar(
 //  EditorStatusBar
 @Composable
 private fun EditorStatusBar(
-    stats: TextStatistics.Stats, filePath: String?,
+    stats: TextStatistics.Stats,
     /** 是否处于「分段浏览」态（大文件未载全文）：此时行数与字节数来自分段计数。 */
     chunkedMode: Boolean,
     fileTotalBytes: Long, chunkedOffset: Long,
@@ -1597,25 +1298,11 @@ private fun EditorStatusBar(
  */
 private const val LARGE_EDIT_STATS_SKIP_CHARS = 200_000
 
-/**
- * 超过该体积进入编辑前先确认。
- * 实测（arm64 / Android 10）：
- *  - 数据加载与解码约 0.25–0.43s，不是瓶颈；
- *  - 瓶颈是 Compose 文本控件对该体量文本的**全量布局**，512KB / 8192 行会阻塞主线程约 30s
- *    （Choreographer：Skipped 1931 frames），期间任何输入都会排队直至 ANR。
- * 因此超过阈值时把选择权交给用户，而不是直接卡死。
- */
-private const val LARGE_EDIT_WARN_BYTES = 200L * 1024L
+/** 文本处理结果只剩 1 行时的「超长单行」提示阈值（字符）。 */
+private const val VERY_LONG_SINGLE_LINE_CHARS = 64_000
 
-/**
- * 超过该字符数时，编辑态改用原生 `EditText`（见 [NativeTextEditor]）。
- *
- * 依据：Compose `BasicTextField` 对全文做整段排版，实测 512KB（约 8192 行）阻塞主线程 30–46s，
- * 且每次输入都重排；原生 `EditText` 走 `DynamicLayout` 增量排版，同体量在秒级完成。
- * 阈值取 64K：以下保留 Compose 通道（有语法高亮、排版开销可接受），以上切原生通道换可用性。
- * 与语法高亮自身的 10 万字符上限协同 —— 走原生通道的文本本来也已超过高亮上限。
- */
-private const val NATIVE_EDITOR_THRESHOLD = 64_000
+/** 查找匹配计数的显示上限：超过后只统计到此值，避免极端命中时长时间全量扫描。 */
+private const val MATCH_COUNT_LIMIT = 5_000
 
 private val EDITOR_CHARSETS: List<Pair<Charset, String>> = listOf(
     Charsets.UTF_8 to "UTF-8", Charsets.UTF_16LE to "UTF-16 LE",
@@ -1633,7 +1320,7 @@ private val EDITOR_CHARSETS: List<Pair<Charset, String>> = listOf(
 @SuppressLint("UseKtx")
 @Composable
 private fun FindReplaceDialog(
-    text: String, currentSelectionStart: Int,
+    text: String,
     onFindNext: (findText: String) -> Unit,
     onReplace: (original: String, replacement: String) -> Unit,
     onReplaceAll: (original: String, replacement: String) -> Unit,
@@ -1641,14 +1328,23 @@ private fun FindReplaceDialog(
 ) {
     var findText by remember { mutableStateOf("") }
     var replaceText by remember { mutableStateOf("") }
-    val matchCount = remember(findText, text) {
-        if (findText.isEmpty()) 0
-        else {
+    // 匹配计数：放后台线程并防抖，且设上限。
+    // 原实现用 remember 在组合期（主线程）跑全量 indexOf 循环 —— 文本可达数十万字符、
+    // 且输入查找词的每个字符都会重跑一遍，直接表现为输入掉帧。
+    // 上限用于拦住「极端高频命中」时无意义的继续扫描（只影响显示数字，不影响替换）。
+    var matchCount by androidx.compose.runtime.mutableIntStateOf(0)
+    LaunchedEffect(findText, text) {
+        if (findText.isEmpty()) {
+            matchCount = 0
+            return@LaunchedEffect
+        }
+        delay(200L)
+        matchCount = withContext(Dispatchers.Default) {
             // 用 indexOf 循环计数，避免 split 产生巨大临时 List/子串分配；
             // 步进 idx + findText.length 与原 split（非重叠）计数语义一致。
             var count = 0
             var idx = text.indexOf(findText)
-            while (idx >= 0) {
+            while (idx >= 0 && count < MATCH_COUNT_LIMIT) {
                 count++
                 idx = text.indexOf(findText, idx + findText.length)
             }
@@ -1749,7 +1445,10 @@ private fun FindReplaceDialog(
                 // 匹配计数（渐变小字）
                 if (findText.isNotEmpty()) {
                     Text(
-                        text = if (matchCount > 0) "共 $matchCount 处匹配" else "无匹配",
+                        text = if (matchCount > 0) {
+                            val suffix = if (matchCount >= MATCH_COUNT_LIMIT) "+" else ""
+                            "共 $matchCount$suffix 处匹配"
+                        } else "无匹配",
                         style = AuroraTextStyles.footnote2.copy(fontSize = 13.sp),
                         color = if (matchCount > 0) androidx.compose.ui.graphics.Color(0xFF00E5FF) else AuroraTokens.Warning,
                         modifier = Modifier.padding(start = 2.dp)
@@ -1934,6 +1633,8 @@ private fun EditorSettingsDialog(
     hasBom: Boolean, onHasBomChange: (Boolean) -> Unit,
     /** 分段浏览（大文件未载全文）：正文不在内存，统计与文本处理都无从下手。 */
     chunkedBrowsing: Boolean = false,
+    /** 打开「语法包」管理（导入/启用/删除 Monarch 语法）。 */
+    onSyntaxPacksClick: () -> Unit = {},
     onSaveAsClick: () -> Unit, onDismiss: () -> Unit
 ) {
     var page by remember { mutableStateOf("root") }          // root | charset | lineEnding
@@ -2036,6 +1737,7 @@ private fun EditorSettingsDialog(
                     else -> {
                         CompactSettingRow("编码", charset.displayName()) { page = "charset" }
                         CompactSettingRow("换行", lineEnding.displayName()) { page = "lineEnding" }
+                        CompactSettingRow("语法包", "›") { onSyntaxPacksClick(); onDismiss() }
                         CompactSettingRow("另存为", "›") { onSaveAsClick(); onDismiss() }
                         CompactSettingRow("显示行号", if (showLineNumber) "开" else "关") {
                             onShowLineNumberChange(!showLineNumber)
@@ -2152,7 +1854,7 @@ private fun EditorSettingsDialog(
                 color = AuroraTokens.TextSecondary,
                 modifier = Modifier.padding(bottom = 6.dp)
             )
-            if (afterLines == 1 && result.length > NATIVE_EDITOR_THRESHOLD) {
+            if (afterLines == 1 && result.length > VERY_LONG_SINGLE_LINE_CHARS) {
                 Text(
                     "注意：结果只剩 1 行且长度较大，超长单行的排版会更慢。",
                     style = AuroraTextStyles.footnote2,

@@ -1,0 +1,69 @@
+{
+  "extensions": [
+    "proto"
+  ],
+  "tokenizer": {
+    "root": [
+      [
+        "\\s+",
+        "white"
+      ],
+      [
+        "/\\*",
+        "comment",
+        "@comment"
+      ],
+      [
+        "//.*$",
+        "comment"
+      ],
+      [
+        "\"(\\\\.|[^\"\\\\])*\"",
+        "string"
+      ],
+      [
+        "'(\\\\.|[^'\\\\])*'",
+        "string"
+      ],
+      [
+        "\\b(syntax|package|import|option|message|enum|service|rpc|returns|stream|repeated|optional|required|reserved|extensions|extend|oneof|map|public)\\b",
+        "keyword"
+      ],
+      [
+        "\\b(double|float|int32|int64|uint32|uint64|sint32|sint64|fixed32|fixed64|sfixed32|sfixed64|bool|string|bytes)\\b",
+        "type"
+      ],
+      [
+        "\\b(true|false)\\b",
+        "constant"
+      ],
+      [
+        "(0[xXbBoO][0-9a-fA-F_]+|[0-9][0-9_]*\\.?[0-9_]*([eE][+-]?[0-9]+)?)",
+        "number"
+      ],
+      [
+        "[A-Za-z_][A-Za-z0-9_]*",
+        "identifier"
+      ],
+      [
+        "[{}()\\[\\]]",
+        "delimiter"
+      ],
+      [
+        "[=+\\-*/%<>!&|^~?:]+",
+        "operator"
+      ]
+    ],
+    "comment": [
+      [
+        ".*?\\*/",
+        "comment",
+        "@pop"
+      ],
+      [
+        ".*",
+        "comment"
+      ]
+    ]
+  }
+}

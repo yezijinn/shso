@@ -1,0 +1,56 @@
+{
+  "extensions": [
+    "sql",
+    "ddl",
+    "dml"
+  ],
+  "ignoreCase": true,
+  "tokenizer": {
+    "root": [
+      [
+        "\\s+",
+        "white"
+      ],
+      [
+        "--.*$",
+        "comment"
+      ],
+      [
+        "/\\*[\\s\\S]*?\\*/",
+        "comment"
+      ],
+      [
+        "'(\\\\.|[^'\\\\])*'",
+        "string"
+      ],
+      [
+        "\\b(SELECT|FROM|WHERE|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|TABLE|DROP|ALTER|ADD|COLUMN|INDEX|VIEW|TRIGGER|REPLACE|INTO|AND|OR|NOT|NULL|IS|LIKE|IN|BETWEEN|EXISTS|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|ALL|DISTINCT|CASE|WHEN|THEN|ELSE|END|BEGIN|COMMIT|ROLLBACK|TRANSACTION|PRIMARY|KEY|FOREIGN|REFERENCES|DEFAULT|UNIQUE|CHECK|CONSTRAINT|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|CROSS|ON|USING|AS|ASC|DESC|WITH|RETURNING|IF|EXPLAIN|ANALYZE|VACUUM|PRAGMA|GRANT|REVOKE)\\b",
+        "keyword"
+      ],
+      [
+        "\\b(INT|INTEGER|BIGINT|SMALLINT|TINYINT|DECIMAL|NUMERIC|FLOAT|REAL|DOUBLE|CHAR|VARCHAR|TEXT|BLOB|DATE|TIME|DATETIME|TIMESTAMP|BOOLEAN|JSON|UUID|SERIAL)\\b",
+        "type"
+      ],
+      [
+        "\\b(true|false|null|current_date|current_timestamp|now)\\b",
+        "constant"
+      ],
+      [
+        "(0[xXbBoO][0-9a-fA-F_]+|[0-9][0-9_]*\\.?[0-9_]*([eE][+-]?[0-9]+)?)",
+        "number"
+      ],
+      [
+        "[A-Za-z_][A-Za-z0-9_]*",
+        "identifier"
+      ],
+      [
+        "[{}()\\[\\]]",
+        "delimiter"
+      ],
+      [
+        "[=+\\-*/%<>!&|^~?:]+",
+        "operator"
+      ]
+    ]
+  }
+}
