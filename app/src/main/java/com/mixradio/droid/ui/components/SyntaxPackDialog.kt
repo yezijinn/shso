@@ -138,10 +138,10 @@ fun SyntaxPackDialog(
                     colors = ButtonDefaults.buttonColors(containerColor = AuroraTokens.SurfaceHover, contentColor = AuroraTokens.Text)
                 ) { Text("从文件导入") }
                 Button(
-                    onClick = { showUrlInput = true },
+                    onClick = { urlPrefill = SyntaxPackUrls.PACK_ZIP; showUrlInput = true },
                     enabled = !busy,
                     colors = ButtonDefaults.buttonColors(containerColor = AuroraTokens.Accent)
-                ) { Text("从 URL 导入") }
+                ) { Text("从仓库下载") }
             }
             if (busy) {
                 Text("正在导入…", style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary,
@@ -242,7 +242,7 @@ private fun PackRow(pack: SyntaxPack, onToggle: () -> Unit, onRemove: () -> Unit
                 maxLines = 2, overflow = TextOverflow.Ellipsis
             )
             Text(
-                "${pack.sizeBytes} B  ·  ${pack.source}",
+                "${pack.sizeBytes} B  ·  ${if (pack.source == SyntaxPackUrls.PACK_ZIP) "github" else pack.source}",
                 style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary,
                 maxLines = 1, overflow = TextOverflow.Ellipsis
             )
@@ -265,7 +265,7 @@ private fun UrlImportDialog(prefillUrl: String, onDismiss: () -> Unit, onConfirm
     var sha by remember { mutableStateOf("") }
     AuroraWindowDialog(
         show = true,
-        title = "从 URL 导入",
+        title = "从仓库下载",
         summary = "支持 https（含 GitHub raw）。建议填写 SHA-256 以校验完整性",
         onDismissRequest = onDismiss
     ) {
