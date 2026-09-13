@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import com.mixradio.droid.data.syntax.SyntaxPack
 import com.mixradio.droid.data.syntax.SyntaxPackStore
 import com.mixradio.droid.ui.theme.AuroraTextStyles
@@ -70,7 +71,9 @@ fun SyntaxPackDialog(
         show = show,
         title = "语法包",
         summary = "导入语法包压缩档（.zip，内含 index.json 与语法 JSON）；APK 不内置语法，导入后按扩展名生效",
-        onDismissRequest = onDismissRequest
+        onDismissRequest = onDismissRequest,
+        // 全宽：对齐 APP 主内容宽度（默认平台默认宽度会让窗口偏窄）
+        properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             if (packs.isEmpty()) {
@@ -146,27 +149,6 @@ fun SyntaxPackDialog(
             if (busy) {
                 Text("正在导入…", style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary,
                     modifier = Modifier.padding(top = 6.dp))
-            }
-            // 仓库语法包压缩档的永固直链（点击即预填 URL）
-            Text(
-                "仓库语法包（点击预填直链）",
-                style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary,
-                modifier = Modifier.padding(top = 10.dp)
-            )
-            LazyColumn(modifier = Modifier.fillMaxWidth().height(120.dp)) {
-                items(SyntaxPackUrls.PRESETS) { preset ->
-                    Text(
-                        "↓ ${preset.second}（${preset.first}）",
-                        style = AuroraTextStyles.footnote2, color = AuroraTokens.Accent,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .clickable {
-                                urlPrefill = preset.second
-                                showUrlInput = true
-                            }
-                            .padding(vertical = 3.dp)
-                    )
-                }
             }
         }
     }
@@ -342,9 +324,4 @@ object SyntaxPackUrls {
 
     /** 整包 zip（62 种语言 / 187 个扩展名 + 无扩展名文件名匹配）。 */
     const val PACK_ZIP = "https://raw.githubusercontent.com/$REPO/refs/tags/$TAG/syntax-packs.zip"
-
-    /** 弹窗里展示的快捷导入项：(说明, 直链)。 */
-    val PRESETS: List<Pair<String, String>> = listOf(
-        "全部 62 种语言" to PACK_ZIP
-    )
 }
