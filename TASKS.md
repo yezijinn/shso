@@ -14,155 +14,150 @@
 
 ---
 
-## 当前状态速览
+## 当前状态速览（2026-09-13）
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 `origin/main` 同步，HEAD `770af32` |
-| 单元测试 | **220 tests / 0 failures**（本轮新增 70 条，起点 150） |
+| 分支 | `main`，与 `origin/main` 同步，HEAD `0840624` |
+| 单元测试 | **233 tests / 0 failures** |
+| release 体积 | **2.09 MB**，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/**`） |
+| 编辑器内核 | **Sora Editor 0.23.6**（打开即可编辑；语法由外置语法包提供） |
+| 语法包 | **62 语言 / 187 扩展名**，`syntax-packs.zip`(37KB)，永固直链 tag **`syntaxpacks-v2`** |
 | 守卫模块 | **v1.2.0**（真机已装并验证拦截） |
-| 真机 | BIYLBAFQQSS8DA69（PacM00，Magisk，`su -c id` uid=0）|
-| 当前安全档位 | 设备上为 **0**（测试后已还原；验证拦截需切到 ≥2） |
-| 文档 | README / PROJECT.md / 本看板已同步至本轮结束状态 |
+| 真机 | BIYLBAFQQSS8DA69（PACM00 / Android 10 / 1080×2280 / 底部导航 y=2034） |
+| 当前安全档位 | 设备上为 **0**（验证拦截需切到 ≥2） |
 
 ---
 
 ## 待办
 
-### A. 立即动作
+### A. 本轮计划（编辑器与文件页体验）
 
-- [x] **推送 main 至 origin** —— 已推送 `bc9690e..73c8f0f`（9 个提交，含本次文档更新）
-  - `fef258c` 看板：排除「主页列表上限」误报
-  - `65c4f8f` 审查修复 11 项（正确性/崩溃/竞态/性能/UX）
-  - `32ca866` 编辑器批次（高亮移出主线程 / 分段按行对齐 / CR 归一 / 文件页首屏回归）
-  - `1a0a309` root 保存保权限与软链 / Pager 保留页 / 编辑历史按文件分区
-  - `42e725e` 安全第一轮（wrapper 绕过 / 加密混淆 / 格机原语 / 重定向 / 守卫 v1.2.0）
-  - `7301745` 安全第二轮（变量伪装程序名 / eval 载荷 / xargs / cp·mv / 守卫原子安装）
-  - `27c1b18` 原子安装失败清理 `.new`
-  - `f34eecb` 自动执行门控纯函数化 + truncated 兜底崩溃修复
+- [ ] **文件页搜索 / 过滤**（高）——当前无任何过滤入口，`/system/bin`（4000+ 项）只能滚动查找
+  - 目标：顶部搜索框，按名称子串过滤当前目录（大小写不敏感）；过滤在 `Dispatchers.Default` 计算，复用现有 `displayFileList` 管线
+  - 需处理：与多选状态、排序、面包屑切目录的交互（切目录清空过滤词）
+- [ ] **历史条目来源标记**（中）——`HistoryEntry` 只有 content+timestamp，草稿与手动保存点无法区分
+  - 目标：条目加来源（草稿 / 保存）与相对时间；恢复确认框显示来源
+- [ ] **语法包更新检测**（中）——直链固定到 tag，用户无法得知有新版本
+  - 目标：「检查更新」比对远端版本文件与本机导入版本，提示可更新
+- [ ] **长耗时批量操作进度反馈**（中）——多选复制/移动/删除无进度，界面表现为「无反应」
+  - 目标：操作中显示「处理中 N/M」并可取消；失败项汇总提示
+- [ ] 检查更新改用 GitHub API（低）——现用 `yezijinn/shso/tags` 页面 HTML 正则，页面结构变动即失效
+- [ ] 图标按钮补 `contentDescription`（低）——文字按钮已自带语义，仅图标按钮受影响
 
-### B. 观察项 / 待确认
-
-- [x] 主页「shso 目录文件」列表无显示上限 —— 已排除（真机下滑后 9 项齐全；先前是排序把新文件挤到折叠线以下）
-- [x] 「添加到 shso」的 `chmod 777` —— 刻意保留（便于其他应用读取）
-
-### C. 后续可选（未安排）
+### B. 安全后续（未安排）
 
 - [ ] **安全第三轮（可选）**：`GuardModuleInstaller` 卸载残留（`/data/adb/shso_guard/policy.conf` 与审计日志）；`ScriptAuditor` 跨行变量追踪；`$IFS` 之外的 shell 展开（`${x:-…}`、算术展开）
 - [ ] **内核级守卫（独立议题）**：PATH 前置型守卫无法拦绝对路径调用与 `PATH` 重置，彻底封堵需 seccomp/LSM hook
-- [ ] 未混淆 debug 包体积优化（DEX 主导，属独立议题）
+
+### C. 待决事项（需用户确认）
+
+1. 设备上的安全档位现为 **0**（测试后还原）。若要实际启用防护，请在设置中切到 **2/3**。
+2. `/data/adb/shso` 下用户自带的测试文件（`test.number.sh`、`num_*.txt`）是否清理 —— **未动**，等确认。
+3. 语法包更新需重打 tag（`syntaxpacks-v3`…）并同步 `SyntaxPackUrls.TAG` 常量。
 
 ---
 
-## 本轮已完成（2026-09-11 代码审查 + 安全加固）
+## 本轮已完成（2026-09-12 ~ 09-13：编辑器引擎与语法高亮系列）
 
-### 批次一：全量代码审查后修复（`65c4f8f`，11 项）
+### 批次 A：编辑器内核替换（Sora Editor）
 
-| # | 内容 | 位置 |
-|---|---|---|
-| 1 | 编辑器切编码静默丢编辑；读取失败仍可保存 → 文件截断为 0 字节 | `TextEditorDialog` |
-| 2 | `stat -c %n` 被误剥离 `" -> "`，含该串的真实文件名被截断（真机验证） | `RootFileManager:365` |
-| 3 | `\e[0;32m` 组合序列丢色 | `AnsiParser:342` |
-| 4 | 编码探测整读文件 → 超大文件 OOM | `ChunkedFileReader:64` |
-| 5 | `checkRoot` 超时无效 + 泄漏 `su` 进程 | `RootService:164` |
-| 6 | 切目录被旧加载结果覆盖 → 可能对错误路径操作（代次校验 + 取消旧任务） | `FilePage:183` |
-| 7 | 切目录不清多选 / 不归顶 | `FilePage:258` |
-| 8 | 终端首帧主线程全量解析 ANSI（≈200ms 卡帧） | `TerminalPage:124` |
-| 9 | LazyColumn key 含下标 → 列表重建 | `FilePage` / `BuiltInFilePicker` |
-| 10 | 每项每帧 `new SimpleDateFormat` | `FileItem:102` |
-| 11 | 扫描中/失败与空目录不可区分 | `HomePage:344` |
+- 以 **Sora Editor 0.23.6** 为唯一编辑面（`ui/components/SoraTextEditor.kt`）：**打开即可编辑**，移除「只读/编辑」切换
+- 文本驻留引擎内部（行索引增量 `Content`），**禁止把整串折回 Compose State**（旧卡顿根因）
+- 超过 `HIGHLIGHT_MAX_CHARS`（20 万字符）不设语法；巨型文件（>32MB）仍走只读稀疏索引浏览
+- 实测 4.0MB / 50002 行打开 841ms（旧实现卡顿甚至闪退）
 
-### 批次二：编辑器（`32ca866`）
+### 批次 B：语法高亮外置化（APK 零内置语法包）
 
-- 语法高亮移出主线程（停顿 120ms 后台计算）+ `VisualTransformation` 陈旧回退保护
-- 大文件分段读取按**完整行**对齐（新增纯函数 `ChunkedFileReader.lastCompleteLineEnd`），不再切断行/多字节字符
-- 载入时 CRLF/CR 归一为 LF（Compose 只按 `\n` 断行），保存时按原风格还原
-- **修复自身引入的回归**：`LaunchedEffect` 内 `scrollToItem` 挂起导致文件页首屏空白 → 改为按目录重建 `LazyListState`
+- **APK 不内置任何语法包**（体积优先）：`app/src/main/assets/sora-grammars/` 已删除，只保留配色主题
+- `tools/gen_syntax_packs.py` 生成 **62 语言 / 187 扩展名**（纯 Monarch JSON）→ 仓库根 `syntax-packs/` + `syntax-packs.zip`（含 `index.json` 声明扩展名与无扩展名文件名）
+- `data/syntax/SyntaxPackStore.kt`：zip 整包导入、SHA-256、上限（单文件 512KB / 整包 2MB）、先全量校验再落盘、清单格式向后兼容（7 列 / 8 列）
+- `ui/components/SyntaxPackDialog.kt`：导入 / 停用 / 删除 / 批量启停 / 汇总行 / 删除二次确认；预设仓库直链（tag 永固地址）
+- **按需注册**：只为命中的语法做解析（实测 7–47ms/个），不再首屏解析全部 62 个
 
-### 批次三：生命周期与存储（`1a0a309`）
+### 批次 C：语言标识统一 + 文件页可编辑范围
 
-- root 保存：解析软链真身、还原 `mode/uid/gid`、尽力 `restorecon`（旧行为会把 640 改成 644 并替换软链）
-- `HorizontalPager` 保留 4 页：切标签不再丢终端输入 / 文件页多选·滚动 / 风险确认弹窗
-- 编辑历史改为**每文件一个 key** + 旧数据自动迁移
+- `data/syntax/SyntaxPackTags.kt`：语言名/短标签**单一来源**（已导入语法包），保证「能否高亮 / 列表标签 / 顶栏语言名」一致
+- 文件列表标签由一律 `TXT` 改为具体语言（`.rs`→`RS`、`Dockerfile`→`DOCKER`）；顶栏显示 `Rust` 等
+- 编辑器可编辑扩展名白名单并入语法包覆盖的 135 个扩展名；**无扩展名与点开头文件**（`Dockerfile`/`.gitignore`）按文本处理
 
-### 批次四：安全加固（第 7 项，`42e725e` + `7301745` + `27c1b18` + `f34eecb`）
+### 批次 D：数据安全（保存 / 编码 / 替换）
 
-- **解析层**：wrapper 选项绕过（`timeout 5`/`sudo -u root`/`stdbuf -o0`）、重定向目标提取、`programUnresolved`（`$IFS` 拼命令）、`eval` 载荷展开、`xargs` 派发
-- **拦截规则**：加密/混淆（解码管道、`eval`+解码器、解释器内联解码、超长 base64、NUL 内容）、格机原语（分区表/刷机/mkfs/truncate/tee/sysrq-trigger）、`cp/mv/install` 写系统路径、重定向写块设备
-- **分级按来源**：脚本 `CRITICAL`（自动执行直接拒）/ 终端 `DANGEROUS`（可确认）
-- **fail-closed**：解析超限、>2MB 不可完整扫描、疑似加密 → 自动执行一律拒绝
-- **守卫 v1.2.0**：新增 9 个包装器；安装改**原子替换 + 失败回滚**；冷启动同步 `policy.conf` 的 `mode`；审计改用线程安全 formatter 并在写入前清除软链
+- **保存原子化**：临时文件放**目标同目录** + `renameTo`/`mv` 原子替换（跨文件系统 `mv` 非原子）；失败清理临时文件；root 记录并还原 `mode/uid/gid` + `restorecon`；软链先 `readlink -f`
+- **编码严格**：`data/TextEncoder.kt` 用 `CharsetEncoder`+`REPORT`，目标字符集无法表示的字符**拒绝保存**（原先静默变 `?` 损坏文件）
+- **替换/全部替换修复**：Sora 的 `replaceAll`/`replaceCurrentMatch` 在检索未结束时静默返回 → 改为「先检索 → 等结果集写入 → 再替换」，全部替换走完成回调并刷新快照
+- **另存为覆盖确认**：目标已存在时弹确认，取消不落盘
+- **草稿快照**（原「自动保存」）补守卫并正名：只写编辑历史、不写原文件；加载中/失败/只读时不抓取
 
-### 批次五：新增「提取 APK」（文件页设置菜单）
+### 批次 E：release 体积纠正
 
-- 文件页「设置」弹窗内新增 **「提取APK」**：列出已安装应用 → 导出安装包到内部存储 `Download/`
-- 命名（**后缀大写**）：基础包 `<应用名>-<版本号>.APK`；分包应用追加 `-split1.APK`、`-split2.APK`…
-- 默认只列用户应用，可切「含系统应用」；应用名非法字符净化；读取 `/data/app/...` 需 ROOT
-- 清单新增 `QUERY_ALL_PACKAGES`（否则 targetSdk 30+ 下 `getInstalledPackages()` 列表残缺）
-- 新增 `ApkExtractorTest` 7 例（命名 / 净化 / 单包与分包产物规划）
-- 真机验证：提取 `com.reveny.vbmetafix.service` → `Download/com.reveny.vbmetafix.service-1.APK`（3.15MB，魔数 `PK\x03\x04` 有效）
-- **未覆盖**：本机全量扫描无分包应用，分包分支由纯函数单测覆盖
+- 排除 `jcodings`（`joni` ← `regex-lib-oniguruma`）的 **648 个编码转换表** `tables/**`（2.9MB 原始 / 1.24MB 压缩）→ release **3.41MB → 2.09MB**
+- 新增编译期红线 `verifyReleasePayload`：禁语法包 / `tables/**` / 含 `"tokenizer"` 的 JSON，体积 ≤2.2MB，违反即中断构建（已反向验证）
 
-### 批次六：分包 APK 可直接安装（修复「提取出来却装不上」）
+---
 
-- **根因**：点 `.APK` 走单文件 `pm install`，分包应用必失败（`INSTALL_FAILED_MISSING_SPLIT`）；
-  会话安装 `installSplitApks()` 早已存在，但只有 `.xapk` 路径调用
-- **做法**：安装前 `collectApkSet()` 聚合同目录同一套件 —— 主判定命名约定
-  （`<名>-<版本>.APK` + `-splitN`，即本 App 提取产物的命名），次判定 manifest 的
-  「同包名 + 同版本号」（覆盖 SAI/MT 的 `split_config.*.apk`）；`bases.size != 1` 退回单文件
-- **点 base 或点任意 split 都装整套**；无 ROOT 时识别出分包给出明确提示而非 `MISSING_SPLIT`
-- 新增 `ApkInstallerSetTest` 8 例；单测 212 → 220
-- 真机验证：`WhatsApp-263507522.APK` + 3 个 `-splitN.APK`（92MB）经 shso 安装成功，
-  `pm path com.whatsapp` 返回 base + `split_config.armeabi_v7a` + `split_config.xhdpi` + `split_i18n_ko`
-- 验证后已 `pm uninstall` 还原设备（测试前该应用本就未安装）
+## 历史批次（2026-09-11：安全加固 + 审查修复）
 
-### 验证（真机闭环）
+> 详细过程与证据见 `docs/archive/TASKS-old-20260911-v18final.md`。
 
-| 链路 | 证据 |
-|---|---|
-| 运行时守卫拦截 | `enforce` 下 `rm/chmod/chown/sgdisk/mkfs/mknod` 对 `/system`、`/dev/block`、`/data/adb/modules` 全部 `DENY(RC=1)`；`/sdcard` 放行 |
-| 守卫安装/升级 | v1.1.0 → v1.2.0 自动升级；删模块后走全新原子安装，无 `.new/.old` 残留；失败路径 A/B/C 均保留旧版 |
-| App 静态层（终端） | 输入 `r$IFSm -rf /system` → 弹窗 `[DANGEROUS] 命令名含未解析变量…` |
-| App 静态层（脚本） | 同内容 `.sh` 点「执行」→ 扫描显示 `第 2 行 [CRITICAL] …` |
-| 自动执行拒绝 | 「添加到 shso」触发 → 终端输出拦截原因、脚本未执行（`/system/bin/x` 不存在）、审计 `CRITICAL\|SCRIPT_FILE\|BLOCK\|UNRESOLVED_PROGRAM` |
-| 兜底分支 | 40KB 单行 → `LINE_TOO_COMPLEX` 拒绝；2.1MB → `SCRIPT_UNREADABLE` 拒绝；两者均落审计 |
+- **代码审查修复 11 项**（`65c4f8f`）：切编码丢编辑、`stat -c %n` 误剥离、编码探测 OOM、`checkRoot` 超时、切目录竞态、LazyColumn key、`SimpleDateFormat` 每帧新建等
+- **编辑器批次**（`32ca866`）：高亮移出主线程、分段按完整行对齐、CRLF 归一、修 `scrollToItem` 首屏空白回归
+- **生命周期与存储**（`1a0a309`）：root 保存保权限与软链、`HorizontalPager` 保留 4 页、编辑历史按文件分区
+- **安全加固**（`42e725e`/`7301745`/`27c1b18`/`f34eecb`）：wrapper 绕过、加密混淆、格机原语、重定向写块设备、按来源分级、fail-closed、守卫 v1.2.0 原子安装
+- **提取 APK / 分包安装**：`ApkInstaller.collectApkSet` 套件聚合 + `pm install-create/-write/-commit`
 
 ---
 
 ## 已定结论（避免反复推翻）
 
 1. **`/data/adb/shso` 必须 777** —— 需让其他应用自由读写；曾改 755，用户明确要求回退。
-2. **大文件阈值 128KB** —— 按低端机实测定（32/64KB 秒开；256KB 约 30s；2MB 数分钟无响应）。
-3. **release 已开启 R8 + shrinkResources** —— 资源会被重命名为随机短名，**不要按 APK 内资源名反查源码资源**。
-4. **`Process.pid()` 在 Android 不存在** —— 取子进程 pid 只能反射；中断正确性由**进程组回收**保证。
-5. **编辑器载入归一为 LF、保存按 `currentLineEnding` 还原** —— 改 `LineEnding.apply` 需同步该契约。
-6. **风险等级一律按来源分级** —— 混淆/未解析类在 `SCRIPT_FILE` 为 `CRITICAL`（自动执行拒），`USER_TERMINAL` 为 `DANGEROUS`（可确认）；不要为「统一」而抹平。
-7. **守卫是 PATH 前置型，能力有边界** —— 绝对路径调用与 `PATH` 重置可绕过；不要据此认为「装了守卫就万无一失」。
-8. **新增守卫包装器必须三处同步** —— `gen_wrappers.py` specs、`assets/shso_guard.zip`、`REQUIRED_ARCHIVE_ENTRIES`，并升 `module.prop` 版本。
-9. **不要在 `LaunchedEffect` 里直接 `scrollToItem`** —— 列表未组合时会挂起并阻塞后续逻辑。
-10. **档位 ≤1 时策略层一律放行** —— 验证拦截必须用档位 ≥2。
-11. **分包安装必须走 `pm install-create/-write/-commit` 且分片先拷到 `/data/local/tmp`** —— 真机实测 `install-write` 直接读 `/storage` 会被 SELinux 拒绝（system_server 无权读 emulated 存储）；单文件 `pm install` 对分包应用必定 `INSTALL_FAILED_MISSING_SPLIT`。
-12. **套件聚合宁少勿错** —— `collectApkSet` 定位不到唯一基础包时必须退回单文件安装，绝不猜测（否则会把两份同包同版本的基础包塞进一个会话）。
+2. **release 已开启 R8 + shrinkResources** —— 资源会被重命名为随机短名，**不要按 APK 内资源名反查源码资源**。
+3. **`Process.pid()` 在 Android 不存在** —— 取子进程 pid 只能反射；中断正确性由**进程组回收**保证。
+4. **编辑器载入归一为 LF、保存按 `currentLineEnding` 还原** —— 改 `LineEnding.apply` 需同步该契约。
+5. **风险等级一律按来源分级** —— 混淆/未解析类在 `SCRIPT_FILE` 为 `CRITICAL`（自动执行拒），`USER_TERMINAL` 为 `DANGEROUS`（可确认）。
+6. **守卫是 PATH 前置型，能力有边界** —— 绝对路径调用与 `PATH` 重置可绕过；不要据此认为「装了守卫就万无一失」。
+7. **新增守卫包装器必须三处同步** —— `gen_wrappers.py` specs、`assets/shso_guard.zip`、`REQUIRED_ARCHIVE_ENTRIES`，并升 `module.prop` 版本。
+8. **不要在 `LaunchedEffect` 里直接 `scrollToItem`** —— 列表未组合时会挂起并阻塞后续逻辑。
+9. **档位 ≤1 时策略层一律放行** —— 验证拦截必须用档位 ≥2。
+10. **分包安装必须走 `pm install-create/-write/-commit` 且分片先拷到 `/data/local/tmp`**。
+11. **套件聚合宁少勿错** —— `collectApkSet` 定位不到唯一基础包时退回单文件安装，绝不猜测。
+12. **APK 不得内置语法包** —— 语法由用户导入（本地 zip / 仓库直链）；`verifyReleasePayload` 为强制红线，确需上调体积上限须连同理由一起改常量。
+13. **保存必须原子** —— 临时文件与目标**同目录**、`renameTo`/`mv` 覆盖、还原 `mode/uid/gid`、失败清理；禁止直接 `writeBytes` 到目标。
+14. **编码必须严格** —— 用 `CharsetEncoder` + `REPORT`；禁止 `String.toByteArray(charset)` 的静默 `?` 替换。
+15. **Sora 的检索与替换都是异步的** —— `replaceAll/replaceCurrentMatch` 在检索未结束（`isResultValid()==false`）时只弹 Toast 后返回；任何「搜索后立即读结果/替换」都必须先等结果集写入。
+16. **`packaging.resources.excludes` 必须保留 `"tables/**"`** —— jcodings 的 648 个编码表会打进 APK 根目录（1.24MB）；正则只用 UTF-8/ASCII-8BIT 内建编码，不查表。
+17. **语法解析器顺序不可颠倒** —— `FileProviderRegistry.addProvider` 先应用私有目录、后 assets；`AssetsFileResolver` 对缺失路径不捕获异常，排在前面会中断整条解析链。
+18. **Monarch 主题必须覆盖语法用到的全部令牌作用域**（含 `identifier`、`attribute`）—— 未匹配令牌落回黑色；主题加载失败时不启用语法。
 
 ---
 
-## 待决事项（需用户确认）
+## 校验与验证命令
 
-1. 设备上的安全档位现为 **0**（测试后还原）。若要实际启用防护，请在设置中切到 **2/3**。
-2. `/data/adb/shso` 下用户自带的测试文件（`test.number.sh`、`num_*.txt` 2MB/1MB）是否清理 —— **未动**，等确认。
+```bash
+export MSYS_NO_PATHCONV=1
+export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot'
+
+./gradlew :app:testDebugUnitTest :app:assembleDebug          # 基线 233 tests / 0 failures
+./gradlew :app:assembleRelease                               # 含 verifyReleasePayload 红线校验
+python tools/gen_syntax_packs.py                             # 重新生成语法包（syntax-packs/ + syntax-packs.zip）
+
+adb -s BIYLBAFQQSS8DA69 install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s BIYLBAFQQSS8DA69 shell "logcat -d -s shso-perf"       # 语法就绪/注册日志
+adb -s BIYLBAFQQSS8DA69 shell "su -c 'ls -ld /data/adb/shso'"        # 权限应为 777
+adb -s BIYLBAFQQSS8DA69 shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.prop'"
+```
 
 ---
 
 ## 真机与环境备忘
 
-### 真机操作（BIYLBAFQQSS8DA69，**性能较弱**）
+### 真机操作（BIYLBAFQQSS8DA69，PACM00 / Android 10 / 1080×2280）
 
-- **每次点击后等 3–5 秒**再执行下一步，否则容易误操作（页面未切换完成）。
-- 底部导航坐标：`主页 153 / 终端 411 / 文件 669 / 设置 927`，y = `2034`。
-- 文件页到 `/data/adb/shso`：直接点顶栏「shso」面包屑（约 `625,174`）。
-- 文件页默认目录是「内部存储」（`/storage/emulated/0`）；要找文件需先下滑（目录恒在文件之前）。
-- 文件的**单击**=动作菜单（含「添加到shso」「执行」等在行内/菜单内），**长按**=多选模式弹窗。
-- 输入法已关闭（不会因聚焦输入框弹起），布局稳定。
+- 底部导航坐标：`主页 153 / 终端 411 / 文件 669 / 设置 927`，y = `2034`；点击后等 3–5 秒。
+- 文件页默认「内部存储」；目录恒排在文件之前。
+- 文件**单击**=动作菜单（含「编辑文本」），**长按**=多选模式。
+- 截图前先 `input keyevent KEYCODE_WAKEUP`，否则可能得到黑屏。
+- 清理 `/sdcard` 测试文件需 `su -c`（应用 push 的文件属 root，adb shell 直接删会失败）。
 
 ### 环境坑（会导致误判，务必注意）
 
@@ -171,30 +166,16 @@
 | Git Bash MSYS 路径转换 | `adb push <local> /data/...` 会被改成 `C:/Program Files/Git/data/...` → 必须 `export MSYS_NO_PATHCONV=1` |
 | `adb install` 相对路径 | 需要绝对路径（shell 不保留上一条命令的 `cd`），否则 `failed to stat` |
 | Android mksh 算术是 **32 位** | `date +%s%N` 参与 `$(( ))` 被截断 → 真机计时用 POSIX `time` |
-| toybox `file` **不支持 `-b`** | 传 `-b` 只输出错误文本；`cat` 也不支持 `-A` |
-| 应用 uid 写 `/data/adb/` 受 **SELinux** 限制 | 即便 `chmod 777`，`run-as` 仍 `Permission denied` → 判可写性必须实测 |
-| uiautomator dump 不含视口外内容 | 长列表超出视口（含普通 `Column + verticalScroll` 的项）**不会**出现在 dump 里；据此判断「列表被截断」是误报 |
-| 用 `su -c` 传含 `$`/`\` 的脚本内容 | 多层引号会被吃掉（曾把 `r$IFSm` 写成 `r\`）→ 改用「本地写文件 → push → `cp`」 |
-| `addFileToShso` 源与目标同目录 | `cp` 同文件失败 → 触发自动执行的测试样本必须放在 shso 目录**之外** |
-
-### 验证命令速查
-
-```bash
-export MSYS_NO_PATHCONV=1
-adb -s BIYLBAFQQSS8DA69 shell "su -c 'ls -ld /data/adb/shso'"                       # 权限应为 777
-adb -s BIYLBAFQQSS8DA69 shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.prop'"
-adb -s BIYLBAFQQSS8DA69 shell "su -c 'grep -E \"^[[:space:]]*mode\" /data/adb/shso_guard/policy.conf'"
-# 守卫拦截检查（dangerous 命令应 RC=1）
-adb -s BIYLBAFQQSS8DA69 shell "su -c 'export PATH=/data/adb/modules/shso_guard/guard:/sbin:/system/bin; rm -rf /system/__probe__; echo RC=\$?'"
-./gradlew :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
-python build_apk.py --variant Debug --skip-check                                    # 含签名 + 版本规则校验
-```
+| toybox `file` 不支持 `-b`，`cat` 不支持 `-A` | 传了只输出错误文本 |
+| 应用 uid 写 `/data/adb/` 受 **SELinux** 限制 | 即便 `chmod 777` 仍可能 `Permission denied` → 判可写性必须实测 |
+| uiautomator dump 不含视口外内容 | 长列表超出视口的内容不会出现在 dump 里，据此判断「列表被截断」是误报 |
+| **uiautomator bounds 对 Compose 文本按钮纵向偏上**（实测约 70px） | 报 `[x1,521][x2,624]`，实际命中区在 590–610；按 bounds 中心点击会「点了没反应」，先做 y 方向小范围扫描再判定 |
+| 用 `su -c` 传含 `$`/`\` 的脚本内容 | 多层引号会被吃掉 → 改用「本地写文件 → push → `cp`」 |
+| Windows 控制台显示 Gradle 中文输出为乱码 | 仅显示问题，日志文件本身是 UTF-8；用 Python 读日志核对 |
 
 ---
 
 ## 旧看板
-
-过程记录，仅供追溯：
 
 | 文件 | 涵盖范围 |
 |---|---|
