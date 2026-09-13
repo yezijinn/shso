@@ -39,7 +39,9 @@ import kotlin.math.roundToInt
  */
 
 /**
- * 对刚加载的文件列表应用视图偏好：按需过滤隐藏文件，目录恒在最前，按名称/时间升/降序。
+ * 对刚加载的文件列表应用视图偏好：按需过滤隐藏文件与名称关键字，目录恒在最前，按名称/时间升/降序。
+ *
+ * [nameQuery] 为空表示不过滤；非空时按名称子串（大小写不敏感）过滤，用于文件页搜索框。
  *
  * 名称排序键在排序前一次性预计算（O(N) 次 `lowercase`）。若写成
  * `compareBy { it.name.lowercase(...) }`，比较器每次比较都要新建临时字符串，
@@ -48,9 +50,14 @@ import kotlin.math.roundToInt
 internal fun applyFileViewSettings(
     list: List<FileItem>,
     showHiddenFiles: Boolean,
-    sortMode: Int
+    sortMode: Int,
+    nameQuery: String = ""
 ): List<FileItem> {
-    val filtered = if (showHiddenFiles) list else list.filterNot { it.name.startsWith(".") }
+    val byHidden = if (showHiddenFiles) list else list.filterNot { it.name.startsWith(".") }
+    // 名称过滤与排序合并为一次 O(N) 后台遍历（大小写不敏感、子串匹配）；
+    // 单独再跑一趟 filter 会让大目录（数千项）多一次全量分配。
+    val query = nameQuery.trim().lowercase(Locale.getDefault())
+    val filtered = if (query.isEmpty()) byHidden else byHidden.filter { it.name.lowercase(Locale.getDefault()).contains(query) }
     val directories = filtered.filter { it.isDirectory }
     val files = filtered.filterNot { it.isDirectory }
 

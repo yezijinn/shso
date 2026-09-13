@@ -9,6 +9,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -32,6 +34,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
@@ -121,6 +124,10 @@ fun FilePage(
     // 过滤+排序后的展示列表：在 Dispatchers.Default 计算后写入，组合期不再做 O(N log N) 排序
     var displayFileList by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
+    // 名称过滤（搜索）：只过滤当前目录的展示列表，切目录即清空；
+    // 过滤与排序在同一次后台遍历里完成（见 applyFileViewSettings(nameQuery)）。
+    var showSearch by remember { mutableStateOf(false) }
+    var nameQuery by remember { mutableStateOf("") }
     var directoryLoadFailed by remember { mutableStateOf(false) }
 
     // 执行确认：点击「执行」先暂存待执行文件，弹窗确认后再真正执行
@@ -213,7 +220,7 @@ fun FilePage(
                 val showHidden = appSettings.showHiddenFiles
                 val sortMode = appSettings.fileSortMode
                 val display = withContext(Dispatchers.Default) {
-                    applyFileViewSettings(loaded, showHidden, sortMode)
+                    applyFileViewSettings(loaded, showHidden, sortMode, nameQuery)
                 }
                 // 已有更新的刷新接替（切目录或重复刷新）：本次结果过期，直接丢弃。
                 if (gen != refreshGenRef[0]) return@launch
@@ -304,13 +311,19 @@ fun FilePage(
     }
 
     // 隐藏文件 / 排序偏好变化时后台重算展示列表，无需重新列目录
-    LaunchedEffect(appSettings.showHiddenFiles, appSettings.fileSortMode) {
+    LaunchedEffect(appSettings.showHiddenFiles, appSettings.fileSortMode, nameQuery) {
         val source = fileList
         val showHidden = appSettings.showHiddenFiles
         val sortMode = appSettings.fileSortMode
+        val query = nameQuery
         displayFileList = withContext(Dispatchers.Default) {
-            applyFileViewSettings(source, showHidden, sortMode)
+            applyFileViewSettings(source, showHidden, sortMode, query)
         }
+    }
+
+    // 切目录清空过滤词：否则新目录会沿用旧关键字，表现为「目录打不开」（实为空结果）
+    LaunchedEffect(currentDirectory) {
+        if (nameQuery.isNotEmpty()) nameQuery = ""
     }
 
     val listFontSize = appSettings.fileListFontSize.sp
@@ -394,6 +407,29 @@ fun FilePage(
                     )
                 }
 
+                // 搜索：展开/收起名称过滤栏（仅过滤当前目录）
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(0.dp))
+                        .background(
+                            if (showSearch) AuroraTokens.Accent.copy(alpha = 0.18f) else AuroraTokens.SurfaceHover
+                        )
+                        .clickable {
+                            showSearch = !showSearch
+                            if (!showSearch) nameQuery = ""
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Search,
+                        contentDescription = "搜索当前目录",
+                        tint = if (showSearch) AuroraTokens.Accent else AuroraTokens.Text,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -418,6 +454,61 @@ fun FilePage(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            // 搜索栏：只过滤当前目录的展示列表，不改变目录本身
+            if (showSearch) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(AuroraTokens.Surface)
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(34.dp)
+                            .clip(RoundedCornerShape(0.dp))
+                            .background(AuroraTokens.SurfaceHover)
+                            .padding(horizontal = 10.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        if (nameQuery.isEmpty()) {
+                            Text(
+                                "输入名称筛选（子串匹配）",
+                                style = AuroraTextStyles.footnote1,
+                                color = AuroraTokens.TextDisabled
+                            )
+                        }
+                        BasicTextField(
+                            value = nameQuery,
+                            onValueChange = { nameQuery = it },
+                            singleLine = true,
+                            textStyle = AuroraTextStyles.body2.copy(color = AuroraTokens.Text),
+                            cursorBrush = SolidColor(AuroraTokens.Accent),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    // 匹配数：过滤时即时反馈，避免「列表空了」被误判为目录为空
+                    if (nameQuery.isNotEmpty()) {
+                        Text(
+                            text = displayFileList.size.toString() + " 项",
+                            style = AuroraTextStyles.footnote1,
+                            color = if (displayFileList.isEmpty()) AuroraTokens.Warning else AuroraTokens.Accent
+                        )
+                    }
+                    Text(
+                        text = "✕",
+                        style = AuroraTextStyles.body2,
+                        color = AuroraTokens.TextSecondary,
+                        modifier = Modifier.clickable {
+                            nameQuery = ""
+                            showSearch = false
+                        }
+                    )
+                }
+            }
+
             // 路径行：独占一整行，固定可容纳两行文本的高度，点击仍弹「跳转路径」
             Box(
                 modifier = Modifier
@@ -555,7 +646,7 @@ fun FilePage(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = "当前目录为空",
+                            text = if (nameQuery.isNotEmpty()) "无匹配项：" + nameQuery else "当前目录为空",
                             style = AuroraTextStyles.body2,
                             color = AuroraTokens.TextSecondary
                         )
