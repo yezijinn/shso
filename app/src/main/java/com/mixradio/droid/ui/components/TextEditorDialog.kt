@@ -82,6 +82,7 @@ import java.nio.charset.Charset
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.ChunkedFileReader
 import com.mixradio.droid.data.SparseLineIndex
+import com.mixradio.droid.data.TextEncoder
 import com.mixradio.droid.data.IndexedLineProvider
 import com.mixradio.droid.data.FileSizeClass
 import com.mixradio.droid.data.syntax.SyntaxPackTags
@@ -830,13 +831,17 @@ internal fun buildRestoreAttrsCommand(statOutput: String, escapedPath: String): 
 }
 
 /**
- * 写入文本：root 走 /data/local/tmp 中转 + mv；无 root 直写。
+ * 写入文本：**临时文件 + 同目录 rename** 覆盖，保证原子性；root 走 root shell。
  *
- * root 路径的两处处理：
- *  1. 符号链接：`mv` 覆盖会把链接替换成普通文件。目标是软链时先 `readlink -f` 解析真实路径
- *     再写入真身，保持链接结构不变。
- *  2. 权限与属主：`mv` 后新文件沿用临时文件的 mode/owner（如 root:root 600）。
- *     写入前记录 `stat -c '%a %u %g'`，写入后还原，并尽力 `restorecon` 恢复 SELinux 上下文。
+ * 三处必须遵守的约束：
+ *  1. 原子性：临时文件必须与目标**同目录**（同文件系统），`renameTo`/`mv` 才是原子替换。
+ *     直接 `writeBytes` 到目标会先截断原文件——写入中途失败（磁盘满/进程被杀）即丢失原内容；
+ *     跨文件系统 `mv` 实为「复制 + 删除」，同样非原子。
+ *  2. 权限与属主：替换后新文件的 mode/owner 来自临时文件，故写入前记录 `stat -c '%a %u %g'`、
+ *     写入后还原，并尽力 `restorecon`；非 root 路径用 `Os.chmod` 还原原 mode。
+ *  3. 符号链接：`mv`/`rename` 覆盖会把链接替换成普通文件，故先 `readlink -f` 解析真实路径（root 路径）。
+ *
+ * 编码安全：[charset] 无法表示的字符**必须报错**而不是静默替换为 `?`（后者会悄悄损坏文件）。
  */
 private suspend fun writeTextFile(
     filePath: String, text: String, charset: java.nio.charset.Charset,
@@ -844,18 +849,11 @@ private suspend fun writeTextFile(
 ): Pair<Boolean, String?> = withContext(Dispatchers.IO) {
     try {
         val finalText = LineEnding.apply(text, lineEnding)
-        val bytes = if (writeBom && (charset == Charsets.UTF_8 || charset == Charsets.UTF_16LE || charset == Charsets.UTF_16BE)) {
-            // 拼接 BOM
-            val bom = when (charset) {
-                Charsets.UTF_8 -> byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
-                Charsets.UTF_16LE -> byteArrayOf(0xFF.toByte(), 0xFE.toByte())
-                Charsets.UTF_16BE -> byteArrayOf(0xFE.toByte(), 0xFF.toByte())
-                else -> byteArrayOf()
-            }
-            bom + finalText.toByteArray(charset)
-        } else {
-            finalText.toByteArray(charset)
-        }
+        // 严格编码：不可映射字符（如用 GBK/ISO-8859-1 保存时输入了该字符集没有的字符）直接失败，
+        // 不能走 String.getBytes 的静默 `?` 替换——那会让用户在毫无提示的情况下丢内容。
+        val bytes = TextEncoder.encode(finalText, charset, writeBom)
+            .getOrElse { return@withContext Pair(false, it.message ?: "编码失败") }
+        val suffix = "${System.nanoTime()}_${kotlin.random.Random.nextInt(1000, 9999)}"
 
         if (RootService.isRootGranted == true) {
             // 解析真实路径（软链写入真身，不替换链接）；readlink 不可用/非软链时退回原路径
@@ -870,14 +868,16 @@ private suspend fun writeTextFile(
                 "stat -c '%a %u %g' $escapedTarget 2>/dev/null", 10_000L
             )
 
-            val tmpFile = "/data/local/tmp/_shso_edit_${System.currentTimeMillis()}.tmp"
+            // 临时文件放在目标同目录：跨文件系统 mv 等于复制+删除，失败会留下半截文件
+            val targetDir = resolved.substringBeforeLast('/', "/").ifEmpty { "/" }
+            val tmpFile = "$targetDir/.shso_edit_$suffix.tmp"
+            val escapedTmp = RootService.escapeShellArg(tmpFile)
             val writeOk = RootService.writeBytesAsRoot(tmpFile, bytes)
             if (!writeOk) return@withContext Pair(false, "写入临时文件失败")
-            val (mvCode, mvOut) = RootService.runCommandSync(
-                "mv ${RootService.escapeShellArg(tmpFile)} $escapedTarget",
-                60_000L
-            )
+            val (mvCode, mvOut) = RootService.runCommandSync("mv $escapedTmp $escapedTarget", 60_000L)
             if (mvCode != 0) {
+                // 失败时清理临时文件，避免在系统目录留下垃圾
+                RootService.runCommandSync("rm -f $escapedTmp", 10_000L)
                 return@withContext Pair(false, "保存失败: ${mvOut.trim().ifEmpty { "未知错误" }}")
             }
 
@@ -889,7 +889,24 @@ private suspend fun writeTextFile(
             RootService.runCommandSync("restorecon $escapedTarget 2>/dev/null", 30_000L)
             Pair(true, null)
         } else {
-            File(filePath).writeBytes(bytes)
+            // 同目录临时文件 + rename：同文件系统内 rename 为原子替换，写失败不影响原文件
+            val target = File(filePath)
+            val parent = target.parentFile ?: return@withContext Pair(false, "无法确定目标目录")
+            val tmp = File(parent, ".${target.name}.shso_$suffix.tmp")
+            val originalMode = if (target.exists()) {
+                runCatching { android.system.Os.stat(target.absolutePath).st_mode }.getOrNull()
+            } else null
+            try {
+                tmp.writeBytes(bytes)
+                if (originalMode != null) runCatching { android.system.Os.chmod(tmp.absolutePath, originalMode) }
+                if (!tmp.renameTo(target)) {
+                    tmp.delete()
+                    return@withContext Pair(false, "保存失败: 无法替换原文件")
+                }
+            } catch (t: Throwable) {
+                tmp.delete()
+                throw t
+            }
             Pair(true, null)
         }
     } catch (e: Exception) { Pair(false, "保存失败: ${e.message}") }
