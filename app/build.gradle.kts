@@ -219,7 +219,9 @@ val verifyReleasePayload = tasks.register("verifyReleasePayload") {
     // 校验逻辑在 doLast 里读取 APK 内容，闭包会引用脚本对象，故声明为配置缓存不兼容
     // （仅在执行 assembleRelease 时触发，代价是本次构建不复用配置缓存）。
     notCompatibleWithConfigurationCache("校验任务读取 APK 内容，闭包引用脚本对象")
-    inputs.file(releaseApkFile).withPropertyName("apk").optional()
+    // 不在 inputs 声明 APK 文件：声明为输入会在 APK 尚未产出时（如 Android Studio “Generate Signed APK”
+    // 向导指定了自定义输出路径，或生成的是 AAB 而非 APK）触发 “Input file does not exist” 校验失败。
+    // 文件缺失由 doLast 内的存在性检查兜底（打印“跳过”后 return）。
     doLast {
         val apk = releaseApkFile.get().asFile
         if (!apk.exists()) {
