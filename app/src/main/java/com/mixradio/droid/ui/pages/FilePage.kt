@@ -34,7 +34,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
@@ -403,29 +402,6 @@ fun FilePage(
                         } else {
                             AuroraTokens.Text
                         },
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
-                // 搜索：展开/收起名称过滤栏（仅过滤当前目录）
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(36.dp)
-                        .clip(RoundedCornerShape(0.dp))
-                        .background(
-                            if (showSearch) AuroraTokens.Accent.copy(alpha = 0.18f) else AuroraTokens.SurfaceHover
-                        )
-                        .clickable {
-                            showSearch = !showSearch
-                            if (!showSearch) nameQuery = ""
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Search,
-                        contentDescription = "搜索当前目录",
-                        tint = if (showSearch) AuroraTokens.Accent else AuroraTokens.Text,
                         modifier = Modifier.size(20.dp)
                     )
                 }
@@ -911,6 +887,12 @@ fun FilePage(
                 }
             },
             allFilesSelected = allFilesSelected,
+            onSearchRequest = {
+                // 搜索入口从文件页顶部移入此处：打开名称过滤栏（仅过滤当前目录）。
+                // 关闭弹窗再展开，避免弹窗遮挡搜索栏；保留当前 nameQuery 以便续筛。
+                showFileSettingsDialog = false
+                showSearch = true
+            },
             onExtractApkRequest = {
                 showFileSettingsDialog = false
                 showExtractApkDialog = true
