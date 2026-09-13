@@ -611,21 +611,34 @@ private fun TextEditorDialogContent(
                 }
             }
         },
+        // 替换**必须先等检索完成**：Sora 的 replaceAll/replaceCurrentMatch 在检索线程未结束时
+        // 判定 isResultValid()==false 后直接 Toast 返回，不做任何修改（曾出现「点了全部替换没反应」）。
         onReplace = { original, replacement ->
-            if (findQuery != original) {
-                findQuery = original
+            findQuery = original
+            soraEditor.search(original, caseInsensitive = false)
+            scope.launch {
+                if (!awaitSearchDone(soraEditor)) { toastMessage = "未找到「$original」"; return@launch }
+                soraEditor.replaceCurrentMatch(replacement)
+                syncSnapshot()
+                dirty = true; textRevision++
+                // 结果集在文本变更后失效，重新检索以刷新匹配数与高亮
                 soraEditor.search(original, caseInsensitive = false)
             }
-            soraEditor.replaceCurrentMatch(replacement)
-            dirty = true; textRevision++
         },
         onReplaceAll = { original, replacement ->
-            if (findQuery != original) {
-                findQuery = original
-                soraEditor.search(original, caseInsensitive = false)
+            findQuery = original
+            soraEditor.search(original, caseInsensitive = false)
+            scope.launch {
+                if (!awaitSearchDone(soraEditor)) { toastMessage = "未找到「$original」"; return@launch }
+                val total = soraEditor.searcherMatchCount()
+                // 完成后才读新文本：同步惰性快照（否则匹配数/统计仍是替换前的内容），再刷新检索
+                soraEditor.replaceAll(replacement) {
+                    syncSnapshot()
+                    dirty = true; textRevision++
+                    toastMessage = "已替换 $total 处"
+                    soraEditor.search(original, caseInsensitive = false)
+                }
             }
-            soraEditor.replaceAll(replacement)
-            dirty = true; textRevision++
         },
         onDismiss = { soraEditor.stopSearch(); showFindReplaceDialog = false }
     )
@@ -1320,8 +1333,24 @@ private fun EditorStatusBar(
  */
 private const val LARGE_EDIT_STATS_SKIP_CHARS = 200_000
 
-/** 文本处理结果只剩 1 行时的「超长单行」提示阈值（字符）。 */
-private const val VERY_LONG_SINGLE_LINE_CHARS = 64_000
+/** 检索轮询间隔（ms）与等待上限（ms）：Sora 检索在后台线程执行，结束后才一次性写入结果集。 */
+private const val SEARCH_POLL_MS = 30L
+private const val SEARCH_WAIT_TIMEOUT_MS = 3_000L
+
+/**
+ * 等待 Sora 检索完成。
+ *
+ * 完成判据用「结果集非空」：`EditorSearcher$SearchRunnable` 只在检索结束时写入 `lastResults`。
+ * 0 处匹配无法与「检索中」区分（都读到 0），故由 [SEARCH_WAIT_TIMEOUT_MS] 兜底并返回 false，
+ * 调用方据此提示「未找到」而不是静默失败。
+ */
+private suspend fun awaitSearchDone(editor: SoraEditorController): Boolean =
+    kotlinx.coroutines.withTimeoutOrNull(SEARCH_WAIT_TIMEOUT_MS) {
+        while (editor.searcherMatchCount() <= 0) kotlinx.coroutines.delay(SEARCH_POLL_MS)
+        true
+    } ?: false
+
+/** 文本处理结果只剩 1 行时的「超长单行」提示阈值（字符）。 */private const val VERY_LONG_SINGLE_LINE_CHARS = 64_000
 
 /** 查找匹配计数的显示上限：超过后只统计到此值，避免极端命中时长时间全量扫描。 */
 private const val MATCH_COUNT_LIMIT = 5_000
