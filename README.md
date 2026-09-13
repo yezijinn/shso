@@ -18,6 +18,12 @@ Android ROOT 环境下的图形化执行工具：运行 `.sh` 脚本与 `.so` / 
 权限模型：普通权限可完成的操作不强制 ROOT；已授权时优先使用 ROOT，
 否则回退 `java.io.File`。
 
+## 自定义包名与在线编译
+
+默认包名 `com.mixradio.droid` 可改为你自己的包名，用 GitHub Actions 在网页上一键编译 APK，无需本地安装 Android Studio / SDK。
+
+步骤：Fork 本仓库 → 进入 `Actions` → 运行「在线编译 APK（自定义包名）」→ 填写包名 → 下载产物。完整说明见 [`docs/在线编译.md`](docs/在线编译.md)。
+
 ## 文档
 
 | 文档 | 内容 |
