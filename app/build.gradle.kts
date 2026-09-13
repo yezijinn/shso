@@ -3,6 +3,7 @@
 
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import java.util.zip.ZipFile
 
 plugins {
     alias(libs.plugins.androidApplication)
@@ -201,4 +202,62 @@ tasks.matching {
     it.name.startsWith("merge") && it.name.endsWith("Assets")
 }.configureEach {
     enabled = true
+}
+
+/**
+ * release 体积红线（编译期强制，不做静默降级）。
+ *
+ * 约定：**APK 不携带任何语法高亮包**——语法由用户在线下载后导入（见 ui/components/SyntaxPackDialog.kt），
+ * 编译产物中只允许存在配色主题。同时禁止把无关的数据表打进包（jcodings 的 648 个编码转换表曾贡献 1.24MB）。
+ * 体积上限用于在无意引入大依赖时中断构建，确需上调请连同理由一起改本常量。
+ */
+val releasePayloadMaxBytes = 2_200_000L
+val releaseApkFile = layout.buildDirectory.file("outputs/apk/release/app-release.apk")
+
+val verifyReleasePayload = tasks.register("verifyReleasePayload") {
+    group = "verification"
+    description = "校验 release APK 不携带语法包/无关数据表，且体积不超红线"
+    // 校验逻辑在 doLast 里读取 APK 内容，闭包会引用脚本对象，故声明为配置缓存不兼容
+    // （仅在执行 assembleRelease 时触发，代价是本次构建不复用配置缓存）。
+    notCompatibleWithConfigurationCache("校验任务读取 APK 内容，闭包引用脚本对象")
+    inputs.file(releaseApkFile).withPropertyName("apk").optional()
+    inputs.property("maxBytes", releasePayloadMaxBytes)
+    doLast {
+        val apk = releaseApkFile.get().asFile
+        if (!apk.exists()) {
+            println("verifyReleasePayload: 未找到 release APK，跳过")
+            return@doLast
+        }
+        val problems = mutableListOf<String>()
+        ZipFile(apk).use { zip ->
+            zip.entries().asSequence().forEach { e ->
+                val name = e.name
+                if (name.startsWith("assets/sora-grammars/") || name.contains("syntax-packs")) {
+                    problems += "内嵌语法包文件：$name"
+                }
+                if (name.startsWith("tables/")) {
+                    problems += "无关数据表：$name"
+                }
+                if (e.size in 1L..2_000_000L && (name.endsWith(".json") || name.contains("grammar", true))) {
+                    val text = zip.getInputStream(e).use { it.readBytes().decodeToString() }
+                    if ("\"tokenizer\"" in text) problems += "内嵌语法定义（含 tokenizer 字段）：$name"
+                }
+            }
+        }
+        val size = apk.length()
+        if (size > releasePayloadMaxBytes) {
+            problems += "体积 ${"%.2f".format(size / 1048576.0)}MB 超过红线 ${"%.2f".format(releasePayloadMaxBytes / 1048576.0)}MB"
+        }
+        if (problems.isNotEmpty()) {
+            throw GradleException(
+                "release 产物校验失败：\n" + problems.joinToString("\n") { "  - $it" } +
+                    "\n语法高亮包必须由用户导入，不得随 APK 分发。"
+            )
+        }
+        println("verifyReleasePayload: 通过（体积 ${"%.2f".format(size / 1048576.0)}MB，无语法包、无数据表）")
+    }
+}
+
+tasks.matching { it.name == "assembleRelease" }.configureEach {
+    finalizedBy(verifyReleasePayload)
 }
