@@ -41,6 +41,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 
 /**
  * 原生对话框：深空蓝玻璃底 + 20dp 圆角 + 1dp 发丝描边，
@@ -55,11 +56,13 @@ fun AuroraWindowDialog(
     summary: String? = null,
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
+    /** 透传给底层 [Dialog]；需全宽（如语法包窗口对齐 APP 宽度）时传 `usePlatformDefaultWidth = false`。 */
+    properties: DialogProperties = DialogProperties(),
     content: @Composable () -> Unit,
 ) {
     if (!show) return
 
-    Dialog(onDismissRequest = onDismissRequest) {
+    Dialog(onDismissRequest = onDismissRequest, properties = properties) {
         Surface(
             color = AuroraTokens.DialogBg,
             shape = RoundedCornerShape(0.dp),
