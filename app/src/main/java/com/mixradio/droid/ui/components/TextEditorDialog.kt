@@ -83,6 +83,7 @@ import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.ChunkedFileReader
 import com.mixradio.droid.data.SparseLineIndex
 import com.mixradio.droid.data.RootFileManager
+import com.mixradio.droid.data.RelativeTime
 import com.mixradio.droid.data.TextEncoder
 import com.mixradio.droid.data.IndexedLineProvider
 import com.mixradio.droid.data.FileSizeClass
@@ -322,7 +323,7 @@ private fun TextEditorDialogContent(
             val t = soraEditor.text()
             val latest = EditHistoryManager.getHistory(path).firstOrNull()
             if (latest == null || latest.content != t) {
-                EditHistoryManager.addHistory(path, t)
+                EditHistoryManager.addHistory(path, t, EditHistoryManager.HistorySource.AUTO)
                 history = EditHistoryManager.getHistory(path)
             }
         }
@@ -348,7 +349,7 @@ private fun TextEditorDialogContent(
                 lastAutoSaveAt = now
                 withContext(Dispatchers.IO) {
                     val t = soraEditor.text()
-                    EditHistoryManager.addHistory(currentFilePath!!, t)
+                    EditHistoryManager.addHistory(currentFilePath!!, t, EditHistoryManager.HistorySource.DRAFT)
                     history = EditHistoryManager.getHistory(currentFilePath!!)
                 }
             }
@@ -378,7 +379,7 @@ private fun TextEditorDialogContent(
             }
             if (ok) {
                 currentFilePath = newPath; dirty = false; lastSavedAtMs = System.currentTimeMillis()
-                EditHistoryManager.addHistory(newPath, contentValue.text)
+                EditHistoryManager.addHistory(newPath, contentValue.text, EditHistoryManager.HistorySource.SAVE)
                 history = EditHistoryManager.getHistory(newPath)
                 toastMessage = "已保存"
             } else { toastMessage = msg ?: "保存失败" }
@@ -411,7 +412,7 @@ private fun TextEditorDialogContent(
                     val outcome = withContext(Dispatchers.IO) {
                         val writeResult = writeTextFile(path, contentValue.text, currentCharset, currentLineEnding, hasBom)
                         if (writeResult.first) {
-                            EditHistoryManager.addHistory(path, contentValue.text)
+                            EditHistoryManager.addHistory(path, contentValue.text, EditHistoryManager.HistorySource.SAVE)
                             Triple(true, null as String?, EditHistoryManager.getHistory(path))
                         } else Triple(false, writeResult.second, emptyList())
                     }
@@ -750,7 +751,9 @@ private fun TextEditorDialogContent(
                 withContext(Dispatchers.IO) {
                     val cur = contentValue.text
                     if (cur != entry.content) {
-                        EditHistoryManager.addHistory(currentFilePath ?: "", cur)
+                        EditHistoryManager.addHistory(
+                        currentFilePath ?: "", cur, EditHistoryManager.HistorySource.DRAFT
+                    )
                     }
                 }
                 history = EditHistoryManager.getHistory(currentFilePath ?: "")
@@ -2161,7 +2164,11 @@ private fun HistoryDialog(
                 Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("暂无历史记录", style = AuroraTextStyles.body1, color = AuroraTokens.TextSecondary)
-                        Text("编辑内容后自动记录版本（每 2.5 秒停顿/保存时）", style = AuroraTextStyles.footnote2, color = AuroraTokens.TextHint, modifier = Modifier.padding(top = 4.dp))
+                        Text(
+                            "编辑停顿 2.5 秒记「停顿快照」、定时记「定时草稿」、保存时记「手动保存」",
+                            style = AuroraTextStyles.footnote2, color = AuroraTokens.TextHint,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
                     }
                 }
             } else {
@@ -2175,9 +2182,28 @@ private fun HistoryDialog(
                                     text = if (index == 0) "最新" else "v${history.size - index}",
                                     style = AuroraTextStyles.footnote2, color = if (index == 0) AuroraTokens.Success else AuroraTokens.TextSecondary
                                 )
-                                Text(text = "${entry.content.lineSequence().count()} 行", style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    // 来源：一眼分清「我手动存过」与「系统自动记的快照」
+                                    Text(
+                                        text = entry.source.label,
+                                        style = AuroraTextStyles.footnote2,
+                                        color = when (entry.source) {
+                                            EditHistoryManager.HistorySource.SAVE -> AuroraTokens.Success
+                                            EditHistoryManager.HistorySource.AUTO -> AuroraTokens.TextSecondary
+                                            EditHistoryManager.HistorySource.DRAFT -> AuroraTokens.TextHint
+                                        }
+                                    )
+                                    Text(
+                                        text = "${entry.content.lineSequence().count()} 行",
+                                        style = AuroraTextStyles.footnote2,
+                                        color = AuroraTokens.TextSecondary
+                                    )
+                                }
                             }
-                            Text(text = df.format(Date(entry.timestamp)), style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary)
+                            Text(
+                                text = RelativeTime.label(entry.timestamp),
+                                style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary
+                            )
                             Text(
                                 text = entry.content.take(80).replace("\n", " "),
                                 style = AuroraTextStyles.body2, color = AuroraTokens.Text, maxLines = 2

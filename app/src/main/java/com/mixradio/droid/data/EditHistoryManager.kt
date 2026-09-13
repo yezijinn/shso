@@ -20,11 +20,46 @@ import org.json.JSONObject
  * （多个文件各 20 条 × 50 万字），开销随历史总量线性放大。
  * [ensureMigrated] 负责把旧的单 key 数据无损拆分。
  */
+/**
+ * 历史条目合并规则（纯函数，便于 JVM 单测）。
+ *
+ * 语义与旧实现保持一致，仅增加「来源升级」：
+ *  - 最新条目内容相同：来源更强则原地升级（不新增条目），否则无需变更；
+ *  - 内容不同：丢弃同内容的旧条目后插到最前，条数上限由调用方的 [EditHistoryManager.trimToBudget] 收口。
+ */
+internal object HistoryMerge {
+
+    /** 返回合并后的完整列表；返回 null 表示**无需写入**（内容重复且来源不更强）。 */
+    fun apply(
+        existing: List<EditHistoryManager.HistoryEntry>,
+        newEntry: EditHistoryManager.HistoryEntry
+    ): List<EditHistoryManager.HistoryEntry>? {
+        val newest = existing.firstOrNull()
+        if (newest != null && newest.content == newEntry.content) {
+            if (newest.source.priority >= newEntry.source.priority) return null
+            // 来源升级：保留原时间（该内容首次出现的时刻），只换来源标记
+            return listOf(newest.copy(source = newEntry.source)) + existing.drop(1)
+        }
+        // 全量按内容去重：**每个内容只保留最新一条**（[distinctBy] 保留首次出现 = 最新的那条）。
+        // 旧实现只过滤掉「等于新内容」的条目，其它内容的重复项会持续累积
+        // （A→B→A→B 交替编辑会把 20 个槽位塞满两份内容，其它版本被挤掉）。
+        val kept = existing.asSequence()
+            .filter { it.content != newEntry.content }
+            .distinctBy { it.content }
+            .take(EditHistoryManager.maxHistoryPerFile() - 1)
+            .toList()
+        return listOf(newEntry) + kept
+    }
+}
+
 object EditHistoryManager {
     /** 旧版：所有文件共用一个大 JSON 数组。仅用于一次性迁移。 */
     private const val KEY_LEGACY = "edit_history"
     private const val KEY_PREFIX = "history:"
     private const val MAX_HISTORY_PER_FILE = 20
+
+    /** 供 [HistoryMerge] 读取单文件条数上限（常量保持私有，避免外部误用其它数值）。 */
+    internal fun maxHistoryPerFile(): Int = MAX_HISTORY_PER_FILE
 
     /**
      * 单条历史上限 20 万字。
@@ -47,9 +82,25 @@ object EditHistoryManager {
         ShsoApplication.appContext.getSharedPreferences("shso_editor", Context.MODE_PRIVATE)
     }
 
+    /**
+     * 历史条目的来源。用途：历史面板里区分「我手动保存过」与「系统自动记的快照」，
+     * 恢复前的判断也更明确（手动保存点通常才是用户认为的"已确认版本"）。
+     *
+     * [priority] 用于**相同内容**合并时的取舍：手动保存 > 停顿快照 > 定时草稿，
+     * 即同一份内容先被自动记过、之后被手动保存，条目应升级为「手动保存」而不是再插一条。
+     */
+    enum class HistorySource(val label: String) {
+        DRAFT("定时草稿"),
+        AUTO("停顿快照"),
+        SAVE("手动保存");
+
+        val priority: Int get() = ordinal
+    }
+
     data class HistoryEntry(
         val content: String,
-        val timestamp: Long
+        val timestamp: Long,
+        val source: HistorySource = HistorySource.AUTO
     )
 
     /**
@@ -67,7 +118,7 @@ object EditHistoryManager {
      *  - 文件历史超过 [MAX_HISTORY_PER_FILE] 时淘汰最旧条目
      */
     @Synchronized
-    fun addHistory(filePath: String, content: String) {
+    fun addHistory(filePath: String, content: String, source: HistorySource = HistorySource.AUTO) {
         ensureMigrated()
         val safeContent = if (content.length > MAX_CONTENT_CHARS) {
             content.substring(content.length - MAX_CONTENT_CHARS)
@@ -76,14 +127,9 @@ object EditHistoryManager {
         }
 
         val entries = readFile(filePath)
-        if (entries.firstOrNull()?.content == safeContent) return
-
-        // 内容级去重：相同内容的历史只保留最新一条；留 1 个位置给新条目
-        val kept = entries.filter { it.content != safeContent }.take(MAX_HISTORY_PER_FILE - 1)
-        writeFile(
-            filePath,
-            trimToBudget(listOf(HistoryEntry(safeContent, System.currentTimeMillis())) + kept)
-        )
+        val merged = HistoryMerge.apply(entries, HistoryEntry(safeContent, System.currentTimeMillis(), source))
+            ?: return
+        writeFile(filePath, trimToBudget(merged))
     }
 
     /**
@@ -122,7 +168,13 @@ object EditHistoryManager {
             val arr = JSONArray(raw)
             (0 until arr.length()).mapNotNull { i ->
                 val obj = arr.optJSONObject(i) ?: return@mapNotNull null
-                HistoryEntry(obj.optString("content", ""), obj.optLong("timestamp", 0L))
+                HistoryEntry(
+                    obj.optString("content", ""),
+                    obj.optLong("timestamp", 0L),
+                    // 旧数据无 source 字段：按「停顿快照」处理（历史默认来源）
+                    runCatching { HistorySource.valueOf(obj.optString("source", HistorySource.AUTO.name)) }
+                        .getOrDefault(HistorySource.AUTO)
+                )
             }.sortedByDescending { it.timestamp }
         } catch (_: Throwable) {
             emptyList()
@@ -139,6 +191,7 @@ object EditHistoryManager {
             arr.put(JSONObject().apply {
                 put("content", e.content)
                 put("timestamp", e.timestamp)
+                put("source", e.source.name)
             })
         }
         return arr
@@ -162,7 +215,14 @@ object EditHistoryManager {
                         val path = obj.optString("filePath")
                         if (path.isEmpty()) continue
                         byFile.getOrPut(path) { mutableListOf() }
-                            .add(HistoryEntry(obj.optString("content", ""), obj.optLong("timestamp", 0L)))
+                            .add(
+                                HistoryEntry(
+                                    obj.optString("content", ""),
+                                    obj.optLong("timestamp", 0L),
+                                    runCatching { HistorySource.valueOf(obj.optString("source", HistorySource.AUTO.name)) }
+                                        .getOrDefault(HistorySource.AUTO)
+                                )
+                            )
                     }
                     for ((path, list) in byFile) {
                         val trimmed = list.sortedByDescending { it.timestamp }.take(MAX_HISTORY_PER_FILE)
