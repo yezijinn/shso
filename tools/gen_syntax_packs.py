@@ -2,7 +2,7 @@
 """生成 shso 外置语法包（Monarch 语法 JSON）到仓库 syntax-packs/ 目录。"""
 import json, os, re, zipfile
 
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "syntax-packs")
+OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "syntax-packs")
 os.makedirs(OUT, exist_ok=True)
 
 NUM = "(0[xXbBoO][0-9a-fA-F_]+|[0-9][0-9_]*\\.?[0-9_]*([eE][+-]?[0-9]+)?)"
