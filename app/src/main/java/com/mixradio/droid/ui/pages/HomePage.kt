@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,7 +27,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
@@ -97,8 +95,10 @@ fun HomePage(
             try {
                 RootFileManager.ensureShsoDir()
                 val files = RootFileManager.listFiles(targetDir)
+                // 仅保留可执行的 .sh 脚本与 .so 二进制（目录与其它无关文件不在此列表显示）
+                val executables = files.filter { it.isSupportedExecutable }
                 // 一次性预计算小写名，避免比较器内逐次 lowercase（O(N log N) 次临时字符串分配）
-                val decorated = files.map { FileItemSortKey(it, it.name.lowercase()) }
+                val decorated = executables.map { FileItemSortKey(it, it.name.lowercase()) }
                 shsoFiles = decorated
                     .sortedWith(
                         compareByDescending<FileItemSortKey> { it.item.isDirectory }
@@ -367,7 +367,7 @@ fun HomePage(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = "当前目录暂无文件或文件夹",
+                        text = "当前目录暂无可执行的 .sh / .so 文件",
                         style = AuroraTextStyles.body2,
                         fontWeight = FontWeight.Medium,
                         color = AuroraTokens.TextSecondary
@@ -396,7 +396,7 @@ fun HomePage(
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(start = 16.dp)
+                                    .padding(start = 2.dp)
                                     .height(0.7.dp)
                                     .background(AuroraTokens.SurfaceHover.copy(alpha = 0.6f))
                             )
@@ -504,7 +504,7 @@ private fun ShsoFileRow(
                 if (isSelected) AuroraTokens.Accent.copy(0.08f)
                 else Color.Transparent
             )
-            .padding(horizontal = 16.dp, vertical = 6.dp),
+            .padding(horizontal = 2.dp, vertical = 1.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // 类型图标：无底色方框、左右零间隙，直接裸文字
@@ -558,19 +558,19 @@ private fun ShsoFileRow(
         }
 
         if (!fileItem.isDirectory) {
-            Button(
-                onClick = onSelect,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isSelected) AuroraTokens.Accent else AuroraTokens.SurfaceHover,
-                    contentColor = if (isSelected) AuroraTokens.OnAccent else AuroraTokens.Text
-                ),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
-                modifier = Modifier.clip(RoundedCornerShape(0.dp))
+            // 紧贴文本的小容器：无 Material Button 的 64dp 最小宽度，零圆角（项目矩形化铁律）
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(0.dp))
+                    .background(if (isSelected) AuroraTokens.Accent else AuroraTokens.SurfaceHover)
+                    .clickable(onClick = onSelect)
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
             ) {
                 Text(
                     text = if (isSelected) "已选择" else "选择",
                     fontSize = 12.sp,
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                    color = if (isSelected) AuroraTokens.OnAccent else AuroraTokens.Text
                 )
             }
         }
