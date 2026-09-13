@@ -146,6 +146,18 @@ class SecurityCoreTest {
         assertEquals("/", PathClassifier.normalize("/system/.."))
     }
 
+    @Test fun `normalize clamps dotdot at root`() {
+        // 回归守卫：根之上的 .. 必须停在根（POSIX 语义），/.. == /、/system/../.. == /
+        // 一旦被当成字面段保留，/../system 会既不是 / 也不以 /system 开头，
+        // 从而绕过 CRITICAL 分级（`rm -rf /system` 的硬拦截会降级成「需确认」）。
+        assertEquals("/", PathClassifier.normalize("/.."))
+        assertEquals("/", PathClassifier.normalize("/system/../.."))
+        assertEquals("/", PathClassifier.normalize("/../.."))
+        assertEquals("/system", PathClassifier.normalize("/../system"))
+        assertEquals("/system/bin", PathClassifier.normalize("/../system/./bin"))
+        assertEquals("/data", PathClassifier.normalize("/../data"))
+    }
+
     @Test fun `normalize strips quote residue`() {
         assertEquals("/etc", PathClassifier.normalize("\"/etc\""))
         assertEquals("/etc", PathClassifier.normalize("'/etc'"))
@@ -363,6 +375,27 @@ class SecurityCoreTest {
         val v = PolicyEngine.evaluate("rm -rf /system/../system", CommandSource.USER_TERMINAL)
         assertTrue(v is Verdict.Block)
         assertTrue((v as Verdict.Block).findings.any { it.ruleId == "RM_SYSTEM" })
+    }
+
+    @Test fun `terminal dotdot above root must not downgrade CRITICAL`() {
+        // 回归守卫：根之上的 .. 必须被夹到根，否则这些写法会绕过硬拦截、只剩「需确认」
+        val cases = listOf(
+            "rm -rf /../system",
+            "rm -rf /system/../..",
+            "rm -rf /..",
+            "rm -rf /system/bin/../../system"
+        )
+        for (cmd in cases) {
+            val v = PolicyEngine.evaluate(cmd, CommandSource.USER_TERMINAL)
+            assertTrue("`$cmd` 应为 Block，实际 $v", v is Verdict.Block)
+        }
+    }
+
+    @Test fun `classify dotdot above root keeps original level`() {
+        assertEquals(PathClassifier.PathClass.CRITICAL, PathClassifier.classify("/../system"))
+        assertEquals(PathClassifier.PathClass.CRITICAL, PathClassifier.classify("/system/../.."))
+        assertEquals(PathClassifier.PathClass.DANGEROUS, PathClassifier.classify("/../data/adb/modules"))
+        assertEquals(PathClassifier.PathClass.SAFE, PathClassifier.classify("/../sdcard/DCIM"))
     }
 
     @Test fun `terminal rm of vendor is BLOCK`() {
