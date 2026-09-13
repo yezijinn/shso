@@ -1,0 +1,58 @@
+{
+  "extensions": [
+    "zig",
+    "zon"
+  ],
+  "tokenizer": {
+    "root": [
+      [
+        "\\s+",
+        "white"
+      ],
+      [
+        "//.*$",
+        "comment"
+      ],
+      [
+        "\"(\\\\.|[^\"\\\\])*\"",
+        "string"
+      ],
+      [
+        "'(\\\\.|[^'\\\\])?'",
+        "string"
+      ],
+      [
+        "@[A-Za-z_][A-Za-z0-9_]*",
+        "attribute"
+      ],
+      [
+        "\\b(const|var|fn|pub|usingnamespace|return|if|else|switch|while|for|break|continue|defer|errdefer|try|catch|unreachable|orelse|and|or|struct|enum|union|error|comptime|inline|export|extern|asm|volatile|suspend|resume|async|await|test|usingnamespace)\\b",
+        "keyword"
+      ],
+      [
+        "\\b(void|bool|u8|u16|u32|u64|u128|usize|i8|i16|i32|i64|i128|isize|f16|f32|f64|f128|c_char|c_int|c_long|c_uint|c_void|anyerror|anytype|type)\\b",
+        "type"
+      ],
+      [
+        "\\b(true|false|null|undefined)\\b",
+        "constant"
+      ],
+      [
+        "(0[xXbBoO][0-9a-fA-F_]+|[0-9][0-9_]*\\.?[0-9_]*([eE][+-]?[0-9]+)?)",
+        "number"
+      ],
+      [
+        "[A-Za-z_][A-Za-z0-9_]*",
+        "identifier"
+      ],
+      [
+        "[{}()\\[\\]]",
+        "delimiter"
+      ],
+      [
+        "[=+\\-*/%<>!&|^~?:]+",
+        "operator"
+      ]
+    ]
+  }
+}
