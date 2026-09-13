@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.zip.ZipFile
 
@@ -45,8 +46,12 @@ kotlin {
 
 // 版本号自动取「构建当日日期」纯数字（YYYYMMDD，如 20260905），
 // 既作为 versionCode（应用升级判定的唯一依据），也与 GitHub 发布标签的纯日期格式对齐。
+//
+// **必须固定按东八区计算**：GitHub runner 默认 UTC，北京时间 00:00–08:00 之间构建时
+// `LocalDate.now()` 会退回前一天，产物 versionCode 与发布标签不一致 ——
+// 用户装上后 versionCode 仍是旧日期，应用内「检查更新」会无限提示升级。
 val buildDateVersionCode: Int = run {
-    LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE).toInt()
+    LocalDate.now(ZoneId.of("Asia/Shanghai")).format(DateTimeFormatter.BASIC_ISO_DATE).toInt()
 }
 
 android {
