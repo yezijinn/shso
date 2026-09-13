@@ -21,6 +21,7 @@ import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import java.util.regex.Pattern
 import com.mixradio.droid.data.security.CommandSource
 import com.mixradio.droid.data.security.GuardModuleInstaller
@@ -111,6 +112,32 @@ object RootService {
      */
     private val runPgidFile: File?
         get() = runCatching { File(com.mixradio.droid.ShsoApplication.appContext.filesDir, ".run.pgid") }.getOrNull()
+
+    /**
+     * 终端一次性命令的代际计数。
+     *
+     * 终端命令与脚本任务共用「当前活动进程」这一套全局状态（`isTaskRunning` / `activeProcess` /
+     * `processPid` / `runPgid`），因此必须保证**旧命令退出时不会把新命令/新任务的状态误清成「待命中」**。
+     * 启动新命令（[runTerminalCommand]）与新任务（[executeFile]）都会自增本计数，
+     * 命令退出时只有计数未变才清理状态。
+     */
+    private val terminalCommandGeneration = AtomicLong(0)
+
+    /**
+     * 终端一次性命令的终止兜底上限。
+     *
+     * 终端命令由用户手动发起、手动终止（「中断 / 结束进程」），因此**不能**用 [runCommandSync]
+     * 那种 120s 超时去砍——`curl` 大文件、`find /`、长时间日志采集都会超 2 分钟，
+     * 被砍等于半途而废。此上限只用于兜住 `su` 授权弹窗挂起这类**永不返回**的情况
+     * （脚本任务链路同理，靠用户终止）。
+     */
+    private const val TERMINAL_COMMAND_TIMEOUT_MS = 30 * 60_000L
+
+    /**
+     * 终端命令拉起后台保活服务的延迟：短命令（`ls` / `echo`）不值得闪一条通知，
+     * 超过该时长的命令才进前台保活（切后台不被回收 + 通知内可「结束进程」）。
+     */
+    private const val KEEPALIVE_DELAY_MS = 5_000L
 
     fun initSettings(settings: AppSettings) {
         appSettings = settings
@@ -216,6 +243,132 @@ object RootService {
     }
 
     /**
+     * 直接子进程 pid。Android 的 `java.lang.Process` 没有 `pid()`，只能反射取；失败退回 0。
+     * 仅用于展示与兜底 `destroy`，回收正确性由进程组 kill 保证，不依赖此值。
+     */
+    private fun pidOfProcess(process: Process): Int = runCatching {
+        val pidField = process.javaClass.getDeclaredField("pid")
+        pidField.isAccessible = true
+        pidField.getInt(process)
+    }.getOrDefault(0)
+
+    /** 命令的展示名：折叠首尾空白并截断，用于「运行中」状态与通知标题。 */
+    private fun commandDisplayName(command: String): String {
+        val trimmed = command.trim()
+        return if (trimmed.length > 48) trimmed.take(48) + "…" else trimmed
+    }
+
+    /**
+     * 执行终端里键入的一次性命令，并把它登记为当前活动进程。
+     *
+     * 与 [runCommandSync] 的差别（面向交互式终端）：
+     * - 输出**边读边回吐**（经 [HyperCore] 批量队列），不再缓冲到命令结束才一次性显示：
+     *   此前 `ping` / 下载类命令全程无任何输出，直到超时才把结果一次刷出；
+     * - 命令期间置 `isTaskRunning`，顶栏显示「运行中」、「中断 / 结束进程」可用；
+     * - 记录 `su -c` 会话的进程组 pid（`echo $$`），使中断 / 结束进程能**整组**回收 ——
+     *   只杀 `su` 会把 `sh -c …` 及其子孙留成 init 名下的孤儿。
+     *
+     * **刻意不写 `currentTaskPath`**：该字段是「结束进程」在进程组不可用时的 pkill 匹配路径，
+     * 填命令文本会匹配到无关进程。
+     *
+     * @param guardedCmd 已拼好守卫 PATH 前缀的完整 shell 命令
+     * @param displayName 展示名（「运行中」状态与通知标题）
+     * @return 退出码；超时返回 -1
+     */
+    private suspend fun runTerminalCommand(guardedCmd: String, displayName: String): Int {
+        val generation = terminalCommandGeneration.incrementAndGet()
+        // 先作废上一轮的 pgid 记录再启动，确保随后读到的一定来自本次命令（与 executeFile 同法）。
+        runCatching { runPgidFile?.delete() }
+        runPgid = 0
+        // 清残留必须发生在**启动进程之前**：进程一旦起来就可能立刻吐输出，
+        // 之后再 clear 会把这段输出丢掉。
+        HyperCore.clearBatchQueue()
+        val pgidRecorder = runPgidFile?.let { "echo " + "\$\$" + " > " + escapeShellArg(it.absolutePath) + "; " } ?: ""
+        val process = try {
+            ProcessBuilder("su", "-c", pgidRecorder + guardedCmd).redirectErrorStream(true).start()
+        } catch (e: Exception) {
+            withContext(Dispatchers.Main) { appendOutputDirect("[执行失败: ${e.message}]\n") }
+            return -1
+        }
+        // 关闭子进程 stdin：本通道只读输出、从不喂输入（交互输入走 processWriter 那条链路）。
+        runCatching { process.outputStream.close() }
+
+        withContext(Dispatchers.Main) {
+            isTaskRunning = true
+            currentTaskName = displayName
+            currentTaskPath = null
+            taskStartTime = System.currentTimeMillis()
+            lastExitCode = null
+            activeProcess = process
+            processWriter = null
+            processPid = pidOfProcess(process)
+        }
+        // 复用任务用的批量发布通道：它按 isTaskRunning 存活，命令结束即自行退出并 flush 残留。
+        HyperCore.startBatchFlushLoop(scope, { isTaskRunning }) { appendOutputDirect(it) }
+        // 长命令保活（与脚本任务同源）：切到后台后不被 ROM 立刻回收，通知里也提供「结束进程」出口。
+        // 延迟 [KEEPALIVE_DELAY_MS] 再拉起，避免 `ls` / `echo` 这类秒回命令闪一下通知。
+        scope.launch {
+            delay(KEEPALIVE_DELAY_MS)
+            if (isTaskRunning && terminalCommandGeneration.get() == generation) {
+                runCatching { ExecutionForegroundService.start(com.mixradio.droid.ShsoApplication.appContext) }
+            }
+        }
+        // 进程组 pid 必须按代际回填：脚本/命令启动后 1.5s 内会持续轮询，若期间已有新命令接管，
+        // 旧轮询读到的新值是同一个（无害），但超时归零会把新命令的 pgid 冲掉，导致中断/结束进程失效。
+        scope.launch {
+            val pgid = awaitRunPgid()
+            if (terminalCommandGeneration.get() == generation) runPgid = pgid
+        }
+
+        val readerThread = Thread {
+            try {
+                process.inputStream.use { stream ->
+                    InputStreamReader(stream, Charsets.UTF_8).use { reader ->
+                        val buffer = CharArray(1024)
+                        var count: Int
+                        while (reader.read(buffer).also { count = it } != -1) {
+                            HyperCore.queueLogChunk(String(buffer, 0, count))
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+        readerThread.isDaemon = true
+        readerThread.start()
+
+        val finished = runCatching { process.waitFor(TERMINAL_COMMAND_TIMEOUT_MS, TimeUnit.MILLISECONDS) }.getOrDefault(false)
+        if (!finished) {
+            process.destroyForcibly()
+            forceCloseProcess(process)
+        }
+        readerThread.join(3000)
+        val exitCode = if (finished) runCatching { process.exitValue() }.getOrDefault(-1) else -1
+
+        withContext(Dispatchers.Main) {
+            // 先停发布循环（并等它刷完本地积压），再写超时说明——
+            // 否则命令最后 ≤250ms 的输出会落在说明行之后。
+            HyperCore.stopBatchFlushLoop()
+            HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
+            if (!finished) {
+                appendOutputDirect("\n[shso] 命令长时间无结束（>${TERMINAL_COMMAND_TIMEOUT_MS / 60_000}分钟），已强制终止\n")
+            }
+            // 仅当没有更新的命令/任务接管时清理：否则会把新任务的状态误清成「待命中」。
+            if (terminalCommandGeneration.get() == generation) {
+                isTaskRunning = false
+                currentTaskName = null
+                currentTaskPath = null
+                taskStartTime = 0L
+                lastExitCode = exitCode
+                activeProcess = null
+                processWriter = null
+                processPid = 0
+            }
+        }
+        return exitCode
+    }
+
+    /**
      * 以 Root 把字节写入目标文件（覆盖或追加）。
      * 统一替代各处自建 `ProcessBuilder("su","-c","cat > …")` 的旁路出口
      * （TextCompare / TextEditorDialog / SecurityAuditLog），使 su 出口收敛。
@@ -292,19 +445,8 @@ object RootService {
     }
 
     /**
-     * 终端输入发送前评估（不动任何状态，主线程安全——纯字符串解析）。
-     * @return null=可直接发送；Confirm=需弹风险确认框；Block=拒绝（调用方展示原因）
+     * 把拦截结果落审计并在终端输出拒绝原因（终端输入被 Block 时调用）。
      */
-    fun evaluateUserInput(text: String): Verdict? {
-        if (text.isBlank()) return null
-        return when (val v = RootCommandGateway.check(text, CommandSource.USER_TERMINAL)) {
-            Verdict.Allow -> null
-            is Verdict.Confirm -> v
-            is Verdict.Block -> v
-        }
-    }
-
-    /** 把拦截结果落审计并在终端输出拒绝原因。 */
     fun reportBlockedInput(block: Verdict.Block) {
         val reasons = block.findings.joinToString("\n") { "  · [${it.ruleId}] ${it.message}" }
         SecurityAuditLog.log(
@@ -417,6 +559,9 @@ object RootService {
             appendOutputDirect(flushedText)
         }
 
+        // 启动新任务即作废「终端一次性命令」的代际：否则那条命令稍后退出时，
+        // 会按自己的代际判断把本任务的状态误清成「待命中」。
+        terminalCommandGeneration.incrementAndGet()
         executionJob?.cancel()
         executionJob = scope.launch(Dispatchers.IO) {
             var process: Process? = null
@@ -456,13 +601,8 @@ object RootService {
                 processWriter = writer
 
                 // 直接子进程（su）pid，仅用于日志与兜底 destroy。
-                // Android 的 java.lang.Process 没有 pid() 方法，只能反射取；失败退回 0。
                 // 中断与回收的正确性由下面的进程组 kill 保证，不依赖此 pid。
-                val childPid = runCatching {
-                    val pidField = process.javaClass.getDeclaredField("pid")
-                    pidField.isAccessible = true
-                    pidField.getInt(process)
-                }.getOrDefault(0)
+                val childPid = pidOfProcess(process)
                 withContext(Dispatchers.Main) {
                     processPid = childPid
                 }
@@ -487,6 +627,10 @@ object RootService {
                 // 本轮执行仍是当前任务（代际判断）才写「退出」文案；被新任务/重启取代后由对方写
                 withContext(Dispatchers.Main) {
                     if (executionJob === coroutineContext[Job]) {
+                        // 先停发布循环并等它把积压刷完，再写「退出」文案：
+                        // 否则循环里最后 ≤250ms 的输出会落在文案之后（看起来像退出码打在输出前面）。
+                        HyperCore.stopBatchFlushLoop()
+                        HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
                         lastExitCode = exitCode
                         if (appSettings?.showShsoBanner != false) {
                             appendOutputDirect("\n[shso Engine] 任务已退出，退出码: $exitCode\n")
@@ -547,8 +691,30 @@ object RootService {
      *   CRITICAL 硬规则（rm 系统 / dd 块设备 / mkfs / wipe 等），其余放行但落审计。
      *
      * @param confirmed 调用方已通过风险确认框获用户同意（CommandRiskDialog → 确认执行）
+     * @return 本次输入是否被接受。`false` = 已有一条命令/任务在运行且不是可写入的交互进程，
+     *   输入未被发送（调用方应保留输入框内容，便于中断后重发）。
      */
-    fun sendInput(text: String, confirmed: Boolean = false) {
+    /**
+     * 终端是否已被占用：已有命令/任务在跑，且不是可写入的交互进程（交互态下输入直写常驻 shell，
+     * 不占用新槽位）。
+     */
+    private fun isTerminalBusy(): Boolean = isTaskRunning && processWriter == null
+
+    /** 说明为何拒绝本次终端输入。 */
+    private suspend fun reportTerminalBusy() {
+        withContext(Dispatchers.Main) {
+            appendOutputDirect("\n[shso] 上一条命令仍在运行，请先「中断」或「结束进程」\n")
+        }
+    }
+
+    fun sendInput(text: String, confirmed: Boolean = false): Boolean {
+        // 与协程内的分支判断保持一致：终端只有一个「当前活动进程」槽位，不接受并发命令
+        //（并发时中断 / 结束进程只能作用到最新一条，先启动的那条会变成无法回收的孤儿）。
+        // 这里同步返回受理结果，调用方据此决定要不要清空输入框。
+        if (text.isNotEmpty() && isTerminalBusy()) {
+            scope.launch { reportTerminalBusy() }
+            return false
+        }
         scope.launch(Dispatchers.IO) {
             try {
                 if (isTaskRunning && processWriter != null) {
@@ -572,6 +738,14 @@ object RootService {
                     processWriter?.write(text + "\n")
                     processWriter?.flush()
                 } else if (text.isNotEmpty()) {
+                    // 已有一条命令/任务在跑（且不是可写入的交互进程）时拒绝新的终端命令：
+                    // 「当前活动进程」只有一个槽位，并发执行会让中断 / 结束进程只能作用到最新一条，
+                    // 先启动的那条变成无法回收的孤儿。
+                    // 同步检查已拦掉绝大多数情况，这里兜住「检查通过后状态才被占用」的竞态。
+                    if (isTerminalBusy()) {
+                        reportTerminalBusy()
+                        return@launch
+                    }
                     // 一次性命令：完整策略判定
                     if (!confirmed) {
                         when (val v = RootCommandGateway.check(text, CommandSource.USER_TERMINAL)) {
@@ -600,15 +774,13 @@ object RootService {
                     }
                     // 守卫不可用时不再拒绝命令，改为告警后放行（见 reportGuardDegraded 说明）
                     val guardPrefix = guardPrefixOrDegrade(CommandSource.USER_TERMINAL, text)
-                    val guardedCmd = guardPrefix + text
-                    val (exitCode, output) = runCommandSync(guardedCmd)
+                    // 走可中断 + 流式回吐的通道：长命令期间顶栏「运行中」、
+                    // 「中断 / 结束进程」可用，输出边跑边显示（见 runTerminalCommand）。
+                    val exitCode = runTerminalCommand(guardPrefix + text, commandDisplayName(text))
                     SecurityAuditLog.log(
                         CommandSource.USER_TERMINAL, "ALLOW", null, RiskLevel.SAFE, text, exitCode = exitCode
                     )
                     withContext(Dispatchers.Main) {
-                        if (output.isNotEmpty()) {
-                            appendOutputDirect(output)
-                        }
                         if (exitCode != 0) {
                             appendOutputDirect("[退出码: $exitCode]\n")
                         }
@@ -620,6 +792,7 @@ object RootService {
                 }
             }
         }
+        return true
     }
 
     fun killCurrentProcess() {
@@ -630,6 +803,7 @@ object RootService {
         val targetPgid = runPgid
         val targetProcess = activeProcess
         val targetName = currentTaskName
+        val targetPath = currentTaskPath
         // 只要还留有执行句柄、进程组记录或任务名就允许回收：
         // 中断后 UI 已回到待命中、但子孙进程仍可能在跑。
         if (!isTaskRunning && targetProcess == null && targetPgid <= 1 && targetName == null) return
@@ -640,13 +814,17 @@ object RootService {
                 // 中断后逃逸的子孙进程（`sh -c …`、真正的脚本进程）只有这样才能回收。
                 if (targetPgid > 1) {
                     killProcessGroup(9, targetPgid)
+                } else {
+                    // 兜底：进程组不可用时（pgid 未落盘；或非 Root 执行——子进程沿用本应用进程组，
+                    // 整组回收会误伤自身）按**完整路径**匹配残留子孙。
+                    // 不可退化为按文件名匹配：同一脚本「覆盖启动」时，新任务的命令行里含同样的文件名，
+                    // `pkill -9 -f <文件名>` 会把刚启动的新任务一并杀死（表现为覆盖启动后脚本秒退）。
+                    targetPath?.takeIf { it.isNotBlank() }?.let { path ->
+                        runCommandSync("pkill -9 -f ${escapeShellArg(path)} 2>/dev/null")
+                    }
                 }
                 if (targetPid > 0) {
                     runCommandSync("kill -9 $targetPid 2>/dev/null")
-                }
-                targetName?.let { taskName ->
-                    // pkill -f 的 pattern 是 ERE 正则，文件名含元字符时用 shell 引号包裹。
-                    runCommandSync("pkill -9 -f ${escapeShellArg(taskName)} 2>/dev/null")
                 }
                 targetProcess?.destroyForcibly()
                 forceCloseProcess(targetProcess)
@@ -676,6 +854,8 @@ object RootService {
                     // 若期间新任务已启动（executionJob 已替换），旧任务的残留日志不应混入新任务输出，
                     // 交由 executeFile 的 clearBatchQueue 与新的 flush loop 自行处理。
                     if (executionJob === targetJob) {
+                        // 停发布循环并等积压刷完，再写「已结束」文案，保证日志顺序
+                        HyperCore.stopBatchFlushLoop()
                         HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
                         isTaskRunning = false
                         currentTaskName = null
@@ -775,11 +955,17 @@ object RootService {
         // 同步捕获旧任务实体：重启只作用于旧实体，新任务启动后由新线条负责
         val targetJob = executionJob
         val targetPid = processPid
+        val targetPgid = runPgid
         val targetProcess = activeProcess
 
         scope.launch(Dispatchers.IO) {
             try {
                 targetJob?.cancel()
+                // 与「结束进程」同源：必须先整组回收。只杀 su 本身的话，`sh -c …` 与脚本进程
+                // 会变成 init 名下的孤儿继续跑（重启后横幅已复位、UI 显示待命中，用户以为停了）。
+                if (targetPgid > 1) {
+                    killProcessGroup(9, targetPgid)
+                }
                 if (targetPid > 0) {
                     runCommandSync("kill -9 $targetPid 2>/dev/null")
                 }

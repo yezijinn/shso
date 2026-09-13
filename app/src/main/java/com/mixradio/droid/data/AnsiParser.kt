@@ -108,6 +108,15 @@ object AnsiParser {
  */
 class IncrementalAnsiParser(private val defaultColor: Color) {
 
+    private companion object {
+        /**
+         * 单个转义序列的缓冲上限。序列不可能无限长：超限即判定为「不是合法序列」
+         * （典型是把二进制文件 cat 到终端，`ESC ]` 之后再无终止符），按普通文本吐出，
+         * 避免 pending 无界增长、整段输出被永久吞掉。
+         */
+        const val MAX_ESCAPE_SEQUENCE = 1024
+    }
+
     private val completed = ArrayList<AnnotatedString>()
 
     private var curText = StringBuilder()
@@ -197,43 +206,106 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
                     textStart = i + 1
                     i++
                 }
+                '\b' -> {
+                    if (i > textStart) writeSegment(input, textStart, i)
+                    backspace()
+                    textStart = i + 1
+                    i++
+                }
                 '\u001B' -> {
                     if (i > textStart) writeSegment(input, textStart, i)
                     val end = escapeEnd(input, i)
                     if (end < 0) {
-                        // 序列被块边界截断：缓冲，等下一块补齐
+                        // 序列被块边界截断：缓冲，等下一块补齐。
+                        // 但序列不可能无限长——超上限说明这不是合法序列（典型：把二进制文件 cat 到终端，
+                        // `ESC ]` 之后再无 BEL）。此时按普通文本吐出，避免 pending 无界增长、整段输出被吞。
+                        if (input.length - i > MAX_ESCAPE_SEQUENCE) {
+                            writeSegment(input, i, i + 1)
+                            textStart = i + 1
+                            i++
+                            continue
+                        }
                         pendingEscape = input.substring(i)
                         return
                     }
                     if (end > i + 1 && input[i + 1] == '[') {
-                        applySgr(input.substring(i + 2, end - 1))
+                        when (input[end - 1]) {
+                            // SGR：唯一需要应用样式的一类
+                            'm' -> applySgr(input.substring(i + 2, end - 1))
+                            // 行内擦除：进度条 `\r ESC[K` 清行重绘
+                            'K' -> eraseInLine(input.substring(i + 2, end - 1))
+                            // 其它 CSI（光标移动 / 清屏 / 光标显隐 / 括号粘贴 / 备用屏幕…）：
+                            // 屏幕控制指令，日志不做屏幕模拟，整体吞掉即可。
+                        }
+                    } else if (end > i + 1) {
+                        // 非 CSI 的合法 ESC 序列（OSC / 字符集切换 / 两字符序列）：同样吞掉。
                     } else {
-                        // 非 CSI（ESC 后不是 `[`）或畸形序列：ESC 按普通文本输出。
+                        // 畸形序列（ESC 后跟控制字符）：ESC 按普通文本输出。
                         writeSegment(input, i, i + 1)
                     }
                     textStart = end
                     i = end
                 }
-                else -> i++
+                else -> {
+                    val ch = input[i]
+                    // 其余 C0 控制字符（NUL / BEL / VT / FF / SO…）与 DEL：真实终端忽略，
+                    // 不能落进文本（否则会被复制到剪贴板、也占一行宽度）。制表符要保留。
+                    if (ch != '\t' && (ch < ' ' || ch == '\u007F')) {
+                        if (i > textStart) writeSegment(input, textStart, i)
+                        textStart = i + 1
+                    }
+                    i++
+                }
             }
         }
         if (textStart < n) writeSegment(input, textStart, n)
     }
 
     /**
-     * 从 ESC 处探测 CSI 序列结束位置（不含）。
+     * 从 ESC 处探测转义序列结束位置（不含）。三类都整体吞掉（日志不做屏幕模拟）：
+     *
+     * - **CSI**（`ESC [`）：参数 `0x30-0x3F`（含 `?` `<` `=` `>` 私有前缀）→ 中间字节 `0x20-0x2F` → 最终字节 `0x40-0x7E`。
+     *   只认 `[0-9;]` 参数会让 `ESC[?25l`（隐藏光标）判定失败，ESC 之后的 `[?25l` 就落到普通文本路径，终端里出现乱码。
+     * - **OSC 等字符串序列**（`ESC ]`）：到 BEL(`0x07`) 或 ST(`ESC \`) 结束。窗口标题与 OSC 8 超链接都走它，
+     *   不识别会在日志里留下 `]0;标题` / `]8;;https://…` 这种尾巴。
+     * - **其它 ESC 序列**：`ESC` + 中间字节（可再接最终字节，如 `ESC(B`）/ `ESC` + 单字节（`ESC=` `ESC>` `ESC7` `ESCc`…）。
+     *
      * @return 结束下标；返回负数 = 序列被输入末尾截断，需要更多字符。
      */
     private fun escapeEnd(input: String, start: Int): Int {
         if (start + 1 >= input.length) return -1
-        if (input[start + 1] != '[') return start + 1
+        return when (input[start + 1]) {
+            '[' -> csiEnd(input, start)
+            ']' -> stringSequenceEnd(input, start)
+            in '\u0020'..'\u002F' -> {
+                // ESC + 中间字节（可再接一个最终字节）
+                val next = start + 2
+                if (next >= input.length) -1
+                else if (input[next] in '\u0030'..'\u007E') next + 1
+                else next
+            }
+            in '\u0030'..'\u007E' -> start + 2 // ESC + 单字节
+            else -> start + 1                  // 畸形：ESC 当普通文本处理
+        }
+    }
+
+    /** CSI：参数 → 中间 → 最终字节。返回负数 = 被截断。 */
+    private fun csiEnd(input: String, start: Int): Int {
+        var j = start + 2
+        while (j < input.length && input[j] in '\u0030'..'\u003F') j++
+        while (j < input.length && input[j] in '\u0020'..'\u002F') j++
+        if (j >= input.length) return -1
+        return if (input[j] in '\u0040'..'\u007E') j + 1 else start + 1
+    }
+
+    /** OSC / DCS 等字符串序列：到 BEL(`0x07`) 或 ST(`ESC \`) 结束。返回负数 = 被截断。 */
+    private fun stringSequenceEnd(input: String, start: Int): Int {
         var j = start + 2
         while (j < input.length) {
-            val ch = input[j]
-            when {
-                ch in '0'..'9' || ch == ';' -> j++
-                ch in 'a'..'z' || ch in 'A'..'Z' -> return j + 1
-                else -> return start + 1 // 出现非法字符：不是合法 CSI
+            when (input[j]) {
+                '\u0007' -> return j + 1
+                '\u001B' -> return if (j + 1 < input.length) (if (input[j + 1] == '\\') j + 2 else j + 1) else -1
+                else -> j++
             }
         }
         return -1
@@ -284,6 +356,48 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
         if (curCol == 0) return // 已在行首，无需进入覆盖模式
         if (curCols == null) materializeCols()
         curCol = 0
+    }
+
+    /**
+     * 退格：光标左移一列。**不删字符**（与真实终端一致）——后续输出会覆盖该列。
+     * 已在行首则不动（真实终端在行首退格也不回绕到上一行）。
+     */
+    private fun backspace() {
+        if (curCol <= 0) return
+        if (curCols == null) materializeCols()
+        curCol--
+    }
+
+    /**
+     * `ESC[K` 行内擦除：`0`/省略 = 从光标擦到行尾；`2` = 整行清空（光标回到行首）。
+     * `1`（行首擦到光标）在日志里极少见且需要填空格，忽略。
+     *
+     * 与 `\r` 同理，这是「按列」的语义，必须同时裁掉样式记录，否则擦除后的新文本
+     * 会继承被擦掉区间的样式。`2K` 按「清空 + 光标回行首」简化（真实终端保留光标列）。
+     */
+    private fun eraseInLine(params: String) {
+        when (params.toIntOrNull() ?: 0) {
+            0 -> {
+                if (curCol >= curText.length) return
+                curText.setLength(curCol)
+                val cols = curCols
+                if (cols != null) {
+                    while (cols.size > curCol) cols.removeAt(cols.size - 1)
+                } else {
+                    curStyles.removeAll { it.start >= curCol }
+                    for (k in curStyles.indices) {
+                        val r = curStyles[k]
+                        if (r.end > curCol) curStyles[k] = AnnotatedString.Range(r.item, r.start, curCol)
+                    }
+                }
+            }
+            2 -> {
+                curText = StringBuilder()
+                curStyles = ArrayList()
+                curCols = null
+                curCol = 0
+            }
+        }
     }
 
     /** 把「区间式样式」展开为「逐列样式」，供覆盖写使用。 */

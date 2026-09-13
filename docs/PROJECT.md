@@ -49,14 +49,14 @@ shso-main/
     ├── AndroidManifest.xml       # MANAGE_EXTERNAL_STORAGE、QUERY_ALL_PACKAGES、allowBackup=false
     └── java/com/mixradio/droid/
         ├── data/                 # 核心逻辑层
-        │   ├── RootService.kt        # ROOT 执行引擎（单例，进程组回收）
+        │   ├── RootService.kt        # ROOT 执行引擎（单例，进程组回收 + 终端命令通道）
         │   ├── RootFileManager.kt    # 全盘文件操作
         │   ├── ApkInstaller.kt       # APK / XAPK 安装（单文件 + 分包会话安装）
         │   ├── ApkExtractor.kt       # 提取已安装应用安装包（纯函数可测）
         │   ├── ArchiveExtractor.kt   # 压缩包解压（防 Zip Slip）
         │   ├── ChunkedFileReader.kt  # 大文件分段读取（128KB 阈值）
-        │   ├── AnsiParser.kt         # ANSI 转义序列解析
-        │   ├── HyperCore.kt          # banner / 日志批处理 / 环境信息
+        │   ├── AnsiParser.kt         # ANSI/OSC 增量解析（私有模式 / 退格 / 行内擦除）
+        │   ├── HyperCore.kt          # banner / 日志批处理（发布节流）/ 滑动窗口 / 环境信息
         │   ├── AppSettings.kt        # 设置状态（shso_settings）
         │   ├── FileItem.kt           # 文件条目模型
         │   └── security/             # 安全子系统，见「安全子系统」
@@ -82,12 +82,36 @@ shso-main/
 
 1. `su -c` 启动子进程并注入环境（PATH / `TERM=xterm-256color` / LANG）；
    `.so` 与二进制执行前 `chmod 755`，`.sh` 一律经 `sh` 运行且不改动用户文件权限。
-   启动后立即关闭子进程 stdin，避免读 stdin 的命令阻塞到超时。
+   脚本任务**保持 stdin 打开**（支持交互输入）；`runCommandSync` 与终端「一次性命令」启动后立即关闭 stdin，
+   避免读 stdin 的命令一直阻塞到超时。
 2. 中断（SIGINT）与「结束进程」按进程组发信号（`kill -<sig> -- -<pgid>`），
    回收 `su` 之下的子孙进程；发信号前校验目标确为进程组组长且不是本应用所在组。
-3. stdout / stderr 由独立协程按 16ms 微批次聚合（`HyperCore.startBatchFlushLoop`），
-   防止重组风暴。
-4. 日志超过 250,000 字符触发滑动窗口截断；退出码与 PID 暴露为 Compose State。
+   「重启终端」走同一条整组回收路径——只杀 `su` 会把 `sh -c …` 与脚本进程留成 init 名下的孤儿。
+3. 终端「一次性命令」（`runTerminalCommand`）与脚本任务**共用同一套「当前活动进程」状态**
+   （`isTaskRunning` / `activeProcess` / `processPid` / `runPgid`）：命令期间顶栏显示「运行中」、
+   「中断 / 结束进程」可用，输出经批量队列**边跑边回显**（不再全量缓冲到结束才刷出）。
+   同一时刻只受理一条命令——并发会让先启动的那条失去回收句柄，故被拒绝时提示用户先中断。
+   状态清理按**代际计数**判定（`terminalCommandGeneration`，新命令与新任务启动都自增），
+   避免旧命令退出时把后来者误清成「待命中」；命令超 5s 自动拉起前台保活服务（秒回命令不闪通知）。
+4. stdout / stderr 由独立协程按 16ms tick 收集、**≥250ms 发布节流**（`HyperCore.startBatchFlushLoop`），
+   防止重组风暴；命令/任务结束时先停发布循环并等积压刷完（`stopBatchFlushLoop`）再写
+   「退出码 / 已结束」文案，保证日志顺序不倒挂。
+5. 日志超过 250,000 字符触发滑动窗口截断（优先**对齐换行**；整段无换行时硬截且不从代理对中间切开）；
+   退出码与 PID 暴露为 Compose State。
+
+### 终端显示约束（改动必守）
+
+- 解析：`IncrementalAnsiParser` 把输出当字符流增量解析，跨块维护未完成行 / SGR 状态 / `\r` 光标列 /
+  被块边界截断的转义序列；支持 16 色、256 色、真彩色与加粗，并消化 `\r` 原地覆盖、`\b` 退格、
+  `ESC[K` 行内擦除、私有模式 CSI（`ESC[?25l/h` 等）、OSC（窗口标题 / OSC 8 超链接）与其余 C0 控制字符；
+  转义序列的跨块缓冲**有 1KB 上限**（防把二进制 `cat` 到终端时待补序列无界增长）。
+- **单行渲染上限 `MAX_RENDER_CHARS_PER_LINE = 4000`**：`LazyColumn` 只做**项级**虚拟化、单个 item 内部不切分，
+  而 Compose `Text` 的排版成本与该行字符数成正比——实测单行 10 万字符会让主线程排版约 20 秒并触发 ANR
+  （`Skipped 1210 frames` / `Davey! 20182ms`）。所有行渲染前过 `renderableLine()` 投影（截断 + 标注省略量），
+  **模型层保持全文**（`plainText` / 「复制输出」不受影响）。
+- 日志跟随：`followTail` 只在滚动进行中采样用户真实落点（**不可**用 `!canScrollForward` 判定，
+  新内容一追加它立刻变 true，会永久停跟）；发命令与清屏时把它置回 `true`，
+  否则用户上翻读日志时发出的命令，其回显与结果都落在屏外、界面看起来「点了没反应」。
 
 ### UI 形态（改动必守）
 

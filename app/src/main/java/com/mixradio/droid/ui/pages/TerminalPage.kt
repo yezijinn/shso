@@ -48,6 +48,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -57,10 +60,13 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mixradio.droid.data.AppSettings
@@ -98,19 +104,74 @@ import kotlin.math.roundToInt
 internal fun terminalLineKey(index: Int, @Suppress("UNUSED_PARAMETER") line: AnnotatedString): Int =
     index
 
+/**
+ * 单行的渲染字符上限。
+ *
+ * Compose 的 `Text` 会对整串文本做断行排版，成本与该行字符数成正比。实测单行 10 万字符
+ * （`cat` 二进制 / minified JSON / 单行大文件这类输出）会让主线程排版约 20 秒——
+ * Choreographer 跳帧 1210、`Davey! duration=20182ms`、直接触发 ANR，期间连输入事件都派发不出去。
+ * 终端日志本就按「行」呈现，超长行只渲染前 N 字符并标注省略量；**模型不动**——
+ * [ParsedAnsiResult.plainText] 仍是全文，「复制输出」拿到的是完整内容。
+ */
+internal const val MAX_RENDER_CHARS_PER_LINE = 4000
+
+/**
+ * 把一行投影为「可安全排版」的渲染文本（纯函数，供 JVM 单测锁定）。
+ *
+ * 超过 [maxChars] 时截断到该长度（**不切断代理对**，否则截断点会渲染成半个字符），
+ * 并追加灰色省略标注说明本行实际有多少字符。
+ */
+internal fun renderableLine(
+    line: AnnotatedString,
+    markerStyle: SpanStyle? = null,
+    maxChars: Int = MAX_RENDER_CHARS_PER_LINE
+): AnnotatedString {
+    if (maxChars <= 0 || line.length <= maxChars) return line
+    val cut = if (line.text[maxChars - 1].isHighSurrogate()) maxChars - 1 else maxChars
+    val marker = " …（本行共 ${line.length} 字符，已截断显示）"
+    return buildAnnotatedString {
+        append(line.subSequence(0, cut))
+        if (markerStyle != null) withStyle(markerStyle) { append(marker) } else append(marker)
+    }
+}
+
+/**
+ * 「命令历史」的存档器：`List<String>` 不是 Bundle 原生类型，直接交给 `rememberSaveable`
+ * 会在保存（旋转屏幕）时抛异常，故显式转成可保存的列表形态。
+ */
+private val historySaver: Saver<List<String>, Any> = listSaver(
+    save = { it.toList() },
+    restore = { it.toList() }
+)
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TerminalPage(
     appSettings: AppSettings
 ) {
     val context = LocalContext.current
-    var inputText by remember { mutableStateOf("") }
+    // 输入框内容与待确认命令用 rememberSaveable：本工程未锁屏幕方向，旋转会重建 Activity，
+    // 用普通 remember 会把「刚敲进去的命令」和「刚弹出/刚确认过的高危确认框」一起丢掉——
+    // 与「切页丢确认弹窗」是同一类问题（高风险命令无声作废）。
+    var inputText by rememberSaveable { mutableStateOf("") }
     // 命令历史：仅本次会话内存保留，不落盘 —— 命令常含密码/token 等敏感参数，
     // 写入 SharedPreferences 会以明文长期留在设备上。
-    var cmdHistory by remember { mutableStateOf(listOf<String>()) }
+    var cmdHistory by rememberSaveable(stateSaver = historySaver) { mutableStateOf(emptyList<String>()) }
     var showCmdHistory by remember { mutableStateOf(false) }
-    var pendingCommand by remember { mutableStateOf<String?>(null) }
-    var pendingFindings by remember { mutableStateOf<List<Finding>>(emptyList()) }
+    var pendingCommand by rememberSaveable { mutableStateOf<String?>(null) }
+    // 风险项由命令**重新判定**得出（判定链是纯函数，结果确定），不再单独存一份状态，
+    // 避免「命令」与「风险项」两个变量不同步。
+    val pendingFindings: List<Finding> = remember(pendingCommand) {
+        pendingCommand?.let { cmd ->
+            (RootCommandGateway.check(cmd, CommandSource.USER_TERMINAL) as? Verdict.Confirm)?.findings.orEmpty()
+        }.orEmpty()
+    }
+    // 「跟随尾部」意图：只在用户手动滚动（拖动/惯性）时更新，不受新日志追加影响。
+    // 注意不可直接用 `!canScrollForward` 判定「是否在底部」——新内容一追加 canScrollForward 立刻变 true，
+    // 会被误判成「用户已向上回看」而永久停止自动滚动。此处只在滚动进行中采样用户真实落点。
+    // 发命令 / 清屏时要把它置回 true：否则用户上翻看日志时发出的命令，其回显与结果都落在屏外，
+    // 界面看起来「点了没反应」（真实终端总把提示符带回底部）。
+    var followTail by remember { mutableStateOf(true) }
     val listState = rememberLazyListState()
 
     var showTerminalSettings by remember { mutableStateOf(false) }
@@ -127,13 +188,15 @@ fun TerminalPage(
     // HorizontalPager 离屏即销毁本页，重进会重建状态；日志窗口可达 250k 字符，
     // 同步全量解析约 200ms+。只缓存快照会丢失解析器的跨行 / SGR 状态，
     // 因此连解析器实例与进度一并缓存：重进时续用，新日志只走增量，首帧不在主线程解析。
-    val cachedParse = TerminalParseCache.state?.takeIf { it.color == terminalDefaultColor }
+    //
+    // 进度（已消费的日志快照）与解析器、结果放在**同一个可变持有者**里，且在解析块内
+    // （非挂起部分）随 feed 一起更新——旋转屏幕会重建 Activity 并取消本协程，
+    // 若进度只在协程恢复后写，就会出现「解析器已前进、进度没记」，
+    // 下次重进会把同一段再喂一遍，终端出现重复行。
+    val parseHolder = remember(terminalDefaultColor) { ParseHolder(TerminalParseCache.state?.takeIf { it.color == terminalDefaultColor }) }
+    val cachedParse = parseHolder.state
     val ansiParser = remember(terminalDefaultColor) {
         cachedParse?.parser ?: IncrementalAnsiParser(terminalDefaultColor)
-    }
-    // 已消费的输入前缀，用于判定「本次是追加还是整体替换」。
-    var consumedLog by remember(terminalDefaultColor) {
-        mutableStateOf(cachedParse?.consumedLog ?: "")
     }
     var parsedOutput by remember(terminalDefaultColor) {
         mutableStateOf(cachedParse?.result ?: ParsedAnsiResult(emptyList()))
@@ -143,16 +206,16 @@ fun TerminalPage(
     // conflate() 保证同一时刻只有一个解析在跑，中间值直接丢弃。
     LaunchedEffect(terminalDefaultColor) {
         // 仅「换色 / 首次进入」需要清空重建；复用缓存解析器时保留其状态与进度。
-        if (ansiParser !== cachedParse?.parser) {
+        if (parseHolder.state?.parser !== ansiParser) {
             ansiParser.reset()
-            consumedLog = ""
+            parseHolder.state = null
         }
         snapshotFlow { RootService.outputLog }
             .conflate()
             .collect { log ->
                 // 复用缓存时首轮日志常与缓存进度一致，此时无需任何解析。
-                if (log == consumedLog) return@collect
-                val prev = consumedLog
+                val prev = parseHolder.state?.consumedLog ?: ""
+                if (log == prev) return@collect
                 val snap = withContext(Dispatchers.Default) {
                     if (log.length > prev.length && log.startsWith(prev)) {
                         // 追加：只解析新增部分
@@ -162,21 +225,23 @@ fun TerminalPage(
                         ansiParser.reset()
                         ansiParser.feed(log)
                     }
-                    ansiParser.snapshot()
+                    val result = ansiParser.snapshot()
+                    // 进度与结果随 feed 在同一个非挂起块内落定：本协程随后被取消（旋转重建组合）也不会
+                    // 出现「解析器已前进、进度没记」——否则重进会把同一段再喂一次，日志出现重复行。
+                    parseHolder.state?.let { it.consumedLog = log; it.result = result }
+                    result
                 }
-                // 回主线程再写状态（避免后台线程写 Compose state），并更新缓存供下次重进复用。
-                consumedLog = log
+                if (parseHolder.state == null) {
+                    parseHolder.state = TerminalParseState(terminalDefaultColor, ansiParser, log, snap)
+                        .also { TerminalParseCache.state = it }
+                }
+                // 渲染用状态（回主线程写 Compose state）
                 parsedOutput = snap
-                TerminalParseCache.state = TerminalParseState(terminalDefaultColor, ansiParser, log, snap)
             }
     }
 
     val isImeVisible = WindowInsets.isImeVisible
 
-    // 「跟随尾部」意图：只在用户手动滚动（拖动/惯性）时更新，不受新日志追加影响。
-    // 注意不可直接用 `!canScrollForward` 判定「是否在底部」——新内容一追加 canScrollForward 立刻变 true，
-    // 会被误判成「用户已向上回看」而永久停止自动滚动。此处只在滚动进行中采样用户真实落点。
-    var followTail by remember { mutableStateOf(true) }
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
             .collect { (scrolling, canForward) ->
@@ -203,39 +268,48 @@ fun TerminalPage(
     fun handleSend(textToSend: String = inputText) {
         val text = textToSend.trim()
         if (text.isEmpty()) {
-            inputText = ""
+            // 「Enter」= 向运行中的交互进程发送一个空行（确认提示 / 翻页等）。
+            // 绝不在此清空输入框：用户很可能已键入命令，误点「Enter」会静默丢掉输入且不执行。
+            if (RootService.isTaskRunning) RootService.sendInput("")
             return
         }
         // 安全门控：先经 RootCommandGateway 判定，Block 直接拒绝；Confirm 弹风险确认框
         when (val v = RootCommandGateway.check(text, CommandSource.USER_TERMINAL)) {
             is Verdict.Block -> {
+                // 拒绝必须落审计并在终端输出区写明原因：只弹 Toast 的话，
+                // Toast 两秒后消失、审计里也无记录，事后完全查不到这次拦截。
+                RootService.reportBlockedInput(v)
                 Toast.makeText(context, "命令已被安全策略拦截：${v.findings.firstOrNull()?.message ?: "见审计日志"}", Toast.LENGTH_LONG).show()
                 return
             }
             is Verdict.Confirm -> {
                 pendingCommand = text
-                pendingFindings = v.findings
             }
             Verdict.Allow -> {
-                RootService.sendInput(text, confirmed = true)
-                rememberCommand(text)
-                inputText = ""
+                // 被拒绝（已有命令/任务在跑）时保留输入框内容，用户中断后可直接重发
+                if (RootService.sendInput(text, confirmed = true)) {
+                    rememberCommand(text)
+                    inputText = ""
+                    followTail = true
+                }
             }
         }
     }
 
     fun onConfirmRiskSend() {
         val cmd = pendingCommand ?: return
-        RootService.sendInput(cmd, confirmed = true)
-        rememberCommand(cmd)
+        val accepted = RootService.sendInput(cmd, confirmed = true)
         pendingCommand = null
-        pendingFindings = emptyList()
-        inputText = ""
+        // 未被接受（已有命令/任务在跑）时保留输入框内容，避免用户刚确认过的命令凭空消失
+        if (accepted) {
+            rememberCommand(cmd)
+            inputText = ""
+            followTail = true
+        }
     }
 
     fun onCancelRiskSend() {
         pendingCommand = null
-        pendingFindings = emptyList()
     }
 
     fun copyOutput() {
@@ -388,8 +462,12 @@ fun TerminalPage(
                         // 重复提示符、回显与 CR 原地覆盖产生的同文本行。
                         // 相同 key 会让 LazyColumn 抛 "Key ... was already used"。
                         itemsIndexed(parsedOutput.lines, key = { idx, line -> terminalLineKey(idx, line) }) { _, line ->
+                            // 投影按行缓存：LazyColumn 复用项时不重复计算（见 MAX_RENDER_CHARS_PER_LINE）
+                            val display = remember(line) {
+                                renderableLine(line, markerStyle = SpanStyle(color = AuroraTokens.TextSecondary))
+                            }
                             Text(
-                                text = line,
+                                text = display,
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = appSettings.terminalFontSize.sp,
                                 lineHeight = (appSettings.terminalFontSize + 5f).sp
@@ -453,7 +531,11 @@ fun TerminalPage(
                     fontSize = 12.sp,
                     color = AuroraTokens.Text,
                     modifier = Modifier
-                        .clickable { RootService.clearOutput() }
+                        .clickable {
+                            RootService.clearOutput()
+                            // 清屏后日志为空，视口必须回到尾部，否则停在旧滚动位置看不到新输出
+                            followTail = true
+                        }
                         .padding(horizontal = 2.dp, vertical = 6.dp)
                 )
 
@@ -466,6 +548,7 @@ fun TerminalPage(
                         .padding(horizontal = 2.dp, vertical = 6.dp)
                 )
 
+                // 「Enter」只发送空行（不携带输入框内容，也不会清空它）；输入框内容交给「发送」
                 Text(
                     text = "Enter",
                     fontSize = 12.sp,
@@ -650,12 +733,26 @@ fun TerminalPage(
  * 供 [TerminalParseCache] 在页面被 HorizontalPager 销毁/重建时复用，避免重进终端页重跑全量解析。
  * [color] 为解析所用默认色，颜色变化即失效（与 `remember(terminalDefaultColor)` 的 key 对齐）。
  */
+/**
+ * 终端解析状态（解析器实例 + 已消费日志进度 + 快照）。
+ * 供 [TerminalParseCache] 在页面被 HorizontalPager 销毁/重建时复用，避免重进终端页重跑全量解析。
+ * [color] 为解析所用默认色，颜色变化即失效（与 `remember(terminalDefaultColor)` 的 key 对齐）。
+ *
+ * [consumedLog] / [result] 可变且 `@Volatile`：解析在 Default 线程跑，进度必须与解析器状态一起
+ * 落定（见 `TerminalPage` 的解析协程），跨线程可见性由此保证。
+ */
 private class TerminalParseState(
     val color: Color,
     val parser: IncrementalAnsiParser,
-    val consumedLog: String,
-    val result: ParsedAnsiResult
+    @Volatile var consumedLog: String,
+    @Volatile var result: ParsedAnsiResult
 )
+
+/**
+ * 页面内经 `remember` 持有的可变引用。它与单例缓存可能指向**同一个** [TerminalParseState] 对象，
+ * 因此就地更新该对象的字段即等于更新缓存，不需要每次解析都重建状态对象。
+ */
+private class ParseHolder(@Volatile var state: TerminalParseState?)
 
 /** 单例缓存：同一时刻只有终端页在用，故仅保留最近一次 [TerminalParseState]。 */
 private object TerminalParseCache {
