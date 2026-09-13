@@ -100,8 +100,8 @@ object SyntaxPackStore {
 
     private fun save(ctx: Context, packs: List<SyntaxPack>) {
         val f = indexFile(ctx)
-        f.parentFile?.mkdirs()
-        f.writeText(
+        atomicWrite(
+            f,
             packs.joinToString("\n") { p ->
                 listOf(
                     p.id,
@@ -115,6 +115,28 @@ object SyntaxPackStore {
                 ).joinToString("\t")
             }
         )
+    }
+
+    /**
+     * 原子写：同目录临时文件 + rename 覆盖，避免写入中途进程被杀导致 [indexFile] 损坏（丢失全部语法包元数据）。
+     * rename 失败（极少见）时回退为非原子直写，至少保证落盘。
+     */
+    private fun atomicWrite(file: File, text: String) {
+        val dir = file.parentFile
+        if (dir == null) {
+            file.writeText(text)
+            return
+        }
+        dir.mkdirs()
+        val tmp = File(dir, "${file.name}.${System.nanoTime()}.tmp")
+        try {
+            tmp.writeText(text)
+            if (!tmp.renameTo(file)) {
+                file.writeText(text)
+            }
+        } finally {
+            if (tmp.exists()) tmp.delete()
+        }
     }
 
     /**
@@ -222,7 +244,8 @@ object SyntaxPackStore {
                     if (n < 0) break
                     total += n
                     // 边读边限流：不能等下载完再判断体积。
-                    require(total <= MAX_BYTES) { "内容超过体积上限 ${MAX_BYTES / 1024}KB" }
+                    // 上限取两者较大者（zip 整包可达 MAX_ZIP_BYTES），具体上限由 importZip/ingest 按内容类型复核。
+                    require(total <= MAX_ZIP_BYTES) { "内容超过体积上限 ${MAX_ZIP_BYTES / 1024}KB" }
                     out.write(buf, 0, n)
                 }
                 return out.toByteArray()
