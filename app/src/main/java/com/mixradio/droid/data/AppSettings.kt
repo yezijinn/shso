@@ -84,6 +84,10 @@ class AppSettings private constructor(context: Context) {
     var editorFontSize by mutableFloatStateOf(prefs.getFloat(KEY_EDITOR_FONT_SIZE, DEFAULT_EDITOR_FONT_SIZE))
         private set
 
+    /** 编辑器自动换行：超宽长行折行延续显示。0=关（默认）。 */
+    var editorWordWrap by mutableStateOf(prefs.getBoolean(KEY_EDITOR_WORD_WRAP, false))
+        private set
+
     /**
      * 安全防护档位：0 无防护 / 1 仅审计 / 2 标准防护（默认）/ 3 最强防护。
      * 见 data/security/SecurityLevels.kt 与 docs/指令审查与拦截方案.md。
@@ -235,6 +239,11 @@ class AppSettings private constructor(context: Context) {
         prefs.edit { putBoolean(KEY_EDITOR_SHOW_LINE_NUMBER, show) }
     }
 
+    fun updateEditorWordWrap(enable: Boolean) {
+        editorWordWrap = enable
+        prefs.edit { putBoolean(KEY_EDITOR_WORD_WRAP, enable) }
+    }
+
     fun updateEditorFontSize(size: Float) {
         val clamped = size.coerceIn(MIN_EDITOR_FONT_SIZE, MAX_EDITOR_FONT_SIZE)
         editorFontSize = clamped
@@ -330,6 +339,7 @@ class AppSettings private constructor(context: Context) {
         private val DEFAULT_BOOKMARKS = listOf("/data/adb", "/data/adb/modules")
         private const val KEY_EDITOR_AUTOSAVE_INTERVAL = "editor_autosave_interval"
         private const val KEY_EDITOR_SHOW_LINE_NUMBER = "editor_show_line_number"
+        private const val KEY_EDITOR_WORD_WRAP = "editor_word_wrap"
         private const val KEY_EDITOR_FONT_SIZE = "editor_font_size"
         private const val KEY_SECURITY_LEVEL = "security_level"
 
