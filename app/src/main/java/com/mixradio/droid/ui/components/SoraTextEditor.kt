@@ -104,6 +104,8 @@ fun SoraTextEditor(
     resetKey: Any?,
     fontSize: TextUnit,
     showLineNumbers: Boolean,
+    /** 自动换行：超宽长行折行延续显示（关=横向滚动）。 */
+    wordWrap: Boolean,
     /** 当前文件名（含扩展名，大小写不敏感）：用于选取 Monarch 语法（null 表示无高亮）。 */
     fileName: String?,
     /** 语法包变更计数：变化时重新取语法（用于导入/删除语法包后即时生效）。 */
@@ -134,7 +136,7 @@ fun SoraTextEditor(
                 typefaceLineNumber = Typeface.MONOSPACE
                 setLineNumberEnabled(showLineNumbers)
                 setTextSize(fontSize.value)
-                setWordwrap(false)
+                setWordwrap(wordWrap)
                 setTabWidth(4)
                 setHighlightCurrentLine(true)
                 setScrollBarEnabled(true)
@@ -154,6 +156,8 @@ fun SoraTextEditor(
         update = { ed ->
             ed.setLineNumberEnabled(showLineNumbers)
             ed.setTextSize(fontSize.value)
+            // 换行开关幂等：仅在状态变化时下发，避免每帧重复触发布局重建。
+            if (ed.isWordwrap != wordWrap) ed.setWordwrap(wordWrap)
             // 扩展名变化（另存为其它类型）时切换语法；重复设置会重置分析，故仅在实例不同时应用。
             if (ed.editorLanguage !== editorLanguage && editorLanguage != null) {
                 ed.setEditorLanguage(editorLanguage)

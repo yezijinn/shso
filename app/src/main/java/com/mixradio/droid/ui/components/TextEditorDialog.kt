@@ -210,6 +210,8 @@ private fun TextEditorDialogContent(
 
     var showLineNumber by remember { mutableStateOf(appSettings.editorShowLineNumber) }
     var fontSize by remember { mutableFloatStateOf(appSettings.editorFontSize) }
+    // 换行开关：超宽长行折行显示。初始值取持久化设置（默认 0=关）。
+    var wordWrap by remember { mutableStateOf(appSettings.editorWordWrap) }
     var autoSaveSeconds by remember { mutableIntStateOf(appSettings.editorAutoSaveInterval) }
     var lastAutoSaveAt by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var lastSavedAtMs by remember { mutableLongStateOf(0L) }
@@ -480,6 +482,11 @@ private fun TextEditorDialogContent(
                     onSaveClick = doSave,
                     onHistoryClick = { syncSnapshot(); showHistoryDialog = true },
                     historyCount = history.size,
+                    wordWrap = wordWrap,
+                    onWordWrapToggle = {
+                        wordWrap = !wordWrap
+                        appSettings.updateEditorWordWrap(wordWrap)
+                    },
                     onDismissRequest = {
                         syncSnapshot()
                         if (dirty) showUnsavedDialog = true else onDismissRequest()
@@ -534,7 +541,8 @@ private fun TextEditorDialogContent(
                                 chunkedFilePath = currentFilePath ?: "",
                                 chunkedCharset = currentCharset,
                                 showLineNumber = showLineNumber,
-                                fontSize = fontSize.sp
+                                fontSize = fontSize.sp,
+                                wordWrap = wordWrap
                             )
                         } else {
                             // 打开即可编辑：单一 Sora 编辑器（MP-Manager 同款引擎），文本驻留在其内部。
@@ -544,6 +552,7 @@ private fun TextEditorDialogContent(
                                 resetKey = editorResetKey,
                                 fontSize = fontSize.sp,
                                 showLineNumbers = showLineNumber,
+                                wordWrap = wordWrap,
                                 fileName = grammarFileName,
                                 syntaxRevision = syntaxRevision,
                                 controller = soraEditor,
@@ -976,6 +985,8 @@ private fun EditorTopBar(
     onSettingsClick: () -> Unit, onFindClick: () -> Unit,
     onCompareClick: () -> Unit, onSaveClick: () -> Unit,
     onHistoryClick: () -> Unit, historyCount: Int,
+    /** 换行开关当前状态：开启时按钮以粗体红字显示。 */
+    wordWrap: Boolean, onWordWrapToggle: () -> Unit,
     onDismissRequest: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
@@ -1019,6 +1030,12 @@ private fun EditorTopBar(
                 // 不做任何禁用：保存按钮始终可点，无改动或状态不满足时点击不产生副作用。
                 // 有改动时用强调色提示「有内容待保存」。
                 tint = if (dirty) AuroraTokens.Accent else AuroraTokens.Text
+            )
+            // 换行开关：开启=粗体红字，关闭=默认样式。
+            EditorToolbarButton(
+                "换行", null, onWordWrapToggle,
+                tint = if (wordWrap) AuroraTokens.Error else AuroraTokens.Text,
+                emphasized = wordWrap
             )
             EditorToolbarButton("设置", null, onSettingsClick)
             if (hasBom) {
@@ -1133,7 +1150,8 @@ private fun ChunkedReadOnlyArea(
     chunkedIndex: SparseLineIndex?,
     chunkedFilePath: String,
     chunkedCharset: java.nio.charset.Charset,
-    showLineNumber: Boolean, fontSize: androidx.compose.ui.unit.TextUnit
+    showLineNumber: Boolean, fontSize: androidx.compose.ui.unit.TextUnit,
+    wordWrap: Boolean
 ) {
     val scope = rememberCoroutineScope()
     Box(modifier = Modifier.fillMaxSize()) {
@@ -1141,7 +1159,7 @@ private fun ChunkedReadOnlyArea(
             // 稀疏行索引：按行号按需 readRange，内存恒定 O(窗口)，不会滚到底 OOM。
             IndexedChunkedView(
                 index = chunkedIndex, filePath = chunkedFilePath, charset = chunkedCharset,
-                showLineNumber = showLineNumber, fontSize = fontSize, scope = scope
+                showLineNumber = showLineNumber, fontSize = fontSize, wordWrap = wordWrap, scope = scope
             )
         } else {
             // 索引建立失败时的兜底：已加载行用 LazyColumn 懒加载渲染（append-only 行列表）。
@@ -1153,7 +1171,11 @@ private fun ChunkedReadOnlyArea(
                 horizontalAlignment = Alignment.Start
             ) {
                 itemsIndexed(lines, key = { idx, _ -> idx }) { index, line ->
-                    Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                    // 换行开：占满宽度折行；关：整行横向滚动（保持原行为）。
+                    Row(
+                        modifier = if (wordWrap) Modifier.fillMaxWidth()
+                                   else Modifier.horizontalScroll(rememberScrollState())
+                    ) {
                         if (showLineNumber) {
                             Text(
                                 text = "${index + 1}",
@@ -1166,8 +1188,9 @@ private fun ChunkedReadOnlyArea(
                             text = line,
                             style = AuroraTextStyles.monospace.copy(fontSize = fontSize),
                             color = AuroraTokens.Text,
-                            modifier = Modifier.padding(end = 200.dp),
-                            softWrap = false
+                            modifier = if (wordWrap) Modifier.weight(1f).padding(end = 8.dp)
+                                       else Modifier.padding(end = 200.dp),
+                            softWrap = wordWrap
                         )
                     }
                 }
@@ -1197,6 +1220,7 @@ private fun ChunkedReadOnlyArea(
 private fun IndexedChunkedView(
     index: SparseLineIndex, filePath: String, charset: java.nio.charset.Charset,
     showLineNumber: Boolean, fontSize: androidx.compose.ui.unit.TextUnit,
+    wordWrap: Boolean,
     scope: kotlinx.coroutines.CoroutineScope
 ) {
     val total = index.totalLines
@@ -1218,7 +1242,10 @@ private fun IndexedChunkedView(
                 // peek 命中 LRU 时首帧即有文本；否则 LaunchedEffect 后台加载后回填。
                 var text by remember(i) { mutableStateOf(provider.peek(i)) }
                 LaunchedEffect(i) { if (text == null) text = provider.load(i) }
-                Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                Row(
+                    modifier = if (wordWrap) Modifier.fillMaxWidth()
+                               else Modifier.horizontalScroll(rememberScrollState())
+                ) {
                     if (showLineNumber) {
                         Text(
                             text = "${i + 1}",
@@ -1231,8 +1258,9 @@ private fun IndexedChunkedView(
                         text = text ?: "",
                         style = AuroraTextStyles.monospace.copy(fontSize = fontSize),
                         color = AuroraTokens.Text,
-                        modifier = Modifier.padding(end = 200.dp),
-                        softWrap = false
+                        modifier = if (wordWrap) Modifier.weight(1f).padding(end = 8.dp)
+                                   else Modifier.padding(end = 200.dp),
+                        softWrap = wordWrap
                     )
                 }
             }
