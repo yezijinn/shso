@@ -28,19 +28,12 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 
 /**
- * 命令执行的前台「保活」服务。
+ * 命令执行的前台「保活」服务：应用切到后台时维持前台优先级，避免激进 ROM 立即回收进程，
+ * 使长耗时脚本 / 下载 / 编译等子进程（由 RootService 承载）得以继续运行。
  *
- * 作用：当应用切到后台（被用户退回桌面 / 进入最近任务列表）时，维持本进程在系统眼中的
- * 前台优先级，避免激进 ROM 在后台立即回收进程，从而让长耗时脚本 / 下载 / 编译等
- * 子进程（由 RootService 以独立 Process 承载）得以继续运行。
- *
- * 实现要点：
- * - 本服务不承载执行逻辑（执行仍完全由 RootService 的 executionJob 负责），只做前台哨兵 +
- *   通知展示，从根上不触碰 RootService 的代际 / 取消 / 清理语义，改动最小。
- * - Android 13（API 33）起发布通知需要 POST_NOTIFICATIONS 运行时授权，未授权时通知不会在
- *   通知抽屉展示（前台保活本身不受影响），因此 `notify()` 前需判权限，权限由设置页引导授予。
- * - 服务自行轮询 RootService.isTaskRunning：任务结束（正常退出 / 结束进程 / 重启）后
- *   stopSelf 自我回收，并由 onDestroy 显式移除前台状态与通知。
+ * 本服务不承载执行逻辑（仍由 RootService.executionJob 负责），只做前台哨兵 + 通知展示。
+ * Android 13+ 发通知需 POST_NOTIFICATIONS 授权，`notify()` 前判权限（保活本身不受影响）。
+ * 服务轮询 RootService.isTaskRunning，任务结束后 stopSelf 回收，onDestroy 移除前台状态与通知。
  */
 class ExecutionForegroundService : Service() {
 

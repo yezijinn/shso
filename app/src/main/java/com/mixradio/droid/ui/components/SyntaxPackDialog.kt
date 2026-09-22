@@ -275,10 +275,6 @@ private fun UrlImportDialog(prefillUrl: String, onDismiss: () -> Unit, onConfirm
     }
 }
 
-/**
- * 语法包压缩档的**永固直链**：指向仓库 `syntax-packs.zip`（整包：index.json + 全部语法）。
- * 直链通过 git tag 固定（`refs/tags/<tag>/...`），仓库后续更新不影响已发布的链接。
- */
 /** 删除确认：破坏性操作不静默执行。 */
 @Composable
 private fun ConfirmRemoveDialog(pack: SyntaxPack, onDismiss: () -> Unit, onConfirm: () -> Unit) {

@@ -1,7 +1,7 @@
 #!/bin/sh
 # 统计「守卫包装器每次调用创建的外部进程数」——fork 数是守卫开销的唯一决定因素
 # （实测本机 fork+exec ≈ 15–18ms，故进程数直接换算为延迟）。
-# 脚本自带定位：test/ 的父目录即模块目录（旧版硬编码迁移前路径，9cd74ed 后失效，2026-09-11 修正）。
+# 脚本自带定位：test/ 的父目录即模块目录。
 SELF="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${ROOT:-$(dirname "$SELF")}"
 W="$ROOT/.tmp-guard-test/work"

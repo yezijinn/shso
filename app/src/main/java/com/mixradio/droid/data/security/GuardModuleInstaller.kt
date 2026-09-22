@@ -71,8 +71,7 @@ object GuardModuleInstaller {
         "guard/parted",
         "guard/fdisk",
         "guard/flash_image",
-        // v1.3.0：不经 dd/rm 的写入原语（ln/install/tee）+ 与 guard_operand_mode()
-        // 映射集合对齐的派发项（wipefs/chattr）。缺任何一个都说明打包异常。
+        // v1.3.0 写入原语（ln/install/tee）+ 与守卫 operand 映射对齐项（wipefs/chattr）
         "guard/ln",
         "guard/install",
         "guard/tee",

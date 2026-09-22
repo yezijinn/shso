@@ -5,8 +5,7 @@ package com.mixradio.droid.ui.components
 /**
  * 文件类型识别：顶栏「语言」标签与该文件的语法高亮选择共用同一扩展名。
  *
- * 注：着色由编辑器引擎（Sora + Monarch）负责，本对象只做扩展名判定 ——
- * 旧 Compose 渲染通道的关键字表与 AnnotatedString 着色实现已移除。
+ * 注：着色由编辑器引擎（Sora + Monarch）负责，本对象只做扩展名判定。
  */
 object CodeHighlighter {
 

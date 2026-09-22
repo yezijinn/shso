@@ -22,27 +22,15 @@ import java.util.Locale
 /**
  * 压缩包智能解压。
  *
- * 支持的格式（12 种）：
- * - 归档型：zip / 7z / tar / tgz / tar.gz / tar.xz / tar.bz2 / tar.lz4
- * - 单文件压缩型：gz / xz / bz2 / lz4（直接解压为原文件名）
+ * 支持格式：归档型 zip / 7z / tar / tgz / tar.gz / tar.xz / tar.bz2 / tar.lz4，
+ * 单文件压缩型 gz / xz / bz2 / lz4（直接解压为去后缀原文件名）。
+ * rar 为专有商业格式不支持；zstd（.zst）已移除：原生库占 release 包近半体积，与使用场景不匹配。
  *
- * rar 为专有商业格式（UnRAR 许可证限制），不支持、不识别、不做任何处理。
- * zstd（.zst / .tar.zst）已移除：zstd-jni 需为 4 个 ABI 各打一份原生库（约 1.9MB），
- * 占 release 包近一半体积，与使用场景不匹配。
+ * 智能解压：根目录仅 1 个顶层目录（条件 A）→ 直接解压到当前目录（剥离顶层前缀避免嵌套）；
+ * 否则（条件 B）→ 在当前目录新建「压缩包名（去后缀）」文件夹解压。重名冲突自动追加 _N。
  *
- * 智能解压算法（归档型）：
- * - 条件 A（单顶层文件夹模式）：压缩包根目录仅含 1 个顶层条目，且该条目为文件夹 →
- *   将该顶层文件夹及其内容直接解压到当前工作目录。
- * - 条件 B（多条目/单文件模式）：不满足条件 A →
- *   在当前目录新建以「压缩包名（去后缀）」命名的文件夹，将所有内容解压其中。
- *
- * 单文件压缩型直接解压为去掉压缩后缀的原文件名，同样执行重名冲突 _N 消解。
- *
- * 边界处理：
- * - 重名冲突：目标路径已存在同名路径 → 自动追加数字后缀（如 xxx_1）。
- * - 加密压缩包：zip 条目加密/7z 头加密时返回 [ExtractResult.NeedPassword]，由 UI 弹窗收集密码后重试。
- *   - zip 使用 zip4j（支持 ZipCrypto + WinZip AES，char[] 密码天然支持中文，UTF-8 密码开关）。
- *   - 7z 使用 commons-compress SevenZFile.Builder（setFile / setPassword）。
+ * 加密包（zip 条目加密 / 7z 头加密）返回 [ExtractResult.NeedPassword] 由 UI 收集密码重试；
+ * zip 用 zip4j（ZipCrypto + WinZip AES），7z 用 commons-compress SevenZFile.Builder。
  */
 object ArchiveExtractor {
 

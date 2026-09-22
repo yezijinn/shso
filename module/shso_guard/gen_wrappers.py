@@ -25,8 +25,8 @@ specs = [
     ("cp", "cp", "MVCP"),
     ("find", "find", "FIND"),
     ("sed", "sed", "SED"),
-    # v1.2.0：补齐「权限崩坏 / 分区表 / 刷机」这一类格机原语。
-    # 均为 ARGS 模式（非选项参数即路径），命中 protect=/system、/dev、/data 即拦截。
+    # 权限崩坏 / 分区表 / 刷机 类格机原语，均为 ARGS 模式（非选项参数即路径），
+    # 命中 protect=/system、/dev、/data 即拦截。
     ("chmod", "chmod", "ARGS"),
     ("chown", "chown", "ARGS"),
     ("chgrp", "chgrp", "ARGS"),
@@ -36,9 +36,9 @@ specs = [
     ("parted", "parted", "ARGS"),
     ("fdisk", "fdisk", "ARGS"),
     ("flash_image", "flash_image", "ARGS"),
-    # v1.3.0：补齐「不经 dd/rm 的写入原语」——ln 可把块设备指向 /dev/null，
-    # install 是带属性的 cp，tee 直接把管道内容写进目标文件。
-    # 新增项必须同步：guard/common.sh 的 guard_operand_mode()、assets/shso_guard.zip、
+    # 不经 dd/rm 的写入原语：ln 可把块设备指向 /dev/null，install 是带属性的 cp，
+    # tee 直接把管道内容写进目标文件。
+    # 新增项必须同步：guard_operand_mode()、assets/shso_guard.zip、
     # GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES，并升 module.prop 版本。
     ("ln", "ln", "MVCP"),
     ("install", "install", "MVCP"),

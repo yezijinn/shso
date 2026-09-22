@@ -188,7 +188,6 @@ dependencies {
     implementation(libs.zip4j)
 
     // 文本编辑器引擎（MP-Manager 同款 Sora Editor）：自绘 View + 行索引增量 Content，只渲染可视区。
-    // 取代此前的「Compose BasicTextField / 原生 EditText 双通道 + 只读虚拟滚动」方案。
     implementation(platform(libs.sora.editor.bom))
     implementation(libs.sora.editor)
     // 语法高亮：Monarch 引擎（语法定义以本项目内置 JSON 提供，不依赖外部语法包）

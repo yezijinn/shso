@@ -427,7 +427,7 @@ fun HomePage(
         )
     }
 
-    // ===== 执行确认弹窗：点击「立即执行」必须先经风险确认 =====
+    // 执行确认弹窗：点击「立即执行」必须先经风险确认
     // 优先复用 shso 列表中的真实 FileItem（含正确大小/时间），否则按输入路径构造
     val execItem = remember(pendingExecutePath) {
         pendingExecutePath?.let { targetPath ->

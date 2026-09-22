@@ -329,7 +329,6 @@ object PolicyEngine {
         val of = atom.args.firstOrNull { it.startsWith("of=") }?.removePrefix("of=")
             ?: atom.operands.firstOrNull { it.startsWith("/dev") } // 裸操作数形态
         if (of == null) return
-        // 常见安全目标：/dev/null 等
         if (of == "/dev/null") return
         val cls = PathClassifier.classify(of)
         when {

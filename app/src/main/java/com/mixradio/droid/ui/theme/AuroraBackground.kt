@@ -18,7 +18,7 @@ import androidx.compose.ui.unit.dp
  * 尺寸/密度不变时只绘制一次并缓进 display list；滚动与翻页都不会触发重绘。
  */
 fun Modifier.auroraBackground(): Modifier = this.drawBehind {
-    // ① 135° 线性渐变（Compose linearGradient 左上→右下，与 CSS 135deg 同向）
+    // 135° 线性渐变（Compose linearGradient 左上→右下，与 CSS 135deg 同向）
     drawRect(
         brush = Brush.linearGradient(
             0.00f to AuroraTokens.AuroraTop,     // #0C1626
@@ -30,13 +30,13 @@ fun Modifier.auroraBackground(): Modifier = this.drawBehind {
     val w = size.width
     val h = size.height
 
-    // ② 左上 青
+    // 左上 青
     drawRadialGlow(AuroraTokens.GlowCyan, 0.16f, Offset(w * 0.08f, h * 0.00f), 720.dp.toPx())
-    // ③ 右上 蓝
+    // 右上 蓝
     drawRadialGlow(AuroraTokens.GlowBlue, 0.12f, Offset(w * 0.92f, h * 0.18f), 560.dp.toPx())
-    // ④ 左下 紫
+    // 左下 紫
     drawRadialGlow(AuroraTokens.GlowViolet, 0.15f, Offset(w * 0.05f, h * 0.95f), 780.dp.toPx())
-    // ⑤ 右下 青
+    // 右下 青
     drawRadialGlow(AuroraTokens.GlowCyan, 0.08f, Offset(w * 0.98f, h * 0.72f), 520.dp.toPx())
 }
 

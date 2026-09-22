@@ -330,7 +330,7 @@ fun BuiltInFilePicker(
                                 .background(AuroraTokens.SurfaceHover.copy(alpha = 0.6f))
                         )
 
-                        // ③ 列表区：占满剩余高度（weight=1），行样式同「文件」页
+                        // 列表区：占满剩余高度（weight=1），行样式同「文件」页
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()

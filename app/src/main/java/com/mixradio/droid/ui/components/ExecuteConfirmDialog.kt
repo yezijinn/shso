@@ -238,7 +238,7 @@ fun ExecuteConfirmDialog(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // ④ 按钮
+        // 按钮
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
