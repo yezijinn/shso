@@ -24,7 +24,7 @@ permissions:
 jobs:
   build:
     name: 编译并导出 APK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - name: 拉取代码
