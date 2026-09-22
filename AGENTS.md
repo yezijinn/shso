@@ -143,11 +143,11 @@ python build_apk.py              # 一键构建：签名 + 版本规则 + 产物
 - 所有 `su -c` 路径必须单引号转义（`replace("'", "'\\''")`）；
   路径处理必须过滤 `..`、`\`、`\0`。改动 `RootFileManager` / `RootService` 时保持。
 - `allowBackup=false`，不要开启。
-- **发布流程**（缺一步不算发布完成）：`python build_apk.py` 出产物 →
-  确认 `versionCode` = 构建当日（东八区）→ 推 `origin main` 与 `gitee master`
-  （用命令自身退出码判断并重试，别用管道；推完 `git ls-remote` 复核远端 tip）→
-  打**纯数字** tag 并推双远端 → 两端建同名 Release（Gitee 无 clobber，同名附件先删再传）→
-  两端下载的 `sha256` 必须与本地完全一致。
-- **发布标签禁止 `v` 前缀**（客户端只认纯数字，Gitee 的 `releases/tag/<纯数字>` 带 `v` 必 404）；
-  历史上误打的 `v20260904` 已纠正为 `20260904`。非发布包用语义前缀 + 序号（如 `syntaxpacks-v2`）。
+- 发布流程：`python build_apk.py` 出产物，确认 `versionCode` 等于构建当日（东八区）；推
+  `origin main` 与 `gitee main`，用命令自身的退出码判断失败并重试（别用管道，退出码会被
+  `tail` 吞掉），推完用 `git ls-remote` 复核远端 tip；打纯数字 tag 并推双远端；两端建同名
+  Release（Gitee 没有 clobber，同名附件要先删再传）；最后从两端各下载一次，`sha256`
+  与本地一致才算完成。
+- 发布标签不能带 `v` 前缀：客户端只认纯数字，Gitee 的 `releases/tag/<纯数字>` 带 `v` 必然
+  404。历史上误打的 `v20260904` 已补为 `20260904`。非发布包用语义前缀加序号，如 `syntaxpacks-v2`。
 - Windows 下构建路径过长时使用 `\\?\` 前缀。
