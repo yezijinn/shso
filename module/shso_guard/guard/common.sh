@@ -26,13 +26,22 @@ GUARD_DIR="${GUARD_DIR:-${MODDIR:-${0%/*}}}"
 # 覆盖仅允许指向受信目录内（词法判定，零子进程；/data/adb/shso_guard 为 root 0755）。
 _OV_POLICY="${SHSO_POLICY:-}"
 case "$_OV_POLICY" in
-    /data/adb/shso_guard/*) POLICY_FILE="$_OV_POLICY" ;;
-    *)                      POLICY_FILE="/data/adb/shso_guard/policy.conf" ;;
+    /data/adb/shso_guard/*)
+        # 前缀匹配挡不住 `…/../../data/local/tmp/x.conf` 这类回退：含 `..` 段一律拒绝。
+        case "$_OV_POLICY" in
+            */../*|*/..) POLICY_FILE="/data/adb/shso_guard/policy.conf" ;;
+            *)           POLICY_FILE="$_OV_POLICY" ;;
+        esac ;;
+    *) POLICY_FILE="/data/adb/shso_guard/policy.conf" ;;
 esac
 _OV_AUDIT="${SHSO_AUDIT:-}"
 case "$_OV_AUDIT" in
-    /data/adb/shso/*)       AUDIT_LOG="$_OV_AUDIT" ;;
-    *)                      AUDIT_LOG="/data/adb/shso/audit.log" ;;
+    /data/adb/shso/*)
+        case "$_OV_AUDIT" in
+            */../*|*/..) AUDIT_LOG="/data/adb/shso/audit.log" ;;
+            *)           AUDIT_LOG="$_OV_AUDIT" ;;
+        esac ;;
+    *) AUDIT_LOG="/data/adb/shso/audit.log" ;;
 esac
 # 轮转阈值不接受覆盖：它只影响日志长度，无排障价值，却可被用来撑爆分区。
 AUDIT_MAX_LINES=2000
@@ -310,10 +319,13 @@ audit() {
     # 目标是软链 / 非常规文件时先清除：审计目录为 0777（刻意，供第三方文件管理器
     # 访问），第三方可在其中放置软链，`>>` 会跟随软链等于以 root 追加任意文件。
     # 内建 [ -L ] 零成本；仅异常时才 fork 一次 rm。
-    if [ -L "$AUDIT_LOG" ]; then
+    if [ -L "$AUDIT_LOG" ] || { [ -e "$AUDIT_LOG" ] && [ ! -f "$AUDIT_LOG" ]; }; then
         /system/bin/rm -f -- "$AUDIT_LOG" 2>/dev/null
-    elif [ -e "$AUDIT_LOG" ] && [ ! -f "$AUDIT_LOG" ]; then
-        /system/bin/rm -f -- "$AUDIT_LOG" 2>/dev/null
+        # 清除后仍非常规文件 → 放弃本次写入：`>>` 会跟随软链，等于以 root 写任意文件。
+        # 这里 return 而不是 exit —— 调用方 run_guard 随后还要输出拦截提示并决定退出码。
+        if [ -L "$AUDIT_LOG" ] || { [ -e "$AUDIT_LOG" ] && [ ! -f "$AUDIT_LOG" ]; }; then
+            return 0
+        fi
     fi
 
     echo "${_ts}|GUARD|${_vd}|${_rule}|cmd=${_cmd}|args=${_args}|path=${_path}" >> "$AUDIT_LOG" 2>/dev/null

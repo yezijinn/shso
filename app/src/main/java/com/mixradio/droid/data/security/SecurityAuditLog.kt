@@ -268,6 +268,12 @@ object SecurityAuditLog {
                 RiskLevel.WARNING, "清空审计日志", null, null
             ) + "\n"
             if (useRootLog()) {
+                // 清空前同样必须先确认目标是普通文件：`>` 与 `>>` 都会跟随软链，
+                // 否则「清空审计」会退化成以 root 截断任意文件（比追加更危险）。
+                if (!prepareRootTarget()) {
+                    recordFailure("审计目标非常规文件，已放弃清空")
+                    return@withContext false
+                }
                 val (code, _) = RootService.runCommandSync("sh -c '> $ROOT_LOG_PATH'", 5_000L)
                 if (code != 0) return@withContext false
                 RootService.writeBytesAsRoot(ROOT_LOG_PATH, marker.toByteArray(Charsets.UTF_8), append = true)

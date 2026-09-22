@@ -13,13 +13,17 @@ SELF="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${ROOT:-$(dirname "$SELF")}"
 GUARD="$ROOT/guard"
 WORK="$ROOT/.tmp-guard-test/work"
-FAKE="$WORK/fakebin"
+# 桩目录必须落在 MSYS 虚拟文件系统（/tmp）内：仓库位于 NTFS，chmod 755 不生效，
+# exec_real 的 [ -x ] 会失败并落到系统真实二进制上，使 ^REAL: 判据失效（Windows 专有陷阱）。
+FAKE="${TMPDIR:-/tmp}/shso-harness-fakebin"
 ORIG_PATH="$PATH"
 EMPTY="$WORK/empty"
 
-rm -rf "$WORK"; mkdir -p "$FAKE" "$WORK/policy" "$EMPTY"
+rm -rf "$WORK" "$FAKE"; mkdir -p "$FAKE" "$WORK/policy" "$EMPTY"
 
-for c in rm dd find sed mv cp toybox busybox truncate rmdir shred wipe; do
+# 桩列表须覆盖被测命令：新增包装器（ln/install/tee/wipefs/chattr）也要有桩，
+# 否则 ALLOW 用例会落到系统真实二进制上，判据（^REAL:）失效。
+for c in rm dd find sed mv cp toybox busybox truncate rmdir shred wipe ln install tee wipefs chattr; do
   printf '#!/bin/sh\necho "REAL:%s $*"\nexit 0\n' "$c" > "$FAKE/$c"
   chmod 755 "$FAKE/$c"
 done
@@ -123,12 +127,47 @@ if [ $rc -ne 0 ] && printf '%s' "$out" | grep -q "找不到可执行的真实二
 else bad "m4) 缺失二进制处理异常 rc=$rc out=[$out]"; fi
 
 echo
-echo "===== 审计日志 ====="
+echo "===== v1.3.0 回归用例（派发表 / 新包装器 / 参数变体 / 未解析变量）====="
+run_case BLOCK "n1)   toybox chmod -R 777 /system"           "$WORK/policy/lf.conf" toybox chmod -R 777 /system
+run_case BLOCK "n2)   toybox chown 0:0 /system"              "$WORK/policy/lf.conf" toybox chown 0:0 /system
+run_case BLOCK "n3)   toybox mknod /system/x c 1 3"          "$WORK/policy/lf.conf" toybox mknod /system/x c 1 3
+run_case BLOCK "n4)   ln -sf /dev/null /system/x（新包装器）" "$WORK/policy/lf.conf" ln -sf /dev/null /system/x
+run_case BLOCK "n5)   toybox ln（派发已补映射）"              "$WORK/policy/lf.conf" toybox ln -sf /dev/null /system/x
+run_case BLOCK "n6)   tee /system/x（新包装器）"              "$WORK/policy/lf.conf" tee /system/x
+run_case BLOCK "n7)   wipefs -a /system/x（新包装器）"        "$WORK/policy/lf.conf" wipefs -a /system/x
+run_case BLOCK "n8)   find -exec /system/bin/rm（basename 判定）" "$WORK/policy/lf.conf" find /system -maxdepth 1 -exec /system/bin/rm -rf '{}' ";"
+run_case BLOCK "n9)   sed --in-place（长选项）"               "$WORK/policy/lf.conf" sed --in-place 1d /system/build.prop
+run_case BLOCK "n10)  rm -rf \$X（未解析变量 fail-closed）"   "$WORK/policy/lf.conf" rm -rf '$X'
+run_case ALLOW "n11)  ln -sf /sdcard/a /data/local/tmp/b（豁免）" "$WORK/policy/lf.conf" ln -sf /sdcard/a /data/local/tmp/b
+run_case ALLOW "n12)  tee /data/local/tmp/x（豁免）"          "$WORK/policy/lf.conf" tee /data/local/tmp/x
+
+echo
+echo "===== 环境变量越权（SHSO_POLICY 指向可写路径的 mode=off，必须被忽略）====="
+printf 'mode=off\n' > "$WORK/policy/evil.conf"
+out=$(PATH="$FAKE:$ORIG_PATH" SHSO_POLICY="$WORK/policy/evil.conf" SHSO_AUDIT="$WORK/audit.log" \
+      /bin/sh "$GUARD/rm" -rf /system 2>&1); rc=$?
+if [ $rc -ne 0 ] && printf '%s' "$out" | grep -q "已拦截"; then ok "n13) 越权 SHSO_POLICY 被忽略，仍按默认策略拦截"
+else bad "n13) 越权生效（未拦截）rc=$rc out=[$out]"; fi
+
+echo
+echo "===== 审计留痕与字段清洗 ====="
+# 注意：SHSO_AUDIT 现只接受 /data/adb/shso/ 前缀，Git Bash 下必然被忽略，
+# 因此这里直接 source 后覆盖 AUDIT_LOG（不经环境变量），否则断言会假失败。
+rm -f "$WORK/audit.log"
+(
+  . "$GUARD/common.sh"
+  AUDIT_LOG="$WORK/audit.log"
+  audit DENY PROTECTED_PATH rm "-rf /system" "/system"
+  audit ALLOW NONE rm "-rf /x
+2026-01-01 00:00:00|GUARD|ALLOW|NONE|cmd=rm|args=-rf /|path=/" "/x"
+)
 if [ -s "$WORK/audit.log" ] && grep -q "GUARD" "$WORK/audit.log"; then
   ok "审计日志已写入（含 GUARD 前缀 / $(grep -c . "$WORK/audit.log") 行）"
   echo "        尾行: $(tail -1 "$WORK/audit.log")"
 else bad "审计日志未写入"; fi
 if grep -q "DENY" "$WORK/audit.log" && grep -q "ALLOW" "$WORK/audit.log"; then ok "DENY 与 ALLOW 均已留痕"; else bad "审计未同时记录 DENY/ALLOW"; fi
+if [ "$(grep -c '^2026-01-01' "$WORK/audit.log" 2>/dev/null)" = "0" ]; then ok "n14) 审计字段清洗：无伪造行"
+else bad "n14) 审计字段清洗失败（出现伪造整行）"; fi
 
 echo
 echo "===== 汇总 ====="
