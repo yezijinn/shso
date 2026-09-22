@@ -262,14 +262,15 @@ python build_apk.py             # Windows 一键脚本（含 --skip-check）
   配置类事件（守卫安装 / 卸载 / 改档 / 降级 / 审计清空）在档位 0 下仍留痕。
 - **执行前确认**：弹风险确认框，展示文件名、路径、类型、大小、修改时间、
   SHA-256、是否以 Root 执行与脚本风险扫描结果。
-- **检查更新**（`SettingsPage`）：GitHub 优先（`/tags` 页面 HTML）、Gitee 备选
-  （`/api/v5/repos/{owner}/{repo}/tags` JSON —— Gitee 网页版 `/tags` 返回 405）。
+- **检查更新**（`SettingsPage`）：**Gitee 优先、GitHub 备选**（国内网络 GitHub 常不可达）。
+  Gitee 走 `/api/v5/repos/{owner}/{repo}/tags`（JSON，网页版 `/tags` 返回 405），
+  GitHub 走 `/tags`（HTML）。
   两源归一化规则一致：**只取 6..8 位纯数字标签**且**不剥离 `v` 前缀**（兼容违规写法
   等于让发布侧问题长期隐藏，且 Gitee 的「去更新」链接按纯数字拼、带 `v` 必 404）。
   GitHub 页面链接里的仓库名为全小写，正则必须忽略大小写，否则会把「有标签」
   误判成「无标签」→ 假的网络异常。五态状态机（Idle / Checking / UpToDate /
-  Available / NetworkError）；成功源只用于「去更新」跳转（GitHub → `releases`，
-  Gitee → `releases/tag/<最新>`）与日志，不写入用户可见文案。
+  Available / NetworkError）；成功源只用于「去更新」跳转（Gitee → `releases/tag/<最新>`，
+  GitHub → `releases`）与日志，不写入用户可见文案。
 - **编辑器只读阈值**：`ChunkedFileReader.LARGE_FILE_THRESHOLD = 128KB`，
   超过走只读懒加载（低端机实测：256KB 约 30s，2MB 数分钟无响应）。
 
