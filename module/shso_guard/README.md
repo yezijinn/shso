@@ -3,7 +3,7 @@
 shso 的运行时守卫模块：在命令被调用的时刻拦截 `rm` / `dd` / `mkfs` 等高危操作，
 保护系统分区并记录审计日志。
 
-- 模块 ID：`shso_guard`（一经发布不再修改），当前版本 v1.2.0（`module.prop` 的 `version=`）。
+- 模块 ID：`shso_guard`（一经发布不再修改），当前版本 v1.3.0（`module.prop` 的 `version=`）。
 - 相关文档：[`README.md`](../../README.md)、[`docs/PROJECT.md`](../../docs/PROJECT.md)。
 
 ## 分层定位
@@ -84,7 +84,9 @@ Magisk / KernelSU / APatch 均可刷入；Recovery 仅 Magisk 支持。
 
 - 防递归：`exec_real()` 遍历 PATH 时跳过守卫目录（判据为「该目录下有 `common.sh`」，
   对尾斜杠、`//`、`/./`、符号链接等写法免疫）；另有深度计数器
-  `SHSO_GUARD_DEPTH`，超限即 fail-closed。
+  `SHSO_GUARD_DEPTH` 超限即 fail-closed。该计数器定位为**健壮性**防线
+  （防误配置触发 fork 炸弹），不是安全边界 —— 它来自可被调用者重置的环境变量，
+  真正的防递归是 `exec_real()` 的目录跳过。v1.3.0 起校验其必须为十进制并收紧上限到 3。
 - 符号链接处理：逐级扫描路径分量，命中第一处符号链接时只解析该链接本身，
   再把其后分量词法接回。不能对整条路径直接 `realpath` ——
   `cp f <link>/new` 场景下叶子不存在，`realpath` 会失败，若退回纯词法则
@@ -107,7 +109,8 @@ App 侧已完成集成，守卫目录由 `GuardModuleInstaller.GUARD_BIN_DIR`
    `export PATH=<GUARD_BIN_DIR>:/sbin:/system/sbin:/system/bin:/system/xbin && …`。
    - 档位 < 2：返回空串，不前置守卫。
    - 档位 ≥ 2 且守卫就绪：前置守卫目录。
-   - 档位 ≥ 2 但守卫未安装：返回 `null`（拒绝执行），由上层提示安装。
+   - 档位 ≥ 2 但守卫未安装：返回 `null`，上层落审计 + 首次告警后**放行**（不阻断 ——
+     档位 2 是默认档位，硬阻断会让未装守卫的设备连 `ls` 都跑不了）。
 2. **安装与升级**：`GuardModuleInstaller` 按原子替换流程执行；
    「守卫 bin 目录是否就绪」探测结果缓存 60 秒，切换档位会失效该缓存。
 3. **策略同步**：切换档位与冷启动时同步 `policy.conf` 的 `mode`
@@ -129,6 +132,20 @@ allow=/sdcard       # 豁免路径，优先级高于 protect
 判定顺序为 allow → protect，因此 `/data/media` 可豁免 `/data` 的保护。
 找不到策略文件时退回内置兜底清单。
 
+### 环境变量（v1.3.0 收紧）
+
+安全关键路径**不接受任意环境覆盖**：守卫的防护对象就是"将被执行的命令"，
+若允许它把策略文件指向自己可写的路径，守卫等于自解除。
+
+| 变量 | v1.3.0 行为 |
+|---|---|
+| `SHSO_POLICY` | 仅接受 `/data/adb/shso_guard/` 前缀（root 0755），其余回落默认策略文件。原实现对任意路径生效，实测 `SHSO_POLICY=<mode=off 文件> rm -rf /system/x` 可整体关闭守卫 |
+| `SHSO_AUDIT` | 仅接受 `/data/adb/shso/` 前缀，其余回落默认日志 |
+| `SHSO_AUDIT_MAX` | 不再生效（固定 2000 行；仅影响日志长度，无排障价值，却可被用来撑爆分区） |
+| `SHSO_GUARD_DEPTH` | 仅作辅助计数，必须为十进制，上限 3 |
+
+排障请改用策略文件里的 `mode=log`。
+
 ## 审计日志
 
 文件：`/data/adb/shso/audit.log`（与 App 侧共用）。
@@ -138,10 +155,18 @@ allow=/sdcard       # 豁免路径，优先级高于 protect
 2026-09-05 23:41:09|GUARD|ALLOW|NONE|cmd=rm|args=-f /sdcard/a.log|path=/sdcard/a.log
 ```
 
-超过 `AUDIT_MAX_LINES + 400` 行时保留尾部 `AUDIT_MAX_LINES` 行（默认 2000，
-可用 `SHSO_AUDIT_MAX` 覆盖）。轮转使用每进程唯一的临时名（`audit.log.$$.tmp`），
+超过 `AUDIT_MAX_LINES + 400` 行时保留尾部 `AUDIT_MAX_LINES` 行（固定 2000，
+v1.3.0 起不再接受 `SHSO_AUDIT_MAX` 覆盖）。轮转使用每进程唯一的临时名（`audit.log.$$.tmp`），
 避免并发调用互相覆盖；行数统计按 PID 抽样（每 16 次调用一次），
 把 `wc -l` 的整文件扫描成本均摊。
+
+写入前做两件事（v1.3.0）：
+
+1. **字段清洗**：把字段内的 `|` 转义为 `\u007C`、换行转义为 `\n`、剥离控制字符
+   ——审计行以 `|` 分隔，未清洗时字段可错位、并可用换行注入完整伪造行。
+2. **目标校验**：`audit.log` 若为软链或非常规文件，先用 `/system/bin/rm -f --` 清除；
+   清除失败则**放弃本次写入**（不退化为继续追加）。审计目录为 0777（刻意），
+   第三方可在其中放置软链让 `>>` 跟随写入任意文件。
 
 App 侧 `SecurityAuditLog` 另有字节级环形滚动（超过 512KB 裁剪保留约 256KB），
 两侧写同一文件，行数上限与字节上限同时生效。
@@ -155,14 +180,18 @@ App 侧 `SecurityAuditLog` 另有字节级环形滚动（超过 512KB 裁剪保�
 | `fastboot` | 任意位置的 `-w` / `--wipe` / `erase` / `format` / `wipe` / `flash` | — |
 | `mv` | 源 + 目标 | 把受保护路径移走同样是销毁 |
 | `cp` | 目标 | 可覆盖 `/system` 下的文件 |
-| `find` | 仅当含 `-delete`，或 `-exec` / `-execdir` 后接 `rm` / `rmdir` / `sh` / `bash` | 常规查找零干预 |
-| `sed` | 仅当含 `-i`，会跳过 sed 脚本参数 | 常规流式编辑零干预 |
+| `ln` | 目标（末操作数） | v1.3.0 新增，可把块设备指向 `/dev/null` |
+| `install` | 目标（末操作数） | v1.3.0 新增，带属性的 `cp` |
+| `tee` | 所有非选项操作数 | v1.3.0 新增，管道内容直接写目标文件 |
+| `find` | 仅当含 `-delete`，或 `-exec` / `-execdir` 后接 `rm` / `rmdir` / `sh` / `bash` / 解释器（按 basename 判定） | v1.3.0 起 `-exec /system/bin/rm`、`-exec toybox rm` 也介入；常规查找零干预 |
+| `sed` | 仅当含 `-i` / `--in-place`，会跳过 sed 脚本参数 | v1.3.0 起认长选项 |
 | `chmod` `chown` `chgrp` | 所有非选项操作数 | v1.2.0 新增，防权限崩坏 |
 | `mknod` | 所有非选项操作数 | v1.2.0 新增 |
 | `mkfs` | 所有非选项操作数 | v1.2.0 新增，通用入口 |
 | `sgdisk` `parted` `fdisk` | 所有非选项操作数 | v1.2.0 新增，分区表改动 |
 | `flash_image` | 所有非选项操作数 | v1.2.0 新增，刷写分区镜像 |
-| `toybox` `busybox` | 子命令命中上表任一即 shift 后按上表判定 | 否则原样透传 |
+| `wipefs` `chattr` | 所有非选项操作数 | v1.3.0 新增，与 `toybox` 派发表对齐 |
+| `toybox` `busybox` | 子命令命中上表任一即 shift 后按上表判定 | 否则原样透传。**派发表与上表同集合**：漏一项即该命令在 `toybox <cmd>` 形态下完全不受守卫（v1.3.0 修复前 `toybox chmod -R 777 /system/…` 实测未拦截且无审计） |
 
 高频命令（`cp` / `find` / `sed` / `mv`）在不需要介入时只做最小判定即 `exec`
 真实二进制。
@@ -179,7 +208,11 @@ App 侧 `SecurityAuditLog` 另有字节级环形滚动（超过 512KB 裁剪保�
    `echo x > /dev/block/by-name/boot` 不 fork 任何被守卫命令。
 5. 同进程内完成破坏的实现：`python -c 'shutil.rmtree("/system")'`、
    静态链接 busybox 的程序。
-6. 有 root 即可改写 `policy.conf` 与 `audit.log`（设置 `mode=off` 或删日志）。
+6. 有 root 即可直接改写 `policy.conf` 与 `audit.log`（设置 `mode=off` 或删日志）。
+   注意：**不以 root 运行的被守卫命令无法再自行降级守卫**（v1.3.0 起环境变量覆盖
+   已被策略白名单收口，见「环境变量」节）。
+7. 包装器清单以外的破坏原语（例如 `mount`、`setprop`、`bootctl`）不在运行时覆盖范围；
+   静态层（L1）对部分命令有等价规则，但不构成运行时兜底。
 
 定位是拦误操作 + 高危留痕 + 提高恶意脚本门槛；主防线仍是 L1 静态审查与
 档位 3 的「脚本默认不以 Root 执行」。
@@ -205,8 +238,8 @@ shso_guard/
 ├── customize.sh             # 刷 zip 安装时执行（复制安装不执行）
 ├── uninstall.sh             # 卸载：删除 /data/adb/shso_guard/（审计日志保留）
 ├── guard-template.sh        # 守卫模板（__CMD_NAME__ / __OPERAND_MODE__ 两处占位符）
-├── gen_wrappers.py          # 从模板生成 25 个守卫，另有 toybox / busybox 两个手写
-│                            # 派发器，合计 27 个包装器
+├── gen_wrappers.py          # 从模板生成 30 个守卫，另有 toybox / busybox 两个手写
+│                            # 派发器，合计 32 个包装器
 └── guard/
     ├── common.sh            # 共用引擎：策略加载 / 路径归一化 / 判定 / 审计 / exec_real
     ├── rm rmdir shred truncate wipe dd fastboot          # 模板生成（删除 / 覆写）
@@ -214,12 +247,15 @@ shso_guard/
     ├── mv cp find sed                                    # 模板生成（移动 / 拷贝 / 原地修改）
     ├── chmod chown chgrp mkfs mknod                      # 模板生成（v1.2.0：权限）
     ├── sgdisk parted fdisk flash_image                   # 模板生成（v1.2.0：分区表 / 刷机）
+    ├── ln install tee wipefs chattr                      # 模板生成（v1.3.0：写入原语 / 派发对齐）
     └── toybox busybox       # 多二进制派发（结构特殊，不由模板生成）
 ```
 
-新增包装器需三处同步：`gen_wrappers.py` 的 specs、
+新增包装器需三处同步：`gen_wrappers.py` 的 specs、`guard_operand_mode()` 的派发表、
 `app/src/main/assets/shso_guard.zip`（重打包）、
 `GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES`，并升 `module.prop` 的 `version=`。
+其中「源码目录 / zip / REQUIRED 三者一致」由单测
+`required entries stay in sync with sources and bundled zip` 强制校验，漏登记即失败。
 
 改动公共行为后必须重新生成守卫：
 

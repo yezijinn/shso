@@ -15,6 +15,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.content.edit
+import com.mixradio.droid.data.security.SecurityLevels
 
 /**
  * 全部 var 都是 mutableStateOf（Compose 读取会自动订阅其变化），
@@ -91,8 +92,16 @@ class AppSettings private constructor(context: Context) {
     /**
      * 安全防护档位：0 无防护 / 1 仅审计 / 2 标准防护（默认）/ 3 最强防护。
      * 见 data/security/SecurityLevels.kt 与 docs/指令审查与拦截方案.md。
+     *
+     * 读取侧必须钳制：越界值（被篡改或降级残留）会让档位门控 fail-open
+     * （负值使 `level <= AUDIT_ONLY` 恒成立 → 全部放行且不前置守卫）；
+     * 类型不符（写入方变更）会抛 ClassCastException，一并兜住。
      */
-    var securityLevel by mutableIntStateOf(prefs.getInt(KEY_SECURITY_LEVEL, SECURITY_STANDARD))
+    var securityLevel by mutableIntStateOf(
+        runCatching { prefs.getInt(KEY_SECURITY_LEVEL, SECURITY_STANDARD) }
+            .getOrDefault(SECURITY_STANDARD)
+            .let { if (SecurityLevels.isValid(it)) it else SECURITY_STANDARD }
+    )
         private set
 
     // 书签（永久存储，按添加顺序）

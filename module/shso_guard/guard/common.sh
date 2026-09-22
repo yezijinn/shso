@@ -19,9 +19,23 @@
 # 不硬编码模块路径（复制安装时模块目录与 ID 绑定，写死会失效）。
 # 被 source 时 $0 即调用方（guard/<cmd>）的路径，取其目录即 guard 目录。
 GUARD_DIR="${GUARD_DIR:-${MODDIR:-${0%/*}}}"
-POLICY_FILE="${SHSO_POLICY:-/data/adb/shso_guard/policy.conf}"
-AUDIT_LOG="${SHSO_AUDIT:-/data/adb/shso/audit.log}"
-AUDIT_MAX_LINES="${SHSO_AUDIT_MAX:-2000}"
+
+# 安全关键路径**不接受任意环境覆盖**：守卫的防护对象就是"将被执行的命令"，
+# 若允许其把策略文件指向自己可写的路径（实测 `SHSO_POLICY=<mode=off 文件>` 可整体
+# 关闭守卫），守卫就等于自解除。排障请改用策略文件里的 mode=log。
+# 覆盖仅允许指向受信目录内（词法判定，零子进程；/data/adb/shso_guard 为 root 0755）。
+_OV_POLICY="${SHSO_POLICY:-}"
+case "$_OV_POLICY" in
+    /data/adb/shso_guard/*) POLICY_FILE="$_OV_POLICY" ;;
+    *)                      POLICY_FILE="/data/adb/shso_guard/policy.conf" ;;
+esac
+_OV_AUDIT="${SHSO_AUDIT:-}"
+case "$_OV_AUDIT" in
+    /data/adb/shso/*)       AUDIT_LOG="$_OV_AUDIT" ;;
+    *)                      AUDIT_LOG="/data/adb/shso/audit.log" ;;
+esac
+# 轮转阈值不接受覆盖：它只影响日志长度，无排障价值，却可被用来撑爆分区。
+AUDIT_MAX_LINES=2000
 
 # 内置兜底：受保护路径（策略文件缺失时生效）
 DEFAULT_PROTECT="/ /system /system_ext /product /vendor /odm /apex /proc /sys /dev /data/system /data/misc /metadata"
@@ -126,11 +140,20 @@ normalize_path() {
 }
 
 # 递归深度守卫：每个守卫进程启动时调用一次。
-# 若 PATH 里 guard 目录无法被归一化跳过（如符号链接），find_real 可能反复返回
-# 守卫自身，造成 exec 递归 / fork 炸弹。这里用导出的计数器在超限时失败关闭。
+# 若 PATH 里 guard 目录无法被归一化跳过（如符号链接），exec_real 可能反复返回
+# 守卫自身，造成 exec 递归 / fork 炸弹。
+#
+# 定位（勿扩大）：这是**健壮性**防线，防误配置触发 fork 炸弹，**不是安全边界** ——
+# 计数器来自可被调用者重置的环境变量，无法做到不可伪造；真正的防递归是
+# exec_real() 跳过含 common.sh 的目录。因此这里只保证：非数字不得进入算术
+# （旧实现 `[ "$_d" -ge 8 ] 2>/dev/null` 在非数字时静默失败且把非数字当 0），
+# 上限收紧到 3（正常链路深度恒为 1，>1 即异常）。
 guard_enter() {
     _d="${SHSO_GUARD_DEPTH:-0}"
-    if [ "$_d" -ge 8 ] 2>/dev/null; then
+    case "$_d" in
+        ''|*[!0-9]*) _d=0 ;;
+    esac
+    if [ "$_d" -ge 3 ]; then
         echo "shso_guard: 递归深度超限（${_d}），拒绝执行以防 fork 炸弹（fail-closed）" >&2
         exit 1
     fi
@@ -240,6 +263,32 @@ judge() {
     return 0
 }
 
+# 审计字段清洗：维持「一行一条记录」的不变式。
+# 不变量：审计行以 | 分隔字段，字段内出现 | 会让字段错位，出现换行则可注入
+# 一整行伪造记录（真机已复现：args 携带换行后日志里出现完整假行）。
+# 结果写入全局 _SANITIZED。
+#
+# 性能：仅当字段含分隔符时才进入循环，正常路径零迭代、零子进程。
+# 写法约束（两处踩过坑，勿"简化"）：
+#   1. 模式里的分隔符必须**带引号**：mksh 的参数展开沿用 ksh 扩展模式，未引号的
+#      `|` 会被当作模式交替符 —— `${_s%%|*}` 于是变成"删除任意后缀"，替换结果
+#      每轮只增长不收敛，直接死循环（真机复现：守卫进程挂死，需 kill -9）。
+#   2. 换行必须写成 $'\n'：在 case 模式/参数展开里嵌入跨行字面量会让 mksh 报
+#      `no closing quote`，整个 common.sh 解析失败（函数缺失 + 脚本转为读 stdin
+#      而挂起）。bash 的 `-n` 检查发现不了这两种问题，**推送前必须用设备上的
+#      `sh -n common.sh` 校验，并在真机上跑一次带 `|` 与换行的审计用例**。
+sanitize_field() {
+    _s="$1"
+    while :; do
+        case "$_s" in
+            *"|"*)   _s="${_s%%"|"*}_${_s#*"|"}" ;;
+            *$'\n'*) _s="${_s%%$'\n'*} ${_s#*$'\n'}" ;;
+            *) break ;;
+        esac
+    done
+    _SANITIZED="$_s"
+}
+
 # 审计落盘（追加写；超过上限时保留尾部）。
 # 用法: audit <verdict> <rule> <cmd> <args> <path>
 # 注意：轮转使用每进程唯一的临时名（audit.log.$$.tmp），
@@ -249,10 +298,23 @@ judge() {
 #       迟滞 16 行，仍能有效约束增长，而均摊成本降到可忽略。
 audit() {
     _vd="$1"; _rule="$2"; _cmd="$3"; _args="$4"; _path="$5"
+    sanitize_field "$_cmd";  _cmd="$_SANITIZED"
+    sanitize_field "$_args"; _args="$_SANITIZED"
+    sanitize_field "$_path"; _path="$_SANITIZED"
+
     _ts=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
     _dir="${AUDIT_LOG%/*}"
     [ "$_dir" = "$AUDIT_LOG" ] && _dir=""
     [ -n "$_dir" ] && [ ! -d "$_dir" ] && mkdir -p "$_dir" 2>/dev/null
+
+    # 目标是软链 / 非常规文件时先清除：审计目录为 0777（刻意，供第三方文件管理器
+    # 访问），第三方可在其中放置软链，`>>` 会跟随软链等于以 root 追加任意文件。
+    # 内建 [ -L ] 零成本；仅异常时才 fork 一次 rm。
+    if [ -L "$AUDIT_LOG" ]; then
+        /system/bin/rm -f -- "$AUDIT_LOG" 2>/dev/null
+    elif [ -e "$AUDIT_LOG" ] && [ ! -f "$AUDIT_LOG" ]; then
+        /system/bin/rm -f -- "$AUDIT_LOG" 2>/dev/null
+    fi
 
     echo "${_ts}|GUARD|${_vd}|${_rule}|cmd=${_cmd}|args=${_args}|path=${_path}" >> "$AUDIT_LOG" 2>/dev/null
 
@@ -300,15 +362,23 @@ exec_real() {
 # 把子命令名映射到操作数提取模式，供 toybox/busybox 派发复用。
 # 结果写入全局 _GUARD_OPERAND_MODE（空串 = 该子命令不受守卫，直接透传真实二进制）。
 # 刻意不用 $( ) 返回——命令替换会 fork 子 shell。
+#
+# 不变量：本清单必须与 guard/ 下的包装器清单**同集合**（见 gen_wrappers.py specs）。
+# 漏一个就等于该命令在 `toybox <cmd>` / `busybox <cmd>` 形态下完全不受守卫
+# ——真机已复现：`toybox chmod -R 777 /system/...` 未被拦截且不留审计，
+# 而直接 `chmod` 被拦。新增包装器时必须同步扩充本表。
 guard_operand_mode() {
     case "$1" in
         rm|rmdir|shred|truncate|wipe) _GUARD_OPERAND_MODE="ARGS" ;;
         mkfs*|mke2fs|make_f2fs)       _GUARD_OPERAND_MODE="ARGS" ;;
+        chmod|chown|chgrp|mknod|sgdisk|parted|fdisk|flash_image|wipefs|chattr)
+                                      _GUARD_OPERAND_MODE="ARGS" ;;
         dd)                           _GUARD_OPERAND_MODE="DD" ;;
         fastboot)                     _GUARD_OPERAND_MODE="FASTBOOT" ;;
-        mv|cp)                        _GUARD_OPERAND_MODE="MVCP" ;;
+        mv|cp|ln|install)             _GUARD_OPERAND_MODE="MVCP" ;;
         find)                         _GUARD_OPERAND_MODE="FIND" ;;
         sed)                          _GUARD_OPERAND_MODE="SED" ;;
+        tee)                          _GUARD_OPERAND_MODE="TEE" ;;
         *)                            _GUARD_OPERAND_MODE="" ;;
     esac
 }
@@ -402,8 +472,12 @@ run_guard() {
                         _j=$((_i + 1))
                         if [ $_j -le $_n ]; then
                             eval "_b=\"\${$_j}\""
-                            case "$_b" in
-                                rm|rmdir|sh|bash) _destruct=1 ;;
+                            # 取 basename 判定：`-exec /system/bin/rm`、`-exec toybox rm`
+                            # 与解释器内联执行同样不可审计，一律介入。
+                            # （只匹配字面 rm 会让带路径/带前缀的形态整体漏判。）
+                            case "${_b##*/}" in
+                                rm|rmdir|sh|bash|ash|mksh|python|python3|perl|node|php|toybox|busybox)
+                                    _destruct=1 ;;
                             esac
                         fi
                         ;;
@@ -428,7 +502,8 @@ run_guard() {
             _has_ef=0
             for _a in "$@"; do
                 case "$_a" in
-                    -e|-e?*|-f|-f?*) _has_ef=1 ;;
+                    -e|-e?*|-f|-f?*|--expression|--expression=*|--file|--file=*)
+                        _has_ef=1 ;;
                 esac
             done
             _has_i=0; _skip=0
@@ -437,9 +512,11 @@ run_guard() {
             for _a in "$@"; do
                 if [ $_skip -eq 1 ]; then _skip=0; continue; fi
                 case "$_a" in
-                    -e|-f)      _skip=1; continue ;;
-                    -e?*|-f?*)  continue ;;
-                    -i|-i*)     _has_i=1; continue ;;
+                    -e|-f|--expression|--file)  _skip=1; continue ;;
+                    -e?*|-f?*|--expression=*|--file=*)  continue ;;
+                    # 原地修改：短选项与长选项都要认，否则 `sed --in-place … /system/x`
+                    # 会被当作"无 -i"整体放行（busybox/GNU sed 环境可绕过）。
+                    -i|-i*|--in-place|--in-place=*)     _has_i=1; continue ;;
                     -*)         continue ;;
                 esac
                 if [ $_take_script -eq 1 ]; then
@@ -449,6 +526,17 @@ run_guard() {
                 _paths="$_paths $_a"
             done
             [ $_has_i -eq 1 ] || _paths=""
+            ;;
+        TEE)
+            # tee <file>...：把管道内容写入列出的每个文件（`… | tee /system/x`）。
+            # 目标是系统/设备文件即等高危写入；-a/--append 为追加标志，不参与判定。
+            for _a in "$@"; do
+                case "$_a" in
+                    -a|--append|-i|--ignore-interrupts) ;;
+                    -*) ;;
+                    *)  _paths="$_paths $_a" ;;
+                esac
+            done
             ;;
         *)
             # ARGS：非选项参数视为路径；-- 之后一律视为操作数
@@ -466,31 +554,38 @@ run_guard() {
             ;;
     esac
 
-    # 特殊：wipe 无操作数 = 擦除默认设备，enforce 下最危险 → 拒绝
-    if [ "$_g_cmd" = "wipe" ] && [ -z "$_paths" ]; then
-        _verdict="DENY"; _rule="WIPE_NO_OPERAND"; _hit="(no operand)"
-    else
-        _verdict="ALLOW"; _rule="NONE"; _hit=""
-        for _p in $_paths; do
-            if [ "$_p" = "__FASTBOOT_DESTRUCTIVE__" ]; then
-                _verdict="DENY"; _rule="FASTBOOT_DESTRUCTIVE"; _hit="${_g_cmd} $*"
-                break
+    # 操作数含未解析变量（未定义变量被原样传入，如 `T=; rm -rf "$T"`）→ 目标不可静态
+    # 判定，与静态层 UNRESOLVED_DESTRUCTIVE 对齐，一律 fail-closed。
+    case "$_paths" in
+        *'$'*) _verdict="DENY"; _rule="UNRESOLVED_TARGET"; _hit="$_paths" ;;
+        *)
+            # 特殊：wipe 无操作数 = 擦除默认设备，enforce 下最危险 → 拒绝
+            if [ "$_g_cmd" = "wipe" ] && [ -z "$_paths" ]; then
+                _verdict="DENY"; _rule="WIPE_NO_OPERAND"; _hit="(no operand)"
+            else
+                _verdict="ALLOW"; _rule="NONE"; _hit=""
+                for _p in $_paths; do
+                    if [ "$_p" = "__FASTBOOT_DESTRUCTIVE__" ]; then
+                        _verdict="DENY"; _rule="FASTBOOT_DESTRUCTIVE"; _hit="${_g_cmd} $*"
+                        break
+                    fi
+                    [ -z "$_p" ] && continue
+                    normalize_path "$_p"
+                    if [ -z "$_NORM_PATH" ]; then
+                        # 可见符号链接却无法解析（realpath 不可用 / 链接悬空）：
+                        # 不猜测解析结果，直接按 fail-closed 拒绝。
+                        _verdict="DENY"; _rule="PATH_UNRESOLVABLE"; _hit="$_p"
+                        break
+                    fi
+                    judge "$_NORM_PATH"
+                    if [ "$_JUDGE_RESULT" = "DENY" ]; then
+                        _verdict="DENY"; _rule="PROTECTED_PATH"; _hit="$_NORM_PATH"
+                        break
+                    fi
+                done
             fi
-            [ -z "$_p" ] && continue
-            normalize_path "$_p"
-            if [ -z "$_NORM_PATH" ]; then
-                # 可见符号链接却无法解析（realpath 不可用 / 链接悬空）：
-                # 不猜测解析结果，直接按 fail-closed 拒绝。
-                _verdict="DENY"; _rule="PATH_UNRESOLVABLE"; _hit="$_p"
-                break
-            fi
-            judge "$_NORM_PATH"
-            if [ "$_JUDGE_RESULT" = "DENY" ]; then
-                _verdict="DENY"; _rule="PROTECTED_PATH"; _hit="$_NORM_PATH"
-                break
-            fi
-        done
-    fi
+            ;;
+    esac
 
     if [ "$_verdict" = "DENY" ]; then
         audit DENY "$_rule" "$_g_cmd" "$*" "$_hit"

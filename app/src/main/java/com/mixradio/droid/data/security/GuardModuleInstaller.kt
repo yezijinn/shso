@@ -31,7 +31,14 @@ object GuardModuleInstaller {
     const val MODULE_DIR = "/data/adb/modules/shso_guard"
     const val GUARD_BIN_DIR = "$MODULE_DIR/guard"
     private const val ASSET_ZIP = "shso_guard.zip"
-    private val REQUIRED_ARCHIVE_ENTRIES = setOf(
+
+    /**
+     * 安装包必需条目。**不变量**：`guard/` 前缀的集合必须与 `module/shso_guard/guard/`
+     * 下的实际文件集合、以及 `assets/shso_guard.zip` 的 `guard/` 条目集合三者完全一致
+     * —— 单测 `required entries stay in sync with sources and bundled zip` 强制校验，
+     * 缺一即失败（新增包装器漏登记会让用户静默拿到残缺守卫）。
+     */
+    internal val REQUIRED_ARCHIVE_ENTRIES = setOf(
         "module.prop",
         "policy.conf",
         "guard/common.sh",
@@ -63,7 +70,14 @@ object GuardModuleInstaller {
         "guard/sgdisk",
         "guard/parted",
         "guard/fdisk",
-        "guard/flash_image"
+        "guard/flash_image",
+        // v1.3.0：不经 dd/rm 的写入原语（ln/install/tee）+ 与 guard_operand_mode()
+        // 映射集合对齐的派发项（wipefs/chattr）。缺任何一个都说明打包异常。
+        "guard/ln",
+        "guard/install",
+        "guard/tee",
+        "guard/wipefs",
+        "guard/chattr"
     )
 
     fun validateArchiveEntry(stagingDir: File, entryName: String): File? {
