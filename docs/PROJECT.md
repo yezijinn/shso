@@ -16,7 +16,7 @@
 Android ROOT 环境下的图形化执行工具：运行 `.sh` 脚本与 `.so` / ELF 原生程序，
 带 ANSI 高亮终端、stdin 交互与全盘 ROOT 文件管理。
 包名 `com.mixradio.droid`，`versionName = Jinn`，
-`versionCode` = 构建当日日期（如 `20260911`），默认工作目录 `/data/adb/shso`。
+`versionCode` = 构建当日日期（如 `20260922`），默认工作目录 `/data/adb/shso`。
 
 ## 技术栈
 
@@ -210,8 +210,8 @@ python build_apk.py             # Windows 一键脚本（含 --skip-check）
 - 签名：仓库外 keystore（V2+V3，alias `com.mixradio.droid`），debug 复用 release 签名。
 - packaging excludes：清理 META-INF / kotlin / assets 冗余，
   并排除 `org/apache/commons/codec/language/bm/**`（约 96KB 语音词典，本应用不使用）。
-- 产物体积参考（20260911，1.84MB）：dex 1.59MB（88%）/ `resources.arsc` 98KB /
-  `res/` 79KB / `assets/` 34KB / `lib/` 10KB。继续瘦身只能从 dex 入手。
+- 产物体积参考（20260922，2.14MB）：dex 1.84MB（87%）/ `resources.arsc` 109KB /
+  `res/` 86KB / `assets/` 72KB / `lib/` 10KB。继续瘦身只能从 dex 入手。
   `build_apk.py` 每次构建后打印该构成，并校验 ABI 白名单与 zstd 残留。
 
 ## 页面与模块映射
