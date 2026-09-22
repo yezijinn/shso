@@ -10,7 +10,7 @@ Android ROOT 环境下的图形化执行工具：运行 `.sh` 脚本与 `.so` / 
 压缩包解压、APK 提取与安装。界面为等宽字体 + 直角矩形深色主题，
 冷启动直接进入主页四 Tab（主页 / 终端 / 文件 / 设置）。
 
-> **可自定义包名 · GitHub 在线编译**：默认包名 `com.mixradio.droid` 可改为你自己的包名，用 GitHub Actions 在线一键编译 APK，无需本地环境。步骤见 [`docs/在线编译.md`](docs/在线编译.md)。
+> 包名可自定义：默认 `com.mixradio.droid` 也能换成你自己的，用 GitHub Actions 在线构建 APK（无需本地环境）。做法见 [`docs/在线编译.md`](docs/在线编译.md)。
 
 包名 `com.mixradio.droid`，版本名 `Jinn`，版本号为构建当日日期（如 `20260922`），
 默认工作目录 `/data/adb/shso`。
@@ -20,9 +20,7 @@ Android ROOT 环境下的图形化执行工具：运行 `.sh` 脚本与 `.so` / 
 
 ## 自定义包名与在线编译
 
-默认包名 `com.mixradio.droid` 可改为你自己的包名，用 GitHub Actions 在网页上一键编译 APK，无需本地安装 Android Studio / SDK。
-
-步骤：Fork 本仓库 → 进入 `Actions` → 运行「在线编译 APK（自定义包名）」→ 填写包名 → 下载产物。完整说明见 [`docs/在线编译.md`](docs/在线编译.md)。
+默认包名 `com.mixradio.droid` 能换成你自己的；没有本地 Android 环境也行，用 GitHub Actions 跑「在线编译 APK（自定义包名）」工作流，填包名就能下载产物。完整步骤见 [`docs/在线编译.md`](docs/在线编译.md)。
 
 ## 文档
 
@@ -314,13 +312,13 @@ SHA-256 与是否以 Root 执行。
 ./gradlew :app:assembleDebug     # Debug
 ./gradlew :app:assembleRelease   # Release（V2+V3 签名）
 ./gradlew :app:testDebugUnitTest # 单元测试
-python build_apk.py              # 一键构建：签名 + 版本规则 + 产物内容与体积校验
+python build_apk.py              # 一条命令完成构建：签名 + 版本规则 + 产物内容与体积校验
 ```
 
 - release 已开启 R8 与 `shrinkResources`，资源会被重命名为随机短名，
   不要按 APK 内资源名反查源码资源。
 - 只打包 `arm64-v8a`；新增带原生库的依赖时注意不要引入多 ABI。
-- Windows 一键脚本 `build_apk.py` 需要外部 keystore，密码从环境变量或
+- Windows 脚本 `build_apk.py` 需要外部 keystore，密码从环境变量或
   `local.properties` 读取。
 - 无需本地环境时用 GitHub Actions 自定义包名编译，步骤见
   [`docs/在线编译.md`](docs/在线编译.md)。
