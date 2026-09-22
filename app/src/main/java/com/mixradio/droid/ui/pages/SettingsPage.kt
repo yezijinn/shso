@@ -98,14 +98,22 @@ private sealed interface UpdateUiState {
 
 /** 「去更新」跳转：GitHub 走 releases 列表，Gitee 直达该 tag（发布 tag 为纯数字才能命中）。 */
 private fun releasesUrl(source: String, latest: Int): String =
-    if (source == "gitee") "https://gitee.com/yezijinn/shso/releases/tag/$latest"
-    else "https://github.com/yezijinn/shso/releases"
+    if (source == "github") "https://github.com/yezijinn/shso/releases"
+    else "https://gitee.com/yezijinn/shso/releases/tag/$latest"
 
 /**
- * 两源取数：端点不同，不可合并 —— GitHub 是 HTML 页面，Gitee 网页版 `/tags` 返回 405，
- * 必须走开放 API（`/api/v5/repos/{owner}/{repo}/tags`，JSON）。
+ * 两源取数：**Gitee 优先，GitHub 备选** —— 国内网络访问 GitHub 常超时/被重置，
+ * 把它当首选会让「检查更新」在多数用户处直接落到网络异常；Gitee 可直连且公开仓库
+ * 的 tags API 无需令牌。
+ * 端点不同，不可合并：Gitee 走开放 API（`/api/v5/repos/{owner}/{repo}/tags`，JSON；
+ * 网页版 `/tags` 返回 405），GitHub 走 `/tags`（HTML）。
  */
 private val UPDATE_SOURCES = listOf(
+    Triple(
+        "gitee",
+        "https://gitee.com/api/v5/repos/yezijinn/shso/tags",
+        Regex(""""name"\s*:\s*"([^"]+)"""")
+    ),
     Triple(
         "github",
         "https://github.com/yezijinn/shso/tags",
@@ -113,15 +121,10 @@ private val UPDATE_SOURCES = listOf(
         // 否则「有标签」会被误判成「无标签」→ 假的网络异常。
         Regex("""yezijinn/shso/(?:tree|releases/tag)/([^"'<>?#\s]+)""", RegexOption.IGNORE_CASE)
     ),
-    Triple(
-        "gitee",
-        "https://gitee.com/api/v5/repos/yezijinn/shso/tags",
-        Regex(""""name"\s*:\s*"([^"]+)"""")
-    ),
 )
 
 /**
- * 抓取远端最大的发布日标签，返回 (最新日期, 成功源)；GitHub 优先、Gitee 备选。
+ * 抓取远端最大的发布日标签，返回 (最新日期, 成功源)；**Gitee 优先、GitHub 备选**。
  *
  * 归一化规则两源一致：**只认 6..8 位纯数字**，且**不剥离 `v` 前缀** ——
  * 发布 tag 的合法形式只有纯数字，兼容 `v20260904` 这类违规写法
@@ -391,7 +394,7 @@ fun SettingsPage(
             // 右侧胶囊与权限行一致；点击胶囊/整行触发检查，亮起 3 秒后自动回关
             AuroraArrowPreference(
                 title = "检查更新",
-                summary = "检查 github / gitee 是否发布了新的版本",
+                summary = "检查 gitee / github 是否发布了新的版本",
                 statusSwitch = updateChecking,
                 statusSwitchEnabled = true,
                 onClick = {
@@ -628,7 +631,7 @@ fun SettingsPage(
                         textAlign = TextAlign.Start
                     )
                     Text(
-                        text = "在线最新版本：访问 github.com / gitee.com 失败",
+                        text = "在线最新版本：访问 gitee.com / github.com 失败",
                         style = AuroraTextStyles.body2,
                         color = AuroraTokens.Text,
                         textAlign = TextAlign.Start
