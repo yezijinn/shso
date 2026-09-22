@@ -36,6 +36,17 @@ specs = [
     ("parted", "parted", "ARGS"),
     ("fdisk", "fdisk", "ARGS"),
     ("flash_image", "flash_image", "ARGS"),
+    # v1.3.0：补齐「不经 dd/rm 的写入原语」——ln 可把块设备指向 /dev/null，
+    # install 是带属性的 cp，tee 直接把管道内容写进目标文件。
+    # 新增项必须同步：guard/common.sh 的 guard_operand_mode()、assets/shso_guard.zip、
+    # GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES，并升 module.prop 版本。
+    ("ln", "ln", "MVCP"),
+    ("install", "install", "MVCP"),
+    ("tee", "tee", "TEE"),
+    # 这两个与 guard_operand_mode() 的 ARGS 清单对齐（映射里有、包装器就该有），
+    # 否则「toybox wipefs」被拦而直接「wipefs」不拦，形成不对称。
+    ("wipefs", "wipefs", "ARGS"),
+    ("chattr", "chattr", "ARGS"),
 ]
 
 others = re.findall(r"__[A-Z_]+__", tpl)

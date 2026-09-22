@@ -57,19 +57,59 @@ class SecurityCoreTest {
     @Test fun `archive contract requires entries present in shso guard asset`() {
         // 含 v1.1.0 新增的覆盖面：多二进制派发（toybox/busybox）+ 高频破坏原语（mv/cp/find/sed）
         // 以及 v1.2.0 的格机原语（chmod/chown/chgrp/mkfs/mknod/分区表/刷机）
+        // 以及 v1.3.0 的写入原语（ln/install/tee）与派发对齐项（wipefs/chattr）
         val names = listOf(
             "module.prop", "policy.conf", "guard/common.sh", "guard/rm", "guard/rmdir",
             "guard/wipe", "guard/dd", "guard/fastboot", "guard/truncate", "guard/shred",
             "guard/make_f2fs", "guard/mke2fs", "guard/mkfs.ext4", "guard/mkfs.f2fs", "guard/mkfs.vfat",
             "guard/toybox", "guard/busybox", "guard/mv", "guard/cp", "guard/find", "guard/sed",
             "guard/chmod", "guard/chown", "guard/chgrp", "guard/mkfs",
-            "guard/mknod", "guard/sgdisk", "guard/parted", "guard/fdisk", "guard/flash_image"
+            "guard/mknod", "guard/sgdisk", "guard/parted", "guard/fdisk", "guard/flash_image",
+            "guard/ln", "guard/install", "guard/tee", "guard/wipefs", "guard/chattr"
         )
         assertTrue(GuardModuleInstaller.hasRequiredArchiveEntries(names))
         assertFalse(GuardModuleInstaller.hasRequiredArchiveEntries(names - "guard/mkfs.vfat"))
         // 新增包装器同属必需项：缺任何一个都必须拒绝安装，否则用户会静默拿到残缺守卫
         assertFalse(GuardModuleInstaller.hasRequiredArchiveEntries(names - "guard/toybox"))
         assertFalse(GuardModuleInstaller.hasRequiredArchiveEntries(names - "guard/mv"))
+        assertFalse(GuardModuleInstaller.hasRequiredArchiveEntries(names - "guard/tee"))
+    }
+
+    /**
+     * 三处同步守护：`REQUIRED_ARCHIVE_ENTRIES` 里 `guard/` 前缀的条目集合 ==
+     * 仓库 `module/shso_guard/guard/` 的实际文件集合 == 内置 zip 内的 guard 条目集合。
+     *
+     * 来源：v1.3.0 前的缺陷 —— `guard_operand_mode()` 只映射 11 类子命令，而包装器有 25 个，
+     * 导致 `toybox chmod -R 777 /system/…` 在真机完全不受守卫（实测未拦截且无审计）。
+     * 三者不同步是同类问题的根因，必须在单测层挡住。
+     */
+    @Test fun `required entries stay in sync with sources and bundled zip`() {
+        val repoRoot = generateSequence(File(System.getProperty("user.dir") ?: ".").absoluteFile) { it.parentFile }
+            .take(5)
+            .firstOrNull { File(it, "module/shso_guard/guard").isDirectory }
+            ?: return   // 工作目录不在仓库内（非本仓库执行）时跳过，避免误报
+
+        val sourceGuard = File(repoRoot, "module/shso_guard/guard").listFiles()
+            ?.filter { it.isFile }
+            ?.map { "guard/${it.name}" }
+            ?.toSet()
+            .orEmpty()
+        assertTrue("未找到守卫源码目录，测试失效", sourceGuard.isNotEmpty())
+
+        val zipFile = File(repoRoot, "app/src/main/assets/shso_guard.zip")
+        assertTrue("内置守卫 zip 缺失", zipFile.isFile)
+        val zipGuard = java.util.zip.ZipFile(zipFile).use { z ->
+            z.entries().asSequence().map { it.name }
+                .filter { !it.endsWith("/") && it.startsWith("guard/") }
+                .toSet()
+        }
+
+        val requiredGuard = GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES
+            .filter { it.startsWith("guard/") }
+            .toSet()
+
+        assertEquals("assets zip 与仓库 guard/ 目录不同步", sourceGuard, zipGuard)
+        assertEquals("REQUIRED_ARCHIVE_ENTRIES 与仓库 guard/ 目录不同步", sourceGuard, requiredGuard)
     }
 
     // ============================================================================
@@ -80,6 +120,22 @@ class SecurityCoreTest {
         assertEquals(1, SecurityAuditLog.boundedTailLines(0))
         assertEquals(1, SecurityAuditLog.boundedTailLines(-100))
         assertEquals(SecurityAuditLog.MAX_TAIL_LINES, SecurityAuditLog.boundedTailLines(Int.MAX_VALUE))
+    }
+
+    /**
+     * 审计字段转义：字段内的 `|` 会让字段错位，换行可注入完整伪造行
+     * （真机复现：args 携带换行后日志里出现一行时间戳/裁决全新构造的假记录）。
+     */
+    @Test fun `audit field sanitizer blocks forged records`() {
+        assertEquals("a\\u007Cb", SecurityAuditLog.sanitizeField("a|b"))
+        assertEquals("a\\nb", SecurityAuditLog.sanitizeField("a\nb"))
+        assertEquals("ab", SecurityAuditLog.sanitizeField("a\rb"))
+        assertEquals("a\\u0007b", SecurityAuditLog.sanitizeField("a\u0007b"))
+
+        val forged = "zz\n2026-01-01 00:00:00|GUARD|ALLOW|NONE|cmd=rm|args=-rf /|path=/"
+        val sanitized = SecurityAuditLog.sanitizeField(forged)
+        assertFalse("清洗后不得残留换行", sanitized.contains('\n'))
+        assertFalse("清洗后不得残留裸分隔符", sanitized.contains('|'))
     }
 
     // ============================================================================
