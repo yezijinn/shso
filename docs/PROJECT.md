@@ -54,7 +54,7 @@ shso-main/
         │   ├── ApkInstaller.kt       # APK / XAPK 安装（单文件 + 分包会话安装）
         │   ├── ApkExtractor.kt       # 提取已安装应用安装包（纯函数可测）
         │   ├── ArchiveExtractor.kt   # 压缩包解压（防 Zip Slip）
-        │   ├── ChunkedFileReader.kt  # 大文件分段读取（128KB 阈值）
+        │   ├── ChunkedFileReader.kt  # 大文件分段读取（128KB 载入阈值 / 32MB 只读上限）
         │   ├── AnsiParser.kt         # ANSI/OSC 增量解析（私有模式 / 退格 / 行内擦除）
         │   ├── HyperCore.kt          # banner / 日志批处理（发布节流）/ 滑动窗口 / 环境信息
         │   ├── AppSettings.kt        # 设置状态（shso_settings）
@@ -190,7 +190,7 @@ UI 层全部使用 `androidx.compose.material3` + `material-icons-extended`，
 - 仓库回退源：本项目环境下 `repo1.maven.org` 对相当一部分制品返回 404（Sora 系、moshi/okio、
   `kotlin-stdlib-jdk8` 等），`settings.gradle.kts` 因此把 Google 官方 Maven Central 镜像
   （`maven-central.storage-download.googleapis.com`）作为通用回退源（内容与中央仓库一致）。
-- 产物体积：编辑器引擎使 release APK 由约 1.84MB 增至约 3.40MB（2026-09-12 实测）；**语法包不入 APK**。
+- 产物体积：编辑器引擎使 release APK 由约 1.84MB 增至约 3.40MB（2026-09-12 实测，含 oniguruma 编码表；剔除 `tables/**` 后回落至 2.09MB）；**语法包不入 APK**。
 
 ## 构建与产物
 
@@ -270,8 +270,7 @@ python build_apk.py             # Windows 一键脚本（含 --skip-check）
   否则「有标签」会被判成「无标签」，用户看到的是假的网络异常。
   状态机五态（Idle / Checking / UpToDate / Available / NetworkError），
   成功源只用于「去更新」跳转（Gitee → `releases/tag/<最新>`，GitHub → `releases`）与日志。
-- **编辑器只读阈值**：`ChunkedFileReader.LARGE_FILE_THRESHOLD = 128KB`，
-  超过走只读懒加载（低端机实测：256KB 约 30s，2MB 数分钟无响应）。
+- **编辑器文件阈值**：`LARGE_FILE_THRESHOLD = 128KB` 是整体载入边界（≤128KB 走 `loadAll`，超过走分块读取以支撑编辑）；`MAX_LOAD_BYTES = 32MB` 是可编辑上限，超过无法全文入 Sora 内存（OOM），退回稀疏只读浏览。
 
 ## 已知注意点
 
