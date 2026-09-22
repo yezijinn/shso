@@ -1454,7 +1454,8 @@ private fun FindReplaceDialog(
     // 原实现用 remember 在组合期（主线程）跑全量 indexOf 循环 —— 文本可达数十万字符、
     // 且输入查找词的每个字符都会重跑一遍，直接表现为输入掉帧。
     // 上限用于拦住「极端高频命中」时无意义的继续扫描（只影响显示数字，不影响替换）。
-    var matchCount by androidx.compose.runtime.mutableIntStateOf(0)
+    // 必须 remember：否则每次重组都新建 State 对象，写入的匹配计数会在重组时丢失。
+    var matchCount by remember { androidx.compose.runtime.mutableIntStateOf(0) }
     LaunchedEffect(findText, text) {
         if (findText.isEmpty()) {
             matchCount = 0
