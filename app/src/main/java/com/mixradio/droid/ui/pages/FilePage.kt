@@ -802,7 +802,7 @@ fun FilePage(
 
             // 文件列表底部：全局三按钮（透明背景、极光渐变图标，靠右、距右边 50dp，位于 DockBar 上方）
             // 图标样式复刻「浏览图片」查看器：40sp Black + 青→蓝→紫极光渐变
-            // ⤒ 回到顶部 / ⤓ 直达底部 / ⟳ 立即刷新文件列表；整体靠右排列，置于可能出现的「执行」按钮左侧
+            // 回到顶部 / 直达底部 / 立即刷新文件列表；整体靠右排列，置于可能出现的「执行」按钮左侧
             val navIconBrush = androidx.compose.ui.graphics.Brush.horizontalGradient(
                 colors = listOf(AuroraTokens.GlowCyan, AuroraTokens.GlowBlue, AuroraTokens.AccentViolet)
             )

@@ -732,11 +732,6 @@ fun TerminalPage(
  * 终端解析状态（解析器实例 + 已消费日志进度 + 快照）。
  * 供 [TerminalParseCache] 在页面被 HorizontalPager 销毁/重建时复用，避免重进终端页重跑全量解析。
  * [color] 为解析所用默认色，颜色变化即失效（与 `remember(terminalDefaultColor)` 的 key 对齐）。
- */
-/**
- * 终端解析状态（解析器实例 + 已消费日志进度 + 快照）。
- * 供 [TerminalParseCache] 在页面被 HorizontalPager 销毁/重建时复用，避免重进终端页重跑全量解析。
- * [color] 为解析所用默认色，颜色变化即失效（与 `remember(terminalDefaultColor)` 的 key 对齐）。
  *
  * [consumedLog] / [result] 可变且 `@Volatile`：解析在 Default 线程跑，进度必须与解析器状态一起
  * 落定（见 `TerminalPage` 的解析协程），跨线程可见性由此保证。

@@ -19,20 +19,14 @@ object ChunkedFileReader {
     /** 换行符字节（LF）。分段加载按它对齐到完整行边界。 */
     private const val LINE_FEED: Byte = 0x0A
     /**
-     * 大于 **128KB** 的文件强制分段（只读 LazyColumn）加载。
-     *
-     * 阈值依据：Compose 的 BasicTextField 会对整段文本做全量 StaticLayout，开销随体积快速放大。
-     * 实测（低端机）：32KB 秒开，256KB 主线程持续约 30 秒，2MB 数分钟无响应。
-     * 因此阈值取 128KB，超过即走按行懒加载的只读路径（不可编辑）。
+     * 大于 128KB 的文件强制分段（只读 LazyColumn）加载。
+     * 依据：BasicTextField 对整段文本做全量 StaticLayout，开销随体积快速放大，故超过即走按行懒加载的只读路径（不可编辑）。
      */
     const val LARGE_FILE_THRESHOLD = 128L * 1024L
 
     /**
-     * `loadAll` 一次性载入的**字节上限**。
-     *
-     * 调用方只在文件 ≤ [LARGE_FILE_THRESHOLD] 时才走 [loadAll]，32MB 已有充足余量。
-     * 设上限用于兜住超大文件：`total.toInt()` 在 >2GB 时溢出为负数
-     * （`IllegalArgumentException: Negative initial size`），1–2GB 区间则直接 OOM。
+     * `loadAll` 一次性载入的字节上限（仅当文件 ≤ [LARGE_FILE_THRESHOLD] 时走 [loadAll]，32MB 已有余量）。
+     * 兜住超大文件：`total.toInt()` 在 >2GB 时溢出为负（`IllegalArgumentException`），1–2GB 区间直接 OOM。
      */
     const val MAX_LOAD_BYTES = 32L * 1024L * 1024L
 

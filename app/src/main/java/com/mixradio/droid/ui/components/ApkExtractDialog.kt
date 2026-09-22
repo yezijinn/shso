@@ -196,7 +196,6 @@ internal fun ApkExtractDialog(
                     }
                 }
 
-                // 底部关闭
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
                     horizontalArrangement = Arrangement.Center

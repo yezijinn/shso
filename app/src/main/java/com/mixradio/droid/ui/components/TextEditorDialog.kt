@@ -743,7 +743,7 @@ private fun TextEditorDialogContent(
         )
     }
 
-    // 文本对比 ③ 进度（可取消）
+    // 文本对比：进度（可取消）
     if (diffRunning) {
         DiffProgressDialog(
             progressLines = diffProgressLines,

@@ -243,7 +243,6 @@ fun ImageViewerDialog(
                             .padding(horizontal = 8.dp, vertical = 8.dp)
                     )
 
-                    // 右下角关闭（快捷关闭）
                     Text(
                         text = "✕",
                         style = iconStyle,
