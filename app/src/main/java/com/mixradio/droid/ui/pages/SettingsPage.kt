@@ -85,43 +85,81 @@ import android.util.Log
  */
 
 /**
- * 检查更新 UI 状态机。
+ * 检查更新 UI 状态机（五态）。`source` 记录取数成功的源，供「去更新」选择跳转地址；
+ * 成功源只用于跳转与日志，不写入用户可见文案。
  */
 private sealed interface UpdateUiState {
     data object Idle : UpdateUiState
     data object Checking : UpdateUiState
-    data class UpToDate(val tag: Int) : UpdateUiState
-    data class Available(val tag: Int) : UpdateUiState
+    data class UpToDate(val tag: Int, val source: String) : UpdateUiState
+    data class Available(val tag: Int, val source: String) : UpdateUiState
     data object NetworkError : UpdateUiState
 }
 
+/** 「去更新」跳转：GitHub 走 releases 列表，Gitee 直达该 tag（发布 tag 为纯数字才能命中）。 */
+private fun releasesUrl(source: String, latest: Int): String =
+    if (source == "gitee") "https://gitee.com/yezijinn/shso/releases/tag/$latest"
+    else "https://github.com/yezijinn/shso/releases"
+
 /**
- * 抓取 GitHub tags 页面，正则提取纯数字标签（兼容 v20260904 与 20260904 两种写法），
- * 返回其中最大的版本号（即最新的发布日期）；无可解析标签时返回 0。
- * 网络异常会向上抛出，由调用方转为「网络不佳」弹窗。
+ * 两源取数：端点不同，不可合并 —— GitHub 是 HTML 页面，Gitee 网页版 `/tags` 返回 405，
+ * 必须走开放 API（`/api/v5/repos/{owner}/{repo}/tags`，JSON）。
  */
-private suspend fun fetchLatestGitHubDateTag(): Int = withContext(Dispatchers.IO) {
-    val conn = (URL("https://github.com/yezijinn/shso/tags").openConnection() as HttpURLConnection).apply {
-        requestMethod = "GET"
-        connectTimeout = 10_000
-        readTimeout = 10_000
-        setRequestProperty("User-Agent", "shso-update-check")
-    }
-    try {
-        if (conn.responseCode != HttpURLConnection.HTTP_OK) {
-            throw IOException("GitHub tags HTTP ${conn.responseCode}")
+private val UPDATE_SOURCES = listOf(
+    Triple(
+        "github",
+        "https://github.com/yezijinn/shso/tags",
+        // 仓库名在 GitHub 页面的链接里是全小写，正则必须忽略大小写，
+        // 否则「有标签」会被误判成「无标签」→ 假的网络异常。
+        Regex("""yezijinn/shso/(?:tree|releases/tag)/([^"'<>?#\s]+)""", RegexOption.IGNORE_CASE)
+    ),
+    Triple(
+        "gitee",
+        "https://gitee.com/api/v5/repos/yezijinn/shso/tags",
+        Regex(""""name"\s*:\s*"([^"]+)"""")
+    ),
+)
+
+/**
+ * 抓取远端最大的发布日标签，返回 (最新日期, 成功源)；GitHub 优先、Gitee 备选。
+ *
+ * 归一化规则两源一致：**只认 6..8 位纯数字**，且**不剥离 `v` 前缀** ——
+ * 发布 tag 的合法形式只有纯数字，兼容 `v20260904` 这类违规写法
+ * 等于让发布侧的问题长期隐藏（且 Gitee 的「去更新」链接按纯数字拼，带 `v` 必然 404）。
+ * 两源皆失败才抛异常，由调用方转「网络异常」。
+ */
+private suspend fun fetchLatestDateTag(): Pair<Int, String> = withContext(Dispatchers.IO) {
+    var lastError: Exception? = null
+    for ((name, url, pat) in UPDATE_SOURCES) {
+        try {
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 10_000
+                readTimeout = 10_000
+                setRequestProperty("User-Agent", "shso-update-check")
+            }
+            var latest: Int? = null
+            try {
+                if (conn.responseCode != HttpURLConnection.HTTP_OK) {
+                    lastError = IOException("$name HTTP ${conn.responseCode}")
+                } else {
+                    val body = conn.inputStream.bufferedReader().use { it.readText() }
+                    latest = pat.findAll(body).mapNotNull { m ->
+                        m.groupValues[1]
+                            .takeIf { it.length in 6..8 && it.all(Char::isDigit) }
+                            ?.toIntOrNull()
+                    }.maxOrNull()
+                    if (latest == null) lastError = IOException("$name 无纯数字日期标签")
+                }
+            } finally {
+                conn.disconnect()
+            }
+            if (latest != null) return@withContext latest to name
+        } catch (e: Exception) {
+            lastError = e
         }
-        val html = conn.inputStream.bufferedReader().use { it.readText() }
-        val linkRe = Regex("""yezijinn/shso/(?:tree|releases/tag)/([^"'<>?#\s]+)""")
-        val nums = linkRe.findAll(html).mapNotNull { m ->
-            m.groupValues[1].removePrefix("v")
-                .takeIf { it.length in 6..8 && it.all(Char::isDigit) }
-                ?.toIntOrNull()
-        }
-        nums.maxOrNull() ?: throw IOException("GitHub tags contain no numeric release tag")
-    } finally {
-        conn.disconnect()
     }
+    throw IOException("all update sources unreachable", lastError)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -225,10 +263,14 @@ fun SettingsPage(
         updateState = UpdateUiState.Checking
         scope.launch {
             try {
-                val latest = fetchLatestGitHubDateTag()
+                val (latest, source) = fetchLatestDateTag()
                 val local = BuildConfig.VERSION_CODE
-                Log.d("ShsoUpdate", "latest=$latest local=$local")
-                updateState = if (latest > local) UpdateUiState.Available(latest) else UpdateUiState.UpToDate(latest)
+                Log.d("ShsoUpdate", "source=$source latest=$latest local=$local")
+                updateState = if (latest > local) {
+                    UpdateUiState.Available(latest, source)
+                } else {
+                    UpdateUiState.UpToDate(latest, source)
+                }
             } catch (_: Exception) {
                 updateState = UpdateUiState.NetworkError
             }
@@ -349,7 +391,7 @@ fun SettingsPage(
             // 右侧胶囊与权限行一致；点击胶囊/整行触发检查，亮起 3 秒后自动回关
             AuroraArrowPreference(
                 title = "检查更新",
-                summary = "检查 github 是否发布了新的版本",
+                summary = "检查 github / gitee 是否发布了新的版本",
                 statusSwitch = updateChecking,
                 statusSwitchEnabled = true,
                 onClick = {
@@ -484,19 +526,13 @@ fun SettingsPage(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = "你目前的版本:${BuildConfig.VERSION_CODE}",
+                        text = "你目前的版本：${BuildConfig.VERSION_CODE}",
                         style = AuroraTextStyles.body2,
                         color = AuroraTokens.Text,
                         textAlign = TextAlign.Start
                     )
                     Text(
-                        text = "在线最新版本:${s.tag}",
-                        style = AuroraTextStyles.body2,
-                        color = AuroraTokens.Text,
-                        textAlign = TextAlign.Start
-                    )
-                    Text(
-                        text = "你已落伍,尽快升级",
+                        text = "在线最新版本：${s.tag}",
                         style = AuroraTextStyles.body2,
                         color = AuroraTokens.Text,
                         textAlign = TextAlign.Start
@@ -516,7 +552,7 @@ fun SettingsPage(
                     }
                     Button(
                         onClick = {
-                            openInBrowserOnly("https://github.com/yezijinn/shso/releases")
+                            openInBrowserOnly(releasesUrl(s.source, s.tag))
                             updateState = UpdateUiState.Idle
                         },
                         colors = auroraPrimaryButtonColors(),
@@ -540,13 +576,13 @@ fun SettingsPage(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = "你目前的版本:${BuildConfig.VERSION_CODE}",
+                        text = "你目前的版本：${BuildConfig.VERSION_CODE}",
                         style = AuroraTextStyles.body2,
                         color = AuroraTokens.Text,
                         textAlign = TextAlign.Start
                     )
                     Text(
-                        text = "在线最新版本:${s.tag}",
+                        text = "在线最新版本：${s.tag}",
                         style = AuroraTextStyles.body2,
                         color = AuroraTokens.Text,
                         textAlign = TextAlign.Start
@@ -586,25 +622,13 @@ fun SettingsPage(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = "你目前的版本:${BuildConfig.VERSION_CODE}",
+                        text = "你目前的版本：${BuildConfig.VERSION_CODE}",
                         style = AuroraTextStyles.body2,
                         color = AuroraTokens.Text,
                         textAlign = TextAlign.Start
                     )
                     Text(
-                        text = "在线最新版本:访问github.com失败",
-                        style = AuroraTextStyles.body2,
-                        color = AuroraTokens.Text,
-                        textAlign = TextAlign.Start
-                    )
-                    Text(
-                        text = "网络不佳",
-                        style = AuroraTextStyles.body2,
-                        color = AuroraTokens.Text,
-                        textAlign = TextAlign.Start
-                    )
-                    Text(
-                        text = "建议开启科学上网",
+                        text = "在线最新版本：访问 github.com / gitee.com 失败",
                         style = AuroraTextStyles.body2,
                         color = AuroraTokens.Text,
                         textAlign = TextAlign.Start

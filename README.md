@@ -1,6 +1,6 @@
 # shso
 
-[![Release](https://img.shields.io/badge/Release-20260911-00e5ff.svg?style=flat-square)](https://github.com/yezijinn/shso/releases)
+[![Release](https://img.shields.io/badge/Release-20260922-00e5ff.svg?style=flat-square)](https://github.com/yezijinn/shso/releases)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square)](LICENSE)
 [![Android](https://img.shields.io/badge/Android-8.0%2B%20%28API%2026%2B%29-3DDC84.svg?style=flat-square&logo=android&logoColor=white)](https://developer.android.com)
 [![ROOT](https://img.shields.io/badge/ROOT-Magisk%20%7C%20KernelSU%20%7C%20APatch-orange.svg?style=flat-square)](https://github.com/topjohnwu/Magisk)
@@ -268,17 +268,35 @@ SHA-256 与是否以 Root 执行。
 - fail-closed：解析超限、脚本超过 2MB 无法完整扫描、疑似加密时，
   自动执行一律拒绝。
 
-**运行时守卫**（`module/shso_guard`，当前 v1.2.0）
+**运行时守卫**（`module/shso_guard`，当前 v1.3.0）
 
 - 随 APK 以 `assets/shso_guard.zip` 分发，通过 PATH 前置拦截破坏性命令，
   审计日志写入 `/data/adb/shso/audit.log`。
 - 策略文件 `/data/adb/shso_guard/policy.conf`（`protect=` / `allow=` /
   `mode=enforce|log|off`），修改即时生效，优先级高于模块自带策略。
-- 安装与升级为原子替换，失败保留或回滚旧版本。
-- 能力边界：PATH 前置型守卫拦不到脚本内的绝对路径调用（如 `/system/bin/rm`）
-  与自行重置 `PATH` 的情况。
+- 覆盖 30 个包装器 + `toybox` / `busybox` 两个多二进制派发器（共 32 个）：
+  删除 / 覆写（`rm` `rmdir` `shred` `truncate` `wipe` `dd`）、格式化（`mkfs.*`）、
+  移动与拷贝（`mv` `cp` `ln` `install`）、原地修改（`sed` `find`）、写入（`tee`）、
+  权限（`chmod` `chown` `chgrp` `mknod`）、分区表与刷机（`sgdisk` `parted` `fdisk`
+  `flash_image` `wipefs` `chattr`）。**派发表与包装器清单同集合**，缺一项即该命令在
+  `toybox <cmd>` 形态下失守。
+- 安全关键配置**不接受环境变量覆盖**：`SHSO_POLICY` / `SHSO_AUDIT` 仅接受受信目录前缀，
+  `SHSO_AUDIT_MAX` 失效，`SHSO_GUARD_DEPTH` 仅作辅助计数 —— 避免被守卫执行的命令自行解除防护。
+- 安装与升级为原子替换，失败保留或回滚旧版本；新增包装器需四处同步
+  （`gen_wrappers.py`、派发表、`assets/shso_guard.zip`、`REQUIRED_ARCHIVE_ENTRIES`），
+  并由单测强制校验三者与源码目录一致。
+- 能力边界：PATH 前置型守卫拦不到脚本内的绝对路径调用（如 `/system/bin/rm`）、
+  自行重置 `PATH`、shell 重定向直写、以及清单外的破坏原语（`mount` 等）。
 
 详见 [`module/shso_guard/README.md`](module/shso_guard/README.md)。
+
+**审计日志**（`SecurityAuditLog`，与守卫共用 `/data/adb/shso/audit.log`）
+
+- 写入前确认目标是**普通文件**：审计目录为 0777（刻意，供第三方文件管理器访问），
+  软链会让 `>>` 以 root 写入任意文件；清除失败即放弃本次写入。
+- 字段转义（`|` → `\u007C`、换行 → `\n`、剥离控制字符），杜绝伪造整行记录。
+- 配置类事件（守卫安装 / 卸载 / 改档 / 降级 / 审计清空）在「无防护」档位下同样留痕。
+- 轮转使用带 PID 的唯一临时名；写入失败计数对外暴露，便于判断审计是否完整。
 
 **通用防护**
 
@@ -306,11 +324,17 @@ python build_apk.py              # 一键构建：签名 + 版本规则 + 产物
 
 ## 版本规则
 
-- `versionCode` = 构建当日日期（如 `20260911`），是判断是否有新版的唯一依据。
+- `versionCode` = 构建当日日期（东八区，如 `20260922`），是判断是否有新版的唯一依据。
 - `versionName` = `Jinn`（固定展示名）。
-- GitHub 发布标签同为纯日期，与 `versionCode` 对齐。
-- 设置页「检查更新」抓取 GitHub tags，提取纯数字标签取最大值与本地 `versionCode`
-  比较；网络异常时提示检查网络。
+- **发布标签必须是纯数字 `YYYYMMDD`**（如 `20260922`）：禁止任何字母或符号，
+  禁止 `v20260922` 这类写法。客户端只认纯数字标签，Gitee 的「去更新」链接按
+  `releases/tag/<纯数字>` 拼，带 `v` 的标签必然 404。历史上误打的 `v20260904`
+  已按此规则纠正为 `20260904`。
+- 非发布包的标签另用一套：语义前缀 + 序号（如 `syntaxpacks-v2`），
+  不得是纯数字、也不得内嵌 6~8 位日期串。
+- 设置页「检查更新」**GitHub 优先、Gitee 备选**（GitHub 走 tags 页面 HTML，
+  Gitee 走开放 API JSON，两源归一化规则一致：只取 6..8 位纯数字标签的最大值），
+  与本地 `versionCode` 比较；两源均不可达才提示网络异常。
 
 ## 许可证
 
