@@ -34,24 +34,24 @@
 
 ### A. 本轮计划（编辑器与文件页体验）
 
-- [x] **文件页搜索 / 过滤**（`a4e7355` 之后一次提交）——已实现
+- [x] **文件页搜索 / 过滤**（`a4e7355` 之后一次提交）：已实现
   - 搜索入口收进「文件列表设置」弹窗（`content-description="搜索文件"`），点击展开名称过滤栏，按名称子串过滤当前目录（大小写不敏感）
   - 过滤与排序合并为同一次后台遍历（`applyFileViewSettings(list, showHidden, sortMode, nameQuery)`），大目录不额外多一趟分配
   - 过滤时显示命中数（`N 项`，无命中转为警示色）；空列表区分「无匹配项：<关键字>」与「当前目录为空」
   - 切目录自动清空过滤词（`LaunchedEffect(currentDirectory)`），避免「新目录打不开」（实为空结果）
   - 真机验证：`xml`→`a1.xml/a2.xml`+「2 项」；`zzz`→「无匹配项：zzz」；清空→恢复全文；切到 `/` 后过滤词为空
-- [x] **历史条目来源标记**（`EditHistoryManager.HistorySource` + `data/RelativeTime.kt`）——已实现
+- [x] **历史条目来源标记**（`EditHistoryManager.HistorySource` + `data/RelativeTime.kt`）：已实现
   - 三种来源：`SAVE` 手动保存 / `AUTO` 停顿快照（编辑停顿 2.5s）/ `DRAFT` 定时草稿；条目写入 JSON 的 `source` 字段，旧数据缺字段按 `AUTO` 兼容
   - 同内容来源升级：内容相同但来源更强（草稿→快照→保存）时原地升级来源并保留首次时间，不再新增重复条目（`HistoryMerge` 纯函数 + 5 例单测）
   - 修一个真 BUG：旧去重只过滤「等于新内容」的条目，其它内容的重复项会累积（A→B 交替编辑把 20 槽塞满两份内容）；现按内容全量去重
   - 历史面板显示来源标签（手动保存=绿 / 停顿快照=次要色 / 定时草稿=浅色）与相对时间（刚刚 / N 分钟前 / N 小时前 / N 天前 / 超 7 天给日期）；`data/RelativeTime.kt` + 4 例单测
   - 真机验证：输入两次并保存后，历史为「手动保存（C2）+ 停顿快照（C1）」两条，来源与相对时间均正确
-- [ ] **语法包更新检测**（中）——直链固定到 tag，用户无法得知有新版本
+- [ ] **语法包更新检测**（中）：直链固定到 tag，用户无法得知有新版本
   - 目标：「检查更新」比对远端版本文件与本机导入版本，提示可更新
-- [ ] **长耗时批量操作进度反馈**（中）——多选复制/移动/删除无进度，界面表现为「无反应」
+- [ ] **长耗时批量操作进度反馈**（中）：多选复制/移动/删除无进度，界面表现为「无反应」
   - 目标：操作中显示「处理中 N/M」并可取消；失败项汇总提示
-- [ ] 检查更新改用 GitHub API（低）——现用 `yezijinn/shso/tags` 页面 HTML 正则，页面结构变动即失效
-- [ ] 图标按钮补 `contentDescription`（低）——文字按钮已自带语义，仅图标按钮受影响
+- [ ] 检查更新改用 GitHub API（低）：现用 `yezijinn/shso/tags` 页面 HTML 正则，页面结构变动即失效
+- [ ] 图标按钮补 `contentDescription`（低）：文字按钮已自带语义，仅图标按钮受影响
 
 ### B. 安全后续（未安排）
 
@@ -68,16 +68,16 @@
 
 ## 本轮已完成（2026-09-14：终端专项审查与修复，4 轮）
 
-- [x] **第一轮：终端功能审查（6 项）** —— 覆盖启动同名脚本被 `pkill -9 -f <文件名>` 误杀、「重启终端」不回收进程组、
+- [x] **第一轮：终端功能审查（6 项）**：覆盖启动同名脚本被 `pkill -9 -f <文件名>` 误杀、「重启终端」不回收进程组、
       拦截高危命令不落审计（`reportBlockedInput` 成死代码）、「Enter」清空输入却不发送、私有模式 CSI 泄漏为文本、
       一次性命令无运行状态 / 不可中断 / 无流式输出。逐项真机复验。
-- [x] **第二轮：控制序列补齐 + 状态健壮性（7 项）** —— OSC（窗口标题 / 超链接）、两字符 ESC 序列、`` 退格、
+- [x] **第二轮：控制序列补齐 + 状态健壮性（7 项）**：OSC（窗口标题 / 超链接）、两字符 ESC 序列、`` 退格、
       `ESC[K` 行内擦除、C0 控制字符过滤、转义缓冲 1KB 上限；旋转屏幕保留输入 / 历史 / 待确认高危命令；
       输出顺序（先停发布循环再写退出码）；终端命令超时 120s → 30min；>5s 命令前台保活；进程组 pid 按代际回填。
-- [x] **第三轮：渲染成本与解析进度（3 项）** —— **单行超长输出 ANR**（单行 10 万字符 → 主线程排版 20s、
+- [x] **第三轮：渲染成本与解析进度（3 项）**：**单行超长输出 ANR**（单行 10 万字符 → 主线程排版 20s、
       `Skipped 1210 frames`、`Davey! 20182ms`）以「渲染投影 4000 字符上限」修复，模型保持全文；
       解析进度随 feed 原子落定（修重复行）；滑动窗口硬截不切代理对。
-- [x] **第四轮：交互跟随（1 项）+ 3 项负结果** —— 上翻读日志时发命令「看起来没反应」改为发命令 / 清屏自动回尾部；
+- [x] **第四轮：交互跟随（1 项）+ 3 项负结果**：上翻读日志时发命令「看起来没反应」改为发命令 / 清屏自动回尾部；
       负结果：横屏按钮未被挤掉（uiautomator 零 bounds 是假象）、四个对话框均可滚动可达、发送后输入框保持焦点。
 
 ## 上一轮已完成（2026-09-12 ~ 09-13：编辑器引擎与语法高亮系列）
@@ -140,24 +140,24 @@
   模型层保持全文；新增任何「整行渲染」入口都要过 `renderableLine()`。
 - **终端显示必须消化非 SGR 序列**：私有模式 CSI / OSC / `` / `ESC[K` 都要吞掉，未识别即会变成可见乱码。
 
-1. **`/data/adb/shso` 必须 777** —— 需让其他应用自由读写；曾改 755，用户明确要求回退。
-2. **release 已开启 R8 + shrinkResources** —— 资源会被重命名为随机短名，不要按 APK 内资源名反查源码资源。
-3. **`Process.pid()` 在 Android 不存在** —— 取子进程 pid 只能反射；中断正确性由进程组回收保证。
-4. **编辑器载入归一为 LF、保存按 `currentLineEnding` 还原** —— 改 `LineEnding.apply` 需同步该契约。
-5. **风险等级一律按来源分级** —— 混淆/未解析类在 `SCRIPT_FILE` 为 `CRITICAL`（自动执行拒），`USER_TERMINAL` 为 `DANGEROUS`（可确认）。
-6. **守卫是 PATH 前置型，能力有边界** —— 绝对路径调用与 `PATH` 重置可绕过；不要据此认为「装了守卫就万无一失」。
-7. **新增守卫包装器必须三处同步** —— `gen_wrappers.py` specs、`assets/shso_guard.zip`、`REQUIRED_ARCHIVE_ENTRIES`，并升 `module.prop` 版本。
-8. **不要在 `LaunchedEffect` 里直接 `scrollToItem`** —— 列表未组合时会挂起并阻塞后续逻辑。
-9. **档位 ≤1 时策略层一律放行** —— 验证拦截必须用档位 ≥2。
+1. **`/data/adb/shso` 必须 777**：需让其他应用自由读写；曾改 755，用户明确要求回退。
+2. **release 已开启 R8 + shrinkResources**：资源会被重命名为随机短名，不要按 APK 内资源名反查源码资源。
+3. **`Process.pid()` 在 Android 不存在**：取子进程 pid 只能反射；中断正确性由进程组回收保证。
+4. **编辑器载入归一为 LF、保存按 `currentLineEnding` 还原**：改 `LineEnding.apply` 需同步该契约。
+5. **风险等级一律按来源分级**：混淆/未解析类在 `SCRIPT_FILE` 为 `CRITICAL`（自动执行拒），`USER_TERMINAL` 为 `DANGEROUS`（可确认）。
+6. **守卫是 PATH 前置型，能力有边界**：绝对路径调用与 `PATH` 重置可绕过；不要据此认为「装了守卫就万无一失」。
+7. **新增守卫包装器必须三处同步**：`gen_wrappers.py` specs、`assets/shso_guard.zip`、`REQUIRED_ARCHIVE_ENTRIES`，并升 `module.prop` 版本。
+8. **不要在 `LaunchedEffect` 里直接 `scrollToItem`**：列表未组合时会挂起并阻塞后续逻辑。
+9. **档位 ≤1 时策略层一律放行**：验证拦截必须用档位 ≥2。
 10. **分包安装必须走 `pm install-create/-write/-commit` 且分片先拷到 `/data/local/tmp`**。
-11. **套件聚合宁少勿错** —— `collectApkSet` 定位不到唯一基础包时退回单文件安装，绝不猜测。
-12. **APK 不得内置语法包** —— 语法由用户导入（本地 zip / 仓库直链）；`verifyReleasePayload` 为强制红线，确需上调体积上限须连同理由一起改常量。
-13. **保存必须原子** —— 临时文件与目标同目录、`renameTo`/`mv` 覆盖、还原 `mode/uid/gid`、失败清理；禁止直接 `writeBytes` 到目标。
-14. **编码必须严格** —— 用 `CharsetEncoder` + `REPORT`；禁止 `String.toByteArray(charset)` 的静默 `?` 替换。
-15. **Sora 的检索与替换都是异步的** —— `replaceAll/replaceCurrentMatch` 在检索未结束（`isResultValid()==false`）时只弹 Toast 后返回；任何「搜索后立即读结果/替换」都必须先等结果集写入。
+11. **套件聚合宁少勿错**：`collectApkSet` 定位不到唯一基础包时退回单文件安装，绝不猜测。
+12. **APK 不得内置语法包**：语法由用户导入（本地 zip / 仓库直链）；`verifyReleasePayload` 为强制红线，确需上调体积上限须连同理由一起改常量。
+13. **保存必须原子**：临时文件与目标同目录、`renameTo`/`mv` 覆盖、还原 `mode/uid/gid`、失败清理；禁止直接 `writeBytes` 到目标。
+14. **编码必须严格**：用 `CharsetEncoder` + `REPORT`；禁止 `String.toByteArray(charset)` 的静默 `?` 替换。
+15. **Sora 的检索与替换都是异步的**：`replaceAll/replaceCurrentMatch` 在检索未结束（`isResultValid()==false`）时只弹 Toast 后返回；任何「搜索后立即读结果/替换」都必须先等结果集写入。
 16. **`packaging.resources.excludes` 必须保留 `"tables/**"` —— jcodings 的 648 个编码表会打进 APK 根目录（1.24MB）；正则只用 UTF-8/ASCII-8BIT 内建编码，不查表。
-17. **语法解析器顺序不可颠倒** —— `FileProviderRegistry.addProvider` 先应用私有目录、后 assets；`AssetsFileResolver` 对缺失路径不捕获异常，排在前面会中断整条解析链。
-18. **Monarch 主题必须覆盖语法用到的全部令牌作用域**（含 `identifier`、`attribute`）—— 未匹配令牌落回黑色；主题加载失败时不启用语法。
+17. **语法解析器顺序不可颠倒**：`FileProviderRegistry.addProvider` 先应用私有目录、后 assets；`AssetsFileResolver` 对缺失路径不捕获异常，排在前面会中断整条解析链。
+18. **Monarch 主题必须覆盖语法用到的全部令牌作用域**（含 `identifier`、`attribute`）： 未匹配令牌落回黑色；主题加载失败时不启用语法。
 
 ---
 

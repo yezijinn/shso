@@ -238,8 +238,8 @@ Android ROOT 环境下的图形化执行工具：运行 `.sh` 脚本与 `.so` / 
 
 ## 安全模型
 
-三层：App 侧静态审查（提示层 / 自动执行第一道门）+ `shso_guard` 运行时守卫（执行层）
-+ 审计日志。
+分三层：App 侧静态审查（提示层，也是自动执行的第一道门）、`shso_guard` 运行时守卫（执行层）、
+审计日志。
 
 **安全档位**（设置页点击循环，即时生效）
 
@@ -247,8 +247,8 @@ Android ROOT 环境下的图形化执行工具：运行 `.sh` 脚本与 `.so` / 
 |---|---|
 | `0` 关 | 不审查、不拦截（防护配置变更仍留痕） |
 | `1` 审计 | 受保护命令放行，审计记为 `DENY` |
-| `2` 标准（默认） | 硬规则拦截 + 高危确认 + 脚本扫描 + 安装运行时守卫 |
-| `3` 最高 | 标准防护 + 脚本默认非 ROOT 执行 + CRITICAL 需输入 `EXECUTE` |
+| `2` 标准防护（默认） | 硬规则拦截 + 高危确认 + 脚本扫描 + 安装运行时守卫 |
+| `3` 最强防护 | 标准防护 + 脚本默认非 ROOT 执行 + CRITICAL 需输入 `EXECUTE` |
 
 档位 ≥2 时在 `/data/adb/modules/shso_guard` 安装运行时守卫。
 执行脚本 / 程序前弹风险确认框，展示文件名、路径、类型、大小、修改时间、
@@ -274,17 +274,20 @@ SHA-256 与是否以 Root 执行。
   审计日志写入 `/data/adb/shso/audit.log`。
 - 策略文件 `/data/adb/shso_guard/policy.conf`（`protect=` / `allow=` /
   `mode=enforce|log|off`），修改即时生效，优先级高于模块自带策略。
-- 覆盖 30 个包装器 + `toybox` / `busybox` 两个多二进制派发器（共 32 个）：
-  删除 / 覆写（`rm` `rmdir` `shred` `truncate` `wipe` `dd`）、格式化（`mkfs.*`）、
-  移动与拷贝（`mv` `cp` `ln` `install`）、原地修改（`sed` `find`）、写入（`tee`）、
+- 覆盖 32 个命令入口：30 个模板生成的包装器，加上 `toybox`、`busybox` 两个多二进制派发器。
+  按用途分成删除与覆写（`rm` `rmdir` `shred` `truncate` `wipe` `dd`）、
+  格式化（`mkfs` `mkfs.ext4` `mkfs.f2fs` `mkfs.vfat` `mke2fs` `make_f2fs`）、
+  搬运与写入（`mv` `cp` `ln` `install` `tee`）、就地修改（`sed` `find`）、
   权限（`chmod` `chown` `chgrp` `mknod`）、分区表与刷机（`sgdisk` `parted` `fdisk`
-  `flash_image` `wipefs` `chattr`）。**派发表与包装器清单同集合**，缺一项即该命令在
+  `flash_image` `wipefs` `chattr`）以及 `fastboot`。
+  `toybox` / `busybox` 的派发表与这份清单同集合，缺一项就意味着该命令在
   `toybox <cmd>` 形态下失守。
-- 安全关键配置**不接受环境变量覆盖**：`SHSO_POLICY` / `SHSO_AUDIT` 仅接受受信目录前缀，
-  `SHSO_AUDIT_MAX` 失效，`SHSO_GUARD_DEPTH` 仅作辅助计数 —— 避免被守卫执行的命令自行解除防护。
-- 安装与升级为原子替换，失败保留或回滚旧版本；新增包装器需四处同步
-  （`gen_wrappers.py`、派发表、`assets/shso_guard.zip`、`REQUIRED_ARCHIVE_ENTRIES`），
-  并由单测强制校验三者与源码目录一致。
+- 安全关键配置不接受环境变量覆盖：`SHSO_POLICY` / `SHSO_AUDIT` 只认受信目录前缀，
+  `SHSO_AUDIT_MAX` 失效，`SHSO_GUARD_DEPTH` 退化为辅助计数，
+  免得被守卫执行的命令自己把防护解除。
+- 安装与升级走原子替换，失败时保留或回滚旧版本。新增包装器要同步四处：`gen_wrappers.py`
+  的 specs、`common.sh` 的派发表、`assets/shso_guard.zip`、`REQUIRED_ARCHIVE_ENTRIES`；
+  单测会逐条比对源码目录、zip、必需清单三者的内容，漏登记或忘了重新打包都会失败。
 - 能力边界：PATH 前置型守卫拦不到脚本内的绝对路径调用（如 `/system/bin/rm`）、
   自行重置 `PATH`、shell 重定向直写、以及清单外的破坏原语（`mount` 等）。
 

@@ -230,7 +230,7 @@ python build_apk.py             # Windows 一键脚本（含 --skip-check）
 分层模型：App 侧静态审查（提示层 / 自动执行第一道门）+ `shso_guard` 运行时守卫
 （执行层）+ 审计日志。设计要点与能力边界见 `module/shso_guard/README.md`。
 
-- **安全档位**：`0 关 / 1 审计 / 2 标准 / 3 最高`，由 `AppSettings.securityLevel`
+- **安全档位**：`0 无防护 / 1 仅审计 / 2 标准防护 / 3 最强防护`，由 `AppSettings.securityLevel`
   持久化，默认 2。档位 ≤1 时 `RootCommandGateway` 一律放行，
   验证拦截效果必须用档位 ≥2。切换档位会失效「守卫就绪」缓存、按需安装守卫并同步
   `policy.conf` 的 `mode`；冷启动也会同步一次（`policy.conf` 跨重装保留，
@@ -262,15 +262,14 @@ python build_apk.py             # Windows 一键脚本（含 --skip-check）
   配置类事件（守卫安装 / 卸载 / 改档 / 降级 / 审计清空）在档位 0 下仍留痕。
 - **执行前确认**：弹风险确认框，展示文件名、路径、类型、大小、修改时间、
   SHA-256、是否以 Root 执行与脚本风险扫描结果。
-- **检查更新**（`SettingsPage`）：**Gitee 优先、GitHub 备选**（国内网络 GitHub 常不可达）。
-  Gitee 走 `/api/v5/repos/{owner}/{repo}/tags`（JSON，网页版 `/tags` 返回 405），
-  GitHub 走 `/tags`（HTML）。
-  两源归一化规则一致：**只取 6..8 位纯数字标签**且**不剥离 `v` 前缀**（兼容违规写法
-  等于让发布侧问题长期隐藏，且 Gitee 的「去更新」链接按纯数字拼、带 `v` 必 404）。
-  GitHub 页面链接里的仓库名为全小写，正则必须忽略大小写，否则会把「有标签」
-  误判成「无标签」→ 假的网络异常。五态状态机（Idle / Checking / UpToDate /
-  Available / NetworkError）；成功源只用于「去更新」跳转（Gitee → `releases/tag/<最新>`，
-  GitHub → `releases`）与日志，不写入用户可见文案。
+- **检查更新**（`SettingsPage`）：Gitee 优先、GitHub 备选，国内网络访问 GitHub 常不可达。
+  Gitee 走 `/api/v5/repos/{owner}/{repo}/tags`（JSON；网页版 `/tags` 是 405），
+  GitHub 走 `/tags`（HTML）。两源归一化规则一致：只保留 6..8 位纯数字标签，
+  且不剥离 `v` 前缀 —— 兼容违规写法会让发布侧的问题一直藏着，而 Gitee 的「去更新」链接
+  按纯数字拼，带 `v` 必然 404。GitHub 页面链接里的仓库名是全小写，正则要忽略大小写，
+  否则「有标签」会被判成「无标签」，用户看到的是假的网络异常。
+  状态机五态（Idle / Checking / UpToDate / Available / NetworkError），
+  成功源只用于「去更新」跳转（Gitee → `releases/tag/<最新>`，GitHub → `releases`）与日志。
 - **编辑器只读阈值**：`ChunkedFileReader.LARGE_FILE_THRESHOLD = 128KB`，
   超过走只读懒加载（低端机实测：256KB 约 30s，2MB 数分钟无响应）。
 
@@ -337,13 +336,12 @@ python build_apk.py             # Windows 一键脚本（含 --skip-check）
 - 改动功能后的同步顺序：代码 → 单测 → `更新日志.md` → `README.md` / 本文件
   （仅当影响用法或约束时）→ 提交。
 - 任务看板 `TASKS*.md` 属过程记录，不参与对外文档同步。
-- 新增守卫包装器需**四处同步**：`gen_wrappers.py` 的 specs、`common.sh` 的
-  `guard_operand_mode()` 派发表、`assets/shso_guard.zip`、`GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES`，
-  并升 `module.prop` 的 `version=`（否则 App 不会自动升级）。单测
-  `required entries stay in sync with sources and bundled zip` 强制校验
-  「源码目录 / zip / 必需清单」三者一致，漏登记即失败。
-- 守卫脚本改动后必须先做两步验证：设备上 `sh -n common.sh`，再跑一次含 `|` 与换行的
-  审计用例。bash 的 `-n` 发现不了 mksh 的两类陷阱 —— 「跨行模式 → `no closing quote`，
-  整个文件解析失败、脚本转为读 stdin 而挂起」与「参数展开中未加引号的 `|` 被当作模式
-  交替符 → 替换不收敛而死循环」。
+- 新增守卫包装器要同步四处：`gen_wrappers.py` 的 specs、`common.sh` 的 `guard_operand_mode()`
+  派发表、`assets/shso_guard.zip`、`GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES`，
+  同时升 `module.prop` 的 `version=`（版本不变，已装设备不会自动升级）。单测
+  `required entries stay in sync with sources and bundled zip` 会逐条比对
+  「源码目录 / zip / 必需清单」的内容，漏登记或忘记重新打包都会失败。
+- 守卫脚本改动后先做两步验证：设备上 `sh -n common.sh`，再跑一次含 `|` 与换行的审计用例。
+  bash 的 `-n` 查不出 mksh 的两类陷阱：跨行模式会报 `no closing quote`，让整个文件解析失败、
+  脚本转去读 stdin 而挂住；参数展开里未加引号的 `|` 会被当成模式交替符，替换不收敛直接死循环。
 - 发布标签必须为纯数字 `YYYYMMDD`（禁止 `v` 前缀）；非发布包用语义前缀 + 序号。
