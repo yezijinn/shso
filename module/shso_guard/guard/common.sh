@@ -3,7 +3,10 @@
 # shso_guard 公共库 —— 策略判定 / 路径归一化 / 审计落盘 / 决策分发
 #
 # 由 guard/<cmd> 脚本 source 调用，不可单独执行。
-# 兼容性：仅用 POSIX sh 语法（Android mksh / ash 均可），不依赖 bash。
+# 兼容性：POSIX 语法为主，不依赖 bash 专有设施；唯一例外是 sanitize_field 用于匹配换行的
+# ANSI-C quoting（美元符 + 单引号包裹的反斜杠 n）—— Android /system/bin/sh 即 mksh、busybox ash
+# 均支持，但 dash 不支持，故本模块的适用面为 mksh / busybox ash，不含 dash。
+# 注意：注释里不得直接书写该字面量，写错会闭合引号/断行，直接破坏整个文件的解析。
 #
 # 设计要点
 #   1. 策略文件缺失时，使用内置兜底清单，保证「裸装也受保护」。

@@ -48,7 +48,7 @@ object SecurityAuditLog {
     private val ALWAYS_AUDITED = setOf(
         "GUARD_INSTALL", "GUARD_UNINSTALL", "GUARD_POLICY_MODE",
         "GUARD_AUTO_INSTALL_FAILED", "GUARD_UNAVAILABLE_DEGRADED",
-        "GUARD_MODE_DRIFT", "AUDIT_CLEARED"
+        "AUDIT_CLEARED"
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -241,8 +241,18 @@ object SecurityAuditLog {
         val safeMaxLines = boundedTailLines(maxLines)
         try {
             if (useRootLog()) {
-                val (code, out) = RootService.runCommandSync("tail -n $safeMaxLines $ROOT_LOG_PATH", 10_000L)
-                if (code == 0) out else "(读取失败 exit=$code)"
+                // 读取前确认目标是普通文件：软链会让 `tail` 读出链接目标的内容并展示到 UI。
+                // 只探测不删除 —— 读取是只读操作，不应产生副作用（清除只发生在写入/清空路径）。
+                val (probeCode, _) = RootService.runCommandSync(
+                    "[ ! -L $ROOT_LOG_PATH ] && { [ ! -e $ROOT_LOG_PATH ] || [ -f $ROOT_LOG_PATH ]; }",
+                    5_000L
+                )
+                if (probeCode != 0) {
+                    "(审计日志不是普通文件（疑似软链），已拒绝读取)"
+                } else {
+                    val (code, out) = RootService.runCommandSync("tail -n $safeMaxLines $ROOT_LOG_PATH", 10_000L)
+                    if (code == 0) out else "(读取失败 exit=$code)"
+                }
             } else {
                 val auditFile = logFile()
                 if (!auditFile.exists()) "(暂无审计记录)"
@@ -278,7 +288,14 @@ object SecurityAuditLog {
                 if (code != 0) return@withContext false
                 RootService.writeBytesAsRoot(ROOT_LOG_PATH, marker.toByteArray(Charsets.UTF_8), append = true)
             } else {
-                logFile().writeText(marker)
+                val auditFile = logFile()
+                // 与 log() 保持一致：私有目录内的软链不可能是正常状态，清空前先移除，
+                // 否则 writeText 会跟随软链写穿到目标文件。
+                if (Files.isSymbolicLink(auditFile.toPath())) {
+                    auditFile.delete()
+                    recordFailure("本地审计文件曾被替换为软链，已清除")
+                }
+                auditFile.writeText(marker)
             }
             true
         } catch (_: Exception) {
