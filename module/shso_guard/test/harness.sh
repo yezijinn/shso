@@ -127,6 +127,17 @@ if [ $rc -ne 0 ] && printf '%s' "$out" | grep -q "找不到可执行的真实二
 else bad "m4) 缺失二进制处理异常 rc=$rc out=[$out]"; fi
 
 echo
+echo "===== s  语法自检（守卫脚本解析失败会让防护全线失效）====="
+syn_bad=""
+for _f in "$GUARD"/*; do
+  case "$_f" in *"/common.sh") continue ;; esac
+  /bin/sh -n "$_f" 2>/dev/null || syn_bad="$syn_bad $(basename "$_f")"
+done
+/bin/sh -n "$GUARD/common.sh" 2>/dev/null || syn_bad="$syn_bad common.sh"
+if [ -z "$syn_bad" ]; then ok "s1) 全部守卫脚本语法自检通过"
+else bad "s1) 存在语法错误：$syn_bad"; fi
+
+echo
 echo "===== v1.3.0 回归用例（派发表 / 新包装器 / 参数变体 / 未解析变量）====="
 run_case BLOCK "n1)   toybox chmod -R 777 /system"           "$WORK/policy/lf.conf" toybox chmod -R 777 /system
 run_case BLOCK "n2)   toybox chown 0:0 /system"              "$WORK/policy/lf.conf" toybox chown 0:0 /system

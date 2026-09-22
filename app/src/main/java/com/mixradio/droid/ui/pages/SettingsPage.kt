@@ -71,7 +71,6 @@ import com.mixradio.droid.ui.theme.AuroraWindowDialog
 import com.mixradio.droid.ui.theme.auroraFilledButton
 import com.mixradio.droid.ui.theme.auroraPrimaryButtonColors
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
@@ -276,6 +275,9 @@ fun SettingsPage(
                 }
             } catch (_: Exception) {
                 updateState = UpdateUiState.NetworkError
+            } finally {
+                // 熄灭时机与结果对齐：两源各 10s 超时，固定 3s 熄灯会让用户误以为已经失败。
+                updateChecking = false
             }
         }
     }
@@ -400,11 +402,9 @@ fun SettingsPage(
                 onClick = {
                     if (!updateChecking) {
                         updateChecking = true
+                        // 熄灭由 checkForUpdate 的 finally 负责（结果返回即熄灭），
+                        // 不再固定 3 秒 —— 否则两源超时叠加时用户会误判为失败。
                         checkForUpdate()
-                        scope.launch {
-                            delay(3000)
-                            updateChecking = false
-                        }
                     }
                 }
             )
@@ -433,7 +433,7 @@ fun SettingsPage(
                             GuardModuleInstaller.syncPolicyMode(next)
                         }
                         val tip = when (next) {
-                            AppSettings.SECURITY_OFF -> "已关闭：不审查 / 不拦截 / 不审计"
+                            AppSettings.SECURITY_OFF -> "已关闭：不审查 / 不拦截（仍记录防护配置变更）"
                             AppSettings.SECURITY_AUDIT_ONLY -> "审计：仅留痕，不拦截命令"
                             AppSettings.SECURITY_STANDARD -> "标准：黑名单拦截 + 终端硬规则 + 守卫 PATH"
                             AppSettings.SECURITY_MAXIMUM -> "最高：脚本默认非 Root 执行 + 全档收口"

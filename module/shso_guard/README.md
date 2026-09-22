@@ -3,8 +3,11 @@
 shso 的运行时守卫模块：在命令被调用的时刻拦截 `rm` / `dd` / `mkfs` 等高危操作，
 保护系统分区并记录审计日志。
 
-- 模块 ID：`shso_guard`（一经发布不再修改），当前版本 v1.3.0（`module.prop` 的 `version=`）。
+- 模块 ID：`shso_guard`（一经发布不再修改），当前版本 v1.3.1（`module.prop` 的 `version=`）。
 - 相关文档：[`README.md`](../../README.md)、[`docs/PROJECT.md`](../../docs/PROJECT.md)。
+- v1.3.1：审计**写入 / 轮转 / 清空**三条路径统一校验「目标是普通文件」（软链即清除，
+  清除失败则放弃本次写入），读取前同样校验目标类型；`SHSO_POLICY` / `SHSO_AUDIT`
+  白名单额外拒绝 `..` 回退路径。
 
 ## 分层定位
 

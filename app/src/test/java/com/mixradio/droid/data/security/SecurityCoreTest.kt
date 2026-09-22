@@ -110,6 +110,21 @@ class SecurityCoreTest {
 
         assertEquals("assets zip 与仓库 guard/ 目录不同步", sourceGuard, zipGuard)
         assertEquals("REQUIRED_ARCHIVE_ENTRIES 与仓库 guard/ 目录不同步", sourceGuard, requiredGuard)
+
+        // 内容级校验：集合一致但内容不同同样是缺陷 —— 只改源码忘了重新打包时，
+        // 用户装 APK 会拿到旧守卫，而 module.prop 版本未变时已装设备也不会自动升级，
+        // 等于「修了但没生效」（2026-09-22 实际发生过：common.sh 的加固未进 zip）。
+        val mismatched = java.util.zip.ZipFile(zipFile).use { z ->
+            z.entries().asSequence()
+                .filter { !it.isDirectory }
+                .mapNotNull { e ->
+                    val disk = File(repoRoot, "module/shso_guard/" + e.name)
+                    val same = disk.isFile && disk.readBytes().contentEquals(z.getInputStream(e).readBytes())
+                    if (same) null else e.name
+                }
+                .toList()
+        }
+        assertTrue("内置 zip 与源码内容不一致（需重新打包并升 module.prop 版本）：$mismatched", mismatched.isEmpty())
     }
 
     // ============================================================================
