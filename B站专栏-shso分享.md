@@ -138,15 +138,14 @@ shso 是一个运行在 Android ROOT 环境下的图形化执行工具：运行 
 
 > 包名可以改成你自己的，编译也不必依赖本地环境。
 
-- 默认包名 `com.mixradio.droid` 可改成你自己的包名
-- 用 GitHub Actions 在网页上一键编译 APK，无需本地安装 Android Studio / SDK
-- 步骤：Fork 本仓库 → 进入 Actions → 运行「在线编译 APK（自定义包名）」→ 填写包名 → 下载产物
-- 完整说明见仓库 `docs/在线编译.md`
+- 默认包名 `com.mixradio.droid` 能换成你自己的
+- 用 GitHub Actions 在线构建 APK，无需本地安装 Android Studio / SDK
+- 填包名即可下载产物；完整步骤见仓库 `docs/在线编译.md`
 
 ## 获取与构建
 
 - GitHub：github.com/yezijinn/shso（Release 下载 APK，或按文档自行编译）
-- 本地构建：`./gradlew :app:assembleRelease`，或 Windows 一键 `python build_apk.py`（签名 + 版本规则 + 产物校验）
+- 本地构建：`./gradlew :app:assembleRelease`，或 Windows 用 `python build_apk.py`（签名 + 版本规则 + 产物校验）
 - 许可证：Apache License 2.0
 
 ## 实机截图

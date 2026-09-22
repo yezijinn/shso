@@ -189,7 +189,7 @@ adb -s BIYLBAFQQSS8DA69 shell "su -c 'grep ^version= /data/adb/modules/shso_guar
 - 截图前先 `input keyevent KEYCODE_WAKEUP`，否则可能得到黑屏。
 - 清理 `/sdcard` 测试文件需 `su -c`（应用 push 的文件属 root，adb shell 直接删会失败）。
 
-### 环境坑（会导致误判，务必注意）
+### 环境坑（易致误判）
 
 | 坑 | 表现 / 处理 |
 |---|---|

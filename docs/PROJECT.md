@@ -197,7 +197,7 @@ UI 层全部使用 `androidx.compose.material3` + `material-icons-extended`，
 ```bash
 ./gradlew :app:assembleDebug    # app/build/outputs/apk/debug/
 ./gradlew :app:assembleRelease  # V2+V3 签名，app/build/outputs/apk/release/
-python build_apk.py             # Windows 一键脚本（含 --skip-check）
+python build_apk.py             # Windows 脚本（含 --skip-check）
 ```
 
 - 只打包 `arm64-v8a`（`defaultConfig.ndk.abiFilters`）。不要用 `splits.abi`：
