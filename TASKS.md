@@ -10,22 +10,22 @@
 
 `versionCode` = 构建当日日期（`YYYYMMDD`），`versionName` = `Jinn`，Release Tag 与 `versionCode` 对齐；升级判定只认 `versionCode`。完整规则见 `README.md` § 版本规则。
 
-守卫模块独立版本：当前 v1.2.0（`module.prop` 的 `version=`）。新增或修改包装器、`common.sh` 后必须按序执行：重新生成包装器 → 重打包 `assets/shso_guard.zip` → 同步 `GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES` → 升 `module.prop` 版本，否则已装用户不会升级。
+守卫模块独立版本：当前 v1.3.1（`module.prop` 的 `version=`）。新增或修改包装器、`common.sh` 后必须按序执行：重新生成包装器 → 重打包 `assets/shso_guard.zip` → 同步 `GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES` → 升 `module.prop` 版本，否则已装用户不会升级。
 
 ---
 
-## 当前状态速览（2026-09-14）
+## 当前状态速览（2026-09-22）
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，HEAD `93b1b76`，与 `origin/main` 同步（终端专项 + CI 时区修复） |
-| 单元测试 | 275 tests / 0 failures |
-| release 体积 | 2.10 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
+| 分支 | `main`，HEAD `a379c4d`，与 `origin/main` 同步（终端专项 + CI 时区修复） |
+| 单元测试 | 277 tests / 0 failures |
+| release 体积 | 2.09 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
 | 编辑器内核 | Sora Editor 0.23.6（打开即可编辑；语法由外置语法包提供） |
 | 语法包 | 62 语言 / 187 扩展名，`syntax-packs.zip`(37KB)，永固直链 tag `syntaxpacks-v2` |
-| 守卫模块 | v1.2.0（真机已装并验证拦截） |
-| 真机 | BIYLBAFQQSS8DA69（PACM00 / Android 10 / 1080×2280 / 底部导航 y=2034） |
+| 守卫模块 | v1.3.1（真机已装并验证拦截） |
+| 真机 | BIYLBAFQQSS8DA69（PACM00 / Android 10 / 1080×2280 / 底部导航 y=2156） |
 | 当前安全档位 | 设备上为 0（验证拦截需切到 ≥2） |
 
 ---
@@ -167,7 +167,7 @@
 export MSYS_NO_PATHCONV=1
 export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot'
 
-./gradlew :app:testDebugUnitTest :app:assembleDebug          # 基线 275 tests / 0 failures
+./gradlew :app:testDebugUnitTest :app:assembleDebug          # 基线 277 tests / 0 failures
 ./gradlew :app:assembleRelease                               # 含 verifyReleasePayload 红线校验
 python tools/gen_syntax_packs.py                             # 重新生成语法包（syntax-packs/ + syntax-packs.zip）
 
@@ -183,7 +183,7 @@ adb -s BIYLBAFQQSS8DA69 shell "su -c 'grep ^version= /data/adb/modules/shso_guar
 
 ### 真机操作（BIYLBAFQQSS8DA69，PACM00 / Android 10 / 1080×2280）
 
-- 底部导航坐标：`主页 153 / 终端 411 / 文件 669 / 设置 927`，y = `2034`；点击后等 3–5 秒。
+- 底部导航坐标：`主页 153 / 终端 411 / 文件 669 / 设置 927`，y = `2156`；点击后等 3–5 秒。
 - 文件页默认「内部存储」；目录恒排在文件之前。
 - 文件单击=动作菜单（含「编辑文本」），长按=多选模式。
 - 截图前先 `input keyevent KEYCODE_WAKEUP`，否则可能得到黑屏。
