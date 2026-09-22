@@ -46,7 +46,6 @@ import com.mixradio.droid.ui.theme.auroraFilledButton
  * - 中间书签列表为纯文本紧凑视图（参考「文件」列表样式：无底色矩形、0 行间隔、
  *   行内 padding 极小），超出时仅此区滚动
  * - 底部仅「添加书签」按钮贴底边（功能 = 收藏当前目录，重复点击由 AppSettings 去重）
- * - 已删除「输入要收藏的目录路径」输入框与「收藏当前目录」控件
  */
 @Composable
 fun BookmarksDialog(
@@ -146,7 +145,6 @@ fun BookmarksDialog(
                     }
                 }
 
-                // ③ 底栏（仅「添加书签」按钮，贴底边；功能 = 收藏当前目录）
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

@@ -54,9 +54,7 @@ import zipfile
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
-# --------------------------------------------------------------------------- #
 # 控制台编码：Windows 下强制 UTF-8，保证中文与 ANSI 输出不乱码
-# --------------------------------------------------------------------------- #
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 os.environ.setdefault("PYTHONUTF8", "1")
 for _stream in (sys.stdout, sys.stderr):
@@ -66,9 +64,7 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 
-# --------------------------------------------------------------------------- #
 # 常量配置
-# --------------------------------------------------------------------------- #
 PROJECT_DIR: Path = Path(__file__).resolve().parent
 PROJECT_NAME: str = "shso"
 
@@ -81,12 +77,10 @@ SIGNING = {
     "alias": "com.mixradio.droid",
 }
 
-# --------------------------------------------------------------------------- #
-# 版本规则（2026-09-11 起生效，与 app/build.gradle.kts 保持一致）
+# 版本规则（与 app/build.gradle.kts 保持一致）
 #   versionName = "Jinn"                     固定展示名，不再使用 9.0.2 之类的数字版本名
 #   versionCode = 构建当日日期 YYYYMMDD        由 Gradle 的 buildDateVersionCode 自动生成，
 #                                             也是应用内「检查更新」与 GitHub 纯日期 Tag 的对齐依据
-# --------------------------------------------------------------------------- #
 VERSION_NAME: str = "Jinn"
 
 # 产物内容校验：只允许这些 ABI（与 app/build.gradle.kts 的 ndk.abiFilters 一致）。
@@ -119,9 +113,7 @@ WARN = "[WARN]"
 INFO = "[INFO]"
 
 
-# --------------------------------------------------------------------------- #
 # 工具函数
-# --------------------------------------------------------------------------- #
 def log(tag: str, message: str) -> None:
     """统一日志输出。"""
     print(f"{tag} {message}", flush=True)
@@ -271,9 +263,7 @@ def human_size(num_bytes: int) -> str:
     return f"{size:.2f} GB"
 
 
-# --------------------------------------------------------------------------- #
 # 阶段 1：环境预检
-# --------------------------------------------------------------------------- #
 def precheck() -> bool:
     """校验编译所需的所有外部依赖，返回是否全部通过。"""
     section("阶段 1 / 5：环境预检")
@@ -345,9 +335,7 @@ def precheck() -> bool:
     return passed
 
 
-# --------------------------------------------------------------------------- #
 # 阶段 2：本地配置校正
-# --------------------------------------------------------------------------- #
 def sync_local_properties() -> None:
     """校正 local.properties 中的 sdk.dir，指向本机真实 SDK 路径（保留文件其余行）。"""
     section("阶段 2 / 5：本地配置校正")
@@ -382,9 +370,7 @@ def sync_local_properties() -> None:
         log(OK, f"已追加 sdk.dir → {desired}（原有内容保留）")
 
 
-# --------------------------------------------------------------------------- #
 # 阶段 3：Gradle 构建
-# --------------------------------------------------------------------------- #
 def build_env() -> dict:
     """构造 Gradle 子进程环境变量。"""
     env = os.environ.copy()
@@ -450,9 +436,7 @@ def gradle_build(variant: str, clean: bool, extra_args: Sequence[str]) -> int:
     return code
 
 
-# --------------------------------------------------------------------------- #
 # 阶段 4：产物定位与签名校验
-# --------------------------------------------------------------------------- #
 def locate_apk(variant: str) -> Optional[Path]:
     """定位构建产物 APK。"""
     section("阶段 4 / 5：产物定位与签名校验")
@@ -604,9 +588,7 @@ def verify_signature(apk: Path) -> Tuple[bool, Optional[dict]]:
     return True, schemes
 
 
-# --------------------------------------------------------------------------- #
 # 阶段 5：结果汇总
-# --------------------------------------------------------------------------- #
 def summarize(
     apk: Optional[Path],
     variant: str,
@@ -639,9 +621,7 @@ def summarize(
     return 1
 
 
-# --------------------------------------------------------------------------- #
 # 入口
-# --------------------------------------------------------------------------- #
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="shso 一键编译脚本：环境预检 → 依赖校正 → Gradle 构建 → 签名校验",

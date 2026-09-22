@@ -173,7 +173,7 @@ fun SettingsPage(
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
-    // ===== 权限状态（首次进入即同步初查，前台返回时统一刷新） =====
+    // 权限状态（首次进入即同步初查，前台返回时统一刷新）
     var permissionStorageGranted by remember {
         mutableStateOf(PermissionChecker.isStorageGranted(context))
     }
@@ -244,7 +244,7 @@ fun SettingsPage(
     }
     var showAboutDialog by remember { mutableStateOf(false) }
 
-    // ===== 安全审计弹窗状态 =====
+    // 安全审计弹窗状态
     var showAuditDialog by remember { mutableStateOf(false) }
     var auditDialogLines by remember { mutableStateOf<List<String>>(emptyList()) }
     var installingGuard by remember { mutableStateOf(false) }
@@ -255,7 +255,7 @@ fun SettingsPage(
         }
     }
 
-    // ===== 检查更新状态 =====
+    // 检查更新状态
     var updateState by remember { mutableStateOf<UpdateUiState>(UpdateUiState.Idle) }
     // 胶囊视觉开关：点击「检查更新」后置为 true（亮起），3 秒后自动回关
     var updateChecking by remember { mutableStateOf(false) }
@@ -392,7 +392,7 @@ fun SettingsPage(
             // 无空行直连：权限区后紧跟三个开关项
             SettingsFileBehaviorGroup(appSettings = appSettings)
 
-            // ===== 检查更新 =====
+            // 检查更新
             // 右侧胶囊与权限行一致；点击胶囊/整行触发检查，亮起 3 秒后自动回关
             AuroraArrowPreference(
                 title = "检查更新",
@@ -411,7 +411,7 @@ fun SettingsPage(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // ===== 安全（指令审查 / 拦截）=====
+            // 安全（指令审查 / 拦截）
             // 三个副作用（写 AppSettings / 同步守卫 / Toast）都在父层做回调，本节点纯 UI
             SettingsSecurityGroup(
                 currentLevel = appSettings.securityLevel,
@@ -421,9 +421,9 @@ fun SettingsPage(
                         val next = (appSettings.securityLevel + 1) % 4
                         appSettings.updateSecurityLevel(next)
                         // 档位即时生效
-                        // ① 失效「守卫就绪」缓存，避免 60s TTL 内仍用旧判定；
-                        // ② 切到受保护档位（≥2）时确保守卫已安装（未装则用内置 zip 静默安装）；
-                        // ③ 把档位同步为守卫 policy.conf 的 mode（0→off / 1→log / 2,3→enforce），
+                        // 失效「守卫就绪」缓存，避免 60s TTL 内仍用旧判定；
+                        // 切到受保护档位（≥2）时确保守卫已安装（未装则用内置 zip 静默安装）；
+                        // 把档位同步为守卫 policy.conf 的 mode（0→off / 1→log / 2,3→enforce），
                         //    否则会出现「App 说标准防护、模块实际 mode=off」的口径不一致。
                         GuardModuleInstaller.invalidateReadyCache()
                         scope.launch {
@@ -478,7 +478,7 @@ fun SettingsPage(
         }
     }
 
-    // ===== 审计日志弹窗 =====
+    // 审计日志弹窗
     if (showAuditDialog) {
         AuroraWindowDialog(
             show = true,
@@ -512,7 +512,7 @@ fun SettingsPage(
         }
     }
 
-    // ===== 检查更新结果弹窗（三种结果统一以弹窗呈现）=====
+    // 检查更新结果弹窗（三种结果统一以弹窗呈现）
     when (val s = updateState) {
         UpdateUiState.Idle,
         UpdateUiState.Checking -> {}

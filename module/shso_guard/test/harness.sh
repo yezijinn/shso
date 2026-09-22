@@ -8,7 +8,6 @@
 
 set -u
 # 脚本自带定位：test/ 的父目录即模块目录，避免硬编码仓库绝对路径。
-# （旧版写死迁移前的 .../com.mixradio.droid/shso_guard，9cd74ed 迁移后即失效。）
 SELF="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${ROOT:-$(dirname "$SELF")}"
 GUARD="$ROOT/guard"

@@ -25,7 +25,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /*
- * ============================================================================
  * 两个玻璃修饰符的分工（务必分清，混用会让白度加倍）：
  *
  *   Modifier.auroraGlass(...)  = 填充 + 描边
@@ -40,7 +39,6 @@ import androidx.compose.ui.unit.dp
  * elevation 恒为 0（Material 3 组件默认无阴影）。
  *
  * 形态铁律：禁止任何大圆角，全部直角矩形（RoundedCornerShape(0.dp)）。
- * ============================================================================
  */
 
 /**
