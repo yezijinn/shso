@@ -128,7 +128,7 @@ Aurora 令牌（`AuroraTokens` / `AuroraGlass` / `AuroraComponents`），
 ./gradlew :app:assembleDebug     # Debug 构建
 ./gradlew :app:assembleRelease   # Release 构建，输出 app/build/outputs/apk/
 ./gradlew :app:testDebugUnitTest # 单元测试
-python build_apk.py              # 一键构建：签名 + 版本规则 + 产物内容与体积校验
+python build_apk.py              # 一条命令完成构建：签名 + 版本规则 + 产物内容与体积校验
 ```
 
 产物只打包 `arm64-v8a`（`app/build.gradle.kts` 的 `ndk.abiFilters`）；
