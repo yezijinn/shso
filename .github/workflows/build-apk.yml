@@ -59,6 +59,10 @@ jobs:
 
       - name: 配置 Android SDK
         uses: android-actions/setup-android@v4.0.1
+        with:
+          # 不装已下架的 tools 包（默认会安装它并以 exit 1 失败）；
+          # 平台与 build-tools 由 Gradle 在 assembleRelease 时按已接受的许可自动拉取。
+          packages: platform-tools
 
       - name: 接受 Android SDK 许可
         run: |
