@@ -83,6 +83,24 @@
     （content:// + 各 MIME 均正确列出）、并发唤起竞争（后到者胜）
   - 真机复验：旋转两次收件箱仍 1 份；旋转后编辑器正常关闭（不再回退内容）；数组 stream 正确打开；
     `onNewIntent` 正常；`SEND_MULTIPLE` 被系统列出
+- [x] **第二轮对抗性审查与修复**（同日）：审查范围含上一轮修复本身，真机复现并修复 3 项
+  - `[High/安全]` **外部唤起 APK 静默安装**：`dispatchExternalOpen` 对 `isInstallable` 直接调
+    `startInstall`，ROOT 下走 `pm install` 静默完成、无确认无审计（`ApkInstaller` 对
+    `PolicyEngine`/`RootCommandGateway`/`SecurityAuditLog` 引用全为 False）。文件页手动点击是显式意图，
+    但外部唤起是被动触发 —— 诱导打开即可静默装。修法：新增 `InstallConfirmDialog`，
+    展示来源/文件信息/安装方式，两条路径（外部唤起与动作菜单）统一经此确认
+  - `[Medium]` **旋转丢失确认框**：`pendingExecuteItem` 用 `remember`，旋转重建后静默丢弃；
+    终端页同类状态早已用 `rememberSaveable`（`TASKS.md` 已记「旋转保留待确认高危命令」），文件页遗漏。
+    修法：新增 `FileItemSaver`，执行确认与新增的安装确认都用 `rememberSaveable`
+  - `[Low]` `FilePage` 完全不用 `rememberSaveable`（56 `remember` / 0 `rememberSaveable`）：
+    目录、多选、搜索词、各弹窗旋转即丢。本轮只修高危确认框（其余为既有行为，未扩大范围）
+  - 已证伪（非缺陷）：`documentId` 含 `../` 穿越（被 `isUnsafePath` 兜住）、`file://` 不存在路径
+    （回退内部存储）、BROWSABLE 误列 http 链接（不误列）、前台连续唤起不同文件（正确切换）、
+    进程存活时后台恢复（不重复拷贝）
+  - 存疑未证实：拷贝进行中旋转（`onExternalRequestConsumed` 在拷贝完成后才调用，理论窗口真实存在，
+    但 300MB/900MB 文件均无法抢占，未复现也未证伪）
+  - 真机复验：外部唤起 APK 弹「安装确认」且标注「ROOT 静默安装」；旋转后执行/安装确认框均保留；
+    点「取消」不安装；点「确认安装」真正安装（`com.jinn.inputmethod` 覆盖安装成功）
 
 ### B. 安全后续（未安排）
 

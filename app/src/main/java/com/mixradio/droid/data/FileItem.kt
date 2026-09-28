@@ -3,6 +3,8 @@
 
 package com.mixradio.droid.data
 
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.listSaver
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -145,3 +147,28 @@ data class FileItem(
         private val FILE_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
     }
 }
+
+/**
+ * [FileItem] 的 `rememberSaveable` Saver：把各字段摊平成可放入 Bundle 的列表。
+ *
+ * 用于「待执行 / 待安装」这类必须在配置变更（旋转 / 分屏）后存活的状态 ——
+ * 它们是文件页自身产生的确认流程，属用户显式意图，旋转不应静默丢弃。
+ * 只存已解析出的字段，重建后不会再去读目录，避免依赖列表是否已加载。
+ */
+val FileItemSaver: Saver<FileItem?, Any> = listSaver(
+    save = { item ->
+        if (item == null) emptyList() else listOf(
+            item.name, item.path, item.isDirectory, item.size, item.lastModified, item.permissions
+        )
+    },
+    restore = { values ->
+        if (values.isEmpty()) null else FileItem(
+            name = values[0] as String,
+            path = values[1] as String,
+            isDirectory = values[2] as Boolean,
+            size = values[3] as Long,
+            lastModified = values[4] as Long,
+            permissions = values[5] as String
+        )
+    }
+)
