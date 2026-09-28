@@ -160,7 +160,7 @@
 
 - [x] **外部唤起高优先级缺陷修复**：完成 stat 安全、取消语义与解压预算加固；本轮不操作手机
   - [x] `statFilePath`：单文件 ROOT stat 独立解析完整路径；非法/不存在/失败返回 null，禁止继续动作分派
-  - [/] 外部请求取消：`CancellationException` 透传已完成；仍需给 Hub 消费增加请求令牌校验，防旧 effect 清空后来者
+  - [x] 外部请求取消：`CancellationException` 透传；Hub 使用请求 token 消费，防旧 effect 清空后来者
   - [x] 外部压缩包：总输出 1GB、单条目 512MB、条目数 20000 上限；外部路径复用 `canExtractTo`；失败清理目标目录
   - [!] 安装确认 TOCTOU、安装审计、收件箱去重/清理、文件页全面状态保存列入下一轮，未在本轮扩大范围
   - 验证：309 tests / 0 failures、lint 0 error、Release 载荷红线通过；新增单文件 stat / Hub 令牌 / 解压预算回归测试
