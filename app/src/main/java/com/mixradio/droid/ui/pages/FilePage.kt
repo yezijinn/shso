@@ -83,6 +83,7 @@ import com.mixradio.droid.data.decideExternalAction
 import com.mixradio.droid.data.INTERNAL_STORAGE_LABEL
 import com.mixradio.droid.data.INTERNAL_STORAGE_PATH
 import com.mixradio.droid.data.MoveDestinationConflict
+import com.mixradio.droid.data.computeSha256Strict
 import com.mixradio.droid.data.syntax.SyntaxPackTags
 import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootService
@@ -327,13 +328,21 @@ fun FilePage(
         }
     }
 
-    fun startInstall(item: FileItem) {
+    fun startInstall(
+        item: FileItem,
+        installAsRootOverride: Boolean? = null,
+        confirmedSha256: String? = null
+    ) {
         scope.launch {
             isInstalling = true
             installAlertMessage = null
             installStatusMessage = "正在安装 ${item.name}，请勿重复操作"
             val result = try {
-                if (RootService.isRootGranted == true) {
+                val installAsRoot = installAsRootOverride ?: (RootService.isRootGranted == true)
+                val currentHash = computeSha256Strict(item.path)
+                if (currentHash == null || !currentHash.equals(confirmedSha256, ignoreCase = true)) {
+                    ApkInstaller.InstallResult.Failure("安装包在确认后发生变化，已取消安装")
+                } else if (installAsRoot) {
                     if (item.realExtension == "apk") {
                         ApkInstaller.installApk(context, item.path)
                     } else {
@@ -2025,10 +2034,10 @@ fun FilePage(
         fileItem = pendingInstallItem,
         willInstallAsRoot = RootService.isRootGranted == true,
         onDismiss = { pendingInstallItem = null },
-        onConfirm = {
+        onConfirm = { confirmedSha256, installAsRoot ->
             val target = pendingInstallItem
             pendingInstallItem = null
-            if (target != null) startInstall(target)
+            if (target != null) startInstall(target, installAsRoot, confirmedSha256)
         }
     )
 }

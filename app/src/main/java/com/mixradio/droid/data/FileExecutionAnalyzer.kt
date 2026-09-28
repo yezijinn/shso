@@ -51,6 +51,27 @@ suspend fun analyzeExecution(item: FileItem): ExecutionInfo = withContext(Dispat
     )
 }
 
+/** 用于安装确认的一致性校验：不因文件大小跳过 SHA-256，失败返回 null。 */
+suspend fun computeSha256Strict(path: String): String? = withContext(Dispatchers.IO) {
+    val file = File(path)
+    runCatching {
+        if (file.isFile && file.canRead()) {
+            val digest = MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+            return@runCatching digest.digest().joinToString("") { "%02X".format(it) }
+        }
+        val (_, output) = RootService.runCommandSync("sha256sum " + RootService.escapeShellArg(path))
+        Regex("^\\s*([0-9a-fA-F]{64})").find(output)?.groupValues?.get(1)?.uppercase()
+    }.getOrNull()
+}
+
 /** 本地可读文件：采样前 8KB 做 ELF 魔数 / 空字节 / 可打印比例判定。 */
 private fun detectContentLocal(file: File): Pair<String, String> {
     val buf = ByteArray(8192)
