@@ -55,6 +55,7 @@ shso-main/
         │   ├── ApkExtractor.kt       # 提取已安装应用安装包（纯函数可测）
         │   ├── ArchiveExtractor.kt   # 压缩包解压（防 Zip Slip）
         │   ├── ChunkedFileReader.kt  # 大文件分段读取（128KB 载入阈值 / 32MB 只读上限）
+        │   ├── ExternalOpen.kt       # 外部唤起（打开方式/分享）URI 解析、收件箱拷贝、投递 Hub
         │   ├── AnsiParser.kt         # ANSI/OSC 增量解析（私有模式 / 退格 / 行内擦除）
         │   ├── HyperCore.kt          # banner / 日志批处理（发布节流）/ 滑动窗口 / 环境信息
         │   ├── AppSettings.kt        # 设置状态（shso_settings）
@@ -75,6 +76,26 @@ shso-main/
 - `rootGranted`（ON_RESUME 经 `PermissionChecker.hasRootAccess()` 重查）不拦截任何页面，
   仅影响 DockBar「终端」tab 着色。
 - 页面间跳转（主页 / 文件「执行」→ 终端）通过回调切页实现。
+
+### 外部唤起（open-with / share）
+
+其他应用的「打开方式 / 分享」入口由同一 `MainActivity` 的两个 `activity-alias` 承担
+（`ExternalOpenActivity` / `ExternalLocateActivity`，`MainActivity` 为 `singleTask`）。
+系统选择器按 component 逐行列项，故显示为两行；命中哪个 alias 由 `intent.component` 判定模式。
+
+数据流：`Intent` → `MainActivity.parseExternalRequest`（ACTION_VIEW 取 `data`、
+ACTION_SEND 取 `EXTRA_STREAM`，两者都接受 Uri 与 String）→ `ExternalOpen.resolve`
+（`data/ExternalOpen.kt`，阻塞 IO 走 `Dispatchers.IO`）→ `ExternalOpenHub.pending` → 切文件页 →
+`FilePage` 跳目录 + 高亮 + OPEN 模式分派。
+
+URI 解析分三层：`file://` 直取；`com.android.externalstorage.documents` 解 `documentId`
+（`primary:` → `/storage/emulated/0`）、`com.android.providers.downloads.documents` 解 `raw:`、
+其余查 `_data` 列；都拿不到（不透明 FileProvider，如 QQ）则流式拷贝到
+`Download/shso/` 收件箱后按副本路径处理。
+
+动作分派**复用文件页 `FileItem` 谓词**（`isInstallable` / `isSupportedExecutable` /
+`isViewableImage` / `isEditableText` / `isArchive`），不引入第二套类型分类；
+执行类仍弹 `ExecuteConfirmDialog` 并受安全档位门控。
 
 ### RootService（执行引擎）
 
@@ -222,8 +243,9 @@ python build_apk.py             # Windows 脚本（含 --skip-check）
 |---|---|---|
 | 主页 | `ui/pages/HomePage.kt` | `RootService`、`RootFileManager` |
 | 终端 | `ui/pages/TerminalPage.kt` | `RootService`、`AnsiParser`、`HyperCore` |
-| 文件 | `ui/pages/FilePage.kt` | `RootFileManager`、`ApkInstaller`、`ApkExtractor`、`ArchiveExtractor` |
+| 文件 | `ui/pages/FilePage.kt` | `RootFileManager`、`ApkInstaller`、`ApkExtractor`、`ArchiveExtractor`、`ExternalOpenHub` |
 | 设置 | `ui/pages/SettingsPage.kt`（+ `SettingsPagePartials.kt`） | `AppSettings`、安全子系统 |
+| 外部唤起 | `MainActivity`（两个 alias）+ `data/ExternalOpen.kt` | `ContentResolver`、`ExternalOpenHub` |
 
 ## 安全子系统
 
@@ -271,6 +293,11 @@ python build_apk.py             # Windows 脚本（含 --skip-check）
   状态机五态（Idle / Checking / UpToDate / Available / NetworkError），
   成功源只用于「去更新」跳转（Gitee → `releases/tag/<最新>`，GitHub → `releases`）与日志。
 - **编辑器文件阈值**：`LARGE_FILE_THRESHOLD = 128KB` 是整体载入边界（≤128KB 走 `loadAll`，超过走分块读取以支撑编辑）；`MAX_LOAD_BYTES = 32MB` 是可编辑上限，超过无法全文入 Sora 内存（OOM），退回稀疏只读浏览。
+- **外部 intent 面**：只有两个 `activity-alias`、只接受 `ACTION_VIEW` / `ACTION_SEND`。
+  外部传入的文件**不改变任何防护语义** —— 执行类仍弹风险确认框、仍走 `ScriptAuditor` 与档位门控；
+  拷贝收件箱时文件名经净化（滤 `..`、`\`、NUL 与控制字符）、体积上限 `COPY_LIMIT_BYTES`（512MB），
+  超限拒绝而非读入内存。`content://` 的读权限只在接收 intent 后的短窗口有效，故拷贝必须在解析时立即完成，
+  不能延后到用户点确认。
 
 ## 已知注意点
 

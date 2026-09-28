@@ -1,3 +1,6 @@
 <resources>
     <string name="app_name">shso</string>
+    <!-- 外部唤起（「打开方式 / 分享」菜单）中显示的两项名称 -->
+    <string name="alias_external_open">shso 打开</string>
+    <string name="alias_external_locate">shso 定位所在位置</string>
 </resources>

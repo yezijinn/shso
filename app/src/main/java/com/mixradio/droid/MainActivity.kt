@@ -3,7 +3,10 @@
 
 package com.mixradio.droid
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -32,6 +35,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.mixradio.droid.data.AppSettings
+import com.mixradio.droid.data.ExternalOpen
+import com.mixradio.droid.data.ExternalOpenHub
+import com.mixradio.droid.data.ExternalRequest
+import com.mixradio.droid.data.ExternalRequestParser
+import com.mixradio.droid.data.streamExtraToUri
 import com.mixradio.droid.data.PermissionChecker
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.security.GuardModuleInstaller
@@ -48,9 +56,27 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
+    // 外部唤起（「打开方式」/「分享」）的待处理请求。Intent 本身不可比较，
+    // 故解析为 ExternalRequest（含 URI 字符串）驱动重组。
+    private var externalRequest by mutableStateOf<ExternalRequest?>(null)
+
+    // 已消费标记：配置变更（旋转 / 分屏）会重建 Activity 并重放原始 intent，
+    // 若不加守卫，外部唤起会被**重复处理** —— 表现为收件箱反复拷贝同名副本，
+    // 以及「旋转后编辑器被原始内容重开、用户未保存的编辑被丢弃」。
+    // 用 savedInstanceState 跨重建保持，使一次外部唤起只处理一次。
+    private var externalConsumed = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // 重建（savedInstanceState != null）时不重新解析外部 intent：
+        // 那次唤起在首次创建时已处理过，重建只是恢复 UI。
+        // onNewIntent 仍可覆盖，故真正的「再次唤起」不受影响。
+        externalConsumed = savedInstanceState?.getBoolean(KEY_EXTERNAL_CONSUMED) ?: false
+        if (!externalConsumed) {
+            externalRequest = parseExternalRequest(intent)
+        }
 
         val appSettings = AppSettings.getInstance(this)
         RootService.initSettings(appSettings)
@@ -70,22 +96,89 @@ class MainActivity : ComponentActivity() {
                         .fillMaxSize()
                         .auroraBackground()
                 ) {
-                    AppRootContent(appSettings = appSettings)
+                    AppRootContent(
+                        appSettings = appSettings,
+                        externalRequest = externalRequest,
+                        onExternalRequestConsumed = {
+                            externalRequest = null
+                            externalConsumed = true
+                        }
+                    )
                 }
             }
         }
     }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(KEY_EXTERNAL_CONSUMED, externalConsumed)
+    }
+
+    // singleTask：其他应用再次「打开方式」唤起时复用本实例，走此回调而非新建 Activity
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        parseExternalRequest(intent)?.let {
+            // 新的唤起请求：清掉已消费标记，允许再次处理
+            externalRequest = it
+            externalConsumed = false
+        }
+    }
+
+    private fun parseExternalRequest(intent: Intent?): ExternalRequest? {
+        intent ?: return null
+        // 仅当确实由两个 external alias 唤起时才处理，避免与普通启动混淆
+        if (!ExternalRequestParser.isExternalComponent(intent.component?.className)) return null
+        val uri = resolveIncomingUri(intent) ?: return null
+        return ExternalRequestParser.build(
+            action = intent.action,
+            componentClassName = intent.component?.className,
+            uriString = uri
+        )
+    }
+
+    /**
+     * 采集传入的目标 URI。顺序：`data`（VIEW）→ `EXTRA_STREAM`（SEND）→ `clipData`。
+     * 后两者都要覆盖：真实分享应用对 stream 的类型不统一（Uri / String / ArrayList<Uri>），
+     * 而 Google Photos / Chrome 这类只设 `clipData`、完全不设 `EXTRA_STREAM`。
+     */
+    private fun resolveIncomingUri(intent: Intent): String? {
+        intent.dataString?.takeIf { it.isNotEmpty() }?.let { return it }
+        @Suppress("DEPRECATION")
+        streamExtraToUri(intent.extras?.get(Intent.EXTRA_STREAM))?.let { return it }
+        // clipData 可能含多项（SEND_MULTIPLE），当前只处理第一项
+        intent.clipData?.let { clip ->
+            if (clip.itemCount > 0) return clip.getItemAt(0).uri?.toString()
+        }
+        return null
+    }
+
+    private companion object {
+        const val KEY_EXTERNAL_CONSUMED = "shso_external_consumed"
+    }
 }
 
 @Composable
-fun AppRootContent(appSettings: AppSettings) {
+fun AppRootContent(
+    appSettings: AppSettings,
+    externalRequest: ExternalRequest? = null,
+    onExternalRequestConsumed: () -> Unit = {}
+) {
     // 冷启动直进主页：不执行任何环境检测、不显示启动加载动画与提示文字。
-    MainContainer(appSettings = appSettings)
+    MainContainer(
+        appSettings = appSettings,
+        externalRequest = externalRequest,
+        onExternalRequestConsumed = onExternalRequestConsumed
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun MainContainer(appSettings: AppSettings) {
+fun MainContainer(
+    appSettings: AppSettings,
+    externalRequest: ExternalRequest? = null,
+    onExternalRequestConsumed: () -> Unit = {}
+) {
     val pagerState = rememberPagerState(initialPage = 0, pageCount = { 4 })
     val coroutineScope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -153,6 +246,40 @@ fun MainContainer(appSettings: AppSettings) {
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
         }
+    }
+
+    // 外部唤起：解析 URI → 投递到 Hub → 切到文件页（页面消费后跳目录并高亮）。
+    // 解析是阻塞 IO（不透明 URI 需拷贝），放在 IO 线程。
+    val appContext = LocalContext.current.applicationContext
+    LaunchedEffect(externalRequest) {
+        val request = externalRequest ?: return@LaunchedEffect
+        val resolved = try {
+            ExternalOpen.resolve(appContext, Uri.parse(request.uri))
+        } catch (e: Exception) {
+            ExternalOpen.Resolved.Failed("打开失败：${e.message ?: "未知错误"}")
+        }
+        when (resolved) {
+            is ExternalOpen.Resolved.Real -> {
+                ExternalOpenHub.post(
+                    path = resolved.path,
+                    mode = request.mode,
+                    copied = false
+                )
+                coroutineScope.launch { pagerState.animateScrollToPage(2) }
+            }
+            is ExternalOpen.Resolved.Copied -> {
+                ExternalOpenHub.post(
+                    path = resolved.path,
+                    mode = request.mode,
+                    copied = true
+                )
+                coroutineScope.launch { pagerState.animateScrollToPage(2) }
+            }
+            is ExternalOpen.Resolved.Failed -> {
+                Toast.makeText(appContext, resolved.reason, Toast.LENGTH_LONG).show()
+            }
+        }
+        onExternalRequestConsumed()
     }
 
     Box(

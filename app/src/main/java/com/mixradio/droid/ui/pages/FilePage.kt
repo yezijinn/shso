@@ -71,11 +71,15 @@ import androidx.compose.ui.unit.sp
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.ApkInstaller
 import com.mixradio.droid.data.ArchiveExtractor
+import com.mixradio.droid.data.ExternalMode
+import com.mixradio.droid.data.ExternalOpen
+import com.mixradio.droid.data.ExternalOpenHub
 import com.mixradio.droid.data.FileItem
 import com.mixradio.droid.data.FilePermissionMetadata
 import com.mixradio.droid.data.INTERNAL_STORAGE_LABEL
 import com.mixradio.droid.data.INTERNAL_STORAGE_PATH
 import com.mixradio.droid.data.MoveDestinationConflict
+import com.mixradio.droid.data.PendingExternalOpen
 import com.mixradio.droid.data.syntax.SyntaxPackTags
 import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootService
@@ -111,6 +115,10 @@ fun FilePage(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // 外部唤起（「打开方式 / 分享」）待处理目标：由 ExternalOpenHub 投递。
+    // 直接订阅单槽位，定位完成后由 Hub 清空；配置变更不会重投（MainActivity 侧已守卫）。
+    val externalTarget = ExternalOpenHub.pending
 
     // 记忆操作路径：开启时沿用进程内记住的上次目录（无效则回退初始目录），关闭时恒为初始目录
     val initialDirectory = if (appSettings.rememberDirectory) {
@@ -282,6 +290,140 @@ fun FilePage(
                 RootFileManager.rememberedDirectory = INTERNAL_STORAGE_PATH
             }
         }
+    }
+
+    // 外部唤起目标落点（由 ExternalOpenHub 投递）：跳目录 + 高亮；OPEN 模式再按类型启动对应动作。
+    // highlightPath 仅用于视觉定位，切目录或用户点击后清空。
+    var highlightPath by remember { mutableStateOf<String?>(null) }
+    var pendingOpenDispatch by remember { mutableStateOf<PendingExternalOpen?>(null) }
+
+    // ===== 单文件动作体：抽为局部函数，供动作菜单与「外部唤起」共用（不产生第二条执行路径）=====
+
+    // 自动解压到当前目录
+    fun startExtract(item: FileItem) {
+        scope.launch {
+            isExtracting = true
+            val result = ArchiveExtractor.extract(archivePath = item.path, targetParent = currentDirectory)
+            isExtracting = false
+            when (result) {
+                is ArchiveExtractor.ExtractResult.Success ->
+                    feedbackMessage = "已解压到: ${result.targetDir}"
+                is ArchiveExtractor.ExtractResult.NeedPassword -> {
+                    extractTargetItem = item
+                    extractPasswordInput = ""
+                    showExtractPasswordDialog = true
+                }
+                is ArchiveExtractor.ExtractResult.Failure ->
+                    feedbackMessage = result.message
+            }
+            refresh()
+        }
+    }
+
+    fun startInstall(item: FileItem) {
+        scope.launch {
+            isInstalling = true
+            installAlertMessage = null
+            installStatusMessage = "正在安装 ${item.name}，请勿重复操作"
+            val result = try {
+                if (RootService.isRootGranted == true) {
+                    if (item.realExtension == "apk") {
+                        ApkInstaller.installApk(context, item.path)
+                    } else {
+                        ApkInstaller.installXapk(context, item.path)
+                    }
+                } else {
+                    if (item.realExtension == "apk") {
+                        if (ApkInstaller.collectApkSet(context, item.path).isSplit) {
+                            ApkInstaller.InstallResult.Failure(
+                                "该应用为分包应用，无 ROOT 时无法整套安装；请将同目录的 base 与 -splitN 文件一并交给 SAI / MT 管理器安装"
+                            )
+                        } else {
+                            ApkInstaller.installApkViaSystem(context, item.path)
+                        }
+                    } else {
+                        ApkInstaller.InstallResult.Failure("XAPK 分片安装需 ROOT 静默权限，请先授权 ROOT")
+                    }
+                }
+            } catch (e: Exception) {
+                ApkInstaller.InstallResult.Failure("安装失败: ${e.message ?: "未知错误"}")
+            }
+            isInstalling = false
+            val resultMessage = when (result) {
+                is ApkInstaller.InstallResult.Success -> result.message
+                is ApkInstaller.InstallResult.Failure -> result.message
+            }
+            installAlertMessage = when (result) {
+                is ApkInstaller.InstallResult.Success -> "安装完成：$resultMessage"
+                is ApkInstaller.InstallResult.Failure -> "安装失败：$resultMessage"
+            }
+            feedbackMessage = resultMessage
+        }
+    }
+
+    fun openImageViewer(item: FileItem) {
+        val imageList = displayFileList.filter { it.isViewableImage }.map { it.path }
+        val idx = imageList.indexOf(item.path).coerceAtLeast(0)
+        viewerImageList = imageList
+        viewerImageIndex = idx
+        showImageViewerDialog = true
+    }
+
+    fun openTextEditor(item: FileItem) {
+        viewerTargetItem = item
+        showTextEditorDialog = true
+    }
+
+    /**
+     * 外部唤起（OPEN 模式）按类型启动：判定条件与文件页动作菜单同源（同一批 FileItem 谓词），
+     * 不引入第二套分类逻辑。执行类不直接执行，而是弹既有的风险确认框；无匹配入口则退回动作菜单。
+     */
+    fun dispatchExternalOpen(item: FileItem) {
+        when {
+            item.isInstallable -> startInstall(item)
+            item.isSupportedExecutable -> pendingExecuteItem = item
+            item.isViewableImage -> openImageViewer(item)
+            item.isEditableText -> openTextEditor(item)
+            item.isArchive -> startExtract(item)
+            else -> {
+                selectedItem = item
+                showActionDialog = true
+            }
+        }
+    }
+
+    LaunchedEffect(externalTarget) {
+        val target = externalTarget ?: return@LaunchedEffect
+        // 收件箱副本先给一次提示：文件已复制到 Download/shso，与原位置不同
+        if (target.copiedFromExternal) {
+            feedbackMessage = "已将文件复制到 ${ExternalOpen.INBOX_DIR}"
+        }
+        val parent = File(target.path).parent ?: INTERNAL_STORAGE_PATH
+        highlightPath = target.path
+        // 关闭任何停留的旧弹窗，避免遮挡定位结果
+        showActionDialog = false
+        selectedItem = null
+        multiSelectMode = false
+        selectedPaths.clear()
+        currentDirectory = parent
+        // OPEN 模式：等目录列表刷新完成后再按类型分派动作
+        if (target.mode == ExternalMode.OPEN) pendingOpenDispatch = target
+        ExternalOpenHub.consume()
+    }
+
+    // 待高亮文件出现在列表且列表已组合后再滚动；用 key 定位而非下标，避免排序/过滤后错位
+    LaunchedEffect(highlightPath, displayFileList) {
+        val path = highlightPath ?: return@LaunchedEffect
+        val index = displayFileList.indexOfFirst { it.path == path }
+        if (index >= 0) listState.scrollToItem(index)
+    }
+
+    LaunchedEffect(pendingOpenDispatch, displayFileList) {
+        val target = pendingOpenDispatch ?: return@LaunchedEffect
+        // 唤起时列表可能尚未含该文件（外部副本刚落盘）：等它出现再分派
+        val item = displayFileList.firstOrNull { it.path == target.path } ?: return@LaunchedEffect
+        pendingOpenDispatch = null
+        dispatchExternalOpen(item)
     }
 
     LaunchedEffect(currentDirectory) {
@@ -640,11 +782,14 @@ fun FilePage(
 
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 val isSelected = multiSelectMode && selectedPaths.contains(item.path)
+                                // 外部唤起定位：命中行加强调色底，便于一眼找到
+                                val isHighlighted = item.path == highlightPath
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .combinedClickable(
                                             onClick = {
+                                                if (isHighlighted) highlightPath = null
                                                 if (item.isDirectory) {
                                                     // 文件夹：非多选模式单击进入；多选模式文件夹不参与选择
                                                     if (!multiSelectMode) currentDirectory = item.path
@@ -661,6 +806,7 @@ fun FilePage(
                                                 }
                                             },
                                             onLongClick = {
+                                                if (isHighlighted) highlightPath = null
                                                 if (item.isDirectory) {
                                                     // 文件夹长按：始终弹动作菜单
                                                     selectedItem = item
@@ -677,7 +823,13 @@ fun FilePage(
                                                 }
                                             }
                                         )
-                                        .background(if (isSelected) AuroraTokens.Accent.copy(alpha = 0.16f) else Color.Transparent)
+                                        .background(
+                                            when {
+                                                isSelected -> AuroraTokens.Accent.copy(alpha = 0.16f)
+                                                isHighlighted -> AuroraTokens.Accent.copy(alpha = 0.22f)
+                                                else -> Color.Transparent
+                                            }
+                                        )
                                         .padding(horizontal = 16.dp, vertical = 0.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -998,81 +1150,20 @@ fun FilePage(
                         enabled = !isExtracting && canExtract
                     ) {
                         showActionDialog = false
-                        scope.launch {
-                            isExtracting = true
-                            val result = ArchiveExtractor.extract(
-                                archivePath = item.path,
-                                targetParent = currentDirectory
-                            )
-                            isExtracting = false
-                            when (result) {
-                                is ArchiveExtractor.ExtractResult.Success ->
-                                    feedbackMessage = "已解压到: ${result.targetDir}"
-                                is ArchiveExtractor.ExtractResult.NeedPassword -> {
-                                    // 弹出密码输入框，用户输入后重试
-                                    extractTargetItem = item
-                                    extractPasswordInput = ""
-                                    showExtractPasswordDialog = true
-                                }
-                                is ArchiveExtractor.ExtractResult.Failure ->
-                                    feedbackMessage = result.message
-                            }
-                            refresh()
-                        }
+                        startExtract(item)
                     }
                 }
 
                 // 安装 APK/XAPK：普通用户即可安装（无 ROOT 走系统安装器），
                 // 仅当授权 ROOT 时优先走静默安装；用 realExtension 兼容 .1 尾缀
                 if (item.isInstallable) {
-                    val rootGranted = RootService.isRootGranted == true
                     ActionTextRow(
                         label = if (isInstalling) "正在安装…" else "安装 APK/XAPK",
                         color = AuroraTokens.Accent,
                         enabled = !isInstalling
                     ) {
                         showActionDialog = false
-                        scope.launch {
-                            isInstalling = true
-                            installAlertMessage = null
-                            installStatusMessage = "正在安装 ${item.name}，请勿重复操作"
-                            val result = try {
-                                if (rootGranted) {
-                                    if (item.realExtension == "apk") {
-                                        // 同目录存在分包时自动改装整套（会话安装）
-                                        ApkInstaller.installApk(context, item.path)
-                                    } else {
-                                        ApkInstaller.installXapk(context, item.path)
-                                    }
-                                } else {
-                                    if (item.realExtension == "apk") {
-                                        // 无 ROOT 无法走会话安装：若识别出是分包套件，给出明确指引，
-                                        // 而不是把 base 交给系统安装器后报一个看不懂的 MISSING_SPLIT
-                                        if (ApkInstaller.collectApkSet(context, item.path).isSplit) {
-                                            ApkInstaller.InstallResult.Failure(
-                                                "该应用为分包应用，无 ROOT 时无法整套安装；请将同目录的 base 与 -splitN 文件一并交给 SAI / MT 管理器安装"
-                                            )
-                                        } else {
-                                            ApkInstaller.installApkViaSystem(context, item.path)
-                                        }
-                                    } else {
-                                        ApkInstaller.InstallResult.Failure("XAPK 分片安装需 ROOT 静默权限，请先授权 ROOT")
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                ApkInstaller.InstallResult.Failure("安装失败: ${e.message ?: "未知错误"}")
-                            }
-                            isInstalling = false
-                            val resultMessage = when (result) {
-                                is ApkInstaller.InstallResult.Success -> result.message
-                                is ApkInstaller.InstallResult.Failure -> result.message
-                            }
-                            installAlertMessage = when (result) {
-                                is ApkInstaller.InstallResult.Success -> "安装完成：$resultMessage"
-                                is ApkInstaller.InstallResult.Failure -> "安装失败：$resultMessage"
-                            }
-                            feedbackMessage = resultMessage
-                        }
+                        startInstall(item)
                     }
                 }
 
@@ -1080,14 +1171,7 @@ fun FilePage(
                 if (item.isViewableImage) {
                     ActionTextRow("浏览图片", AuroraTokens.AccentViolet) {
                         showActionDialog = false
-                        // 收集当前目录所有可浏览图片路径，定位当前项索引
-                        val imageList = displayFileList
-                            .filter { it.isViewableImage }
-                            .map { it.path }
-                        val idx = imageList.indexOf(item.path).coerceAtLeast(0)
-                        viewerImageList = imageList
-                        viewerImageIndex = idx
-                        showImageViewerDialog = true
+                        openImageViewer(item)
                     }
                 }
 
@@ -1095,8 +1179,7 @@ fun FilePage(
                 if (item.isEditableText) {
                     ActionTextRow("编辑文本", AuroraTokens.AccentViolet) {
                         showActionDialog = false
-                        viewerTargetItem = item
-                        showTextEditorDialog = true
+                        openTextEditor(item)
                     }
                 }
 

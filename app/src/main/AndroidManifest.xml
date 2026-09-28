@@ -35,9 +35,12 @@
         android:requestLegacyExternalStorage="true"
         tools:targetApi="35">
 
+        <!-- singleTask：其他应用「打开方式 / 分享」再次唤起时复用同一实例（走 onNewIntent），
+             不再堆叠新的 MainActivity。 -->
         <activity
             android:name="com.mixradio.droid.MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.shso">
             <intent-filter>
@@ -45,6 +48,69 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 外部唤起入口：同一 MainActivity 的两个 alias。
+             系统「打开方式」按 component 逐行列项，故两个 alias 会显示为两行
+             （「shso 打开」/「shso 定位所在位置」）。命中哪个 alias 由 intent.component 判定。
+             MIME 为「精选 + octet-stream」：QQ 等下载器常把 APK 标成 octet-stream，
+             只列精确类型会导致 shso 不出现。 -->
+        <activity-alias
+            android:name="com.mixradio.droid.ExternalOpenActivity"
+            android:targetActivity="com.mixradio.droid.MainActivity"
+            android:exported="true"
+            android:label="@string/alias_external_open">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="application/vnd.android.package-archive" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-7z-compressed" />
+                <data android:mimeType="application/x-tar" />
+                <data android:mimeType="application/gzip" />
+                <data android:mimeType="application/x-gzip" />
+                <data android:mimeType="application/x-xz" />
+                <data android:mimeType="application/x-bzip2" />
+                <data android:mimeType="application/x-lz4" />
+                <data android:mimeType="application/json" />
+                <data android:mimeType="application/xml" />
+                <data android:mimeType="application/x-sh" />
+                <data android:mimeType="text/*" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name="com.mixradio.droid.ExternalLocateActivity"
+            android:targetActivity="com.mixradio.droid.MainActivity"
+            android:exported="true"
+            android:label="@string/alias_external_locate">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="application/vnd.android.package-archive" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-7z-compressed" />
+                <data android:mimeType="application/x-tar" />
+                <data android:mimeType="application/gzip" />
+                <data android:mimeType="application/x-gzip" />
+                <data android:mimeType="application/x-xz" />
+                <data android:mimeType="application/x-bzip2" />
+                <data android:mimeType="application/x-lz4" />
+                <data android:mimeType="application/json" />
+                <data android:mimeType="application/xml" />
+                <data android:mimeType="application/x-sh" />
+                <data android:mimeType="text/*" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+        </activity-alias>
 
         <!-- 命令执行的前台保活服务：切后台后维持进程前台优先级，长脚本/下载/编译可持续运行 -->
         <service

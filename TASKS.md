@@ -18,8 +18,8 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，HEAD `a379c4d`，与 `origin/main` 同步（终端专项 + CI 时区修复） |
-| 单元测试 | 277 tests / 0 failures |
+| 分支 | `main`，与 `origin/main` 同步 |
+| 单元测试 | 289 tests / 0 failures / 1 skipped |
 | release 体积 | 2.09 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
 | 编辑器内核 | Sora Editor 0.23.6（打开即可编辑；语法由外置语法包提供） |
@@ -52,6 +52,37 @@
   - 目标：操作中显示「处理中 N/M」并可取消；失败项汇总提示
 - [ ] 检查更新改用 GitHub API（低）：现用 `yezijinn/shso/tags` 页面 HTML 正则，页面结构变动即失效
 - [ ] 图标按钮补 `contentDescription`（低）：文字按钮已自带语义，仅图标按钮受影响
+
+### A2. 外部唤起（2026-09-28 完成）
+
+- [x] **从其他 APP 唤起 shso 处理文件**（高）：其他应用「打开方式 / 分享」菜单出现 shso，
+  点击后启动并定位到文件所在目录，OPEN 模式按类型自动执行
+  - 入口：`MainActivity`（`singleTask`）+ 两个 `activity-alias`：`ExternalOpenActivity`（label「shso 打开」）、
+    `ExternalLocateActivity`（label「shso 定位所在位置」），各自注册 `ACTION_VIEW` + `ACTION_SEND` +
+    `ACTION_SEND_MULTIPLE`；MIME 取「精选 + `application/octet-stream`」（QQ 下载常标 octet-stream）
+  - URI 采集：`data` → `EXTRA_STREAM`（覆盖 `Uri` / `CharSequence` / `List` / 数组）→ `clipData`
+  - URI 解析（`data/ExternalOpen.kt`）：`file://` 直取；`externalstorage` 解 `documentId`（`primary:` →
+    `/storage/emulated/0`）、`downloads` 解 `raw:`；其余查 `_data` 列；不透明 FileProvider
+    流式拷贝到 `/sdcard/Download/shso/` 收件箱后按副本路径处理
+  - 动作分派复用文件页 `FileItem` 谓词（不引入第二套分类）：安装 / 执行（弹确认框）/ 看图 / 编辑 / 解压 /
+    退回动作菜单；文件页内动作体抽为 `startInstall` / `startExtract` / `openImageViewer` /
+    `openTextEditor` 局部函数，动作菜单与外部唤起共用
+  - 文件页新增 `highlightPath` 定位高亮 + 滚动，命中行用 `Accent.copy(0.22f)` 底
+  - 安全：不因外部传入跳过确认框与档位门控；文件名净化滤 `..`/`\`/NUL/控制字符；拷贝上限 512MB
+  - 验证：单测 293 / 0 failures（`ExternalOpenTest` 16 例）；`lintDebug` 0 error；真机实测见下
+- [x] **外部唤起对抗性审查与修复**（同日）：对上述改动做 7 维度 BUG 挖掘，真机复现并修复 5 项
+  - `[Critical]` **重建重复处理**：配置变更重放 intent → 收件箱重复拷贝（旋转两次得 3 份）、
+    编辑器被原始内容重开且未保存编辑被丢弃。修法：`savedInstanceState` 记录「已消费」，
+    重建时不重解析；`onNewIntent` 清除标记，真实再次唤起不受影响
+  - `[Major]` `EXTRA_STREAM` 为 `ArrayList` / 数组时 `toString()` 出方括号 → 解析失败静默退回主页。
+    修法：`streamExtraToUri` 顶层纯函数，覆盖 `Uri`/`List`/数组/`CharSequence`
+  - `[Major]` 未读 `clipData`（Google Photos / Chrome 只设 clipData）→ 已补
+  - `[Minor]` 未注册 `ACTION_SEND_MULTIPLE` → 已补（多文件取首个）
+  - 清理死字段：`PendingExternalOpen.token` / `displayName`、`ExternalRequest.mimeType`（均无消费方）
+  - 已证伪（非缺陷）：`file://` 路径穿越（被 `isUnsafePath` 兜住）、intent-filter 匹配
+    （content:// + 各 MIME 均正确列出）、并发唤起竞争（后到者胜）
+  - 真机复验：旋转两次收件箱仍 1 份；旋转后编辑器正常关闭（不再回退内容）；数组 stream 正确打开；
+    `onNewIntent` 正常；`SEND_MULTIPLE` 被系统列出
 
 ### B. 安全后续（未安排）
 
