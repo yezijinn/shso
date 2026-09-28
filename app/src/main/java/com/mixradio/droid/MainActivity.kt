@@ -133,7 +133,9 @@ class MainActivity : ComponentActivity() {
         return ExternalRequestParser.build(
             action = intent.action,
             componentClassName = intent.component?.className,
-            uriString = uri
+            uriString = uri,
+            // 发送方声明的 MIME：无扩展名文件（相册临时文件）靠它区分图片/文本
+            mimeType = intent.type
         )
     }
 
@@ -263,6 +265,7 @@ fun MainContainer(
                 ExternalOpenHub.post(
                     path = resolved.path,
                     mode = request.mode,
+                    mimeType = request.mimeType,
                     copied = false
                 )
                 coroutineScope.launch { pagerState.animateScrollToPage(2) }
@@ -271,6 +274,7 @@ fun MainContainer(
                 ExternalOpenHub.post(
                     path = resolved.path,
                     mode = request.mode,
+                    mimeType = request.mimeType,
                     copied = true
                 )
                 coroutineScope.launch { pagerState.animateScrollToPage(2) }

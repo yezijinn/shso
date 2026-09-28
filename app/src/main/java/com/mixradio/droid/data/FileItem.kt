@@ -99,8 +99,10 @@ data class FileItem(
     /**
      * 无扩展名（`Dockerfile`、`Makefile`、`hosts`、`crontab`）或点开头的隐藏配置（`.gitignore`）
      * 按文本处理——这类文件在扩展名白名单里查不到，但绝大多数是纯文本。
+     *
+     * 对外可见：外部唤起需要据此判断「谓词无法区分类型、应以 MIME 为准」。
      */
-    private val isExtensionlessText: Boolean
+    val isExtensionlessText: Boolean
         get() {
             if (isDirectory) return false
             val dots = name.count { it == '.' }
