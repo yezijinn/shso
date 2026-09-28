@@ -29,13 +29,16 @@ enum class ExternalMode { OPEN, LOCATE }
 /**
  * 唤起后待处理的目标，经 [ExternalOpenHub] 从 MainActivity 投递到 FilePage。
  *
- * 不携带动作类型：OPEN 模式的动作由 FilePage 依 [FileItem] 现有的
- * `isInstallable` / `isSupportedExecutable` / `isViewableImage` / `isEditableText` / `isArchive`
- * 判定，与文件页动作菜单同源，避免第二套分类逻辑与之一致性漂移。
+ * 动作由 FilePage 依 [FileItem] 现有的 `isInstallable` / `isSupportedExecutable` /
+ * `isViewableImage` / `isEditableText` / `isArchive` 判定，与文件页动作菜单同源；
+ * 这些谓词**只看扩展名**，对无扩展名文件无法区分类型（如相册分享的临时图片），
+ * 故额外携带 [mimeType] 作兜底。
  */
 data class PendingExternalOpen(
     val path: String,
     val mode: ExternalMode,
+    /** 发送方声明的 MIME（可空）；扩展名无法判定时用它兜底。 */
+    val mimeType: String?,
     /** 是否来自不透明 URI 的收件箱副本（用于提示用户实际位置与来源不同）。 */
     val copiedFromExternal: Boolean
 )
@@ -43,7 +46,8 @@ data class PendingExternalOpen(
 /** Activity 层解析出的原始请求；只含字符串，便于 JVM 单测（不触碰 Uri / Context）。 */
 data class ExternalRequest(
     val uri: String,
-    val mode: ExternalMode
+    val mode: ExternalMode,
+    val mimeType: String?
 )
 
 /**
@@ -67,16 +71,18 @@ object ExternalRequestParser {
 
     /**
      * @param uriString 已由 Activity 层从 data / EXTRA_STREAM / clipData 采集到的目标 URI
+     * @param mimeType  Intent 声明的 MIME（`Intent.type`），用于扩展名无法判定时兜底
      * @return 非受支持动作、非外部组件或缺少 URI 时返回 null
      */
     fun build(
         action: String?,
         componentClassName: String?,
-        uriString: String?
+        uriString: String?,
+        mimeType: String? = null
     ): ExternalRequest? {
         if (action !in SUPPORTED_ACTIONS) return null
         val uri = uriString?.takeIf { it.isNotEmpty() } ?: return null
-        return ExternalRequest(uri, modeForComponent(componentClassName))
+        return ExternalRequest(uri, modeForComponent(componentClassName), mimeType)
     }
 }
 
@@ -107,12 +113,66 @@ object ExternalOpenHub {
     var pending by mutableStateOf<PendingExternalOpen?>(null)
         private set
 
-    fun post(path: String, mode: ExternalMode, copied: Boolean) {
-        pending = PendingExternalOpen(path, mode, copied)
+    fun post(path: String, mode: ExternalMode, mimeType: String?, copied: Boolean) {
+        pending = PendingExternalOpen(path, mode, mimeType, copied)
     }
 
     fun consume() {
         pending = null
+    }
+}
+
+/**
+ * 外部唤起（OPEN 模式）的动作。`BROWSE` 表示无法判定，退回定位 + 动作菜单。
+ */
+enum class ExternalAction { INSTALL, EXECUTE, VIEW_IMAGE, EDIT_TEXT, EXTRACT, BROWSE }
+
+/** MIME → 动作；无法判定返回 null。发送方给的 MIME 可能不准，故只作兜底。 */
+fun actionForMimeType(mimeType: String?): ExternalAction? = when {
+    mimeType.isNullOrBlank() -> null
+    mimeType.startsWith("image/", ignoreCase = true) -> ExternalAction.VIEW_IMAGE
+    mimeType.startsWith("text/", ignoreCase = true) -> ExternalAction.EDIT_TEXT
+    mimeType.equals("application/json", ignoreCase = true) || mimeType.endsWith("+json", ignoreCase = true) ->
+        ExternalAction.EDIT_TEXT
+    mimeType.equals("application/xml", ignoreCase = true) -> ExternalAction.EDIT_TEXT
+    mimeType.equals("application/vnd.android.package-archive", ignoreCase = true) -> ExternalAction.INSTALL
+    mimeType.contains("zip", ignoreCase = true) ||
+        mimeType.contains("tar", ignoreCase = true) ||
+        mimeType.contains("compress", ignoreCase = true) -> ExternalAction.EXTRACT
+    else -> null
+}
+
+/**
+ * 决定外部唤起后的动作（纯函数，便于单测）。
+ *
+ * **有扩展名**：完全按扩展名谓词（与文件页动作菜单同源，发送方的 MIME 可能不准）。
+ * **无扩展名**：谓词无法区分类型（`isEditableText` 对无扩展名恒真），此时以 MIME 为准；
+ * MIME 也无结论才退回「按文本」——沿用无扩展名 = 文本的既有语义。
+ *
+ * 存在的理由：相册 / 分享应用常给出**无扩展名**的临时文件。不像 MIME 分流的话，
+ * 一张 `image/png` 无扩展名图片会走 `isEditableText` 被当文本打开（用户看到一堆乱码）。
+ */
+fun decideExternalAction(
+    isExtensionless: Boolean,
+    isInstallable: Boolean,
+    isSupportedExecutable: Boolean,
+    isViewableImage: Boolean,
+    isEditableText: Boolean,
+    isArchive: Boolean,
+    mimeType: String?
+): ExternalAction {
+    if (isExtensionless) {
+        // 无扩展名：安装 / 执行不受影响（谓词本就依赖扩展名，此处必为假），以 MIME 为准
+        return actionForMimeType(mimeType) ?: ExternalAction.EDIT_TEXT
+    }
+    return when {
+        isInstallable -> ExternalAction.INSTALL
+        isSupportedExecutable -> ExternalAction.EXECUTE
+        isViewableImage -> ExternalAction.VIEW_IMAGE
+        isEditableText -> ExternalAction.EDIT_TEXT
+        isArchive -> ExternalAction.EXTRACT
+        // 扩展名未知：尽力用 MIME，仍无结论退回定位 + 动作菜单
+        else -> actionForMimeType(mimeType) ?: ExternalAction.BROWSE
     }
 }
 

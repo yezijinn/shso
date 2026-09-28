@@ -73,11 +73,13 @@ import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.ApkInstaller
 import com.mixradio.droid.data.ArchiveExtractor
 import com.mixradio.droid.data.ExternalMode
+import com.mixradio.droid.data.ExternalAction
 import com.mixradio.droid.data.ExternalOpen
 import com.mixradio.droid.data.ExternalOpenHub
 import com.mixradio.droid.data.FileItem
 import com.mixradio.droid.data.FileItemSaver
 import com.mixradio.droid.data.FilePermissionMetadata
+import com.mixradio.droid.data.decideExternalAction
 import com.mixradio.droid.data.INTERNAL_STORAGE_LABEL
 import com.mixradio.droid.data.INTERNAL_STORAGE_PATH
 import com.mixradio.droid.data.MoveDestinationConflict
@@ -369,7 +371,13 @@ fun FilePage(
     }
 
     fun openImageViewer(item: FileItem) {
-        val imageList = displayFileList.filter { it.isViewableImage }.map { it.path }
+        // 相册左右滑动列表：按扩展名收集同目录图片。
+        // 但目标本身可能**无扩展名**（外部唤起时依 MIME 判定为图片），
+        // 它不在 isViewableImage 集合里，必须显式并入，否则列表为空、对话框渲染条件不成立。
+        val imageList = buildList {
+            displayFileList.filter { it.isViewableImage }.forEach { add(it.path) }
+            if (none { it == item.path }) add(item.path)
+        }
         val idx = imageList.indexOf(item.path).coerceAtLeast(0)
         viewerImageList = imageList
         viewerImageIndex = idx
@@ -382,18 +390,26 @@ fun FilePage(
     }
 
     /**
-     * 外部唤起（OPEN 模式）按类型启动：判定条件与文件页动作菜单同源（同一批 FileItem 谓词），
-     * 不引入第二套分类逻辑。执行类与安装类都不直接动作，而是弹既有/新增的确认框；
-     * 无匹配入口则退回动作菜单。
+     * 外部唤起（OPEN 模式）按类型启动。有扩展名时判定条件与文件页动作菜单同源；
+     * 无扩展名（相册临时文件）时以发送方 MIME 兜底，避免把图片当文本打开。
+     * 执行类与安装类都不直接动作，而是弹确认框；无法判定则退回动作菜单。
      */
-    fun dispatchExternalOpen(item: FileItem) {
-        when {
-            item.isInstallable -> pendingInstallItem = item
-            item.isSupportedExecutable -> pendingExecuteItem = item
-            item.isViewableImage -> openImageViewer(item)
-            item.isEditableText -> openTextEditor(item)
-            item.isArchive -> startExtract(item)
-            else -> {
+    fun dispatchExternalOpen(item: FileItem, mimeType: String?) {
+        when (decideExternalAction(
+            isExtensionless = item.isExtensionlessText,
+            isInstallable = item.isInstallable,
+            isSupportedExecutable = item.isSupportedExecutable,
+            isViewableImage = item.isViewableImage,
+            isEditableText = item.isEditableText,
+            isArchive = item.isArchive,
+            mimeType = mimeType
+        )) {
+            ExternalAction.INSTALL -> pendingInstallItem = item
+            ExternalAction.EXECUTE -> pendingExecuteItem = item
+            ExternalAction.VIEW_IMAGE -> openImageViewer(item)
+            ExternalAction.EDIT_TEXT -> openTextEditor(item)
+            ExternalAction.EXTRACT -> startExtract(item)
+            ExternalAction.BROWSE -> {
                 selectedItem = item
                 showActionDialog = true
             }
@@ -431,7 +447,7 @@ fun FilePage(
         // 唤起时列表可能尚未含该文件（外部副本刚落盘）：等它出现再分派
         val item = displayFileList.firstOrNull { it.path == target.path } ?: return@LaunchedEffect
         pendingOpenDispatch = null
-        dispatchExternalOpen(item)
+        dispatchExternalOpen(item, target.mimeType)
     }
 
     LaunchedEffect(currentDirectory) {
