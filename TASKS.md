@@ -188,6 +188,14 @@
 - [ ] **APK 安装审计**：记录来源、确认哈希、安装模式、开始/结果/失败原因
 - 验证：310 tests / 0 failures、lint 0 error、Release 载荷红线通过；新增完整 SHA-256 回归测试
 
+### A6. 外部动作与取消语义修复（已完成）
+
+- [x] **外部压缩包不再自动写盘**：OPEN 模式只定位并弹文件动作菜单，用户明确点击解压后才执行，
+  保留资源预算与可写性检查
+- [x] **取消语义收口**：ArchiveExtractor / ApkInstaller / FilePage 安装任务的 `CancellationException`
+  必须透传，不转成普通失败、不继续写 Compose 状态
+- 验证：310 tests / 0 failures、lint 0 error、Release 载荷红线通过；不操作手机
+
 ### A5. 第七轮全面 BUG 审查（静态审查，未操作手机）
 
 - [!] 新发现待处理项：

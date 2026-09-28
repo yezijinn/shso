@@ -4,6 +4,7 @@
 package com.mixradio.droid.data
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import net.lingala.zip4j.ZipFile as Zip4jFile
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
@@ -239,6 +240,8 @@ object ArchiveExtractor {
                 budget.beginEntry()
                 openDecompress(archivePath).use { input -> copyStream(input, targetFile, budget) }
                 ExtractResult.Success(targetFile.absolutePath)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 runCatching { targetFile?.delete() }
                 ExtractResult.Failure("解压失败: ${e.message ?: e.javaClass.simpleName}")
@@ -298,6 +301,8 @@ object ArchiveExtractor {
                     result
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             ExtractResult.Failure("解压失败: ${e.message ?: e.javaClass.simpleName}")
         }
@@ -342,6 +347,8 @@ object ArchiveExtractor {
                     dest.parentFile?.mkdirs()
                     try {
                         zip.getInputStream(h).use { input -> copyStream(input, dest, budget) }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         dest.delete()
                         val msg = e.message ?: ""
@@ -353,6 +360,8 @@ object ArchiveExtractor {
                 }
             }
             ExtractResult.Success(target)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             val msg = e.message ?: ""
             if (msg.contains("password", ignoreCase = true) || msg.contains("Wrong Password", ignoreCase = true) || msg.contains("Invalid password", ignoreCase = true)) {
@@ -381,6 +390,8 @@ object ArchiveExtractor {
                 }
             }
             ExtractResult.Success(target)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             ExtractResult.Failure(e.message ?: "TAR 解压异常")
         }
@@ -420,6 +431,8 @@ object ArchiveExtractor {
                 }
             }
             ExtractResult.Success(target)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             val msg = e.message ?: ""
             if (msg.contains("password", ignoreCase = true)) {
