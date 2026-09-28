@@ -83,7 +83,6 @@ import com.mixradio.droid.data.decideExternalAction
 import com.mixradio.droid.data.INTERNAL_STORAGE_LABEL
 import com.mixradio.droid.data.INTERNAL_STORAGE_PATH
 import com.mixradio.droid.data.MoveDestinationConflict
-import com.mixradio.droid.data.PendingExternalOpen
 import com.mixradio.droid.data.syntax.SyntaxPackTags
 import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootService
@@ -301,10 +300,9 @@ fun FilePage(
         }
     }
 
-    // 外部唤起目标落点（由 ExternalOpenHub 投递）：跳目录 + 高亮；OPEN 模式再按类型启动对应动作。
+    // 外部唤起目标落点（由 ExternalOpenHub 投递）：跳目录 + 高亮；OPEN 模式按类型分派动作。
     // highlightPath 仅用于视觉定位，切目录或用户点击后清空。
     var highlightPath by remember { mutableStateOf<String?>(null) }
-    var pendingOpenDispatch by remember { mutableStateOf<PendingExternalOpen?>(null) }
 
     // ===== 单文件动作体：抽为局部函数，供动作菜单与「外部唤起」共用（不产生第二条执行路径）=====
 
@@ -430,8 +428,13 @@ fun FilePage(
         multiSelectMode = false
         selectedPaths.clear()
         currentDirectory = parent
-        // OPEN 模式：等目录列表刷新完成后再按类型分派动作
-        if (target.mode == ExternalMode.OPEN) pendingOpenDispatch = target
+        // OPEN 模式按类型立即分派。**不能等目标出现在目录列表里**：
+        // 隐藏文件（点开头）默认被列表过滤，收件箱副本也可能尚未列出，
+        // 等列表就会永远等不到、整个唤起静默失效。此处直接取单文件属性。
+        if (target.mode == ExternalMode.OPEN) {
+            val item = RootFileManager.statFilePath(target.path)
+            dispatchExternalOpen(item, target.mimeType)
+        }
         ExternalOpenHub.consume()
     }
 
@@ -440,14 +443,6 @@ fun FilePage(
         val path = highlightPath ?: return@LaunchedEffect
         val index = displayFileList.indexOfFirst { it.path == path }
         if (index >= 0) listState.scrollToItem(index)
-    }
-
-    LaunchedEffect(pendingOpenDispatch, displayFileList) {
-        val target = pendingOpenDispatch ?: return@LaunchedEffect
-        // 唤起时列表可能尚未含该文件（外部副本刚落盘）：等它出现再分派
-        val item = displayFileList.firstOrNull { it.path == target.path } ?: return@LaunchedEffect
-        pendingOpenDispatch = null
-        dispatchExternalOpen(item, target.mimeType)
     }
 
     LaunchedEffect(currentDirectory) {

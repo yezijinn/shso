@@ -337,6 +337,37 @@ object RootFileManager {
      */
     internal fun statSecondsToMillis(seconds: Long): Long = if (seconds <= 0L) 0L else seconds * 1000L
 
+    /**
+     * 对单个路径做 stat，构造 [FileItem]（不依赖所在目录的列表）。
+     *
+     * 用途：外部唤起时目标可能是**隐藏文件**（默认被列表过滤）或**刚落盘的收件箱副本**，
+     * 若等它出现在目录列表里再处理，就会永远等不到。此处直接取属性，使分派与列表可见性解耦。
+     * 失败（路径不存在/无权限）时回退最小可用的 [FileItem]（仅用 [File] 本地属性），不返回 null，
+     * 让上层仍能按扩展名分派并给出自身错误提示。
+     */
+    suspend fun statFilePath(path: String): FileItem = withContext(Dispatchers.IO) {
+        val name = path.substringAfterLast('/').ifEmpty { path }
+        val fallback = FileItem(name = name, path = path, isDirectory = false)
+        if (isUnsafePath(path)) return@withContext fallback
+
+        if (preferRoot()) {
+            val escaped = RootService.escapeShellArg(path)
+            val (_, output) = RootService.runCommandSync("stat -L -c \"%A|%s|%Y|%n\" $escaped 2>/dev/null")
+            val items = mutableListOf<FileItem>()
+            // %n 给完整路径，这里按父目录解析，才能得到正确的 name/path
+            parseStatOutput(output, path.substringBeforeLast('/', ""), items)
+            items.firstOrNull { it.path == path }?.let { return@withContext it }
+        }
+        runCatching {
+            val file = File(path)
+            fallback.copy(
+                isDirectory = file.isDirectory,
+                size = if (file.isFile) file.length() else 0L,
+                lastModified = file.lastModified()
+            )
+        }.getOrDefault(fallback)
+    }
+
     private fun parseStatOutput(output: String, targetPath: String, items: MutableList<FileItem>) {
         for (line in output.lineSequence()) {
             val trimmed = line.trim()
