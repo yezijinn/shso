@@ -5,6 +5,8 @@ package com.mixradio.droid.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.nio.file.Files
+import kotlinx.coroutines.runBlocking
 
 /**
  * 回归守卫：`file` 输出行 → 类型/内容判定的纯函数。
@@ -14,6 +16,20 @@ import org.junit.Test
  * 另：`file` 输出带 `<path>: ` 前缀，且路径里的 `data` 会污染关键词匹配，必须先剥前缀。
  */
 class FileExecutionAnalyzerTest {
+
+    @Test
+    fun `strict SHA-256 computes the complete file`() = runBlocking {
+        val file = Files.createTempFile("shso-hash", ".apk").toFile()
+        try {
+            file.writeText("shso-hash-test")
+            assertEquals(
+                "0115C5B52893FD4F8D109F1AE1AE64276F53F42652282E311DFF55627E1C3B06",
+                computeSha256Strict(file.absolutePath)
+            )
+        } finally {
+            file.delete()
+        }
+    }
 
     @Test
     fun `真实 toybox 输出的 shell 脚本判为文本脚本而非二进制`() {

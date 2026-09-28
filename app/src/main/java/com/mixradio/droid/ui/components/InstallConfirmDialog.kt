@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import com.mixradio.droid.data.ExecutionInfo
 import com.mixradio.droid.data.FileItem
 import com.mixradio.droid.data.analyzeExecution
+import com.mixradio.droid.data.computeSha256Strict
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraTokens
 import com.mixradio.droid.ui.theme.AuroraWindowDialog
@@ -47,7 +48,7 @@ import kotlinx.coroutines.withContext
  * @param fileItem          待安装文件；为 null 时不渲染
  * @param willInstallAsRoot true = 将以 ROOT 静默安装（无系统确认），false = 交系统安装器
  * @param onDismiss         取消
- * @param onConfirm         确认安装
+ * @param onConfirm         确认安装，参数为确认时展示的 SHA-256 与锁定的安装模式
  */
 @Composable
 fun InstallConfirmDialog(
@@ -55,14 +56,18 @@ fun InstallConfirmDialog(
     fileItem: FileItem?,
     willInstallAsRoot: Boolean,
     onDismiss: () -> Unit,
-    onConfirm: () -> Unit
+    onConfirm: (confirmedSha256: String, installAsRoot: Boolean) -> Unit
 ) {
     var info by remember { mutableStateOf<ExecutionInfo?>(null) }
+    var confirmedSha256 by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(show, fileItem?.path) {
         info = if (show && fileItem != null) {
-            withContext(Dispatchers.IO) { analyzeExecution(fileItem) }
+            val currentInfo = withContext(Dispatchers.IO) { analyzeExecution(fileItem) }
+            confirmedSha256 = computeSha256Strict(fileItem.path)
+            currentInfo.copy(sha256 = confirmedSha256 ?: "计算失败，无法确认文件一致性")
         } else {
+            confirmedSha256 = null
             null
         }
     }
@@ -132,8 +137,11 @@ fun InstallConfirmDialog(
                 Text(text = "取消", fontWeight = FontWeight.Bold)
             }
             Button(
-                onClick = onConfirm,
-                enabled = info != null,
+                onClick = {
+                    val confirmed = info ?: return@Button
+                    onConfirm(confirmedSha256 ?: return@Button, willInstallAsRoot)
+                },
+                enabled = info != null && confirmedSha256 != null,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = AuroraTokens.Error,
                     contentColor = Color.White

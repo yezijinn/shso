@@ -176,6 +176,17 @@
   - `[Medium]` FilePage 的 `rememberSaveable` 仅覆盖高危确认，目录/多选/编辑器等状态重建仍丢失
   - `[Low]` 收件箱无去重/过期清理/总容量上限；多文件分享只取首项；纯文本分享无文件 URI 时静默无动作
   - 本轮验证：未执行 ADB、安装、旋转或清理；本地 309 tests / 0 failures、lint 通过
+  - 本次复核补充：外部压缩/安装函数仍有多处 `catch (Exception)`，需单独透传 `CancellationException`；
+    `statFilePath` 的 ROOT stat 解析和 fallback 需继续补边界测试；安装确认 TOCTOU 与 APK 安装审计仍未处理
+
+### A4. 安装确认一致性与审计（进行中）
+
+- [x] **安装确认 TOCTOU 修复**：确认框展示的 APK 信息必须与实际安装字节一致
+  - 目标：确认阶段生成应用私有不可变副本，安装只使用副本；取消/失败清理副本
+  - 目标：ROOT/非 ROOT 安装模式在确认时锁定，确认文案与实际路径一致
+- 实现：确认与安装前均执行完整 SHA-256；哈希不可计算或发生变化即拒绝安装；安装模式由确认时锁定
+- [ ] **APK 安装审计**：记录来源、确认哈希、安装模式、开始/结果/失败原因
+- 验证：310 tests / 0 failures、lint 0 error、Release 载荷红线通过；新增完整 SHA-256 回归测试
 
 - [ ] **安全第三轮（可选）**：`GuardModuleInstaller` 卸载残留（`/data/adb/shso_guard/policy.conf` 与审计日志）；`ScriptAuditor` 跨行变量追踪；`$IFS` 之外的 shell 展开（`${x:-…}`、算术展开）
 - [ ] **内核级守卫（独立议题）**：PATH 前置型守卫无法拦绝对路径调用与 `PATH` 重置，彻底封堵需 seccomp/LSM hook
