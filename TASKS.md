@@ -188,6 +188,21 @@
 - [ ] **APK 安装审计**：记录来源、确认哈希、安装模式、开始/结果/失败原因
 - 验证：310 tests / 0 failures、lint 0 error、Release 载荷红线通过；新增完整 SHA-256 回归测试
 
+### A5. 第七轮全面 BUG 审查（静态审查，未操作手机）
+
+- [!] 新发现待处理项：
+  - `[High]` `MainActivity` 仍用 `catch (Exception)` 捕获 `ExternalOpen.resolve()`，取消旧请求时可能继续清空后来者；
+    `ArchiveExtractor` / `ApkInstaller` / `FilePage.startInstall` 也有同类取消吞异常路径
+  - `[High]` `RootFileManager.statFilePath()` 修复后仍需补 ROOT-only 失败、目录、符号链接边界测试；
+    stat 失败应保持不可分派，不得回退默认元数据
+  - `[High]` ZIP central directory 在 `peekRoot()` 中仍可能先由 zip4j 一次性构造，条目上限检查存在前置内存峰值
+  - `[Medium]` 外部压缩失败清理与目标目录并发创建存在误删他方目录风险
+  - `[Medium]` 外部压缩/安装任务绑定 FilePage 生命周期，页面重建或取消时底层同步任务与 UI 状态可能脱节
+  - `[Medium]` 外部 OPEN 压缩包仍自动写盘，虽有预算限制但没有用户确认；APK 已有确认，压缩包语义不一致
+  - `[Medium]` 安装确认后仍安装共享存储原文件，确认哈希与实际安装内容存在 TOCTOU；安装审计仍缺失
+  - `[Low]` LOCATE 隐藏文件仍无法在过滤列表中显示高亮；收件箱无去重/清理；多文件分享只处理首项
+  - 本地基线：310 tests / 0 failures、lint 通过；本轮未执行 ADB、安装或清理
+
 - [ ] **安全第三轮（可选）**：`GuardModuleInstaller` 卸载残留（`/data/adb/shso_guard/policy.conf` 与审计日志）；`ScriptAuditor` 跨行变量追踪；`$IFS` 之外的 shell 展开（`${x:-…}`、算术展开）
 - [ ] **内核级守卫（独立议题）**：PATH 前置型守卫无法拦绝对路径调用与 `PATH` 重置，彻底封堵需 seccomp/LSM hook
 
