@@ -95,7 +95,11 @@ URI 解析分三层：`file://` 直取；`com.android.externalstorage.documents`
 
 动作分派**复用文件页 `FileItem` 谓词**（`isInstallable` / `isSupportedExecutable` /
 `isViewableImage` / `isEditableText` / `isArchive`），不引入第二套类型分类；
-执行类仍弹 `ExecuteConfirmDialog` 并受安全档位门控。
+执行类弹 `ExecuteConfirmDialog`、安装类弹 `InstallConfirmDialog`，均受安全档位门控。
+
+配置变更守卫：`MainActivity` 用 `savedInstanceState` 记录外部 intent 是否已消费，
+重建时不重解析（否则重放 intent 会重复拷贝、重开编辑器）；`onNewIntent` 清除该标记，
+真实再次唤起不受影响。
 
 ### RootService（执行引擎）
 

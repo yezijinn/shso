@@ -277,9 +277,10 @@ fun ExecuteConfirmDialog(
 internal fun needTypedExecuteConfirm(securityLevel: Int, hasCritical: Boolean): Boolean =
     securityLevel >= SecurityLevels.MAXIMUM && hasCritical
 
-/** 单行信息：标签（次要色）+ 等宽值（便于路径 / 哈希断行对齐）。 */
+/** 单行信息：标签（次要色）+ 等宽值（便于路径 / 哈希断行对齐）。供确认类弹窗共用。 */
 @Composable
-private fun InfoRow(label: String, value: String) {    Column(
+internal fun InfoRow(label: String, value: String) {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 3.dp)
