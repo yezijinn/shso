@@ -117,6 +117,20 @@
     大文件拷贝期间无进度反馈（主线程未阻塞，`resolve` 在 IO）
   - 验证：单测 303 / 0 failures（`ExternalOpenTest` 21 例）、lint 0 error、release 载荷红线通过；
     真机复验无扩展名图片→查看器、无扩展名文本→编辑器、有扩展名图片→查看器、有扩展名文本→编辑器
+- [x] **第四轮对抗性审查与修复**（同日）：重点复查上一轮 `decideExternalAction` 修复自身
+  - `[Medium]` **外部唤起隐藏文件静默失效**（上一轮为防抖把分派挂在「目标出现在目录列表」上引入）：
+    点开头文件默认被 `applyFileViewSettings` 过滤 → `pendingOpenDispatch` 的 effect 永远等不到 →
+    OPEN 模式不执行任何动作（不打开/不安装/不弹框/无提示），LOCATE 模式跳目录但不高亮。
+    真实场景：QQ/编辑器分享 `.gitignore` / `.env` / `.bashrc`。修法：新增
+    `RootFileManager.statFilePath` 单文件取属性，在外部唤起 effect 内**立即分派**，
+    与列表可见性解耦（同时覆盖「副本刚落盘尚未列出」）
+  - 已证伪（非缺陷）：**协程取消吞 `CancellationException`** —— `input.read()` 是阻塞 IO、
+    不响应取消，真机 200MB 拷贝中途旋转，副本完整、无残留（209715200 字节）；
+    点开头文件「扩展名矛盾」（`.png` 的 `isExtensionlessText=true` 但 `realExtension='png'`）
+    在 D1 修复后复验正确（隐藏图片按 MIME 进查看器）；TOCTOU（源文件消失）优雅定位不崩溃；
+    zip 解压目标目录时序正确
+  - 真机复验：`.gitignore`（默认不显示隐藏）→ 编辑器；`.png` 隐藏图片 → 查看器；
+    普通 txt → 编辑器；不透明 URI 副本 → 编辑器；LOCATE → 停在文件页；全程无崩溃
 
 ### B. 安全后续（未安排）
 
