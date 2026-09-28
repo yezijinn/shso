@@ -132,7 +132,38 @@
   - 真机复验：`.gitignore`（默认不显示隐藏）→ 编辑器；`.png` 隐藏图片 → 查看器；
     普通 txt → 编辑器；不透明 URI 副本 → 编辑器；LOCATE → 停在文件页；全程无崩溃
 
+- [!] **第五轮全面 BUG 审查**（静态审查，本轮未操作手机）：发现以下待处理项，未擅自修改
+  - `[High]` `RootFileManager.statFilePath()` 对 ROOT `stat` 的 `%n` 完整路径按文件名解析，
+    拼出错误 path，导致 ROOT-only 文件的 size/mtime/权限元信息退回为 0/空；应单独解析单文件 stat
+  - `[High]` 外部 OPEN 压缩包直接调用 `startExtract()`，绕过动作菜单的 `canExtractTo()` 检查，
+    `ArchiveExtractor` 无总输出/条目/单文件/压缩比限制，存在 Zip Bomb 耗尽存储风险
+  - `[High]` `MainContainer` 用 `catch (Exception)` 包住可取消的 `ExternalOpen.resolve()`，
+    取消旧请求时可能继续调用 `onExternalRequestConsumed()` 清空新请求；`copyToInbox()` 的
+    `runCatching` 同样吞 `CancellationException`
+  - `[High]` 安装确认 SHA-256 与实际安装路径之间存在 TOCTOU：确认后共享存储文件可被替换，
+    实际安装内容可能与用户确认的哈希不一致
+  - `[Medium]` `statFilePath()` 非法路径 / stat 失败回退伪造 `FileItem(isDirectory=false)`，
+    仍会进入 APK/脚本/压缩包分派；应返回 null 并禁止动作
+  - `[Medium]` `FilePage` 直接分派前未用 try/finally 消费 `ExternalOpenHub`，stat/分派异常会留下旧 pending
+  - `[Medium]` 收件箱无去重、过期清理与总容量上限；重复外部唤起会无限生成 `_1`、`_2` 副本
+  - `[Medium]` 安装动作仍不写 `SecurityAuditLog`，无法追踪外部来源、确认哈希、静默安装结果
+  - `[Low]` `FileItemSaver` 对 saved state 字段数量/类型强制转换，损坏或未来格式变化可能导致恢复崩溃
+  - `[Low]` `ACTION_SEND_MULTIPLE`/多项 clipData 只取首项；纯文本分享无文件 URI 时静默无动作
+  - 验证基线：本轮未执行 ADB、安装、旋转或清理；本地 `testDebugUnitTest` / `lintDebug` 通过
+  - 本次复核补充：`statFilePath` 的 ROOT 单文件输出必须与目录列表解析分离；外部压缩包分派必须复用
+    `canExtractTo` 并增加解压资源上限；安装确认需锁定安装模式并在确认前后校验文件一致性；
+    `CancellationException` 不得被普通异常捕获；上述项当前仍未修复，保持 `[!]`，待单独执行
+
 ### B. 安全后续（未安排）
+
+### A3. 第五轮优先修复（2026-09-28 起）
+
+- [x] **外部唤起高优先级缺陷修复**：完成 stat 安全、取消语义与解压预算加固；本轮不操作手机
+  - [x] `statFilePath`：单文件 ROOT stat 独立解析完整路径；非法/不存在/失败返回 null，禁止继续动作分派
+  - [/] 外部请求取消：`CancellationException` 透传已完成；仍需给 Hub 消费增加请求令牌校验，防旧 effect 清空后来者
+  - [x] 外部压缩包：总输出 1GB、单条目 512MB、条目数 20000 上限；外部路径复用 `canExtractTo`；失败清理目标目录
+  - [!] 安装确认 TOCTOU、安装审计、收件箱去重/清理、文件页全面状态保存列入下一轮，未在本轮扩大范围
+  - 验证：309 tests / 0 failures、lint 0 error、Release 载荷红线通过；新增单文件 stat / Hub 令牌 / 解压预算回归测试
 
 - [ ] **安全第三轮（可选）**：`GuardModuleInstaller` 卸载残留（`/data/adb/shso_guard/policy.conf` 与审计日志）；`ScriptAuditor` 跨行变量追踪；`$IFS` 之外的 shell 展开（`${x:-…}`、算术展开）
 - [ ] **内核级守卫（独立议题）**：PATH 前置型守卫无法拦绝对路径调用与 `PATH` 重置，彻底封堵需 seccomp/LSM hook

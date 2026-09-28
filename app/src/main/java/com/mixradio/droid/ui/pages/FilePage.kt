@@ -406,7 +406,13 @@ fun FilePage(
             ExternalAction.EXECUTE -> pendingExecuteItem = item
             ExternalAction.VIEW_IMAGE -> openImageViewer(item)
             ExternalAction.EDIT_TEXT -> openTextEditor(item)
-            ExternalAction.EXTRACT -> startExtract(item)
+            ExternalAction.EXTRACT -> {
+                if (ArchiveExtractor.canExtractTo(currentDirectory)) {
+                    startExtract(item)
+                } else {
+                    feedbackMessage = "当前目录不可写，无法解压"
+                }
+            }
             ExternalAction.BROWSE -> {
                 selectedItem = item
                 showActionDialog = true
@@ -431,11 +437,22 @@ fun FilePage(
         // OPEN 模式按类型立即分派。**不能等目标出现在目录列表里**：
         // 隐藏文件（点开头）默认被列表过滤，收件箱副本也可能尚未列出，
         // 等列表就会永远等不到、整个唤起静默失效。此处直接取单文件属性。
-        if (target.mode == ExternalMode.OPEN) {
-            val item = RootFileManager.statFilePath(target.path)
-            dispatchExternalOpen(item, target.mimeType)
+        try {
+            if (target.mode == ExternalMode.OPEN) {
+                val item = RootFileManager.statFilePath(target.path)
+                if (item == null) {
+                    feedbackMessage = "无法读取目标文件或路径不合法"
+                } else {
+                    dispatchExternalOpen(item, target.mimeType)
+                }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            feedbackMessage = "打开文件失败：${e.message ?: "未知错误"}"
+        } finally {
+            ExternalOpenHub.consume(target)
         }
-        ExternalOpenHub.consume()
     }
 
     // 待高亮文件出现在列表且列表已组合后再滚动；用 key 定位而非下标，避免排序/过滤后错位

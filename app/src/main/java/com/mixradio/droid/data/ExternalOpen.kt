@@ -40,7 +40,9 @@ data class PendingExternalOpen(
     /** 发送方声明的 MIME（可空）；扩展名无法判定时用它兜底。 */
     val mimeType: String?,
     /** 是否来自不透明 URI 的收件箱副本（用于提示用户实际位置与来源不同）。 */
-    val copiedFromExternal: Boolean
+    val copiedFromExternal: Boolean,
+    /** 请求代数：旧 effect 取消收尾时不得清掉后来者。 */
+    val token: Long
 )
 
 /** Activity 层解析出的原始请求；只含字符串，便于 JVM 单测（不触碰 Uri / Context）。 */
@@ -113,12 +115,20 @@ object ExternalOpenHub {
     var pending by mutableStateOf<PendingExternalOpen?>(null)
         private set
 
+    private var sequence = 0L
+
     fun post(path: String, mode: ExternalMode, mimeType: String?, copied: Boolean) {
-        pending = PendingExternalOpen(path, mode, mimeType, copied)
+        sequence += 1L
+        pending = PendingExternalOpen(path, mode, mimeType, copied, sequence)
     }
 
     fun consume() {
         pending = null
+    }
+
+    /** 仅消费仍是本请求的槽位，防止取消中的旧 effect 清掉后来者。 */
+    fun consume(request: PendingExternalOpen) {
+        if (pending?.token == request.token) pending = null
     }
 }
 
@@ -320,7 +330,7 @@ object ExternalOpen {
         val dir = File(INBOX_DIR)
         if (!dir.exists() && !dir.mkdirs()) return null
         val target = uniqueFile(dir, displayName)
-        return runCatching {
+        return try {
             context.contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(target).use { output ->
                     val buffer = ByteArray(64 * 1024)
@@ -336,7 +346,10 @@ object ExternalOpen {
                 }
             } ?: return null
             target
-        }.getOrElse {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            runCatching { target.delete() }
+            throw e
+        } catch (e: Exception) {
             runCatching { target.delete() }
             null
         }
