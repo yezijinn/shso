@@ -37,6 +37,34 @@ class RootFileManagerEscapingTest {
         assertFalse(RootFileManager.isUnsafePath("/storage/My Music/it's.txt"))
     }
 
+    @Test
+    fun `parseSingleStatOutput keeps full path and converts seconds`() {
+        val path = "/data/adb/shso/app.sh"
+        val item = RootFileManager.parseSingleStatOutput(
+            "-rwxr-xr-x|123|1789044590|$path",
+            path
+        )
+
+        assertEquals("app.sh", item?.name)
+        assertEquals(path, item?.path)
+        assertEquals(123L, item?.size)
+        assertEquals(1789044590000L, item?.lastModified)
+        assertEquals("-rwxr-xr-x", item?.permissions)
+        assertFalse(item?.isDirectory == true)
+    }
+
+    @Test
+    fun `parseSingleStatOutput rejects malformed output`() {
+        assertNull(RootFileManager.parseSingleStatOutput("", "/data/adb/shso/a.sh"))
+        assertNull(RootFileManager.parseSingleStatOutput("bad|line", "/data/adb/shso/a.sh"))
+        assertNull(
+            RootFileManager.parseSingleStatOutput(
+                "-rw-r--r--|bad|1789044590|/data/adb/shso/a.sh",
+                "/data/adb/shso/a.sh"
+            )
+        )
+    }
+
     @Test fun `isUnsafeFileName rejects separators traversal and controls`() {
         assertTrue(RootFileManager.isUnsafeFileName("a/b"))
         assertTrue(RootFileManager.isUnsafeFileName("a\\b"))

@@ -257,6 +257,8 @@ fun MainContainer(
         val request = externalRequest ?: return@LaunchedEffect
         val resolved = try {
             ExternalOpen.resolve(appContext, Uri.parse(request.uri))
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             ExternalOpen.Resolved.Failed("打开失败：${e.message ?: "未知错误"}")
         }

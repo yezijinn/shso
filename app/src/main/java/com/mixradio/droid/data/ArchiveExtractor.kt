@@ -34,6 +34,37 @@ import java.util.Locale
  */
 object ArchiveExtractor {
 
+    /** 防压缩炸弹预算：外部唤起与手动解压共用，避免小包无限膨胀耗尽存储。 */
+    internal const val MAX_EXTRACT_BYTES = 1L * 1024 * 1024 * 1024
+    internal const val MAX_EXTRACT_ENTRY_BYTES = 512L * 1024 * 1024
+    internal const val MAX_EXTRACT_ENTRIES = 20_000
+
+    internal class ExtractionBudget {
+        var entries = 0
+            private set
+        var bytes = 0L
+            private set
+
+        fun beginEntry(declaredSize: Long? = null) {
+            if (entries >= MAX_EXTRACT_ENTRIES) {
+                throw ExtractionLimitException("压缩包条目数超过 $MAX_EXTRACT_ENTRIES")
+            }
+            if (declaredSize != null && declaredSize >= 0L && declaredSize > MAX_EXTRACT_ENTRY_BYTES) {
+                throw ExtractionLimitException("单个压缩条目超过 ${MAX_EXTRACT_ENTRY_BYTES / 1024 / 1024}MB")
+            }
+            entries++
+        }
+
+        fun consume(count: Int) {
+            bytes += count.toLong()
+            if (bytes > MAX_EXTRACT_BYTES) {
+                throw ExtractionLimitException("解压总大小超过 ${MAX_EXTRACT_BYTES / 1024 / 1024 / 1024}GB")
+            }
+        }
+    }
+
+    internal class ExtractionLimitException(message: String) : Exception(message)
+
     /** 压缩包/文件类型分类。 */
     private enum class Kind { ZIP, SEVENZ, TAR, SINGLE }
 
@@ -183,13 +214,17 @@ object ArchiveExtractor {
 
         // 单文件压缩型：直接解压为去掉压缩后缀的原文件名
         if (kind == Kind.SINGLE) {
+            var targetFile: File? = null
             return@withContext try {
                 val outName = baseName(File(archivePath).name)
-                val targetFile = resolveTargetPath(targetParent, outName)
-                File(targetFile).parentFile?.mkdirs()
-                openDecompress(archivePath).use { input -> copyStream(input, File(targetFile)) }
-                ExtractResult.Success(targetFile)
+                targetFile = File(resolveTargetPath(targetParent, outName))
+                targetFile.parentFile?.mkdirs()
+                val budget = ExtractionBudget()
+                budget.beginEntry()
+                openDecompress(archivePath).use { input -> copyStream(input, targetFile, budget) }
+                ExtractResult.Success(targetFile.absolutePath)
             } catch (e: Exception) {
+                runCatching { targetFile?.delete() }
                 ExtractResult.Failure("解压失败: ${e.message ?: e.javaClass.simpleName}")
             }
         }
@@ -242,10 +277,8 @@ object ArchiveExtractor {
                     result
                 }
                 is ExtractResult.Failure -> {
-                    // 失败时清理可能遗留的空目标目录
-                    if (File(finalTarget).listFiles()?.isEmpty() == true) {
-                        File(finalTarget).delete()
-                    }
+                    // 目标由本次 resolveTargetPath 新建，失败时整体清理，避免残留半包数据。
+                    File(finalTarget).deleteRecursively()
                     result
                 }
             }
@@ -268,6 +301,7 @@ object ArchiveExtractor {
 
     private fun extractZip(path: String, target: String, password: String?, stripPrefix: String?): ExtractResult {
         return try {
+            val budget = ExtractionBudget()
             Zip4jFile(path).use { zip ->
                 // 中文密码：开启 UTF-8 密码编码（zip4j 默认 CP437，中文密码必须显式 UTF-8）
                 if (!password.isNullOrEmpty()) {
@@ -282,6 +316,7 @@ object ArchiveExtractor {
                 // 使用流式解压以兼容条件 A/B 的预建目录结构
                 val headers = zip.fileHeaders
                 for (h in headers) {
+                    budget.beginEntry(if (h.isDirectory) 0L else h.uncompressedSize)
                     val entryName = stripPrefix?.let { stripTopFolder(h.fileName, it) } ?: h.fileName
                     val dest = safeDest(target, entryName)
                     if (h.isDirectory) {
@@ -290,7 +325,7 @@ object ArchiveExtractor {
                     }
                     dest.parentFile?.mkdirs()
                     try {
-                        zip.getInputStream(h).use { input -> copyStream(input, dest) }
+                        zip.getInputStream(h).use { input -> copyStream(input, dest, budget) }
                     } catch (e: Exception) {
                         dest.delete()
                         val msg = e.message ?: ""
@@ -314,16 +349,18 @@ object ArchiveExtractor {
 
     private fun extractTar(path: String, target: String, stripPrefix: String?): ExtractResult {
         return try {
+            val budget = ExtractionBudget()
             openTar(path).use { tarIn ->
                 while (true) {
                     val entry = tarIn.nextEntry ?: break
+                    budget.beginEntry(if (entry.isDirectory) 0L else entry.size)
                     val entryName = stripPrefix?.let { stripTopFolder(entry.name, it) } ?: entry.name
                     val dest = safeDest(target, entryName)
                     if (entry.isDirectory) {
                         dest.mkdirs()
                     } else {
                         dest.parentFile?.mkdirs()
-                        copyStream(tarIn, dest)
+                        copyStream(tarIn, dest, budget)
                     }
                 }
             }
@@ -335,6 +372,7 @@ object ArchiveExtractor {
 
     private fun extract7z(path: String, target: String, password: String?, stripPrefix: String?): ExtractResult {
         return try {
+            val budget = ExtractionBudget()
             val file = File(path)
             val archive = if (password.isNullOrEmpty()) {
                 org.apache.commons.compress.archivers.sevenz.SevenZFile.Builder().setFile(file).get()
@@ -344,6 +382,7 @@ object ArchiveExtractor {
             archive.use { sevenZ ->
                 while (true) {
                     val entry = sevenZ.nextEntry ?: break
+                    budget.beginEntry(if (entry.isDirectory) 0L else entry.size)
                     val entryName = stripPrefix?.let { stripTopFolder(entry.name, it) } ?: entry.name
                     val dest = safeDest(target, entryName)
                     if (entry.isDirectory) {
@@ -357,6 +396,7 @@ object ArchiveExtractor {
                         while (total < entry.size) {
                             val read = sevenZ.read(buffer)
                             if (read <= 0) break
+                            budget.consume(read)
                             out.write(buffer, 0, read)
                             total += read
                         }
@@ -430,11 +470,12 @@ object ArchiveExtractor {
         }
     }
 
-    private fun copyStream(input: InputStream, dest: File) {
+    private fun copyStream(input: InputStream, dest: File, budget: ExtractionBudget) {
         BufferedOutputStream(FileOutputStream(dest)).use { out ->
             val buffer = ByteArray(64 * 1024)
             var count: Int
             while (input.read(buffer).also { count = it } != -1) {
+                budget.consume(count)
                 out.write(buffer, 0, count)
             }
         }
