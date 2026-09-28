@@ -128,9 +128,13 @@ object ArchiveExtractor {
         when (kindOf(path)) {
             Kind.ZIP -> {
                 Zip4jFile(path).use { zip ->
+                    val headers = zip.fileHeaders
+                    if (headers.size > MAX_EXTRACT_ENTRIES) {
+                        throw ExtractionLimitException("压缩包条目数超过 $MAX_EXTRACT_ENTRIES")
+                    }
                     val names = mutableSetOf<String>()
                     val dirs = mutableSetOf<String>()
-                    for (h in zip.fileHeaders) {
+                    for (h in headers) {
                         val first = firstSegment(h.fileName)
                         if (first.isEmpty()) continue
                         names.add(first)
@@ -143,7 +147,12 @@ object ArchiveExtractor {
                 org.apache.commons.compress.archivers.sevenz.SevenZFile.Builder().setFile(File(path)).get().use { sevenZ ->
                     val names = mutableSetOf<String>()
                     val dirs = mutableSetOf<String>()
+                    var count = 0
                     for (entry in sevenZ.entries) {
+                        count++
+                        if (count > MAX_EXTRACT_ENTRIES) {
+                            throw ExtractionLimitException("压缩包条目数超过 $MAX_EXTRACT_ENTRIES")
+                        }
                         val first = firstSegment(entry.name)
                         if (first.isEmpty()) continue
                         names.add(first)
@@ -155,8 +164,13 @@ object ArchiveExtractor {
             Kind.TAR -> openTar(path).use { tarIn ->
                 val names = mutableSetOf<String>()
                 val dirs = mutableSetOf<String>()
+                var count = 0
                 while (true) {
                     val entry = tarIn.nextEntry ?: break
+                    count++
+                    if (count > MAX_EXTRACT_ENTRIES) {
+                        throw ExtractionLimitException("压缩包条目数超过 $MAX_EXTRACT_ENTRIES")
+                    }
                     val first = firstSegment(entry.name)
                     if (first.isEmpty()) continue
                     names.add(first)
@@ -166,6 +180,8 @@ object ArchiveExtractor {
             }
             else -> RootPeek(emptySet(), emptySet())
         }
+    } catch (e: ExtractionLimitException) {
+        throw e
     } catch (_: Exception) {
         RootPeek(emptySet(), emptySet())
     }
