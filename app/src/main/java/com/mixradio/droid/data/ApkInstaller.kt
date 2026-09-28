@@ -14,6 +14,7 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import net.lingala.zip4j.ZipFile
 import org.json.JSONObject
@@ -141,6 +142,8 @@ object ApkInstaller {
                         }
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 return@withContext InstallResult.Failure("XAPK 解压失败: ${e.message}")
             }
@@ -402,6 +405,8 @@ object ApkInstaller {
                 context.startActivity(intent)
                 Log.i(TAG, "已跳转设置页请求 REQUEST_INSTALL_PACKAGES")
                 InstallResult.Failure("需要允许 shso 安装未知来源应用，请先在设置中开启后再试")
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "跳转设置页失败", e)
                 InstallResult.Failure("需要允许 shso 安装未知来源应用: ${e.message}")
@@ -419,6 +424,8 @@ object ApkInstaller {
             context.startActivity(intent)
             Log.i(TAG, "已启动系统安装器, uri=$uri")
             InstallResult.Success("已调用系统安装器，请在弹出的界面完成安装")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "启动系统安装器失败", e)
             InstallResult.Failure("启动系统安装器失败: ${e.message}")

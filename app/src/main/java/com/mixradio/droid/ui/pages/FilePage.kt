@@ -361,6 +361,8 @@ fun FilePage(
                         ApkInstaller.InstallResult.Failure("XAPK 分片安装需 ROOT 静默权限，请先授权 ROOT")
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 ApkInstaller.InstallResult.Failure("安装失败: ${e.message ?: "未知错误"}")
             }
@@ -415,12 +417,10 @@ fun FilePage(
             ExternalAction.EXECUTE -> pendingExecuteItem = item
             ExternalAction.VIEW_IMAGE -> openImageViewer(item)
             ExternalAction.EDIT_TEXT -> openTextEditor(item)
+            // 外部 OPEN 只定位并弹动作菜单；解压会写入多个文件，必须由用户明确点击。
             ExternalAction.EXTRACT -> {
-                if (ArchiveExtractor.canExtractTo(currentDirectory)) {
-                    startExtract(item)
-                } else {
-                    feedbackMessage = "当前目录不可写，无法解压"
-                }
+                selectedItem = item
+                showActionDialog = true
             }
             ExternalAction.BROWSE -> {
                 selectedItem = item

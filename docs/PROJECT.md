@@ -99,7 +99,8 @@ URI 解析分三层：`file://` 直取；`com.android.externalstorage.documents`
 （相册分享的临时图片常无扩展名，否则会被「无扩展名 = 文本」接管而显示乱码）。
 执行类弹 `ExecuteConfirmDialog`、安装类弹 `InstallConfirmDialog`，均受安全档位门控。
 
-外部压缩包解压有资源预算：总输出 ≤1GB、单条目 ≤512MB、条目数 ≤20000；超限或失败时清理本次目标目录。
+外部唤起压缩包不自动写盘，只定位并弹动作菜单；用户明确点击解压后才执行。解压有资源预算：
+总输出 ≤1GB、单条目 ≤512MB、条目数 ≤20000；超限或失败时清理本次目标目录。
 外部请求取消必须透传 `CancellationException`；`ExternalOpenHub` 以请求令牌消费，防止取消中的旧 effect 清空后来者。
 隐藏文件与刚落盘的收件箱副本不依赖目录列表可见性，使用 `RootFileManager.statFilePath()` 直接取单文件属性；
 stat 失败或路径非法时禁止动作分派。
