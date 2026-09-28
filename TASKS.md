@@ -165,6 +165,18 @@
   - [!] 安装确认 TOCTOU、安装审计、收件箱去重/清理、文件页全面状态保存列入下一轮，未在本轮扩大范围
   - 验证：309 tests / 0 failures、lint 0 error、Release 载荷红线通过；新增单文件 stat / Hub 令牌 / 解压预算回归测试
 
+- [!] **第六轮全面 BUG 审查**（静态审查，本轮未操作手机）：当前代码未修改，发现以下待处理项
+  - `[High]` `statFilePath` 的单文件 ROOT stat 已修正，但 `parseSingleStatOutput` 与 fallback 仍需补充异常/权限回归；
+    外部路径分派必须保证 stat 失败不会进入动作路径
+  - `[High]` 外部压缩预算已加固，但 ZIP central directory 在 `peekRoot()` 阶段仍由 zip4j 一次性构造 header 列表，
+    极端百万条目归档可能在预算检查前消耗内存
+  - `[High]` 安装确认 SHA-256 与实际安装路径存在 TOCTOU；安装动作仍无审计记录
+  - `[Medium]` 外部压缩失败清理与 `resolveTargetPath()` 存在并发竞态：目标目录被其他进程抢先创建时，失败清理可能误删他方目录
+  - `[Medium]` `InstallConfirmDialog` 的 ROOT 状态/文件元数据在确认前后可能变化，确认文案与实际安装路径可能不一致
+  - `[Medium]` FilePage 的 `rememberSaveable` 仅覆盖高危确认，目录/多选/编辑器等状态重建仍丢失
+  - `[Low]` 收件箱无去重/过期清理/总容量上限；多文件分享只取首项；纯文本分享无文件 URI 时静默无动作
+  - 本轮验证：未执行 ADB、安装、旋转或清理；本地 309 tests / 0 failures、lint 通过
+
 - [ ] **安全第三轮（可选）**：`GuardModuleInstaller` 卸载残留（`/data/adb/shso_guard/policy.conf` 与审计日志）；`ScriptAuditor` 跨行变量追踪；`$IFS` 之外的 shell 展开（`${x:-…}`、算术展开）
 - [ ] **内核级守卫（独立议题）**：PATH 前置型守卫无法拦绝对路径调用与 `PATH` 重置，彻底封堵需 seccomp/LSM hook
 
