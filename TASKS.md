@@ -243,6 +243,15 @@
   - 文件页：修复解压取消后 `isExtracting` 不复位；兼容 `.zip.1` 等压缩包尾缀
   - 验证：`testDebugUnitTest`、`lintDebug`、`assembleRelease` 均通过；Release 载荷红线通过；Release APK 已安装至 `BIYLBAFQQSS8DA69` 并启动验证成功
 
+### A9. 已知缺陷修复（2026-09-29）
+
+- [x] **安装审计与收件箱并发安全**：完成
+  - APK / XAPK 安装记录来源路径、确认哈希、安装模式、开始与结果
+  - 收件箱使用 `createNewFile()` 原子预占文件名，避免并发分享同名文件互相覆盖；增加 256 文件 / 2GB 总容量边界
+  - 暂不修改 ZIP central directory、解压目录竞态等需更大重构的项目，避免误判
+  - 验证：311 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线均通过
+  - 发布产物：`app-release.apk`，2,266,625 bytes，SHA-256 `E83E3F3912241DFCABD80F778890B9419E76715022A02811EE2D491E4A0C7ED7`，V2/V3 签名通过
+
 - [ ] **安全第三轮（可选）**：`GuardModuleInstaller` 卸载残留（`/data/adb/shso_guard/policy.conf` 与审计日志）；`ScriptAuditor` 跨行变量追踪；`$IFS` 之外的 shell 展开（`${x:-…}`、算术展开）
 - [ ] **内核级守卫（独立议题）**：PATH 前置型守卫无法拦绝对路径调用与 `PATH` 重置，彻底封堵需 seccomp/LSM hook
 

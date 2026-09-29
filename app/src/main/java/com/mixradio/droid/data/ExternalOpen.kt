@@ -193,6 +193,8 @@ object ExternalOpen {
 
     /** 拷贝体积上限：共享型 FileProvider 无法预知大小，超限直接拒绝而不是 OOM。 */
     const val COPY_LIMIT_BYTES = 512L * 1024 * 1024
+    private const val MAX_INBOX_FILES = 256
+    private const val MAX_INBOX_BYTES = 2L * 1024 * 1024 * 1024
 
     sealed class Resolved {
         /** 直接拿到真实文件路径。 */
@@ -329,7 +331,11 @@ object ExternalOpen {
         if (declaredSize > COPY_LIMIT_BYTES) return null
         val dir = File(INBOX_DIR)
         if (!dir.exists() && !dir.mkdirs()) return null
-        val target = uniqueFile(dir, displayName)
+        val existing = dir.listFiles() ?: emptyArray()
+        if (existing.size >= MAX_INBOX_FILES) return null
+        val existingBytes = existing.sumOf { if (it.isFile) it.length() else 0L }
+        if (existingBytes >= MAX_INBOX_BYTES || (declaredSize > 0L && existingBytes + declaredSize > MAX_INBOX_BYTES)) return null
+        val target = reserveUniqueFile(dir, displayName) ?: return null
         return try {
             context.contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(target).use { output ->
@@ -353,6 +359,24 @@ object ExternalOpen {
             runCatching { target.delete() }
             null
         }
+    }
+
+    /** Atomically reserve a destination before opening the provider stream. */
+    private fun reserveUniqueFile(dir: File, name: String): File? {
+        val dot = name.lastIndexOf('.')
+        val stem = if (dot > 0) name.substring(0, dot) else name
+        val ext = if (dot > 0) name.substring(dot) else ""
+        var index = 0
+        while (index < MAX_INBOX_FILES) {
+            val candidate = File(dir, if (index == 0) name else "${stem}_$index$ext")
+            try {
+                if (candidate.createNewFile()) return candidate
+            } catch (_: Exception) {
+                return null
+            }
+            index++
+        }
+        return null
     }
 
     /** 在目录内构造不冲突的文件名：`x.apk` → `x_1.apk` → `x_2.apk`… */

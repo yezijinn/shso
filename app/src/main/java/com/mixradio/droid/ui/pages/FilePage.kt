@@ -87,6 +87,9 @@ import com.mixradio.droid.data.computeSha256Strict
 import com.mixradio.droid.data.syntax.SyntaxPackTags
 import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootService
+import com.mixradio.droid.data.security.CommandSource
+import com.mixradio.droid.data.security.RiskLevel
+import com.mixradio.droid.data.security.SecurityAuditLog
 import com.mixradio.droid.data.displayPath
 import com.mixradio.droid.ui.components.ApkExtractDialog
 import com.mixradio.droid.ui.components.BookmarksDialog
@@ -341,6 +344,9 @@ fun FilePage(
             isInstalling = true
             installAlertMessage = null
             installStatusMessage = "正在安装 ${item.name}，请勿重复操作"
+            val installMode = if (installAsRootOverride == true) "root" else "system"
+            SecurityAuditLog.log(CommandSource.INTERNAL_APP, "START", "APK_INSTALL", RiskLevel.WARNING,
+                "path=${item.path} | sha256=${confirmedSha256 ?: "unconfirmed"} | mode=$installMode")
             val result = try {
                 val installAsRoot = installAsRootOverride ?: (RootService.isRootGranted == true)
                 val installPath = stagedPath ?: item.path
@@ -381,6 +387,13 @@ fun FilePage(
                 is ApkInstaller.InstallResult.Failure -> "安装失败：$resultMessage"
             }
             feedbackMessage = resultMessage
+            SecurityAuditLog.log(
+                CommandSource.INTERNAL_APP,
+                if (result is ApkInstaller.InstallResult.Success) "ALLOW" else "FAIL",
+                "APK_INSTALL",
+                RiskLevel.WARNING,
+                "path=${item.path} | sha256=${confirmedSha256 ?: "unconfirmed"} | mode=$installMode | result=$resultMessage"
+            )
             stagedPath?.let { File(it).delete() }
         }
     }
