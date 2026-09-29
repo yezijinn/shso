@@ -95,7 +95,7 @@ URI 解析分三层：`file://` 直取；`com.android.externalstorage.documents`
 
 动作分派**复用文件页 `FileItem` 谓词**（`isInstallable` / `isSupportedExecutable` /
 `isViewableImage` / `isEditableText` / `isArchive`），不引入第二套类型分类；
-**但这些谓词只看扩展名**，故 `decideExternalAction` 对无扩展名文件以发送方 MIME 兜底
+已知后缀（包括 `.数字` 下载器尾缀和点文件）按文件名判定，真正无扩展名文件才以发送方 MIME 兜底
 （相册分享的临时图片常无扩展名，否则会被「无扩展名 = 文本」接管而显示乱码）。
 执行类弹 `ExecuteConfirmDialog`、安装类弹 `InstallConfirmDialog`，均受安全档位门控。
 

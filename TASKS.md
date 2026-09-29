@@ -252,6 +252,24 @@
   - 验证：311 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线均通过
   - 发布产物：`app-release.apk`，2,266,625 bytes，SHA-256 `E83E3F3912241DFCABD80F778890B9419E76715022A02811EE2D491E4A0C7ED7`，V2/V3 签名通过
 
+### A10. 高置信度缺陷修复（2026-09-29）
+
+- [x] **隐藏文件、解压竞态与状态恢复**：完成
+  - 点文件按真实后缀分派：`.apk`、`.zip`、`.sh`、图片不再被无扩展名文本兜底抢先处理；`.env` 等未知点文件仍按文本处理
+  - 解压目标文件/目录使用原子预占，失败清理只针对本次拥有的目标，降低并发解压误删他方目录风险
+  - `FileItemSaver` 对字段数量、类型和数值类型做安全校验，损坏状态恢复为 null，不再因旋转恢复崩溃
+  - 追加修复：压缩包类型识别统一剥离下载器 `.数字` 尾缀，`FileItem` 与实际解压内核保持一致
+  - 验证：312 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线均通过；后续 A11 重新构建并安装验证
+
+### A11. 解压取消清理（2026-09-29）
+
+- [x] **取消解压残留目标清理**：完成
+  - 取消单文件解压时删除本次原子预占的目标文件
+  - 取消归档解压时删除本次原子预占的目标目录
+  - 仅清理当前任务成功预占的目标，不触碰并发任务或用户原有文件
+  - 验证：312 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线均通过；Release APK 已安装至 `BIYLBAFQQSS8DA69` 并启动成功，进程 `13527`
+  - 发布产物校验：2,266,625 bytes，SHA-256 `166A330D86B3F0DBC4CB8B0DE3130FD156407A7602024B34AE874E4298991430`，V2/V3 签名通过
+
 - [ ] **安全第三轮（可选）**：`GuardModuleInstaller` 卸载残留（`/data/adb/shso_guard/policy.conf` 与审计日志）；`ScriptAuditor` 跨行变量追踪；`$IFS` 之外的 shell 展开（`${x:-…}`、算术展开）
 - [ ] **内核级守卫（独立议题）**：PATH 前置型守卫无法拦绝对路径调用与 `PATH` 重置，彻底封堵需 seccomp/LSM hook
 

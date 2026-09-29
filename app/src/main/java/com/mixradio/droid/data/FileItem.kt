@@ -106,7 +106,11 @@ data class FileItem(
         get() {
             if (isDirectory) return false
             val dots = name.count { it == '.' }
-            return dots == 0 || (name.startsWith(".") && dots == 1)
+            if (dots == 0) return true
+            // Keep dot-prefixed configuration files text-like, but preserve
+            // known action types such as .apk, .zip, .sh and .png.
+            return name.startsWith(".") && dots == 1 &&
+                !isInstallable && !isSupportedExecutable && !isViewableImage && !isArchive
         }
 
     /** 是否常见图片（可浏览）。 */
@@ -122,7 +126,7 @@ data class FileItem(
 
     /** 是否实际可解压（rar 仅识别，暂不支持解压）。 */
     val isExtractableArchive: Boolean
-        get() = !isDirectory && ArchiveExtractor.isExtractable(name)
+        get() = !isDirectory && ArchiveExtractor.isExtractable(realArchiveName)
 
     val formattedSize: String
         get() {
@@ -167,13 +171,16 @@ val FileItemSaver: Saver<FileItem?, Any> = listSaver(
         )
     },
     restore = { values ->
-        if (values.isEmpty()) null else FileItem(
-            name = values[0] as String,
-            path = values[1] as String,
-            isDirectory = values[2] as Boolean,
-            size = values[3] as Long,
-            lastModified = values[4] as Long,
-            permissions = values[5] as String
-        )
+        if (values.size != 6) null else {
+            val name = values[0] as? String
+            val path = values[1] as? String
+            val isDirectory = values[2] as? Boolean
+            val size = (values[3] as? Number)?.toLong()
+            val lastModified = (values[4] as? Number)?.toLong()
+            val permissions = values[5] as? String
+            if (name == null || path == null || isDirectory == null || size == null ||
+                lastModified == null || permissions == null
+            ) null else FileItem(name, path, isDirectory, size, lastModified, permissions)
+        }
     }
 )
