@@ -21,13 +21,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.mixradio.droid.data.ExecutionInfo
 import com.mixradio.droid.data.FileItem
 import com.mixradio.droid.data.analyzeExecution
-import com.mixradio.droid.data.computeSha256Strict
+import com.mixradio.droid.data.stageApkForInstall
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraTokens
 import com.mixradio.droid.ui.theme.AuroraWindowDialog
@@ -56,17 +57,29 @@ fun InstallConfirmDialog(
     fileItem: FileItem?,
     willInstallAsRoot: Boolean,
     onDismiss: () -> Unit,
-    onConfirm: (confirmedSha256: String, installAsRoot: Boolean) -> Unit
+    onConfirm: (confirmedSha256: String, installAsRoot: Boolean, stagedPath: String) -> Unit
 ) {
+    val context = LocalContext.current.applicationContext
     var info by remember { mutableStateOf<ExecutionInfo?>(null) }
     var confirmedSha256 by remember { mutableStateOf<String?>(null) }
+    var stagedPath by remember { mutableStateOf<String?>(null) }
+    var lockedInstallAsRoot by remember { mutableStateOf(willInstallAsRoot) }
 
     LaunchedEffect(show, fileItem?.path) {
         info = if (show && fileItem != null) {
+            lockedInstallAsRoot = willInstallAsRoot
             val currentInfo = withContext(Dispatchers.IO) { analyzeExecution(fileItem) }
-            confirmedSha256 = computeSha256Strict(fileItem.path)
-            currentInfo.copy(sha256 = confirmedSha256 ?: "计算失败，无法确认文件一致性")
+            val staged = stageApkForInstall(context, fileItem.path)
+            stagedPath = staged?.first
+            confirmedSha256 = staged?.second
+            val sizeLabel = staged?.first?.let { java.io.File(it).length() }?.let { "$it B" }
+            currentInfo.copy(
+                sizeLabel = sizeLabel ?: currentInfo.sizeLabel,
+                sha256 = confirmedSha256 ?: "无法生成安装副本"
+            )
         } else {
+            stagedPath?.let { java.io.File(it).delete() }
+            stagedPath = null
             confirmedSha256 = null
             null
         }
@@ -109,13 +122,13 @@ fun InstallConfirmDialog(
                 color = AuroraTokens.TextSecondary
             )
             Text(
-                text = if (willInstallAsRoot) {
+                text = if (lockedInstallAsRoot) {
                     "ROOT 静默安装（无系统安装器确认）"
                 } else {
                     "系统安装器（需在系统界面确认）"
                 },
                 style = AuroraTextStyles.body2,
-                color = if (willInstallAsRoot) AuroraTokens.Error else AuroraTokens.Text
+                color = if (lockedInstallAsRoot) AuroraTokens.Error else AuroraTokens.Text
             )
         }
 
@@ -139,7 +152,11 @@ fun InstallConfirmDialog(
             Button(
                 onClick = {
                     val confirmed = info ?: return@Button
-                    onConfirm(confirmedSha256 ?: return@Button, willInstallAsRoot)
+                    onConfirm(
+                        confirmedSha256 ?: return@Button,
+                        lockedInstallAsRoot,
+                        stagedPath ?: return@Button
+                    )
                 },
                 enabled = info != null && confirmedSha256 != null,
                 colors = ButtonDefaults.buttonColors(

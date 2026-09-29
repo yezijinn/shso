@@ -1,6 +1,6 @@
 # shso
 
-[![Release](https://img.shields.io/badge/Release-20260922-00e5ff.svg?style=flat-square)](https://github.com/yezijinn/shso/releases)
+[![Release](https://img.shields.io/badge/Release-20260929-00e5ff.svg?style=flat-square)](https://github.com/yezijinn/shso/releases)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square)](LICENSE)
 [![Android](https://img.shields.io/badge/Android-8.0%2B%20%28API%2026%2B%29-3DDC84.svg?style=flat-square&logo=android&logoColor=white)](https://developer.android.com)
 [![ROOT](https://img.shields.io/badge/ROOT-Magisk%20%7C%20KernelSU%20%7C%20APatch-orange.svg?style=flat-square)](https://github.com/topjohnwu/Magisk)

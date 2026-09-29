@@ -115,7 +115,10 @@ data class FileItem(
 
     /** 是否为已知压缩包（zip/tar/tgz/7z/gz/xz/bz2/lz4 等）——长按菜单据此显示「自动解压文件」。 */
     val isArchive: Boolean
-        get() = !isDirectory && ArchiveExtractor.isKnownArchive(name)
+        get() = !isDirectory && ArchiveExtractor.isKnownArchive(realArchiveName)
+
+    private val realArchiveName: String
+        get() = if (name.matches(Regex(".+\\.\\d+$"))) name.substringBeforeLast('.') else name
 
     /** 是否实际可解压（rar 仅识别，暂不支持解压）。 */
     val isExtractableArchive: Boolean

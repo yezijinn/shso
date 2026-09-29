@@ -19,6 +19,8 @@ import kotlinx.coroutines.withContext
 import net.lingala.zip4j.ZipFile
 import org.json.JSONObject
 import java.io.File
+import java.io.ByteArrayOutputStream
+import java.util.UUID
 
 /**
  * APK / XAPK 安装器（root 静默）。
@@ -44,6 +46,16 @@ object ApkInstaller {
 
     /** 安装大包允许的更长超时（拷贝 + pm 会话流可能超过默认 120s）。 */
     private const val INSTALL_TIMEOUT_MS = 300_000L
+    internal const val MAX_XAPK_BYTES = 1L * 1024 * 1024 * 1024
+    internal const val MAX_XAPK_ENTRY_BYTES = 512L * 1024 * 1024
+    internal const val MAX_XAPK_ENTRIES = 20_000
+    private const val MAX_XAPK_MANIFEST_BYTES = 1L * 1024 * 1024
+    private val ANDROID_PACKAGE_NAME = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
+
+    internal fun isValidAndroidPackageName(value: String): Boolean =
+        ANDROID_PACKAGE_NAME.matches(value)
+
+    internal fun isValidVersionCode(value: String): Boolean = value.matches(Regex("\\d+"))
 
     /**
      * 安装 APK（root 静默）。
@@ -69,27 +81,28 @@ object ApkInstaller {
         }
 
         // 统一用规范名（.apk）落到 /data/local/tmp：pm install 对 .1 等非规范后缀可能拒绝
-        val tmpApk = "$TMP_DIR/_shso_install.apk"
+        val tmpApk = "$TMP_DIR/_shso_install_${UUID.randomUUID()}.apk"
         val cleanCmd = "rm -f ${RootService.escapeShellArg(tmpApk)}"
-        RootService.runCommandSync(cleanCmd, INSTALL_TIMEOUT_MS)
+        try {
+            RootService.runCommandSync(cleanCmd, INSTALL_TIMEOUT_MS)
 
-        val copyCmd = "cp ${RootService.escapeShellArg(apkPath)} ${RootService.escapeShellArg(tmpApk)}"
-        val (copyCode, copyOut) = RootService.runCommandSync(copyCmd, INSTALL_TIMEOUT_MS)
-        if (copyCode != 0) {
-            return@withContext InstallResult.Failure("复制 APK 到临时目录失败: $copyOut")
-        }
+            val copyCmd = "cp ${RootService.escapeShellArg(apkPath)} ${RootService.escapeShellArg(tmpApk)}"
+            val (copyCode, copyOut) = RootService.runCommandSync(copyCmd, INSTALL_TIMEOUT_MS)
+            if (copyCode != 0) {
+                return@withContext InstallResult.Failure("复制 APK 到临时目录失败: $copyOut")
+            }
 
-        // 安装（-r 覆盖安装 -d 允许降级 -t 允许测试包）
-        val installCmd = "pm install -r -d -t ${RootService.escapeShellArg(tmpApk)}"
-        val (installCode, installOut) = RootService.runCommandSync(installCmd, INSTALL_TIMEOUT_MS)
+            // 安装（-r 覆盖安装 -d 允许降级 -t 测试包）
+            val installCmd = "pm install -r -d -t ${RootService.escapeShellArg(tmpApk)}"
+            val (installCode, installOut) = RootService.runCommandSync(installCmd, INSTALL_TIMEOUT_MS)
 
-        // 清理临时文件（失败也不影响结果）
-        RootService.runCommandSync(cleanCmd, INSTALL_TIMEOUT_MS)
-
-        if (installCode == 0 && (installOut.contains("Success") || installOut.contains("success"))) {
-            InstallResult.Success("安装成功")
-        } else {
-            InstallResult.Failure("安装失败: ${installOut.trim().ifEmpty { "未知错误" }}")
+            if (installCode == 0 && (installOut.contains("Success") || installOut.contains("success"))) {
+                InstallResult.Success("安装成功")
+            } else {
+                InstallResult.Failure("安装失败: ${installOut.trim().ifEmpty { "未知错误" }}")
+            }
+        } finally {
+            RootService.runCommandSync(cleanCmd, INSTALL_TIMEOUT_MS)
         }
     }
 
@@ -104,17 +117,26 @@ object ApkInstaller {
         if (!file.exists()) return@withContext InstallResult.Failure("文件不存在: $xapkPath")
 
         // 1. 解压 XAPK（zip4j，zip 条目名可能含中文，需 UTF-8）
-        val stagingDir = File(File(xapkPath).parentFile ?: File(TMP_DIR), ".shso_xapk_${System.currentTimeMillis()}")
+        val stagingDir = File(File(xapkPath).parentFile ?: File(TMP_DIR), ".shso_xapk_${UUID.randomUUID()}")
         try {
             if (!stagingDir.exists()) stagingDir.mkdirs()
 
+            if (file.length() > MAX_XAPK_BYTES) {
+                return@withContext InstallResult.Failure("XAPK 文件超过 ${MAX_XAPK_BYTES / 1024 / 1024}MB 上限")
+            }
             val apkFiles = mutableListOf<File>()
             val obbFiles = mutableListOf<File>()
+            val extractedNames = mutableSetOf<String>()
+            var extractedBytes = 0L
             var manifestJson: JSONObject? = null
 
             try {
                 ZipFile(xapkPath).use { zip ->
-                    for (header in zip.fileHeaders) {
+                    val headers = zip.fileHeaders
+                    if (headers.size > MAX_XAPK_ENTRIES) {
+                        return@withContext InstallResult.Failure("XAPK 条目数超过 $MAX_XAPK_ENTRIES")
+                    }
+                    for (header in headers) {
                         val entryName = header.fileName
                         // 跳过目录条目与 manifest 之外的元数据
                         if (header.isDirectory) continue
@@ -122,21 +144,26 @@ object ApkInstaller {
                         val lower = entryName.lowercase()
                         when {
                             entryName == "manifest.json" -> {
-                                val content = zip.getInputStream(header).use { it.readBytes().toString(Charsets.UTF_8) }
+                                if (header.uncompressedSize > MAX_XAPK_MANIFEST_BYTES) {
+                                    return@withContext InstallResult.Failure("XAPK manifest.json 过大")
+                                }
+                                val content = zip.getInputStream(header).use {
+                                    readBoundedUtf8(it, MAX_XAPK_MANIFEST_BYTES)
+                                }
                                 manifestJson = try { JSONObject(content) } catch (_: Exception) { null }
                             }
                             lower.endsWith(".apk") -> {
-                                val dest = File(stagingDir, File(entryName).name)
-                                zip.getInputStream(header).use { input ->
-                                    dest.outputStream().use { out -> input.copyTo(out) }
-                                }
+                                val name = File(entryName).name
+                                if (!extractedNames.add(name)) return@withContext InstallResult.Failure("XAPK 包含重复文件名: $name")
+                                val dest = File(stagingDir, name)
+                                extractedBytes = copyXapkEntry(zip, header, dest, extractedBytes)
                                 apkFiles.add(dest)
                             }
                             lower.endsWith(".obb") -> {
-                                val dest = File(stagingDir, File(entryName).name)
-                                zip.getInputStream(header).use { input ->
-                                    dest.outputStream().use { out -> input.copyTo(out) }
-                                }
+                                val name = File(entryName).name
+                                if (!extractedNames.add(name)) return@withContext InstallResult.Failure("XAPK 包含重复文件名: $name")
+                                val dest = File(stagingDir, name)
+                                extractedBytes = copyXapkEntry(zip, header, dest, extractedBytes)
                                 obbFiles.add(dest)
                             }
                         }
@@ -155,9 +182,14 @@ object ApkInstaller {
             // 2. OBB 数据落位 /sdcard/Android/obb/<包名>/
             // 该路径由 ROOT shell 侧使用（mkdir/cp），非 Java 文件 API，故不能用 Environment 构造。
             // Android 规范：OBB 文件名必须为 main.<versionCode>.<packageName>.obb
-            val packageName = manifestJson?.optString("package_name")?.takeIf { it.isNotBlank() }
-            val versionCode = manifestJson?.optString("version_code")?.takeIf { it.isNotBlank() } ?: "1"
-            if (obbFiles.isNotEmpty() && packageName != null) {
+            val packageName = manifestJson?.optString("package_name")
+                ?.takeIf(::isValidAndroidPackageName)
+            val versionCode = manifestJson?.optString("version_code")
+                ?.takeIf(::isValidVersionCode) ?: "1"
+            if (obbFiles.isNotEmpty() && packageName == null) {
+                return@withContext InstallResult.Failure("XAPK 含 OBB 但 manifest 缺少有效包名")
+            }
+            if (obbFiles.isNotEmpty()) {
                 val obbDir = "/sdcard/Android/obb/$packageName"
                 val mkdirCmd = "mkdir -p ${RootService.escapeShellArg(obbDir)}"
                 RootService.runCommandSync(mkdirCmd, INSTALL_TIMEOUT_MS)
@@ -322,10 +354,13 @@ object ApkInstaller {
         if (apkPaths.isEmpty()) return@withContext InstallResult.Failure("没有可安装的 APK")
 
         // 1. 拷贝所有分片到 /data/local/tmp（sdcard 直读可能受限）
+        val token = UUID.randomUUID().toString()
         val tmpFiles = mutableListOf<String>()
+        var sessionId: String? = null
+        var committed = false
         try {
             for ((i, path) in apkPaths.withIndex()) {
-                val tmp = "$TMP_DIR/_shso_split_$i.apk"
+                val tmp = "$TMP_DIR/_shso_split_${token}_$i.apk"
                 val copyCmd = "cp ${RootService.escapeShellArg(path)} ${RootService.escapeShellArg(tmp)}"
                 val (code, out) = RootService.runCommandSync(copyCmd, INSTALL_TIMEOUT_MS)
                 if (code != 0) {
@@ -343,29 +378,31 @@ object ApkInstaller {
             }
 
             // 会话 id 形如 "Success: created install session [123456789]"
-            val sessionId = SESSION_ID_REGEX.find(createOut)?.groupValues?.get(1)
+            sessionId = SESSION_ID_REGEX.find(createOut)?.groupValues?.get(1)
                 ?: return@withContext InstallResult.Failure("无法解析安装会话 ID: ${createOut.trim()}")
 
             // 3. 写入分片
             for ((i, tmp) in tmpFiles.withIndex()) {
                 val size = File(tmp).length()
-                val writeCmd = "pm install-write -S $size $sessionId split$i ${RootService.escapeShellArg(tmp)}"
+                val writeCmd = "pm install-write -S $size ${sessionId} split$i ${RootService.escapeShellArg(tmp)}"
                 val (writeCode, writeOut) = RootService.runCommandSync(writeCmd, INSTALL_TIMEOUT_MS)
                 if (writeCode != 0) {
-                    RootService.runCommandSync("pm install-abandon $sessionId", INSTALL_TIMEOUT_MS)
+                    RootService.runCommandSync("pm install-abandon ${sessionId}", INSTALL_TIMEOUT_MS)
                     return@withContext InstallResult.Failure("写入分片 $i 失败: ${writeOut.trim()}")
                 }
             }
 
             // 4. 提交
-            val commitCmd = "pm install-commit $sessionId"
+            val commitCmd = "pm install-commit ${sessionId}"
             val (commitCode, commitOut) = RootService.runCommandSync(commitCmd, INSTALL_TIMEOUT_MS)
             if (commitCode != 0 || (!commitOut.contains("Success") && !commitOut.contains("success"))) {
                 return@withContext InstallResult.Failure("提交安装失败: ${commitOut.trim().ifEmpty { "未知错误" }}")
             }
 
+            committed = true
             InstallResult.Success("安装成功")
         } finally {
+            if (!committed) sessionId?.let { RootService.runCommandSync("pm install-abandon $it", INSTALL_TIMEOUT_MS) }
             // 清理临时分片
             val cleanupCmd = tmpFiles.joinToString(";") { "rm -f ${RootService.escapeShellArg(it)}" }
             if (cleanupCmd.isNotBlank()) {
@@ -375,6 +412,44 @@ object ApkInstaller {
     }
 
     private val SESSION_ID_REGEX = Regex("\\[(\\d+)]")
+
+    private fun readBoundedUtf8(input: java.io.InputStream, maxBytes: Long): String {
+        val out = ByteArrayOutputStream()
+        val buffer = ByteArray(16 * 1024)
+        var total = 0L
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            total += count
+            if (total > maxBytes) throw IllegalStateException("XAPK manifest.json 过大")
+            out.write(buffer, 0, count)
+        }
+        return out.toByteArray().toString(Charsets.UTF_8)
+    }
+
+    private fun copyXapkEntry(
+        zip: ZipFile,
+        header: net.lingala.zip4j.model.FileHeader,
+        dest: File,
+        currentTotal: Long
+    ): Long {
+        val declared = header.uncompressedSize
+        if (declared > MAX_XAPK_ENTRY_BYTES) throw IllegalStateException("XAPK 单个条目过大")
+        var total = currentTotal
+        zip.getInputStream(header).use { input ->
+            dest.outputStream().use { output ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    if (total > MAX_XAPK_BYTES) throw IllegalStateException("XAPK 解压总大小超限")
+                    output.write(buffer, 0, count)
+                }
+            }
+        }
+        return total
+    }
 
     /**
      * 非 ROOT 安装：调用系统包安装器（ACTION_VIEW + FileProvider 内容 URI）。

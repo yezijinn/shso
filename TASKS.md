@@ -196,9 +196,9 @@
   必须透传，不转成普通失败、不继续写 Compose 状态
 - 验证：310 tests / 0 failures、lint 0 error、Release 载荷红线通过；不操作手机
 
-### A5. 第七轮全面 BUG 审查（静态审查，未操作手机）
+### A5. 第七轮全面 BUG 审查（静态审查，历史记录）
 
-- [!] 新发现待处理项：
+- [x] 新发现待处理项：后续已拆分至 A8，以下内容保留为审查原始记录
   - `[High]` `MainActivity` 仍用 `catch (Exception)` 捕获 `ExternalOpen.resolve()`，取消旧请求时可能继续清空后来者；
     `ArchiveExtractor` / `ApkInstaller` / `FilePage.startInstall` 也有同类取消吞异常路径
   - `[High]` `RootFileManager.statFilePath()` 修复后仍需补 ROOT-only 失败、目录、符号链接边界测试；
@@ -210,6 +210,38 @@
   - `[Medium]` 安装确认后仍安装共享存储原文件，确认哈希与实际安装内容存在 TOCTOU；安装审计仍缺失
   - `[Low]` LOCATE 隐藏文件仍无法在过滤列表中显示高亮；收件箱无去重/清理；多文件分享只处理首项
   - 本地基线：310 tests / 0 failures、lint 通过；本轮未执行 ADB、安装或清理
+
+### A7. 全面 BUG 挖掘（2026-09-29，已完成）
+
+- [x] **八维度静态审查**：功能逻辑、边界条件、异常处理、性能、安全、兼容性、数据一致性、并发；本轮不操作手机，避免干扰其他操作者
+  - 范围：外部唤起、安装/解压、ROOT 文件操作、FilePage/编辑器生命周期、终端任务、守卫与审计
+  - 规则：先区分已修复历史项与当前代码风险；每项记录严重级别、文件/行号、触发条件、影响与测试缺口
+  - `[High][安全/一致性]` 安装确认哈希后仍直接从共享存储原路径 `cp`/系统安装器读取；确认哈希与实际安装字节之间仍有 TOCTOU 窗口，`FilePage.kt:331-363`、`ApkInstaller.kt:58-94`。需确认阶段生成应用私有不可变副本，安装只读副本；当前仅有哈希回归测试，无替换竞态测试
+  - `[High][安全/功能]` `installXapk()` 对外部 XAPK 无总大小、单条目、条目数或 manifest 大小限制，`fileHeaders`/`readBytes()` 可造成内存或磁盘耗尽；manifest 的 `package_name` 未按 Android 包名校验，拼入 `/sdcard/Android/obb/$packageName` 后可逃出 OBB 根目录，`ApkInstaller.kt:102-181`
+  - `[High][并发/一致性]` 单 APK 与 split 安装使用固定 `/data/local/tmp/_shso_install.apk`、`_shso_split_N.apk`，并发安装会互相覆盖或清理临时文件；提交失败也未统一 `pm install-abandon`，`ApkInstaller.kt:58-94`、`321-374`
+  - `[High][安全]` `ArchiveExtractor.resolveTargetPath()` 的“检查后创建”与失败 `deleteRecursively()` 存在竞态；并发解压同名归档或外部进程抢先创建目标时，失败任务可能删除他方目录。`safeDest()` 的 canonical 检查同样不能阻止检查后被替换为软链，`ArchiveExtractor.kt:268-320`、`485-509`
+  - `[High][边界/性能]` ZIP `peekRoot()` 在条目数上限判断前先取 `zip.fileHeaders`，zip4j 可能先一次性构造百万级 central directory；XAPK 也一次性遍历完整 headers，预算检查无法阻止前置内存峰值，`ArchiveExtractor.kt:128-145`、`ApkInstaller.kt:116-143`
+  - `[High][安全/失败关闭]` `statFilePath()` ROOT `stat` 失败或输出解析失败后仍回退 `java.io.File` 元数据；共享存储可读但 ROOT stat 异常时仍可能进入安装/执行/解压分派，违背“stat 失败禁止动作”的契约，`RootFileManager.kt:347-364`
+  - `[Medium][功能]` 点开头的隐藏文件统一被 `isExtensionlessText` 判为无扩展名；外部唤起 `.apk`/`.zip`/`.sh`/`.png` 时优先走 MIME，发送方常给 `application/octet-stream` 会把可安装/可执行/图片目标误退回文本或动作菜单，`FileItem.kt:105-110`、`ExternalOpen.kt:174-185`
+  - `[Medium][并发/兼容]` 收件箱 `uniqueFile()` 是非原子“查存在→返回”，并发分享同名 URI 可能同时选择同一路径并互相覆盖；无去重、清理和容量上限，重复唤起可无限增长，`ExternalOpen.kt:328-369`
+  - `[Medium][异常处理]` XAPK 安装取消/异常时虽清 staging，但固定临时 APK、分片安装会话与 OBB 已落盘数据没有统一回滚；`installSplitApks()` 仅写分片失败时 abandon，create/commit 失败与取消可能泄露 session/文件，`ApkInstaller.kt:155-185`、`321-374`
+  - `[Medium][数据一致性]` 安装确认窗口的大小来自旧 `FileItem`，哈希却异步重新读取；文件被替换或大小变化时界面展示的大小与确认对象不一致，且 ROOT 状态变化会动态改变“安装方式”，确认时未锁定初始模式，`InstallConfirmDialog.kt:61-73`、`FilePage.kt:2031-2040`
+  - `[Medium][生命周期]` `startExtract()` 在 `ArchiveExtractor.extract()` 抛取消异常时没有 `finally` 复位 `isExtracting`；页面仍存活时可能永久显示“正在解压”，`FilePage.kt:311-328`
+  - `[Low][健壮性]` `FileItemSaver.restore` 对 saved state 字段数量/类型直接强转，损坏或未来格式变化会在旋转恢复阶段崩溃；`FileItem.kt:160-175`
+  - `[Low][审计]` `SecurityAuditLog.log()`、轮转与读取仍用 `catch (Exception)`，可能吞取消异常或把取消记录为普通写入失败；安装流程亦完全没有来源、确认哈希、模式、结果审计，`SecurityAuditLog.kt:157-186`、`ApkInstaller.kt:58-94`
+  - `[Low][兼容]` `isArchive` 未使用 `realExtension`，QQ 等产生的 `archive.zip.1` 能识别 APK `.apk.1` 却不能识别压缩包；`FileItem.kt:116-122`
+  - 复核结论：外部解压自动写盘已由 A6 修复；安装确认一致性、stat 回退、XAPK 边界、安装并发与取消清理已由 A8 修复
+  - 静态复核范围已完成：现有测试曾缺少 XAPK 恶意 manifest/超大条目、安装替换竞态、固定临时文件并发、隐藏扩展名外部分派和取消清理覆盖；本轮已补充关键边界测试
+  - 完成记录：静态审查验证通过 `:app:testDebugUnitTest`、`:app:lintDebug`；修复项与产物验证统一记录于 A8
+
+### A8. 高优先级缺陷修复（2026-09-29）
+
+- [x] **修复 stat / XAPK / 安装并发边界**：完成
+  - `RootFileManager.statFilePath`：ROOT stat 非零退出或解析失败直接返回 null，不再降级为可能误分派的普通文件元数据
+  - `ApkInstaller`：XAPK 增加压缩包/条目/单条目/manifest/总解压预算，校验 Android 包名与版本号；单 APK、分包临时文件改为 UUID 隔离，失败会话统一 abandon
+  - 安装确认：确认阶段生成应用私有缓存副本，实际安装只使用副本并复核哈希；确认时锁定 ROOT/系统安装器模式
+  - 文件页：修复解压取消后 `isExtracting` 不复位；兼容 `.zip.1` 等压缩包尾缀
+  - 验证：`testDebugUnitTest`、`lintDebug`、`assembleRelease` 均通过；Release 载荷红线通过；Release APK 已安装至 `BIYLBAFQQSS8DA69` 并启动验证成功
 
 - [ ] **安全第三轮（可选）**：`GuardModuleInstaller` 卸载残留（`/data/adb/shso_guard/policy.conf` 与审计日志）；`ScriptAuditor` 跨行变量追踪；`$IFS` 之外的 shell 展开（`${x:-…}`、算术展开）
 - [ ] **内核级守卫（独立议题）**：PATH 前置型守卫无法拦绝对路径调用与 `PATH` 重置，彻底封堵需 seccomp/LSM hook

@@ -350,8 +350,11 @@ object RootFileManager {
 
         if (preferRoot()) {
             val escaped = RootService.escapeShellArg(path)
-            val (_, output) = RootService.runCommandSync("stat -L -c \"%A|%s|%Y|%n\" $escaped 2>/dev/null")
-            parseSingleStatOutput(output, path)?.let { return@withContext it }
+            val (code, output) = RootService.runCommandSync("stat -L -c \"%A|%s|%Y|%n\" $escaped 2>/dev/null")
+            // ROOT is authoritative for protected paths. Do not downgrade a failed
+            // stat to best-effort metadata and accidentally dispatch an unknown file.
+            if (code != 0) return@withContext null
+            return@withContext parseSingleStatOutput(output, path)
         }
         val file = runCatching { File(path) }.getOrNull() ?: return@withContext null
         if (!runCatching { file.exists() }.getOrDefault(false)) return@withContext null
