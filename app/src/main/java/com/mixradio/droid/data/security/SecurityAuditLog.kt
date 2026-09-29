@@ -48,7 +48,7 @@ object SecurityAuditLog {
     private val ALWAYS_AUDITED = setOf(
         "GUARD_INSTALL", "GUARD_UNINSTALL", "GUARD_POLICY_MODE",
         "GUARD_AUTO_INSTALL_FAILED", "GUARD_UNAVAILABLE_DEGRADED",
-        "AUDIT_CLEARED"
+        "AUDIT_CLEARED", "APK_INSTALL"
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
