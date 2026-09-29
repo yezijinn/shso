@@ -104,8 +104,8 @@ URI 解析分三层：`file://` 直取；`com.android.externalstorage.documents`
 外部请求取消必须透传 `CancellationException`；`ExternalOpenHub` 以请求令牌消费，防止取消中的旧 effect 清空后来者。
 隐藏文件与刚落盘的收件箱副本不依赖目录列表可见性，使用 `RootFileManager.statFilePath()` 直接取单文件属性；
 stat 失败或路径非法时禁止动作分派。
-安装确认展示的 SHA-256 会在实际安装前重新计算；确认哈希不一致、哈希不可计算或安装模式发生变化时拒绝安装，
-避免共享存储文件在确认后被替换。
+安装确认阶段先把源文件复制到应用私有缓存副本并计算 SHA-256；实际安装只使用该副本，并在安装前再次校验哈希。
+副本缺失、哈希不一致或哈希不可计算时拒绝安装；确认时同时锁定 ROOT 静默安装/系统安装器模式，避免共享存储文件替换或权限状态变化影响确认结果。
 
 配置变更守卫：`MainActivity` 用 `savedInstanceState` 记录外部 intent 是否已消费，
 重建时不重解析（否则重放 intent 会重复拷贝、重开编辑器）；`onNewIntent` 清除该标记，

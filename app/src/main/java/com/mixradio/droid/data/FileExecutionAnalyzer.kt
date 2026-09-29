@@ -4,6 +4,7 @@
 package com.mixradio.droid.data
 
 import java.io.File
+import java.util.UUID
 import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -71,6 +72,38 @@ suspend fun computeSha256Strict(path: String): String? = withContext(Dispatchers
         Regex("^\\s*([0-9a-fA-F]{64})").find(output)?.groupValues?.get(1)?.uppercase()
     }.getOrNull()
 }
+
+/**
+ * Create the exact APK bytes that the confirmation dialog will approve.
+ * The staged copy lives in the app-private cache, so a shared-storage writer
+ * cannot replace the file between confirmation and installation.
+ */
+suspend fun stageApkForInstall(context: android.content.Context, sourcePath: String): Pair<String, String>? =
+    withContext(Dispatchers.IO) {
+        val source = File(sourcePath)
+        if (!source.isFile) return@withContext null
+        val dir = File(context.cacheDir, "install-confirm").apply { mkdirs() }
+        val staged = File(dir, "${UUID.randomUUID()}.apk")
+        try {
+            if (source.canRead()) {
+                source.inputStream().use { input -> staged.outputStream().use { output -> input.copyTo(output) } }
+            } else {
+                val (code, output) = RootService.runCommandSync(
+                    "cp ${RootService.escapeShellArg(sourcePath)} ${RootService.escapeShellArg(staged.absolutePath)}"
+                )
+                if (code != 0) throw IllegalStateException("复制安装副本失败: $output")
+                val (chmodCode, chmodOutput) = RootService.runCommandSync(
+                    "chmod 644 ${RootService.escapeShellArg(staged.absolutePath)}"
+                )
+                if (chmodCode != 0) throw IllegalStateException("设置安装副本权限失败: $chmodOutput")
+            }
+            val hash = computeSha256Strict(staged.absolutePath) ?: return@withContext null
+            staged.absolutePath to hash
+        } catch (_: Exception) {
+            staged.delete()
+            null
+        }
+    }
 
 /** 本地可读文件：采样前 8KB 做 ELF 魔数 / 空字节 / 可打印比例判定。 */
 private fun detectContentLocal(file: File): Pair<String, String> {

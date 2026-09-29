@@ -311,8 +311,11 @@ fun FilePage(
     fun startExtract(item: FileItem) {
         scope.launch {
             isExtracting = true
-            val result = ArchiveExtractor.extract(archivePath = item.path, targetParent = currentDirectory)
-            isExtracting = false
+            val result = try {
+                ArchiveExtractor.extract(archivePath = item.path, targetParent = currentDirectory)
+            } finally {
+                isExtracting = false
+            }
             when (result) {
                 is ArchiveExtractor.ExtractResult.Success ->
                     feedbackMessage = "已解压到: ${result.targetDir}"
@@ -331,7 +334,8 @@ fun FilePage(
     fun startInstall(
         item: FileItem,
         installAsRootOverride: Boolean? = null,
-        confirmedSha256: String? = null
+        confirmedSha256: String? = null,
+        stagedPath: String? = null
     ) {
         scope.launch {
             isInstalling = true
@@ -339,14 +343,15 @@ fun FilePage(
             installStatusMessage = "正在安装 ${item.name}，请勿重复操作"
             val result = try {
                 val installAsRoot = installAsRootOverride ?: (RootService.isRootGranted == true)
-                val currentHash = computeSha256Strict(item.path)
+                val installPath = stagedPath ?: item.path
+                val currentHash = computeSha256Strict(installPath)
                 if (currentHash == null || !currentHash.equals(confirmedSha256, ignoreCase = true)) {
                     ApkInstaller.InstallResult.Failure("安装包在确认后发生变化，已取消安装")
                 } else if (installAsRoot) {
                     if (item.realExtension == "apk") {
-                        ApkInstaller.installApk(context, item.path)
+                        ApkInstaller.installApk(context, installPath)
                     } else {
-                        ApkInstaller.installXapk(context, item.path)
+                        ApkInstaller.installXapk(context, installPath)
                     }
                 } else {
                     if (item.realExtension == "apk") {
@@ -355,7 +360,7 @@ fun FilePage(
                                 "该应用为分包应用，无 ROOT 时无法整套安装；请将同目录的 base 与 -splitN 文件一并交给 SAI / MT 管理器安装"
                             )
                         } else {
-                            ApkInstaller.installApkViaSystem(context, item.path)
+                            ApkInstaller.installApkViaSystem(context, installPath)
                         }
                     } else {
                         ApkInstaller.InstallResult.Failure("XAPK 分片安装需 ROOT 静默权限，请先授权 ROOT")
@@ -376,6 +381,7 @@ fun FilePage(
                 is ApkInstaller.InstallResult.Failure -> "安装失败：$resultMessage"
             }
             feedbackMessage = resultMessage
+            stagedPath?.let { File(it).delete() }
         }
     }
 
@@ -2034,10 +2040,11 @@ fun FilePage(
         fileItem = pendingInstallItem,
         willInstallAsRoot = RootService.isRootGranted == true,
         onDismiss = { pendingInstallItem = null },
-        onConfirm = { confirmedSha256, installAsRoot ->
+        onConfirm = { confirmedSha256, installAsRoot, stagedPath ->
             val target = pendingInstallItem
             pendingInstallItem = null
-            if (target != null) startInstall(target, installAsRoot, confirmedSha256)
+            if (target != null) startInstall(target, installAsRoot, confirmedSha256, stagedPath)
+            else File(stagedPath).delete()
         }
     )
 }

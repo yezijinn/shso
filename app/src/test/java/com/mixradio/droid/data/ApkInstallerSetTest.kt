@@ -19,6 +19,18 @@ import org.junit.Test
 class ApkInstallerSetTest {
 
     @Test
+    fun `XAPK budgets and package names are bounded`() {
+        assertEquals(1L * 1024 * 1024 * 1024, ApkInstaller.MAX_XAPK_BYTES)
+        assertEquals(512L * 1024 * 1024, ApkInstaller.MAX_XAPK_ENTRY_BYTES)
+        assertEquals(20_000, ApkInstaller.MAX_XAPK_ENTRIES)
+        assertTrue(ApkInstaller.isValidAndroidPackageName("com.example.app"))
+        assertFalse(ApkInstaller.isValidAndroidPackageName("../outside"))
+        assertFalse(ApkInstaller.isValidAndroidPackageName("com.example/escape"))
+        assertTrue(ApkInstaller.isValidVersionCode("123"))
+        assertFalse(ApkInstaller.isValidVersionCode("1/2"))
+    }
+
+    @Test
     fun `套件前缀剥离分包后缀`() {
         assertEquals("X-123", ApkInstaller.apkSetStem("X-123.APK"))
         assertEquals("X-123", ApkInstaller.apkSetStem("X-123-split2.APK"))
