@@ -59,6 +59,12 @@ class FileItemSaverTest {
     }
 
     @Test
+    fun `损坏或旧格式状态安全还原为 null`() {
+        assertNull(FileItemSaver.restore(listOf("name", "path")))
+        assertNull(FileItemSaver.restore(listOf("name", "path", false, "bad", 0L, "644")))
+    }
+
+    @Test
     fun `路径含空格与中文不被破坏`() {
         val item = FileItem(
             name = "Jinn输入法-20260830.APK",

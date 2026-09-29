@@ -85,7 +85,7 @@ object ArchiveExtractor {
 
     /** 识别压缩包类型；未知格式返回 null。 */
     private fun kindOf(name: String): Kind? {
-        val lower = name.lowercase(Locale.getDefault())
+        val lower = archiveName(name).lowercase(Locale.getDefault())
         return when {
             lower.endsWith(".zip") -> Kind.ZIP
             lower.endsWith(".7z") -> Kind.SEVENZ
@@ -97,17 +97,22 @@ object ArchiveExtractor {
 
     /** 去除全部压缩/归档后缀后的基础名（如 a.tar.gz → a；a.gz → a）。 */
     fun baseName(name: String): String {
-        val lower = name.lowercase(Locale.getDefault())
+        val normalized = archiveName(name)
+        val lower = normalized.lowercase(Locale.getDefault())
         val suffix = TAR_EXTENSIONS.firstOrNull { lower.endsWith(it) }
             ?: SINGLE_EXTENSIONS.firstOrNull { lower.endsWith(it) }
             ?: ".zip".takeIf { lower.endsWith(".zip") }
             ?: ".7z".takeIf { lower.endsWith(".7z") }
         if (suffix != null) {
-            val n = name.substring(0, name.length - suffix.length)
+            val n = normalized.substring(0, normalized.length - suffix.length)
             if (n.isNotEmpty()) return n
         }
         return name
     }
+
+    /** Strip downloader suffixes such as `.1` before archive classification. */
+    private fun archiveName(name: String): String =
+        name.replace(Regex("\\.\\d+$"), "")
 
     sealed class ExtractResult {
         data class Success(val targetDir: String) : ExtractResult()
@@ -197,7 +202,7 @@ object ArchiveExtractor {
     /** 按格式打开解压流（tar 或单文件压缩型）。 */
     private fun openDecompress(path: String): InputStream {
         val base = BufferedInputStream(FileInputStream(path))
-        val lower = path.lowercase(Locale.getDefault())
+        val lower = archiveName(path).lowercase(Locale.getDefault())
         return when {
             lower.endsWith(".tar") -> base
             lower.endsWith(".tgz") || lower.endsWith(".tar.gz") || lower.endsWith(".gz") ->
@@ -234,13 +239,14 @@ object ArchiveExtractor {
             var targetFile: File? = null
             return@withContext try {
                 val outName = baseName(File(archivePath).name)
-                targetFile = File(resolveTargetPath(targetParent, outName))
-                targetFile.parentFile?.mkdirs()
+                targetFile = reserveTargetFile(targetParent, outName)
+                    ?: return@withContext ExtractResult.Failure("无法创建解压目标文件")
                 val budget = ExtractionBudget()
                 budget.beginEntry()
                 openDecompress(archivePath).use { input -> copyStream(input, targetFile, budget) }
                 ExtractResult.Success(targetFile.absolutePath)
             } catch (e: CancellationException) {
+                runCatching { targetFile?.delete() }
                 throw e
             } catch (e: Exception) {
                 runCatching { targetFile?.delete() }
@@ -265,39 +271,44 @@ object ArchiveExtractor {
                 sevenZ.close()
             }
 
-            val finalTarget: String = rootPeek.singleTopFolder?.let { topFolder ->
+            val finalTarget: File = rootPeek.singleTopFolder?.let { topFolder ->
                 // 条件 A：直接将顶层文件夹解压到当前目录（需剥离顶层文件夹前缀，避免 abc/abc 嵌套）
-                resolveTargetPath(targetParent, topFolder)
+                reserveTargetDirectory(targetParent, topFolder)
             } ?: run {
                 // 条件 B：新建以压缩包名（去后缀）命名的文件夹
-                resolveTargetPath(targetParent, baseName(File(archivePath).name))
-            }
-
-            File(finalTarget).mkdirs()
+                reserveTargetDirectory(targetParent, baseName(File(archivePath).name))
+            } ?: return@withContext ExtractResult.Failure("无法创建解压目标目录")
 
             // 条件 A 命中时剥离顶层文件夹前缀；条件 B 原样保留条目结构
             val stripPrefix = rootPeek.singleTopFolder
 
-            val result = when (kind) {
-                Kind.ZIP -> extractZip(archivePath, finalTarget, password, stripPrefix)
-                Kind.SEVENZ -> extract7z(archivePath, finalTarget, password, stripPrefix)
-                Kind.TAR -> extractTar(archivePath, finalTarget, stripPrefix)
-                // SINGLE 已在此前提前返回，此处不可达；显式列出以保持枚举穷尽且避免 NoWhenBranchMatchedException
-                Kind.SINGLE -> ExtractResult.Failure("暂不支持解压该格式")
+            val result = try {
+                when (kind) {
+                    Kind.ZIP -> extractZip(archivePath, finalTarget.absolutePath, password, stripPrefix)
+                    Kind.SEVENZ -> extract7z(archivePath, finalTarget.absolutePath, password, stripPrefix)
+                    Kind.TAR -> extractTar(archivePath, finalTarget.absolutePath, stripPrefix)
+                    // SINGLE 已在此前提前返回，此处不可达；显式列出以保持枚举穷尽且避免 NoWhenBranchMatchedException
+                    Kind.SINGLE -> ExtractResult.Failure("暂不支持解压该格式")
+                }
+            } catch (e: CancellationException) {
+                // The directory was atomically reserved by this invocation.
+                // Remove only that owned target, never a pre-existing sibling.
+                runCatching { finalTarget.deleteRecursively() }
+                throw e
             }
 
             when (result) {
-                is ExtractResult.Success -> ExtractResult.Success(finalTarget)
+                is ExtractResult.Success -> ExtractResult.Success(finalTarget.absolutePath)
                 is ExtractResult.NeedPassword -> {
                     // 清理可能已创建的空白目标目录
-                    if (File(finalTarget).listFiles()?.isEmpty() == true) {
-                        File(finalTarget).delete()
+                    if (finalTarget.listFiles()?.isEmpty() == true) {
+                        finalTarget.delete()
                     }
                     result
                 }
                 is ExtractResult.Failure -> {
                     // 目标由本次 resolveTargetPath 新建，失败时整体清理，避免残留半包数据。
-                    File(finalTarget).deleteRecursively()
+                    finalTarget.deleteRecursively()
                     result
                 }
             }
@@ -318,6 +329,40 @@ object ArchiveExtractor {
             index++
         }
         return candidate.absolutePath
+    }
+
+    /** Reserve a directory atomically so failed extraction cannot delete a rival target. */
+    private fun reserveTargetDirectory(parent: String, baseName: String): File? {
+        val safe = baseName.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        var index = 0
+        while (index < 100_000) {
+            val name = if (index == 0) safe else "${safe}_$index"
+            val candidate = File(parent, name)
+            if (candidate.mkdir()) return candidate
+            if (!candidate.exists()) return null
+            index++
+        }
+        return null
+    }
+
+    /** Reserve a file atomically before opening the decompressor output stream. */
+    private fun reserveTargetFile(parent: String, baseName: String): File? {
+        val safe = baseName.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        val dot = safe.lastIndexOf('.')
+        val stem = if (dot > 0) safe.substring(0, dot) else safe
+        val ext = if (dot > 0) safe.substring(dot) else ""
+        var index = 0
+        while (index < 100_000) {
+            val name = if (index == 0) safe else "${stem}_$index$ext"
+            val candidate = File(parent, name)
+            try {
+                if (candidate.createNewFile()) return candidate
+            } catch (_: Exception) {
+                return null
+            }
+            index++
+        }
+        return null
     }
 
     private fun extractZip(path: String, target: String, password: String?, stripPrefix: String?): ExtractResult {
