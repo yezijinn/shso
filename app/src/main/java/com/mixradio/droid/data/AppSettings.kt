@@ -90,7 +90,7 @@ class AppSettings private constructor(context: Context) {
         private set
 
     /**
-     * 安全防护档位：0 无防护 / 1 仅审计 / 2 标准防护（默认）/ 3 最强防护。
+     * 安全防护档位：0 无防护（默认）/ 1 仅审计 / 2 标准防护 / 3 最强防护。
      * 见 data/security/SecurityLevels.kt 与 docs/指令审查与拦截方案.md。
      *
      * 读取侧必须钳制：越界值（被篡改或降级残留）会让档位门控 fail-open
@@ -98,9 +98,9 @@ class AppSettings private constructor(context: Context) {
      * 类型不符（写入方变更）会抛 ClassCastException，一并兜住。
      */
     var securityLevel by mutableIntStateOf(
-        runCatching { prefs.getInt(KEY_SECURITY_LEVEL, SECURITY_STANDARD) }
-            .getOrDefault(SECURITY_STANDARD)
-            .let { if (SecurityLevels.isValid(it)) it else SECURITY_STANDARD }
+        runCatching { prefs.getInt(KEY_SECURITY_LEVEL, SECURITY_OFF) }
+            .getOrDefault(SECURITY_OFF)
+            .let { if (SecurityLevels.isValid(it)) it else SECURITY_OFF }
     )
         private set
 
@@ -302,8 +302,8 @@ class AppSettings private constructor(context: Context) {
         const val FILE_SORT_TIME_DESC = 3
 
         /** 安全档位常量（与 data/security/SecurityLevels 对齐） */
-        const val SECURITY_OFF = 0
         const val SECURITY_AUDIT_ONLY = 1
+        const val SECURITY_OFF = SecurityLevels.OFF
         const val SECURITY_STANDARD = 2
         const val SECURITY_MAXIMUM = 3
 

@@ -16,11 +16,13 @@ import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
 import net.lingala.zip4j.ZipFile
 import org.json.JSONObject
 import java.io.File
 import java.io.ByteArrayOutputStream
 import java.util.UUID
+import android.os.Process
 
 /**
  * APK / XAPK 安装器（root 静默）。
@@ -46,6 +48,7 @@ object ApkInstaller {
 
     /** 安装大包允许的更长超时（拷贝 + pm 会话流可能超过默认 120s）。 */
     private const val INSTALL_TIMEOUT_MS = 300_000L
+    private const val OBB_LOCK_TTL_SECONDS = 15 * 60L
     internal const val MAX_XAPK_BYTES = 1L * 1024 * 1024 * 1024
     internal const val MAX_XAPK_ENTRY_BYTES = 512L * 1024 * 1024
     internal const val MAX_XAPK_ENTRIES = 20_000
@@ -118,8 +121,14 @@ object ApkInstaller {
 
         // 1. 解压 XAPK（zip4j，zip 条目名可能含中文，需 UTF-8）
         val stagingDir = File(File(xapkPath).parentFile ?: File(TMP_DIR), ".shso_xapk_${UUID.randomUUID()}")
+        val installedObbTargets = mutableListOf<String>()
+        var obbTransactionLock: String? = null
+        var obbLockToken: String? = null
+        var installSucceeded = false
         try {
-            if (!stagingDir.exists()) stagingDir.mkdirs()
+            if (!stagingDir.exists() && !stagingDir.mkdirs()) {
+                return@withContext InstallResult.Failure("无法创建 XAPK 临时目录")
+            }
 
             if (file.length() > MAX_XAPK_BYTES) {
                 return@withContext InstallResult.Failure("XAPK 文件超过 ${MAX_XAPK_BYTES / 1024 / 1024}MB 上限")
@@ -191,32 +200,172 @@ object ApkInstaller {
             }
             if (obbFiles.isNotEmpty()) {
                 val obbDir = "/sdcard/Android/obb/$packageName"
+                obbTransactionLock = "$obbDir/.shso_install.lock"
+                obbLockToken = UUID.randomUUID().toString()
+                var lockResult = acquireObbLock(obbTransactionLock, obbLockToken)
+                for (attempt in 0 until 3) {
+                    if (lockResult.first == 0 || lockResult.first != 17) break
+                    delay((attempt + 1) * 250L)
+                    lockResult = acquireObbLock(obbTransactionLock, obbLockToken)
+                }
+                if (lockResult.first != 0) {
+                    return@withContext InstallResult.Failure("OBB 目录正在被其他安装任务使用")
+                }
                 val mkdirCmd = "mkdir -p ${RootService.escapeShellArg(obbDir)}"
-                RootService.runCommandSync(mkdirCmd, INSTALL_TIMEOUT_MS)
-                for (obb in obbFiles) {
-                    // 已符合 main.<vc>.<pkg>.obb 命名则原样拷贝，否则按规范重命名
-                    val targetName = if (obb.name.matches(Regex("^(main|patch)\\.\\d+\\..+\\.obb$"))) {
-                        obb.name
-                    } else {
-                        "main.$versionCode.$packageName.obb"
+                val (mkdirCode, mkdirOutput) = RootService.runCommandSync(mkdirCmd, INSTALL_TIMEOUT_MS)
+                if (mkdirCode != 0) {
+                    return@withContext InstallResult.Failure("创建 OBB 目录失败: ${mkdirOutput.trim()}")
+                }
+                val copiedObbTargets = mutableListOf<String>()
+                try {
+                    for (obb in obbFiles) {
+                        // 已符合 main.<vc>.<pkg>.obb 命名则原样拷贝，否则按规范重命名
+                        val targetName = if (obb.name.matches(Regex("^(main|patch)\\.\\d+\\..+\\.obb$"))) {
+                            obb.name
+                        } else {
+                            "main.$versionCode.$packageName.obb"
+                        }
+                        val targetPath = "$obbDir/$targetName"
+                        if (targetPath in copiedObbTargets) {
+                            return@withContext InstallResult.Failure("XAPK 包含重复 OBB 目标: $targetName")
+                        }
+                        val (copyCode, copyOutput) = copyObbAtomically(
+                            obb.absolutePath, targetPath, obbTransactionLock, obbLockToken
+                        )
+                        if (copyCode != 0) {
+                            return@withContext InstallResult.Failure("复制 OBB 失败: ${copyOutput.trim()}")
+                        }
+                        copiedObbTargets += targetPath
+                        readObbIdentity(targetPath)?.let { identity ->
+                            installedObbTargets += "$targetPath|$identity"
+                        }
                     }
-                    val copyCmd = "cp ${RootService.escapeShellArg(obb.absolutePath)} ${RootService.escapeShellArg("$obbDir/$targetName")}"
-                    RootService.runCommandSync(copyCmd, INSTALL_TIMEOUT_MS)
+                } finally {
+                    // Do not leave a partial OBB set when any copy fails or is cancelled.
+                    if (copiedObbTargets.size != obbFiles.size) {
+                    copiedObbTargets.forEach { target ->
+                            RootService.runCommandSync("rm -f ${RootService.escapeShellArg(target)}", INSTALL_TIMEOUT_MS)
+                        }
+                    }
                 }
             }
 
             // 3. 单 APK 直接装；多 APK（split）走会话流
-            return@withContext if (apkFiles.size == 1) {
+            val installResult = if (apkFiles.size == 1) {
                 installApk(context, apkFiles[0].absolutePath)
             } else {
                 installSplitApks(apkFiles.map { it.absolutePath })
             }
+            installSucceeded = installResult is InstallResult.Success
+            return@withContext installResult
         } finally {
+            if (!installSucceeded && installedObbTargets.isNotEmpty()) {
+                installedObbTargets.forEach { target ->
+                    obbLockToken?.let { removeOwnedObb(target, obbTransactionLock, it) }
+                }
+            }
+            if (obbTransactionLock != null && obbLockToken != null) {
+                releaseObbLock(obbTransactionLock, obbLockToken)
+            }
             // 清理解压的临时目录（保留 OBB 已拷走的副本）
             try {
                 if (stagingDir.exists()) stagingDir.deleteRecursively()
             } catch (_: Exception) {}
         }
+    }
+
+    /** Copy beside the destination, then atomically move into the empty target path. */
+    private fun copyObbAtomically(
+        sourcePath: String,
+        targetPath: String,
+        lockPath: String?,
+        token: String?
+    ): Pair<Int, String> {
+        val tempToken = UUID.randomUUID().toString()
+        val tempPath = "$targetPath.shso.tmp.$tempToken"
+        val source = RootService.escapeShellArg(sourcePath)
+        val target = RootService.escapeShellArg(targetPath)
+        val temp = RootService.escapeShellArg(tempPath)
+        val lock = RootService.escapeShellArg(lockPath ?: return 21 to "OBB lock missing")
+        val tokenArg = RootService.escapeShellArg(token ?: return 21 to "OBB lock token missing")
+        val script = buildString {
+            append("trap 'rm -f $temp' EXIT; ")
+            append("if [ \"\$(cat $lock/token 2>/dev/null)\" != $tokenArg ]; then exit 21; fi; ")
+            append("if [ -e $target ] || [ -L $target ]; then exit 18; fi; ")
+            append("cp $source $temp || exit 19; ")
+            append("if [ \"\$(cat $lock/token 2>/dev/null)\" != $tokenArg ]; then exit 21; fi; ")
+            append("mv $temp $target || exit 20; ")
+            append("trap - EXIT")
+        }
+        return RootService.runCommandSync(script, INSTALL_TIMEOUT_MS)
+    }
+
+    private fun acquireObbLock(lockPath: String, token: String): Pair<Int, String> {
+        val lock = RootService.escapeShellArg(lockPath)
+        val tokenArg = RootService.escapeShellArg(token)
+        val pid = Process.myPid().toString()
+        val pidArg = RootService.escapeShellArg(pid)
+        val startTicks = processStartTicks() ?: return 21 to "无法读取当前进程启动时间"
+        val startArg = RootService.escapeShellArg(startTicks)
+        val lockToken = UUID.randomUUID().toString()
+        val tempLockPath = "$lockPath.shso.lock.$lockToken"
+        val tempLock = RootService.escapeShellArg(tempLockPath)
+        val script = buildString {
+            append("if [ -e $lock ] || [ -L $lock ]; then ")
+            append("oldPid=\$(cat $lock/pid 2>/dev/null || true); ")
+            append("oldStart=\$(cat $lock/start 2>/dev/null || true); ")
+            append("created=\$(cat $lock/created 2>/dev/null || true); ")
+            append("now=\$(date +%s 2>/dev/null || true); ")
+            append("if [ -z \"\$oldPid\" ] || [ -z \"\$oldStart\" ] || [ -z \"\$created\" ] || [ -z \"\$now\" ]; then exit 17; fi; ")
+            append("liveStart=\$(cat /proc/\$oldPid/stat 2>/dev/null | awk '{print \$22}'); ")
+            append("if [ \"\$liveStart\" = \"\$oldStart\" ]; then exit 17; fi; ")
+            append("if [ \"\$created\" -ge \"\$now\" ] || [ \"\$now\" - \"\$created\" -lt ${OBB_LOCK_TTL_SECONDS} ]; then exit 17; fi; ")
+            val quarantine = RootService.escapeShellArg("$lockPath.shso.quarantine.$lockToken")
+            // Rename to a unique path and retain it. Deleting a quarantine path
+            // after the rename would reintroduce a race with an external creator.
+            append("if ! mv $lock $quarantine 2>/dev/null; then exit 17; fi; ")
+            append("mkdir $tempLock 2>/dev/null || exit 17; trap 'rm -rf -- $tempLock' EXIT; ")
+            append("printf '%s' $tokenArg > $tempLock/token && printf '%s' $pidArg > $tempLock/pid && printf '%s' $startArg > $tempLock/start && date +%s > $tempLock/created || exit 19; ")
+            append("mv $tempLock $lock || exit 20; trap - EXIT")
+        }
+        return RootService.runCommandSync(script, INSTALL_TIMEOUT_MS)
+    }
+
+    private fun processStartTicks(): String? = runCatching {
+        val stat = File("/proc/${Process.myPid()}/stat").readText()
+        val endComm = stat.lastIndexOf(")")
+        if (endComm < 0) return null
+        stat.substring(endComm + 1).trim().split(Regex("\\s+"))[19]
+    }.getOrNull()?.takeIf { it.all(Char::isDigit) }
+
+    private fun releaseObbLock(lockPath: String?, token: String?) {
+        if (lockPath == null || token == null) return
+        val lock = RootService.escapeShellArg(lockPath)
+        val tokenArg = RootService.escapeShellArg(token)
+        RootService.runCommandSync("if [ \"\$(cat $lock/token 2>/dev/null)\" = $tokenArg ]; then rm -rf -- $lock; fi", INSTALL_TIMEOUT_MS)
+    }
+
+    private fun removeOwnedObb(targetPath: String, lockPath: String?, token: String) {
+        if (lockPath == null) return
+        val separator = targetPath.indexOf('|')
+        if (separator <= 0) return
+        val path = targetPath.substring(0, separator)
+        val identity = targetPath.substring(separator + 1)
+        val target = RootService.escapeShellArg(path)
+        val lock = RootService.escapeShellArg(lockPath)
+        val tokenArg = RootService.escapeShellArg(token)
+        val expected = RootService.escapeShellArg(identity)
+        RootService.runCommandSync(
+            "if [ \"\$(cat $lock/token 2>/dev/null)\" = $tokenArg ] && " +
+                "[ \"\$(stat -c '%i:%s:%Y' $target 2>/dev/null)\" = $expected ]; then rm -f -- $target; fi",
+            INSTALL_TIMEOUT_MS
+        )
+    }
+
+    private fun readObbIdentity(path: String): String? {
+        val escaped = RootService.escapeShellArg(path)
+        val (code, output) = RootService.runCommandSync("stat -c '%i:%s:%Y' $escaped 2>/dev/null", INSTALL_TIMEOUT_MS)
+        return output.trim().takeIf { code == 0 && it.matches(Regex("\\d+:\\d+:\\d+")) }
     }
 
     //  安装套件识别（基础包 + 分包）

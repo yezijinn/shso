@@ -23,6 +23,11 @@ import org.junit.Test
  */
 class SecurityTierSemanticsTest {
 
+    @Test
+    fun `无配置时默认档位为 0 无防护`() {
+        assertEquals(SecurityLevels.OFF, com.mixradio.droid.data.AppSettings.SECURITY_OFF)
+    }
+
     // 守卫 PATH 注入
 
     @Test

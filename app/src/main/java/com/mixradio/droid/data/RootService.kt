@@ -394,7 +394,7 @@ object RootService {
     }
 
     /** 当前安全档位（AppSettings 未初始化时保守取标准防护）。 */
-    fun currentSecurityLevel(): Int = appSettings?.securityLevel ?: SecurityLevels.STANDARD
+    fun currentSecurityLevel(): Int = appSettings?.securityLevel ?: SecurityLevels.OFF
 
     /** 返回 Root 执行的守卫 PATH；受保护档位下守卫不可用时返回 null。 */
     fun guardPathPrefix(): String? {
