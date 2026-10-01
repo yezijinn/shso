@@ -381,10 +381,14 @@ object ArchiveExtractor {
 
                 // 使用流式解压以兼容条件 A/B 的预建目录结构
                 val headers = zip.fileHeaders
+                val writtenPaths = HashSet<String>()
                 for (h in headers) {
                     budget.beginEntry(if (h.isDirectory) 0L else h.uncompressedSize)
                     val entryName = stripPrefix?.let { stripTopFolder(h.fileName, it) } ?: h.fileName
                     val dest = safeDest(target, entryName)
+                    if (!writtenPaths.add(dest.canonicalPath)) {
+                        return ExtractResult.Failure("归档包含重复条目: $entryName")
+                    }
                     if (h.isDirectory) {
                         dest.mkdirs()
                         continue
@@ -420,12 +424,16 @@ object ArchiveExtractor {
     private fun extractTar(path: String, target: String, stripPrefix: String?): ExtractResult {
         return try {
             val budget = ExtractionBudget()
+            val writtenPaths = HashSet<String>()
             openTar(path).use { tarIn ->
                 while (true) {
                     val entry = tarIn.nextEntry ?: break
                     budget.beginEntry(if (entry.isDirectory) 0L else entry.size)
                     val entryName = stripPrefix?.let { stripTopFolder(entry.name, it) } ?: entry.name
                     val dest = safeDest(target, entryName)
+                    if (!writtenPaths.add(dest.canonicalPath)) {
+                        return ExtractResult.Failure("归档包含重复条目: $entryName")
+                    }
                     if (entry.isDirectory) {
                         dest.mkdirs()
                     } else {
@@ -445,18 +453,25 @@ object ArchiveExtractor {
     private fun extract7z(path: String, target: String, password: String?, stripPrefix: String?): ExtractResult {
         return try {
             val budget = ExtractionBudget()
+            val writtenPaths = HashSet<String>()
             val file = File(path)
             val archive = if (password.isNullOrEmpty()) {
                 org.apache.commons.compress.archivers.sevenz.SevenZFile.Builder().setFile(file).get()
             } else {
                 org.apache.commons.compress.archivers.sevenz.SevenZFile.Builder().setFile(file).setPassword(password.toCharArray()).get()
             }
-            archive.use { sevenZ ->
-                while (true) {
-                    val entry = sevenZ.nextEntry ?: break
+                archive.use { sevenZ ->
+                    while (true) {
+                        val entry = sevenZ.nextEntry ?: break
+                    if (!entry.isDirectory && entry.size < 0L) {
+                        throw IllegalStateException("7Z 条目大小未知，拒绝解压")
+                    }
                     budget.beginEntry(if (entry.isDirectory) 0L else entry.size)
                     val entryName = stripPrefix?.let { stripTopFolder(entry.name, it) } ?: entry.name
                     val dest = safeDest(target, entryName)
+                    if (!writtenPaths.add(dest.canonicalPath)) {
+                        return ExtractResult.Failure("归档包含重复条目: $entryName")
+                    }
                     if (entry.isDirectory) {
                         dest.mkdirs()
                         continue
@@ -467,7 +482,8 @@ object ArchiveExtractor {
                         var total = 0L
                         while (total < entry.size) {
                             val read = sevenZ.read(buffer)
-                            if (read <= 0) break
+                            if (read < 0) throw IllegalStateException("7Z 条目提前结束")
+                            if (read == 0) continue
                             budget.consume(read)
                             out.write(buffer, 0, read)
                             total += read

@@ -31,6 +31,15 @@ class ApkInstallerSetTest {
     }
 
     @Test
+    fun `XAPK version and package validation rejects unsafe OBB paths`() {
+        assertTrue(ApkInstaller.isValidAndroidPackageName("com.example.game"))
+        assertFalse(ApkInstaller.isValidAndroidPackageName("com.example/../escape"))
+        assertFalse(ApkInstaller.isValidAndroidPackageName("/system"))
+        assertTrue(ApkInstaller.isValidVersionCode("42"))
+        assertFalse(ApkInstaller.isValidVersionCode("42;rm"))
+    }
+
+    @Test
     fun `套件前缀剥离分包后缀`() {
         assertEquals("X-123", ApkInstaller.apkSetStem("X-123.APK"))
         assertEquals("X-123", ApkInstaller.apkSetStem("X-123-split2.APK"))

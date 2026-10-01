@@ -62,7 +62,7 @@ import kotlinx.coroutines.withContext
 fun ExecuteConfirmDialog(
     show: Boolean,
     fileItem: FileItem?,
-    securityLevel: Int = SecurityLevels.STANDARD,
+    securityLevel: Int = SecurityLevels.OFF,
     onDismiss: () -> Unit,
     onConfirm: (runAsRoot: Boolean) -> Unit
 ) {

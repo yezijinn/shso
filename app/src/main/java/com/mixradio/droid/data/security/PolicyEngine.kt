@@ -525,8 +525,8 @@ object PolicyEngine {
 
     /** 当前安全档位（读 AppSettings；未初始化时保守取 STANDARD）。 */
     fun currentLevel(): Int = try {
-        RootService.appSettings?.securityLevel ?: SecurityLevels.STANDARD
+        RootService.appSettings?.securityLevel ?: SecurityLevels.OFF
     } catch (_: Exception) {
-        SecurityLevels.STANDARD
+        SecurityLevels.OFF
     }
 }

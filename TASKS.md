@@ -270,6 +270,325 @@
   - 验证：312 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线均通过；Release APK 已安装至 `BIYLBAFQQSS8DA69` 并启动成功，进程 `13527`
   - 发布产物校验：2,266,625 bytes，SHA-256 `166A330D86B3F0DBC4CB8B0DE3130FD156407A7602024B34AE874E4298991430`，V2/V3 签名通过
 
+### A12. 全面 BUG 挖掘（2026-09-29）
+
+- [x] **八维度复审**：功能逻辑、边界条件、异常处理、性能、安全、兼容性、数据一致性、并发；本轮先静态审查，不操作手机
+  - 范围：XAPK/分包安装、压缩包解压、外部唤起收件箱、ROOT 执行/审计、终端与编辑器生命周期
+  - 要求：区分已修复项、真实当前缺陷和仅有理论风险；每项记录触发条件、影响、证据位置和测试缺口
+
+  - `[High][功能/数据一致性]` XAPK 的 OBB `mkdir` 与 `cp` 只调用 `runCommandSync` 而忽略退出码；目标目录不可写、复制失败或空间不足时仍继续 APK 安装并可能返回成功，导致应用安装后缺少资源，`ApkInstaller.kt:192-205`。缺少 OBB 失败回滚与回归测试
+  - `[High][安全/数据一致性]` ZIP/TAR/7Z 解压对重复条目没有拒绝或去重；同一路径的后出现条目会覆盖先前输出，攻击者可利用目录顺序制造“预览/扫描内容”和最终落盘内容不一致，`ArchiveExtractor.kt:369-421`、`432-465`。现有 Zip Slip/预算测试未覆盖 duplicate entry
+  - `[High][安全/并发]` `safeDest()` 只在写入前做 canonical 检查；检查后目标父路径或已有目录可被替换为符号链接，随后 `mkdirs`/`FileOutputStream` 仍可能逃逸，`ArchiveExtractor.kt:530-545`。当前防护是静态路径检查，未形成写入时原子安全保证
+  - `[Medium][性能]` ZIP `zip.fileHeaders` 在条目数上限检查前一次性构造 central directory；极端高条目归档可能先造成内存峰值，`ArchiveExtractor.kt:131-145`、`355-371`。需确认 zip4j 可用的流式枚举 API 后再改
+  - `[Medium][异常处理]` `extract7z` 对条目声明 `entry.size < 0` 或实际读取提前 EOF 只退出循环，仍可能返回成功并保留不完整文件；应将短读视为失败并清理，`ArchiveExtractor.kt:441-465`
+  - `[Medium][兼容性]` `ACTION_SEND_MULTIPLE` 与多项 `clipData` 仍只取首项，用户分享多文件时其余项目被静默丢弃；属于既有单文件模型限制，需先确定是否扩展 Hub/页面模型，`MainActivity.kt:147-155`
+  - `[Low][生命周期]` FilePage 除高危确认外的目录、多选、搜索与编辑器弹窗状态仍不全面保存；旋转/分屏会丢失用户上下文，但未发现数据写盘破坏，`FilePage.kt:134-214`
+  - `[High][安全/数据一致性]` XAPK OBB 复制到真实 OBB 目录前没有确认目标是否为本次任务新建；安装失败回滚会直接 `rm -f` 已记录目标，可能删除用户原有同名 OBB，`ApkInstaller.kt:203-244`
+  - `[High][安全/一致性]` ZIP/TAR/7Z 解压仍直接向 `safeDest()` 返回路径写入，重复条目覆盖和符号链接 TOCTOU 风险尚未修复；本轮确认 A13 只覆盖 OBB 失败与 7Z 短读，不应把这两项标为已完成，`ArchiveExtractor.kt:382-476`
+  - `[Medium][异常处理]` XAPK staging 目录 `mkdirs()` 失败未立即返回，后续可能以误导性的 ZIP 解压/复制错误结束；`ApkInstaller.kt:120-125`
+  - `[Medium][边界]` 7Z 条目声明大小为负值时当前循环不读取内容却仍可能返回成功；A13 仅修复了正数声明下的提前 EOF，负值需单独拒绝，`ArchiveExtractor.kt:455-475`
+  - 已证伪/暂缓：守卫卸载命令路径为固定内部常量，不构成当前 shell 注入；ZIP central-directory 内存问题尚未完成库 API 复核；上述项目本轮未操作手机
+  - 本轮验证基线：`312 tests / 0 failures / 1 skipped`、`lintDebug` 通过；本轮未操作手机；新增发现保持 `[!]`，待后续专项修复
+
+### A13. 安装与解压一致性修复（2026-09-29）
+
+- [x] **修复 XAPK OBB 失败静默继续与 7Z 短读成功**：完成
+  - OBB 目录创建/复制命令必须检查退出码，失败时停止安装并清理本次已落位 OBB
+  - 7Z 非目录条目必须读满声明大小，提前 EOF 作为失败并由上层清理目标
+  - 验证：`testDebugUnitTest`、`lintDebug`、`assembleRelease`、Release 载荷红线均通过；Release APK 已安装至 `BIYLBAFQQSS8DA69` 并启动成功，进程 `23764`
+
+### A14. XAPK 边界与回滚安全（2026-09-29）
+
+- [x] **修复 OBB 原文件保护、临时目录失败与 7Z 未知大小**：完成
+  - XAPK staging 目录创建失败立即返回
+  - OBB 目标已存在或为软链时拒绝覆盖，回滚只清理本次成功复制的目标
+  - 7Z 非目录条目声明大小为负时拒绝解压
+  - 验证：313 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线均通过；Release APK 已安装至 `BIYLBAFQQSS8DA69` 并启动成功，进程 `2030`
+
+### A15. 全面 BUG 挖掘（2026-09-29）
+
+- [x] **八维度复审**：功能逻辑、边界条件、异常处理、性能、安全、兼容性、数据一致性、并发；本轮未操作手机
+  - `[High][安全/数据一致性]` OBB `cp` 返回失败时，当前条目尚未加入回滚列表；若 `cp` 已创建部分目标后失败，`finally` 只清理此前成功条目，当前半文件可能残留。`ApkInstaller.kt:203-239`
+  - `[High][并发]` OBB “不存在检查”与后续 `cp` 非原子；检查后其他进程可抢先创建同名目标，仍存在覆盖/回滚误删竞态。`ApkInstaller.kt:216-231`
+  - `[High][安全]` ZIP/TAR/7Z 重复条目仍可覆盖同一路径输出；`safeDest` canonical 检查与实际 `mkdirs`/打开文件之间仍有符号链接 TOCTOU。`ArchiveExtractor.kt:382-479`、`534-548`
+  - `[Medium][性能]` ZIP central directory 仍由 `zip.fileHeaders` 一次性构造后才检查条目上限；极端高条目归档可能在预算检查前产生内存峰值。`ArchiveExtractor.kt:137`、`383`
+  - `[Medium][兼容性]` 多文件分享仍只取首项；扩展需同时调整 `ExternalOpenHub` 单槽位与 FilePage 消费模型，不能单点改 `MainActivity`。`MainActivity.kt:147-155`
+  - `[Low][生命周期]` FilePage 普通浏览/多选/搜索状态旋转丢失，属于上下文体验问题，暂未发现直接数据损坏。`FilePage.kt:134-214`
+  - 已修复确认：staging 创建失败、OBB 已有目标拒绝覆盖、7Z 负数大小拒绝、OBB 失败回滚、7Z 提前 EOF；本轮不重复计入
+  - 现有测试覆盖：313 tests / 0 failures / 1 skipped；新增发现缺少 OBB 部分复制失败、竞争创建、重复归档条目、符号链接并发替换测试
+
+### A16. OBB 原子落位修复（2026-09-29）
+
+- [x] **修复 OBB 部分复制残留与检查后覆盖竞态**：完成
+  - 不再直接复制到最终 OBB 路径；先复制到随机临时文件，再以原子 `mv` 落位
+  - 最终目标已存在或变为软链时拒绝落位，失败只清理本次临时文件
+  - 取消/安装失败不删除用户原有 OBB
+  - 验证：313 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线通过；设备已安装并启动，版本 `20260930`，进程 `10247`
+
+### A17. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：功能逻辑、边界条件、异常处理、性能、安全、兼容性、数据一致性、并发；本轮未操作手机
+  - `[High][兼容性/功能]` A16 使用 ROOT `ln` 把临时 OBB 硬链接到 `/sdcard/Android/obb`；Android emulated/FUSE 存储及部分 ROM 可能不支持跨目录/外部存储硬链接，导致合法 XAPK 的 OBB 安装全部失败。`ApkInstaller.kt:254-268`；当前无真机 OBB 回归
+  - `[High][安全/并发]` 即使 `ln` 可用，临时文件复制、目标检查和最终链接依赖 shell 文件系统语义；外部进程可抢占目标或替换父目录，当前实现只保证同一实现的“目标不存在即链接”，不构成对抗性目录锁。`ApkInstaller.kt:254-268`
+  - `[High][安全]` ZIP/TAR/7Z 重复条目仍可覆盖相同输出；`safeDest()` canonical 检查与实际创建/打开之间仍有符号链接 TOCTOU，需原子、无跟随符号链接的写入模型，`ArchiveExtractor.kt:382-479`、`534-548`
+  - `[Medium][性能]` ZIP `fileHeaders` 仍在条目上限检查前整体构造，极端 central directory 可能先产生内存峰值，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` `ACTION_SEND_MULTIPLE` 仍只取首项；修复需扩展 Hub/页面数据模型，不宜单点修改，`MainActivity.kt:147-155`
+  - `[Low][生命周期]` FilePage 普通目录、多选、搜索状态旋转丢失，当前未见数据写盘破坏，`FilePage.kt:134-214`
+  - 本轮未发现新的终端解析、审计字段注入或守卫卸载路径注入证据；这些不重复计入
+  - 验证基线沿用：`313 tests / 0 failures / 1 skipped`、`lintDebug` 通过；本轮未操作手机；高风险项保持待专项修复
+
+### A18. OBB 落位兼容性修复（2026-09-30）
+
+- [x] **移除外部存储硬链接依赖**：完成
+  - OBB 临时文件与最终目标保持同目录，使用 `mv` 原子落位，兼容不支持跨目录硬链接的 emulated/FUSE 存储
+  - 使用独占锁文件串行化同一目标的检查、复制和移动；目标已存在或变为软链时拒绝覆盖
+  - 失败只清理本次临时文件，安装失败只清理本次已原子落位的目标
+  - 验证：313 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线通过；APK 已安装至 `BIYLBAFQQSS8DA69` 并启动成功，进程 `28353`
+
+### A19. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：功能逻辑、边界条件、异常处理、性能、安全、兼容性、数据一致性、并发；本轮未操作手机
+  - `[High][并发/可用性]` A18 的 OBB 锁是目标旁目录；进程被强杀、设备断电或 shell 超时后锁目录可能永久残留，后续合法安装会持续返回“锁已存在”，`ApkInstaller.kt:254-272`。当前无陈旧锁恢复/超时机制
+  - `[High][安全/数据一致性]` OBB 成功落位后释放锁，待 APK 安装失败再由外层 `rm -f` 回滚；期间其他进程可替换目标，失败回滚可能删除他方文件，`ApkInstaller.kt:239-245`。需要把锁覆盖整个 OBB+APK 事务或回滚前验证文件身份
+  - `[High][兼容性]` `mv` 原子落位依赖同目录 rename 语义，目标目录 `/sdcard/Android/obb` 在不同 Android/FUSE/厂商 ROM 上行为不同；当前仅验证应用启动，未验证真实 OBB XAPK 安装
+  - `[High][安全]` ZIP/TAR/7Z 重复条目仍可覆盖同一路径；`safeDest` canonical 检查与实际写入仍有符号链接 TOCTOU，`ArchiveExtractor.kt:382-479`、`534-548`
+  - `[Medium][性能]` ZIP central directory 仍在条目上限检查前由 `fileHeaders` 一次性构造，极端归档可能先造成内存峰值，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享仍只消费首项，需扩展 `ExternalOpenHub`/FilePage 模型，`MainActivity.kt:147-155`
+  - `[Low][生命周期]` FilePage 普通导航、多选、搜索状态旋转丢失，当前未发现直接数据写盘破坏，`FilePage.kt:134-214`
+  - A18 已修复确认：硬链接改为同目录临时文件 + `mv`；本轮新增的是锁生命周期、事务回滚和真实 OBB 兼容性风险，不重复计入
+  - 验证基线：`313 tests / 0 failures / 1 skipped`、`lintDebug` 通过；本轮未操作手机
+
+### A20. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][异常/可用性]` A18 的锁目录没有陈旧锁恢复；强杀/断电/shell 超时会永久阻塞同一 OBB 目标，且锁目录位于用户可见存储，可能被外部应用预创建造成拒绝服务，`ApkInstaller.kt:254-272`
+  - `[High][安全/数据一致性]` OBB 外层安装失败回滚只按路径 `rm -f`，锁覆盖的 OBB 事务已结束后，其他进程仍可能替换目标，回滚会误删新文件；锁需覆盖 OBB 落位到 APK 安装完成，或回滚需验证唯一身份，`ApkInstaller.kt:239-245`
+  - `[High][安全]` 解压仍未拒绝重复条目；ZIP/TAR/7Z 后出现同路径条目会覆盖前一条，且写入跟随符号链接，`ArchiveExtractor.kt:382-479`
+  - `[Medium][性能]` ZIP `fileHeaders` 在预算检查前整体加载，极端 central directory 仍可能产生内存峰值，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享仍只处理首项，涉及单槽位 Hub 与 FilePage 模型，`MainActivity.kt:147-155`
+  - `[Low][生命周期]` FilePage 普通状态旋转丢失，未发现直接数据写盘破坏，`FilePage.kt:134-214`
+  - 本轮未发现新的终端、审计注入或守卫路径注入问题；验证基线沿用 `313 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A21. 安全档位默认值调整（2026-09-30）
+
+- [x] **默认档位改为 0 无防护**：完成
+  - 新安装或无有效持久化值时使用档位 0；不做策略审查、不拦截、不安装运行时守卫
+  - 已保存的用户档位不迁移、不覆盖；用户可在设置中主动切换到 1/2/3
+  - 同步 AppSettings、RootService/PolicyEngine fallback、执行确认默认值和相关文档
+  - 验证：314 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线通过；APK 已安装并启动，进程 `23151`
+
+### A22. OBB 事务锁生命周期修复（2026-09-30）
+
+- [x] **修复陈旧 OBB 锁与回滚身份风险**：完成
+  - 锁目录写入随机 token 和时间戳；发现旧锁只在超过 TTL 时回收，避免永久拒绝服务
+  - OBB 锁保持到 APK 安装事务结束，回滚前验证目标仍属于本次 token
+  - 不修改 ZIP 重复条目/符号链接 TOCTOU 等独立专项
+  - 验证：314 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线通过；APK 已安装并启动，进程 `3218`
+
+### A23. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][安全/并发]` A22 的 finally 无条件 `rm -rf lockPath`；若锁目录被外部应用删除后重新创建，或锁被替换为含内容目录，安装结束可能删除非本次创建的目录，`ApkInstaller.kt:248-254`
+  - `[High][异常/可用性]` 陈旧锁回收使用 `find -mmin`，若目标文件系统不支持可靠 mtime 或权限不足，可能永久拒绝安装；当前失败信息未区分“锁占用”和“锁无法检查”，`ApkInstaller.kt:279-282`
+  - `[High][数据一致性]` OBB 回滚仍按路径删除；即使事务锁持续到 APK 结束，锁被强杀后回收再被新任务获得时，旧进程无法继续安全回滚，需 token/所有权校验，`ApkInstaller.kt:241-254`
+  - `[High][安全]` ZIP/TAR/7Z 重复条目仍覆盖输出；`safeDest` canonical 检查与实际写入间仍有符号链接 TOCTOU，`ArchiveExtractor.kt:382-479`、`534-548`
+  - `[Medium][性能]` ZIP central directory 仍一次性构造后才检查条目上限，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享仍只消费首项，需扩展 Hub/FilePage 模型，`MainActivity.kt:147-155`
+  - 本轮未发现新的终端、审计字段注入或守卫路径注入问题；验证基线 `314 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A24. OBB 锁所有权修复（2026-09-30）
+
+- [x] **修复锁替换、陈旧回收和回滚误删**：完成
+  - 锁目录内写入随机 token；释放/回收必须匹配 token，不再无条件 `rm -rf`
+  - 回滚前验证目标内容仍带本次 token 标记；不匹配则放弃删除
+  - 保留 15 分钟陈旧锁回收，但无法读取/校验锁时 fail-closed
+  - 验证：314 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线通过；APK 已安装并启动，进程 `7007`
+
+### A25. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][安全/并发]` `acquireObbLock()` 的陈旧锁回收按 `find -mmin` 判断后直接 `rm -rf lock`，未再次验证 token；锁可在检查后被外部替换，回收会删除非本次任务目录，`ApkInstaller.kt:294-305`
+  - `[High][数据一致性]` A24 的 OBB 回滚 token 只保护锁文件，不保护目标文件；外部进程若在事务期间删除并替换目标，旧任务仍可能在 token 有效时 `rm -f` 新目标，`ApkInstaller.kt:245-256`、`315-321`
+  - `[High][兼容性]` 目标旁 `.shso.lock`、`.shso.tmp.*` 文件位于用户可见 OBB 目录，Android 媒体扫描、厂商文件管理器或权限策略可能暴露/处理这些中间项；当前未验证真实 OBB XAPK 流程
+  - `[High][安全]` ZIP/TAR/7Z 重复条目覆盖和符号链接 TOCTOU 仍未修复，`ArchiveExtractor.kt:382-479`、`534-548`
+  - `[Medium][性能]` ZIP `fileHeaders` 一次性构造后才检查条目上限，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享只处理首项，需要扩展单槽位 Hub 与 FilePage 模型，`MainActivity.kt:147-155`
+  - 本轮未发现新的终端、审计或守卫注入问题；验证基线 `314 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A26. 归档重复条目修复（2026-09-30）
+
+- [x] **拒绝 ZIP/TAR/7Z 重复输出路径**：完成
+  - 同一归档内经规范化后的重复文件路径直接失败，不允许后出现条目覆盖前一条
+  - 目录/文件路径冲突同样失败，避免预览、扫描和最终落盘内容不一致
+  - 验证：315 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线通过；APK 已安装并启动，进程 `5404`
+
+### A27. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][安全/一致性]` 重复条目检测使用 `dest.canonicalPath`，但 `safeDest()` 可能因已有符号链接把路径 canonical 化到链接目标；不同归档条目可能被错误合并或仍绕过实际写入竞态，重复检测不能替代无跟随符号链接写入。`ArchiveExtractor.kt:382-479`、`546-573`
+  - `[High][并发/可用性]` 陈旧锁回收仍是“检查 mtime → rm -rf”非原子操作；锁在检查后被替换仍可能误删，A24 token 只在释放/复制时校验，回收路径未校验 token。`ApkInstaller.kt:294-305`
+  - `[High][数据一致性]` OBB 回滚验证 token 只验证锁，不验证目标文件仍由本次 `mv` 创建；外部进程可删除后创建同名目标，回滚仍可能删除新目标。`ApkInstaller.kt:250-260`、`315-321`
+  - `[Medium][性能]` ZIP central directory 仍由 `fileHeaders` 一次性构造后才检查预算。`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` OBB 锁、临时文件位于用户可见目录，真实 XAPK OBB 安装尚未在设备上验证；厂商媒体扫描/文件管理器可能看到中间文件。`ApkInstaller.kt:254-305`
+  - `[Medium][功能]` 多文件分享仍只处理首项，需扩展单槽位 Hub 与 FilePage 模型。`MainActivity.kt:147-155`
+  - 本轮未发现新的终端、审计、守卫路径注入问题；验证基线：`315 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A28. OBB 回滚身份修复（2026-09-30）
+
+- [x] **修复陈旧锁回收与目标替换回滚**：完成
+  - 不再自动 `rm -rf` 陈旧锁；无法确认锁所有权时 fail-closed，避免非原子回收误删他方锁
+  - OBB 原子落位后记录目标身份，安装失败回滚前重新读取并比对；身份变化则放弃删除
+  - 验证：316 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线通过；APK 已安装并启动，进程 `20980`
+
+### A29. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][可用性/异常]` A28 取消陈旧锁自动回收后，进程强杀、断电或文件系统残留会永久阻塞同一 OBB 安装；安全拒绝误用为永久拒绝服务，`ApkInstaller.kt:296-305`
+  - `[High][并发/数据一致性]` OBB 锁只覆盖当前 `installXapk` 协程；锁释放后外层异常/回滚路径与其他安装调用的资源身份仍可能交叉，当前 token 不能覆盖进程死亡后的完整事务，`ApkInstaller.kt:245-260`
+  - `[High][安全]` 重复条目检测基于 canonical 路径，仍无法阻止 `safeDest` 检查后目录被替换为符号链接并实际跟随写入，`ArchiveExtractor.kt:382-494`、`546-561`
+  - `[Medium][性能]` ZIP central directory 仍在预算前整体加载，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享只取第一项，需扩展 Hub/FilePage 模型，`MainActivity.kt:147-155`
+  - `[Low][生命周期]` FilePage 普通导航/多选/搜索状态旋转丢失，未见直接写盘破坏，`FilePage.kt:134-214`
+  - 本轮未发现新的终端、审计、守卫注入问题；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A30. OBB 锁陈旧恢复修复（2026-09-30）
+
+- [x] **修复 OBB 锁永久阻塞**：完成
+  - 锁元数据写入 token、创建时间和持有进程标识
+  - 只有锁元数据完整、超过 TTL 且持有进程已不存在时才允许回收
+  - 无法确认锁状态时继续 fail-closed，避免把安全不确定性变成覆盖风险
+  - 验证：316 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线通过；APK 已安装并启动，进程 `19486`
+
+### A32. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][异常/可用性]` A30 的锁在进程死亡后只有当 `pid` 不存在且年龄超过 TTL 才可回收；PID 可能被系统快速复用，旧锁会被误判为活锁而永久阻塞，`ApkInstaller.kt:297-315`
+  - `[High][安全/并发]` 陈旧锁回收仍是检查后 `rm -rf`，未用 token 原子夺锁；外部替换锁目录的窗口仍存在，`ApkInstaller.kt:297-315`
+  - `[High][安全]` 解压输出仍直接打开 `safeDest()` 路径，重复条目拒绝不能解决符号链接 TOCTOU，`ArchiveExtractor.kt:382-494`、`546-561`
+  - `[Medium][性能]` ZIP `fileHeaders` 仍整体加载后才执行条目预算，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享仍只消费首项，`MainActivity.kt:147-155`
+  - `[Low][文档一致性]` A24/A30 任务记录仍描述“超过 TTL 自动回收/不再自动删除”两种不同语义，实际代码已改为元数据+PID校验；需在发布前统一文档措辞
+  - 本轮未发现新的终端、审计、守卫注入问题；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A33. OBB 锁 PID 复用修复（2026-09-30）
+
+- [x] **修复 PID 复用导致陈旧锁误判**：完成
+  - 锁元数据增加进程启动时间标识，不再只依赖 PID 存活
+  - 回收前同时校验 PID 与启动时间；无法读取时 fail-closed
+  - 同步更新锁文档与验证记录
+  - 验证：316 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线通过；APK 已安装并启动，进程 `22683`
+
+### A34. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][可用性]` A33 仍只在“锁目录存在”时读取 PID/启动时间；若锁目录元数据未完整写入后进程退出，后续永远 fail-closed，无法恢复；`ApkInstaller.kt:297-315`
+  - `[High][并发/安全]` 锁回收仍是读取旧元数据后 `rm -rf`，没有 compare-and-swap；锁被替换窗口内可能删除新任务锁，`ApkInstaller.kt:303-315`
+  - `[High][安全]` 解压实际写入仍跟随 `safeDest()` 解析出的符号链接，重复条目检测不构成无跟随写入，`ArchiveExtractor.kt:382-494`、`546-561`
+  - `[Medium][性能]` ZIP central directory 仍一次性加载后才检查预算，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享仍只处理首项，`MainActivity.kt:147-155`
+  - 本轮未发现新的终端、审计、守卫注入问题；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A35. OBB 锁元数据原子发布（2026-09-30）
+
+- [x] **修复锁元数据半成品永久阻塞**：完成
+  - 锁元数据写入随机临时目录，token/pid/start/created 全部成功后再原子移动为正式锁目录
+  - 正式锁目录只接受完整元数据；临时目录异常由 trap 清理
+  - 保持无法确认所有权时 fail-closed，不自动删除不完整正式锁
+  - 验证：316 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线通过；APK 已安装并启动，进程 `28197`
+
+### A37. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][安全/并发]` A35 临时锁完整写入后使用 `mv tempLock lock`，但锁正式目录已在此前检查阶段被删除；其他进程可在检查与发布之间抢先创建 lock，`mv` 在部分语义下可能覆盖/替换对方锁，未形成原子 compare-and-swap，`ApkInstaller.kt:303-320`
+  - `[High][可用性]` A35/A33 对存活锁直接失败且没有等待/退避；两个合法并发 XAPK 安装会随机失败，用户无法区分真实占用与异常锁，`ApkInstaller.kt:303-315`
+  - `[High][安全]` 解压写入仍跟随 `safeDest()` 路径，canonical 检查与 `FileOutputStream` 之间仍有符号链接 TOCTOU，`ArchiveExtractor.kt:382-494`、`546-561`
+  - `[Medium][性能]` ZIP central directory 仍整体加载后才检查预算，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享仍只处理首项，`MainActivity.kt:147-155`
+  - 本轮未发现新的终端、审计、守卫注入问题；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A38. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][并发/安全]` A35 原正式锁存在时，先读取 PID/start/created 后 `rm -rf`，再发布临时锁；这不是 compare-and-swap，任何外部替换都可能被删除或被覆盖，`ApkInstaller.kt:303-320`
+  - `[High][可用性]` 活锁直接返回失败，没有等待/退避，合法并发 XAPK 安装表现为随机失败；`ApkInstaller.kt:303-305`
+  - `[High][安全]` 解压输出继续跟随符号链接，canonical 检查与实际写入之间存在 TOCTOU；重复条目拒绝不改变该结论，`ArchiveExtractor.kt:382-494`、`546-561`
+  - `[Medium][性能]` ZIP central directory 仍整体加载，预算检查滞后，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享仍只取首项，`MainActivity.kt:147-155`
+  - 本轮未发现新的终端、审计、守卫注入问题；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A39. OBB 锁原子接管修复（2026-09-30，历史记录）
+
+- [x] **修复锁回收与并发重试**：后续由 A42、A43、A44 持续收口，以下保留原始记录
+  - 陈旧锁先改名隔离，接管失败不删除未知路径
+  - 活锁按有限次数短退避重试，降低合法并发安装的随机失败
+
+### A40. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][并发/安全]` A39 的陈旧锁接管仍是 `mv lock quarantine` 后再 `rm -rf quarantine`；若 quarantine 被外部替换或预先存在，清理路径可能误删非本次接管对象，`ApkInstaller.kt:313-327`
+  - `[High][功能]` A39 的 `repeat(3) { if (...) return@repeat }` 只结束当前迭代，不结束重试流程；成功后仍会继续 delay 并重复 acquire，可能把刚获得的锁视为已有锁而最终失败，`ApkInstaller.kt:205-210`
+  - `[High][安全]` 解压仍直接向 `safeDest()` 路径打开，canonical 检查与实际写入之间存在符号链接 TOCTOU，`ArchiveExtractor.kt:382-494`、`546-561`
+  - `[Medium][性能]` ZIP central directory 仍整体加载后才检查预算，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享仍只处理首项，`MainActivity.kt:147-155`
+  - 本轮未发现新的终端、审计、守卫注入问题；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A41. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][并发/安全]` A39 quarantine 路径由调用方随机生成但未先原子预占；`mv lock quarantine` 成功后直接 `rm -rf quarantine`，外部进程可抢占该名称，导致误删，`ApkInstaller.kt:310-327`
+  - `[High][异常/可用性]` A39 `repeat` 重试逻辑使用 `return@repeat`，成功获取锁后仍继续后续迭代、delay 并再次 acquire，可能把自身刚持有的锁判为冲突，`ApkInstaller.kt:205-210`
+  - `[High][安全]` 解压仍存在符号链接 TOCTOU，`safeDest` canonical 检查不能保证后续 `FileOutputStream` 不跟随链接，`ArchiveExtractor.kt:382-494`、`546-561`
+  - `[Medium][性能]` ZIP central directory 仍整体加载后才检查预算，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享仍只处理首项，`MainActivity.kt:147-155`
+  - 本轮未发现新的终端、审计、守卫注入问题；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A44. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][文档/功能一致性]` A39 仍标为 `[/]` 未完成，且 A35/A36/A40/A41 的历史描述与当前实现混杂，发布说明可能把已修复、待修复和旧路径混为一谈；需发布前清理任务状态，`TASKS.md:519-544`
+  - `[High][并发]` A42 `quarantine` 虽预占目录，但接管后仍将旧锁移入并删除；在 `mv` 与清理之间仍可能被外部替换，当前实现未能真正保证所有权，`ApkInstaller.kt:313-327`
+  - `[High][安全]` 解压符号链接 TOCTOU 仍未解决，`safeDest` canonical 校验不等于无跟随写入，`ArchiveExtractor.kt:382-494`、`546-561`
+  - `[Medium][性能]` ZIP central directory 仍一次性加载，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享仍只取第一项，`MainActivity.kt:147-155`
+  - 本轮未发现新的终端、审计或守卫注入问题；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A42. OBB 重试与 quarantine 竞态修复（2026-09-30，历史记录）
+
+- [x] **修复重试控制流和 quarantine 误删**：完成
+  - 成功获取锁后立即退出重试，不再重复 acquire 自己持有的锁
+  - quarantine 目录名先用原子 `mkdir` 预占；后续审查继续覆盖锁接管竞态
+  - 验证：316 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线通过；APK 已安装并启动，进程 `26524`；SHA-256 `77B9C9F2CD384AEBD4E06265DF7D80D0EA89A7C0E2008588E99E912D5A88EAB5`
+
+### A43. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][文档/安全一致性]` 文档与实现不一致：A35/更新日志声称“不自动删除不完整正式锁”“quarantine 只改名不删除”，但 `acquireObbLock()` 仍会 `rm -rf` 正式锁和 quarantine；发布说明会误导运维判断，且实现仍保留误删风险，`ApkInstaller.kt:313-327`
+  - `[High][并发]` A42 重试修复仍未真正保证 CAS：旧锁接管、quarantine 释放和新锁发布由多个 shell 步骤组成，外部替换可插入中间窗口，`ApkInstaller.kt:303-327`
+  - `[High][安全]` 解压仍存在符号链接 TOCTOU；canonical 路径检查不等于无跟随写入，`ArchiveExtractor.kt:382-494`、`546-561`
+  - `[Medium][性能]` ZIP central directory 仍整体加载，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享仍只消费首项，`MainActivity.kt:147-155`
+  - 本轮未发现新的终端、审计或守卫注入问题；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A36. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][并发/安全]` A35 临时锁目录发布前虽完整写入，但正式锁陈旧回收仍先读取 PID/start/created 再 `rm -rf`，未做 token compare-and-swap；其他进程可在窗口中替换锁，回收误删新锁，`ApkInstaller.kt:303-320`
+  - `[High][异常/可用性]` A35 正式锁若已存在且元数据完整但持有进程存活，安装直接失败；没有等待/退避策略，两个合法并发安装会立即失败而非排队，`ApkInstaller.kt:303-305`
+  - `[High][安全]` 解压仍直接向 `safeDest` 路径打开文件，符号链接可在 canonical 检查后被跟随；重复条目拒绝不能消除 TOCTOU，`ArchiveExtractor.kt:382-494`、`546-561`
+  - `[Medium][性能]` ZIP `fileHeaders` 仍在预算前整体加载，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享仍只取第一项，`MainActivity.kt:147-155`
+  - 本轮未发现新的终端、审计、守卫注入问题；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A31. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][可用性]` A30 在锁元数据写入失败时 trap 会自动删除刚创建的锁，但在进程被强杀/断电时又无法安全回收；锁机制在“写入失败”和“崩溃残留”之间没有一致的恢复策略，可能表现为间歇性永久拒绝安装，`ApkInstaller.kt:296-315`
+  - `[High][安全/边界]` OBB 回滚身份通过字符串 `path|inode:size:mtime` 传递；虽然当前生成路径不含 `|`，但该隐式格式契约无独立校验，后续路径来源变化可能导致截断或误判，`ApkInstaller.kt:253-337`
+  - `[High][安全]` ZIP/TAR/7Z 写入仍跟随符号链接，canonical 检查不是原子安全写；重复条目拒绝不能消除该风险，`ArchiveExtractor.kt:382-494`、`546-561`
+  - `[Medium][性能]` ZIP `fileHeaders` 仍整体加载后才做预算检查，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享仍只处理第一项，`MainActivity.kt:147-155`
+  - 本轮未发现新的终端、审计、守卫注入问题；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
 - [ ] **安全第三轮（可选）**：`GuardModuleInstaller` 卸载残留（`/data/adb/shso_guard/policy.conf` 与审计日志）；`ScriptAuditor` 跨行变量追踪；`$IFS` 之外的 shell 展开（`${x:-…}`、算术展开）
 - [ ] **内核级守卫（独立议题）**：PATH 前置型守卫无法拦绝对路径调用与 `PATH` 重置，彻底封堵需 seccomp/LSM hook
 

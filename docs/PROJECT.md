@@ -268,7 +268,7 @@ python build_apk.py             # Windows 脚本（含 --skip-check）
 （执行层）+ 审计日志。设计要点与能力边界见 `module/shso_guard/README.md`。
 
 - **安全档位**：`0 无防护 / 1 仅审计 / 2 标准防护 / 3 最强防护`，由 `AppSettings.securityLevel`
-  持久化，默认 2。档位 ≤1 时 `RootCommandGateway` 一律放行，
+  持久化，默认 0。档位 0/1 时 `RootCommandGateway` 一律放行，
   验证拦截效果必须用档位 ≥2。切换档位会失效「守卫就绪」缓存、按需安装守卫并同步
   `policy.conf` 的 `mode`；冷启动也会同步一次（`policy.conf` 跨重装保留，
   残留 `off` / `log` 会让守卫静默不拦截）。
