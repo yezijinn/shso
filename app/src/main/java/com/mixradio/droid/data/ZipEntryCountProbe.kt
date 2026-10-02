@@ -59,27 +59,41 @@ internal object ZipEntryCountProbe {
      * 从**文件尾部字节**解析条目总数。纯函数，便于 JVM 单测。
      *
      * @param tail 文件最后一段字节（调用方需保证覆盖 TAIL_WINDOW 或整个文件）
-     * @param fileSize 文件总长度，用于判断 tail 是否覆盖到了 EOCD 的起始位置
+     * @param fileSize 文件总长度
      * @return 条目数；无法确定（尾部无 EOCD 签名、tail 不完整）返回 null
      */
     fun entryCountFromTail(tail: ByteArray, fileSize: Long): Int? {
         if (tail.size < EOCD_MIN_SIZE || fileSize < tail.size) return null
-        // 从尾部往前扫 EOCD 签名。注释里可能伪造签名，故不能只查最后一个位置；
-        // 命中后还要校验「EOCD 结束位置 + 注释长度 == 文件长度」。
-        var i = tail.size - EOCD_MIN_SIZE
-        while (i >= 0) {
+        // 收集**全部**自洽的 EOCD 候选，取条目数最大者。
+        //
+        // 为什么不能用「EOCD 结束位置必须正好等于文件长度」的严格判据：
+        // zip4j 2.11.1 `HeaderReader.locateOffsetOfEndOfCentralDirectoryByReverseSeek`
+        // 反向逐字节找签名后**直接返回，不做任何 EOF 对齐或注释长度校验**
+        // （已用 javap 反编译核对字节码确认）。所以「真 EOCD 之后还挂着垃圾字节」的 zip
+        // （拼接下载、对齐填充、自定义工具追加）zip4j 能照常解析出全部 central directory。
+        // 严格判据会判成「非 zip」返回 null，预算检查被静默绕过 —— 正是这个探针要防的事。
+        //
+        // 为什么取最大值而不是第一个命中：
+        // 注释区可以伪造签名。严格等值判据能靠「必须正好等于文件长度」把伪造者滤掉，
+        // 放宽后就得换个不依赖 EOF 的判据：要求候选**自洽**（EOCD 起点 + 22 + 注释长度
+        // 不超过文件长度），并对所有自洽候选取最大条目数 —— 无论 zip4j 最终反查命中哪一个，
+        // 探针给出的都是不小于它的上界，预算检查因此偏保守而非漏判。
+        var best: Int? = null
+        var i = 0
+        while (i + EOCD_MIN_SIZE <= tail.size) {
             if (readIntLE(tail, i) == EOCD_SIGNATURE) {
                 val commentLength = readShortLE(tail, i + 20)
-                // EOCD 起点 + 22 + 注释长度 必须正好等于文件长度，否则这个签名是伪造的
-                if (i.toLong() + EOCD_MIN_SIZE + commentLength.toLong() == fileSize) {
+                val endExclusive = i.toLong() + EOCD_MIN_SIZE + commentLength.toLong()
+                if (endExclusive <= fileSize) {
                     val raw = readShortLE(tail, i + 10)
                     // 0xFFFF == ZIP64，实际条目数只会更大；按「已达上限量级」处理
-                    return if (raw == ZIP64_SENTINEL) ZIP64_SENTINEL else raw
+                    val count = if (raw == ZIP64_SENTINEL) ZIP64_SENTINEL else raw
+                    if (best == null || count > best) best = count
                 }
             }
-            i--
+            i++
         }
-        return null
+        return best
     }
 
     /**

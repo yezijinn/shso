@@ -142,4 +142,34 @@ class RootFileManagerEscapingTest {
         assertEquals(0L, RootFileManager.statSecondsToMillis(0L))
         assertEquals(0L, RootFileManager.statSecondsToMillis(-1L))
     }
+
+    @Test fun `Java 删除回退路径必须先判符号链接`() {
+        // 真实缺陷：回退分支用 `File.isDirectory`（走 stat，跟随链接）+
+        // `deleteRecursively()`（对目录链接同样下潜）。于是「删除一个指向别处的链接」
+        // 会静默清空链接目标整棵树 —— ROOT 不可用 + 用户删的是自己放在 /sdcard 下的链接时必现，
+        // 且不可撤销。修复是在 deleteRecursively 之前用 lstat 判链接，只删链接本身。
+        val s = java.io.File("src/main/java/com/mixradio/droid/data/RootFileManager.kt").readText()
+        val fnStart = s.indexOf("suspend fun delete(")
+        assertTrue("必须能定位到 delete 实现", fnStart > 0)
+        val fnEnd = s.indexOf("private const val COPY_NAME_PROBE_LIMIT", fnStart)
+        val body = s.substring(fnStart, if (fnEnd > 0) fnEnd else s.length)
+        val linkAt = body.indexOf("if (Files.isSymbolicLink(targetFile.toPath()))")
+        val recurseAt = body.indexOf("targetFile.deleteRecursively()")
+        assertTrue("删除回退必须先判符号链接", linkAt > 0)
+        assertTrue("仍然使用 deleteRecursively 处理真实目录", recurseAt > 0)
+        assertTrue("符号链接判定必须早于递归删除", linkAt < recurseAt)
+    }
+
+    @Test fun `覆盖移动不得预先删除文件型目标`() {
+        // 真实缺陷：OVERWRITE 分支先 delete(destination) 再 rename/mv。
+        // `rename(2)` 与 `mv` 本身就会原子覆盖同类型文件目标，先删等于造出一个
+        // 「移动失败则目标已丢」的窗口（跨挂载点 / 无权限 / 被守卫拦时 mv 必然失败，
+        // 而目标已被删掉，用户数据不可恢复）。只有目录目标才需要先删。
+        val s = java.io.File("src/main/java/com/mixradio/droid/data/RootFileManager.kt").readText()
+        val start = s.indexOf("MoveDestinationConflict.OVERWRITE -> {")
+        assertTrue("必须能定位到 OVERWRITE 分支", start > 0)
+        val branch = s.substring(start, start + 900)
+        assertTrue("覆盖前必须先判定目标类型", branch.contains("destType"))
+        assertTrue("只有目录目标才允许预先删除", branch.contains("if (destType == 2)"))
+    }
 }

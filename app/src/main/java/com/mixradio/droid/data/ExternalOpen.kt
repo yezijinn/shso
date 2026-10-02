@@ -337,13 +337,20 @@ object ExternalOpen {
         if (existingBytes >= MAX_INBOX_BYTES || (declaredSize > 0L && existingBytes + declaredSize > MAX_INBOX_BYTES)) return null
         val target = reserveUniqueFile(dir, displayName) ?: return null
         return try {
-            context.contentResolver.openInputStream(uri)?.use { input ->
+            // 显式判空而不是用 `?.use{} ?: return null`：
+            // `return null` 是**非局部返回**，会直接跳出函数、绕过下面两个 catch，
+            // 于是 reserveUniqueFile 预占出来的 0 字节占位文件永远留在收件箱里。
+            // 反复分享同一个打不开的 URI 就能把收件箱槽位（MAX_INBOX_FILES）全部占满，
+            // 之后任何分享都被 `existing.size >= MAX_INBOX_FILES` 拒绝。
+            val input = context.contentResolver.openInputStream(uri)
+                ?: throw IllegalStateException("无法打开传入的文件")
+            input.use { stream ->
                 FileOutputStream(target).use { output ->
                     val buffer = ByteArray(64 * 1024)
                     var total = 0L
                     var checkedBytes = existingBytes
                     while (true) {
-                        val read = input.read(buffer)
+                        val read = stream.read(buffer)
                         if (read < 0) break
                         total += read
                         if (total > COPY_LIMIT_BYTES) throw IllegalStateException("文件超过 ${COPY_LIMIT_BYTES / 1024 / 1024}MB 上限")
@@ -358,7 +365,7 @@ object ExternalOpen {
                     }
                     output.flush()
                 }
-            } ?: return null
+            }
             target
         } catch (e: kotlinx.coroutines.CancellationException) {
             runCatching { target.delete() }

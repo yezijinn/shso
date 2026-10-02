@@ -441,19 +441,35 @@ run_guard() {
             done
             ;;
         FASTBOOT)
+            # 三个高危子命令必须判，但**不能只做整参数精确匹配**：
+            #  - `flash` 精确匹配漏掉 `flashall`（整盘重刷）与 `flashing`（unlock 前置）；
+            #  - `"oem unlock"` 写在 case 里永不命中，因为 "$@" 已按空白拆成 `oem` 和 `unlock` 两个参数。
+            # 因此改为：整参数精确匹配 + `flash*` 前缀匹配 + 「存在 unlock 参数」判定。
+            _fb_unlock=0
             for _a in "$@"; do
                 case "$_a" in
-                    -w|--wipe|erase|format|wipe|flash|"oem unlock")
+                    unlock|--unlock|--unlock-bootloader) _fb_unlock=1 ;;
+                esac
+            done
+            for _a in "$@"; do
+                case "$_a" in
+                    -w|--wipe|erase|format|wipe|flash|flashall|flashing)
+                        _paths="$_paths __FASTBOOT_DESTRUCTIVE__" ;;
+                    flash*)
+                        # flash <partition>、flashall、flashing lock/unlock …
                         _paths="$_paths __FASTBOOT_DESTRUCTIVE__" ;;
                 esac
             done
+            [ $_fb_unlock -eq 1 ] && _paths="$_paths __FASTBOOT_DESTRUCTIVE__"
             ;;
         MVCP)
             _n=$#
             _last=""
             if [ $_n -gt 0 ]; then eval "_last=\"\${$_n}\""; fi
-            # `-t <dir>` / `--target-directory=<dir>`：语义是「把所有源搬进 <dir>」，
+            # `-t <dir>` / `-t<dir>` / `--target-directory=<dir>`：语义是「把所有源搬进 <dir>」，
             # 此时末操作数是**源**而非目标。只判末位会让 `cp -t /system/bin a b` 放行。
+            # 必须同时覆盖「取值紧贴」写法：GNU getopt_long 与 busybox 的 getopt32 都接受
+            # `-tDIR`（必选参数可与短选项连写），只认 `-t DIR` 会被 `-t/system/bin` 绕过。
             # 一旦识别到 -t，末操作数就不再当目标判（它只是源之一），改判 -t 的值。
             _has_t=0
             _i=1
@@ -468,6 +484,11 @@ run_guard() {
                             _has_t=1
                         fi
                         ;;
+                    # 紧贴写法：-t 后直接跟取值（-t/system/bin）
+                    -t?*)
+                        _paths="$_paths ${_a#-t}"
+                        _has_t=1
+                        ;;
                     --target-directory=*)
                         _paths="$_paths ${_a#--target-directory=}"
                         _has_t=1
@@ -481,8 +502,9 @@ run_guard() {
                 while [ $_i -lt $_n ]; do
                     eval "_a=\"\${$_i}\""
                     case "$_a" in
-                        # -t 与其取值本身不是路径，跳过（取值已单独判过）
+                        # -t 及其取值本身不是路径，跳过（取值已单独判过）
                         -t|--target-directory) _i=$((_i + 1)) ;;
+                        -t?*) ;;
                         -*) ;;
                         *)  _paths="$_paths $_a" ;;
                     esac
@@ -509,9 +531,15 @@ run_guard() {
                             eval "_b=\"\${$_j}\""
                             # 取 basename 判定：`-exec /system/bin/rm`、`-exec toybox rm`
                             # 与解释器内联执行同样不可审计，一律介入。
-                            # （只匹配字面 rm 会让带路径/带前缀的形态整体漏判。）
+                            # 名单必须与顶层 ARGS 对齐：顶层已拦的破坏性原语一旦从这里漏掉，
+                            # `find ... -exec <该命令> {} +` 就整体放行（绕过只需换一个入口）。
                             case "${_b##*/}" in
-                                rm|rmdir|sh|bash|ash|mksh|python|python3|perl|node|php|toybox|busybox)
+                                rm|rmdir|unlink|shred|truncate|wipe|dd|blkdiscard|\
+                                mkfs.*|mke2fs|mkdosfs|parted|sgdisk|fdisk|sfdisk|wipefs|\
+                                mount|umount|chmod|chown|chgrp|chattr|setfacl|\
+                                cp|mv|install|ln|tee|sed|flash_image|\
+                                sh|bash|ash|mksh|dash|zsh|python|python2|python3|perl|\
+                                node|php|ruby|java|awk|gawk|toybox|busybox)
                                     _destruct=1 ;;
                             esac
                         fi
@@ -520,10 +548,17 @@ run_guard() {
                 _i=$((_i + 1))
             done
             if [ $_destruct -eq 1 ]; then
+                # 收集**全部**绝对路径操作数。
+                # 旧实现「取第一个非选项参数就 break」有两个漏洞：
+                #  1) 被前置选项骗过——`find -name keepme /system -delete` 把选项值 `keepme`
+                #     当成唯一路径判掉，真正的 `/system` 从未入判，整条销毁命令放行；
+                #  2) 多起始路径只判第一个——`find /sdcard /system -delete` 中受保护的那个漏掉。
+                # 改用「凡以 / 开头者一律入判」：FIND 模式下没有会被误认成绝对路径的非路径参数
+                # （表达式是 -name/-type/-delete 这类选项，选项值是名字而非路径），
+                # 少数形如 `-name '/*.o'` 的 glob 会被多判一次，属于可接受的 fail-closed。
                 for _a in "$@"; do
                     case "$_a" in
-                        -*) ;;
-                        *)  _paths="$_paths $_a"; break ;;
+                        /*)  _paths="$_paths $_a" ;;
                     esac
                 done
             fi
@@ -549,10 +584,21 @@ run_guard() {
                 case "$_a" in
                     -e|-f|--expression|--file)  _skip=1; continue ;;
                     -e?*|-f?*|--expression=*|--file=*)  continue ;;
-                    # 原地修改：短选项与长选项都要认，否则 `sed --in-place … /system/x`
+                    # 原地修改：短选项、长选项都要认，否则 `sed --in-place … /system/x`
                     # 会被当作"无 -i"整体放行（busybox/GNU sed 环境可绕过）。
-                    -i|-i*|--in-place|--in-place=*)     _has_i=1; continue ;;
-                    -*)         continue ;;
+                    -i|--in-place|--in-place=*)  _has_i=1; continue ;;
+                    # 短选项捆绑：POSIX 允许 `-ni`、`-in`、`-Ei` 把多个标志写成一个 token
+                    # （`-i.bak` 是 -i 带后缀，已在上面判过）。旧实现只认 `-i` 整参数，
+                    # 于是 `sed -ni 's/x/y/' /system/f` 整条放行——同一效果换个写法即绕过。
+                    # 短选项串里 i 只能出现在第 1 或第 2 位（`-i…` 或 `-ni/-in/-Ei…`），
+                    # 更靠后的 i 属于取值而非标志（如 `-ne` / `-e i`），不能算原地修改。
+                    -*)
+                        _b="${_a#-}"
+                        case "$_b" in
+                            i*|?i|?i?*)  _has_i=1 ;;
+                        esac
+                        continue
+                        ;;
                 esac
                 if [ $_take_script -eq 1 ]; then
                     _take_script=0      # 第一个非选项参数 = sed 脚本，不是路径

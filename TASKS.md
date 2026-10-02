@@ -20,22 +20,60 @@
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 371 tests / 0 failures / 1 skipped |
-| lint | 0 errors / 25 warnings / 4 hints |
-| release 体积 | 2.17 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
+| 单元测试 | 387 tests / 0 failures / 1 skipped |
+| lint | 0 errors / 31 warnings |
+| release 体积 | 2.18 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
 | 编辑器内核 | Sora Editor 0.23.6（打开即可编辑；语法由外置语法包提供） |
 | 语法包 | 62 语言 / 187 扩展名，`syntax-packs.zip`(37KB)，永固直链 tag `syntaxpacks-v2` |
-| 守卫模块 | **v1.4.1**（真机已装并验证拦截）；重打包走 `tools/pack_guard_module.py` |
-| OBB 事务锁 | 单文件 `set -C`(O_EXCL) 原子 CAS；真机 8 进程并发恰好 1 成功 |
+| 守卫模块 | **v1.4.2**（真机已装并验证拦截）；重打包走 `tools/pack_guard_module.py` |
+| OBB 事务锁 | 单文件 `set -C`(O_EXCL) 原子 CAS；真机 8 进程并发恰好 1 成功；**建目录早于取锁** |
 | 审计判定 | `AuditVerdict` 枚举（`DENIED` 与 `DEGRADED` 分离）；来源含 `FILE_MANAGER` |
 | 真机 | BIYLBAFQQSS8DA69，PACM00 / Android 10 / 1080×2280 / Magisk root |
 | 当前安全档位 | 设备上为 **3**（验证后如需还原请手动切回 0） |
 | 已知环境坑 | `adb shell su -c "a; b"` 的 `;` 会让后半段以 shell 用户执行 → 必须 `su -c 'sh script.sh'` |
+| 已知环境坑 | 守卫实际读 `/data/adb/shso_guard/policy.conf`（**优先于**模块自带 `policy.conf`）；改策略只改模块那份会不生效，且调试脚本覆写后必须还原，否则 `protect=/data` 会静默消失、所有用例变放行 |
 
 ---
 
 ## 待办
+
+### A51. 第二轮全面 BUG 深挖（2026-10-02）
+
+- [x] **四路并行审计 + 真机/字节码核验**：完成
+  - 分工：守卫 `common.sh` / 解压与安装落盘 / 编辑器与终端 / 文件操作与外部唤起
+  - 纪律：子代理结论一律复核。已剔除 2 条误报（`pm install-write` 的 splitName、
+    编辑器「读取失败可保存」——代码里 `loadError != null` 已先行拦截）
+  - 守卫侧不采信设备探针结论，改用**读代码 + harness 回归**定案（原因见「已知环境坑」末条：
+    首轮探针把测试目录放在 `allow=/data/local/tmp` 下，`allow` 优先于 `protect`，全部误判为放行）
+
+- [x] **守卫 v1.4.2：补齐 5 处可绕过判定**（真机 mksh + toybox 复验由放行转拦截，合法用法无误杀）
+  - [x] `find` 起始路径：删掉「取第一个非选项参数就 break」，改为收集全部绝对路径操作数
+    （`find -name x /system -delete`、`find /sdcard /system -delete` 原先整体放行）
+  - [x] `find -exec` 名单与顶层 ARGS 对齐（`truncate`/`dd`/`cp`/`mv`/`ln`/`tee`/`sed`/`wipefs`/
+    `chmod`/`chown`/`mkfs.*`/`parted` 等原缺）
+  - [x] `sed` 短选项捆绑：`-ni` / `-in` / `-Ei` 原先整体放行
+  - [x] `fastboot`：`flashall` / `flashing` 原先被 `flash` 的整参数匹配漏掉；
+    `"oem unlock"` 写在 case 里永不命中（参数已按空白拆开）
+  - [x] `cp` / `mv` 的 `-t<目录>` 紧贴写法（必选参数可与短选项连写）
+  - [x] `harness.sh` 新增 22 条用例（56 → 78，全通过）；桩列表补 `fastboot`
+
+- [x] **Kotlin 侧 8 项修复**
+  - [x] OBB 目录先建再取锁（否则含 OBB 的 XAPK **首次安装必失败**，且误报「目录正被占用」）
+  - [x] `ZipEntryCountProbe` 改宽松：zip4j 2.11.1 EOCD 反查**不做 EOF 对齐**（javap 核实），
+    严格等值判据会被 1 字节尾随垃圾绕过；改为取全部自洽候选的条目数上界
+  - [x] `delete` Java 回退先 `lstat` 判符号链接（原先跟随链接递归删空目标树）
+  - [x] `moveFile` OVERWRITE 仅目录目标才预删（原先文件目标也先删，失败即丢数据）
+  - [x] `ExternalOpen.copyToInbox` 去掉非局部 `return`，占位文件必清理
+  - [x] 文件页编辑器宿主开关/目标项改 `rememberSaveable`（旋转不再丢未保存内容）
+  - [x] 保存期间继续输入不再被清脏标记（按 `textRevision` 比对），文本与状态读取移回主线程
+  - [x] 新增 `validateSaveAsPath`：拒绝相对路径、`..`/`.`、空目录段、反斜杠、NUL，
+    并按运行时实际私有目录（`dataDir` / `deviceProtectedDataDir`）拒绝自毁数据
+
+- [x] **回归**：387 tests / 0 failures / 1 skipped；lint 0 errors / 31 warnings；
+  `build_apk.py` 红线通过（2.18 MB）；真机安装并冷启动无崩溃；
+  守卫 harness 78/78、`device-symlink.sh` 全通过
+- [x] **文档**：`更新日志.md` 增补守卫 5 项缺口与 8 项修复
 
 ### B1. GPL-3.0 协议切换（2026-10-02）
 
