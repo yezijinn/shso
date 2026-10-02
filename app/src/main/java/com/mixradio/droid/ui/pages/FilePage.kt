@@ -156,11 +156,15 @@ fun FilePage(
     var selectedItem by remember { mutableStateOf<FileItem?>(null) }
     var showActionDialog by remember { mutableStateOf(false) }
     var isInstalling by remember { mutableStateOf(false) }
-    var showImageViewerDialog by remember { mutableStateOf(false) }
-    var viewerImageList by remember { mutableStateOf<List<String>>(emptyList()) }
-    var viewerImageIndex by remember { mutableIntStateOf(0) }
-    var showTextEditorDialog by remember { mutableStateOf(false) }
-    var viewerTargetItem by remember { mutableStateOf<FileItem?>(null) }
+    // 图片浏览弹窗的宿主开关与目标项必须 rememberSaveable：
+    // 旋转/分屏时 Activity 重建会让普通 remember 回到初值，弹窗被静默关掉。
+    // 对文本编辑器而言这是**数据丢失**：编辑器内部的 rememberSaveable 状态随
+    // composable 一起被卸载重建，连同未落盘的改动一起消失，用户毫不知情。
+    var showImageViewerDialog by rememberSaveable { mutableStateOf(false) }
+    var viewerImageList by rememberSaveable { mutableStateOf<List<String>>(emptyList()) }
+    var viewerImageIndex by rememberSaveable { mutableIntStateOf(0) }
+    var showTextEditorDialog by rememberSaveable { mutableStateOf(false) }
+    var viewerTargetItem by rememberSaveable(stateSaver = FileItemSaver) { mutableStateOf<FileItem?>(null) }
 
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameInput by remember { mutableStateOf("") }

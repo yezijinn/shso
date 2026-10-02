@@ -112,9 +112,49 @@ class InstallAndBudgetHardeningTest {
 
     @Test fun `注释里伪造的 EOCD 签名不被误认为真 EOCD`() {
         // 注释区可以任意字节，攻击者能放一个 0x06054b50。
-        // 判据：真 EOCD 的起点 + 22 + 注释长度 必须等于文件长度。
+        // 判据：真 EOCD 的起点 + 22 + 注释长度 不得超过文件长度，且必须落在尾部窗口内。
         val zip = buildZipWithComment(listOf("a.txt"), commentByteCount = 64, forgeEocdInComment = true)
         assertEquals(1, ZipEntryCountProbe.probe(zip))
+    }
+
+    @Test fun `真 EOCD 之后挂尾随垃圾字节仍能解析出条目数`() {
+        // zip4j 2.11.1 的 HeaderReader.locateOffsetOfEndOfCentralDirectoryByReverseSeek
+        // 反向找到签名后**直接返回，不做 EOF 对齐或注释长度校验**（javap 反编译确认）。
+        // 所以「真 EOCD 后面还有垃圾字节」的 zip（拼接下载、对齐填充、自定义工具追加）
+        // zip4j 能正常解析出全部 central directory。若探针用严格等值判据就会判成「非 zip」
+        // 返回 null，预算检查被静默绕过 —— 恰好是这个探针要防的事。
+        val zip = buildZip(listOf("a.txt", "b.txt", "c.txt"))
+        appendBytes(zip, 1)   // 追加 1 字节
+        assertEquals(3, ZipEntryCountProbe.probe(zip))
+    }
+
+    @Test fun `尾随垃圾字节时 zip4j 同样能解析_证明探针必须与之同口径`() {
+        val zip = buildZip(listOf("a.txt", "b.txt", "c.txt"))
+        appendBytes(zip, 3)
+        val zf = net.lingala.zip4j.ZipFile(zip)
+        try {
+            assertEquals(3, zf.fileHeaders.size)
+        } finally {
+            zf.close()
+        }
+        assertEquals(3, ZipEntryCountProbe.probe(zip))
+    }
+
+    @Test fun `尾随垃圾超出 64KB 反查窗口时两个解析器都拒绝`() {
+        // zip4j 的反向查找窗口是 65536 字节，垃圾更多就找不到签名；
+        // 探针此时同样返回 null（尾部窗口内无自洽 EOCD），两侧口径一致。
+        val zip = buildZip(listOf("a.txt", "b.txt", "c.txt"))
+        appendBytes(zip, 70000)
+        assertNull(ZipEntryCountProbe.probe(zip))
+    }
+
+    @Test fun `EOCD 结束位置超过文件长度仍判为伪造`() {
+        // 注释长度字段谎报 500，但文件只有 22 字节 → 结束位置越界，不认。
+        val eocd = ByteArray(22)
+        writeIntLe(eocd, 0, 0x06054b50)
+        writeShortLe(eocd, 10, 4)
+        writeShortLe(eocd, 20, 500)
+        assertNull(ZipEntryCountProbe.entryCountFromTail(eocd, 22L))
     }
 
     @Test fun `尾部字节不足一个 EOCD 时返回 null`() {
@@ -183,6 +223,20 @@ class InstallAndBudgetHardeningTest {
         assertTrue(s.contains("case \"\$liveStart\" in ''|*[!0-9]*) ;;"))
     }
 
+    @Test fun `OBB 目录必须在取锁之前创建`() {
+        // 真实缺陷：锁用 `( set -C; printf > LOCK )` 创建，而该重定向在父目录不存在时
+        // 直接失败（ENOENT），`if` 条件为假 → 走 `exit BUSY`，用户看到的是误导性的
+        // 「OBB 目录正在被其他安装任务使用」并白等 4 次退避重试（重试永远无效）。
+        // 任何新游戏首次安装时 /sdcard/Android/obb/<pkg> 都不存在（AOSP 到装 APK 那步才建），
+        // 所以这是**含 OBB 的 XAPK 的必现失败**。
+        val s = File("src/main/java/com/mixradio/droid/data/ApkInstaller.kt").readText()
+        val mkdirAt = s.indexOf("mkdir -p \${RootService.escapeShellArg(obbDir)}")
+        val lockAt = s.indexOf("acquireObbLock(obbTransactionLock, obbLockToken)")
+        assertTrue("必须存在 mkdir -p OBB 目录的调用", mkdirAt > 0)
+        assertTrue("必须存在取锁调用", lockAt > 0)
+        assertTrue("建目录必须早于取锁（否则 O_EXCL 在父目录缺失时必失败）", mkdirAt < lockAt)
+    }
+
     @Test fun `OBB 锁获取脚本对陈旧锁先隔离再核对身份`() {
         val s = ApkInstaller.buildObbLockAcquireScript("'L'", "'T|1|2'", "'Q'")
         assertTrue("陈旧锁必须先原子改名摘掉锁名", s.contains("mv 'L' 'Q'"))
@@ -239,6 +293,11 @@ class InstallAndBudgetHardeningTest {
     }
 
     private fun buildZip(names: List<String>): File = buildZipWithComment(names, 0, false)
+
+    /** 追加字节；必须用 append 模式，`File.outputStream()` 默认截断会把 zip 清空。 */
+    private fun appendBytes(file: File, count: Int) {
+        java.io.FileOutputStream(file, true).use { it.write(ByteArray(count)) }
+    }
 
     private fun buildZipWithComment(
         names: List<String>,

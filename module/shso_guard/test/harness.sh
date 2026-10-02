@@ -24,7 +24,7 @@ rm -rf "$WORK" "$FAKE"; mkdir -p "$FAKE" "$WORK/policy" "$EMPTY"
 
 # 桩列表须覆盖被测命令：新增包装器（ln/install/tee/wipefs/chattr）也要有桩，
 # 否则 ALLOW 用例会落到系统真实二进制上，判据（^REAL:）失效。
-for c in rm dd find sed mv cp toybox busybox truncate rmdir shred wipe ln install tee wipefs chattr; do
+for c in rm dd find sed mv cp toybox busybox truncate rmdir shred wipe ln install tee wipefs chattr fastboot; do
   printf '#!/bin/sh\necho "REAL:%s $*"\nexit 0\n' "$c" > "$FAKE/$c"
   chmod 755 "$FAKE/$c"
 done
@@ -160,6 +160,37 @@ run_case BLOCK "n15)  cp -t /system/bin（目标目录形态）"     "$WORK/poli
 run_case BLOCK "n16)  mv -t /system/bin（目标目录形态）"     "$WORK/policy/lf.conf" mv -t /system/bin /sdcard/a
 run_case BLOCK "n17)  cp --target-directory=/system/bin"    "$WORK/policy/lf.conf" cp --target-directory=/system/bin /sdcard/a
 run_case ALLOW "n18)  cp -t /data/local/tmp（豁免目标）"   "$WORK/policy/lf.conf" cp -t /data/local/tmp /sdcard/a
+# 必选参数可与短选项紧贴：GNU getopt_long 与 busybox getopt32 都接受 `-tDIR`。
+# 旧实现只认 `-t DIR`，于是 `cp -t/system/bin a` 既漏判目标、又把末位源当目标，整条放行。
+run_case BLOCK "n19)  cp -t/system/bin（紧贴取值）"       "$WORK/policy/lf.conf" cp -t/system/bin /sdcard/a
+run_case BLOCK "n20)  mv -t/system/bin（紧贴取值）"       "$WORK/policy/lf.conf" mv -t/system/bin /sdcard/a
+run_case ALLOW "n21)  cp -t/data/local/tmp（紧贴豁免）"   "$WORK/policy/lf.conf" cp -t/data/local/tmp /sdcard/a
+
+# `find` 起始路径提取：旧实现「取第一个非选项参数就 break」，
+# 被前置选项（-name/-type/-maxdepth…）骗过——把选项值当唯一路径判掉，真正的受保护路径从未入判。
+run_case BLOCK "o1)   find -name x /system -delete（前置选项）"   "$WORK/policy/lf.conf" find -name x /system -delete
+run_case BLOCK "o2)   find -type f /system -delete（前置选项）"   "$WORK/policy/lf.conf" find -type f /system -delete
+run_case BLOCK "o3)   find -maxdepth 1 /system -delete（前置选项）" "$WORK/policy/lf.conf" find -maxdepth 1 /system -delete
+run_case BLOCK "o4)   find /sdcard -name x /system -delete（双路径）" "$WORK/policy/lf.conf" find /sdcard -name x /system -delete
+# -exec 名单必须与顶层 ARGS 对齐：顶层已拦的原语从 -exec 漏掉即等于没拦。
+run_case BLOCK "o5)   find -exec truncate"       "$WORK/policy/lf.conf" find /system -maxdepth 1 -exec truncate -s 0 '{}' ";"
+run_case BLOCK "o6)   find -exec dd"             "$WORK/policy/lf.conf" find /system -maxdepth 1 -exec dd of=/dev/null '{}' ";"
+run_case BLOCK "o7)   find -exec cp"             "$WORK/policy/lf.conf" find /system -maxdepth 1 -exec cp '{}' /sdcard/x ";"
+run_case BLOCK "o8)   find -exec sed -i"         "$WORK/policy/lf.conf" find /system -maxdepth 1 -exec sed -i s/a/b/ '{}' ";"
+run_case BLOCK "o9)   find -exec wipefs"         "$WORK/policy/lf.conf" find /system -maxdepth 1 -exec wipefs -a '{}' ";"
+run_case BLOCK "o10)  find -exec chmod"         "$WORK/policy/lf.conf" find /system -maxdepth 1 -exec chmod 777 '{}' ";"
+run_case ALLOW "o11)  find -name x /data/local/tmp -delete（豁免）" "$WORK/policy/lf.conf" find -name x /data/local/tmp -delete
+# sed 短选项捆绑：POSIX 允许 `-ni` 把多个标志写成一个 token，同一效果换个写法即绕过。
+run_case BLOCK "p1)   sed -ni（短选项捆绑）"     "$WORK/policy/lf.conf" sed -ni 1d /system/build.prop
+run_case BLOCK "p2)   sed -in（短选项捆绑）"     "$WORK/policy/lf.conf" sed -in 1d /system/build.prop
+run_case ALLOW "p3)   sed -n 1d（无 -i 不介入）" "$WORK/policy/lf.conf" sed -n 1d /system/build.prop
+# fastboot：`flash` 整参数精确匹配漏掉 `flashall`（整盘重刷）与 `flashing`（unlock 前置）；
+# `"oem unlock"` 写在 case 里永不命中，因为 "$@" 已按空白拆成两个参数。
+run_case BLOCK "q1)   fastboot flashall"        "$WORK/policy/lf.conf" fastboot flashall
+run_case BLOCK "q2)   fastboot flashing lock"   "$WORK/policy/lf.conf" fastboot flashing lock
+run_case BLOCK "q3)   fastboot oem unlock"      "$WORK/policy/lf.conf" fastboot oem unlock
+run_case BLOCK "q4)   fastboot flash boot"      "$WORK/policy/lf.conf" fastboot flash boot
+run_case ALLOW "q5)   fastboot devices（只读）" "$WORK/policy/lf.conf" fastboot devices
 
 echo
 echo "===== 环境变量越权（SHSO_POLICY 指向可写路径的 mode=off，必须被忽略）====="

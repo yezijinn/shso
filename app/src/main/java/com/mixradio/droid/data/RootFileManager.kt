@@ -14,6 +14,7 @@ import com.mixradio.droid.data.security.Verdict
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.file.Files
 
 /** 移动文件时遇到目标同名项目时的处理策略 */
 enum class MoveDestinationConflict {
@@ -601,9 +602,18 @@ suspend fun moveFile(
         if (destExists()) {
             when (onConflict) {
                 MoveDestinationConflict.OVERWRITE -> {
-                    // 先删除目标同名项（文件或目录树），再移动
-                    if (!delete(destinationPath).first) {
-                        return@withContext Pair(false, "无法覆盖目标同名项")
+                    // 仅当目标是**目录**时才需要先删：`rename(2)` 与 `mv` 本身就会原子覆盖
+                    // 同类型文件目标，先删等于凭空造出一个「移动失败则目标已丢」的窗口
+                    // （源在别的挂载点 / 无权限 / 被守卫拦时，mv 必然失败，
+                    //   而目标已被删掉，用户数据不可恢复）。
+                    // 目录目标无法被 rename 覆盖（非空目录会 ENOTEMPTY），只能先删。
+                    val destType = localType(destinationPath).let {
+                        if (it == 0 && RootService.isRootGranted == true) rootType(destinationPath) else it
+                    }
+                    if (destType == 2) {
+                        if (!delete(destinationPath).first) {
+                            return@withContext Pair(false, "无法覆盖目标同名目录")
+                        }
                     }
                 }
                 MoveDestinationConflict.RENAME -> {
@@ -684,6 +694,15 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
         }
         try {
             val targetFile = File(path)
+            // 符号链接必须只删链接本身，绝不能跟随。
+            // `File.isDirectory` 走 stat，会跟随链接；`deleteRecursively()` 对目录链接
+            // 同样会下潜，于是「删除一个指向别处的链接」会静默清空链接目标整棵树
+            // （ROOT 不可用 + 用户删的是 /sdcard 下自己放的链接时必现，且不可撤销）。
+            if (Files.isSymbolicLink(targetFile.toPath())) {
+                val ok = targetFile.delete()   // 删链接本身，不动目标
+                if (ok) return@withContext Pair(true, "删除成功")
+                return@withContext Pair(false, "删除符号链接失败")
+            }
             val ok = if (targetFile.isDirectory) targetFile.deleteRecursively() else targetFile.delete()
             if (ok) return@withContext Pair(true, "删除成功")
         } catch (_: Exception) {

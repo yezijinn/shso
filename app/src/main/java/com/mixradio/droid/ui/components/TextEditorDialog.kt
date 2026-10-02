@@ -162,6 +162,12 @@ private fun TextEditorDialogContent(
     fun resolveCharset(): Charset =
         runCatching { Charset.forName(currentCharset) }.getOrDefault(Charsets.UTF_8)
 
+    // 本进程实际可见的应用私有目录（随 userId 变化，故运行时取而不是写死路径）。
+    val privateDataDirs: List<String> = remember(context) {
+        val ai = context.applicationInfo
+        listOfNotNull(ai.dataDir, ai.deviceProtectedDataDir).map { it.trimEnd('/') }.distinct()
+    }
+
     var overrideCharset by remember { mutableStateOf<Charset?>(null) }
 
     /** 把编辑器当前全文同步到 [contentValue]（按需调用：保存 / 查找 / 对比 / 统计 / 历史）。 */
@@ -384,20 +390,35 @@ private fun TextEditorDialogContent(
     // 语法高亮改由编辑器引擎自绘（Sora 的可视区增量高亮），不再走 Compose `VisualTransformation`：
     // 旧方案需对全文做 AnnotatedString 计算且与输入文本逐帧校验，大文本是纯开销。
     // 另存为的落盘动作：抽成局部函数，供「直接保存」与「确认覆盖后保存」共用。
-    val performSaveAs: (String) -> Unit = { newPath ->
+    val performSaveAs: (String) -> Unit = saveAs@{ newPath ->
+        // 另存为的目标路径来自用户输入 / 覆盖确认弹窗，零校验就直接交给
+        // writeTextFile：空串、纯目录、含 `..` 的相对穿越、以及应用私有路径
+        // （/data/data/com.mixradio.droid/…）都会被接受。
+        // writeTextFile 走 ROOT 时是 `cat > <path>`，等价于**无条件覆盖**，
+        // 于是「另存为」能静默毁掉应用自身数据文件/数据库，且不可撤销。
+        val saveAsProblem = validateSaveAsPath(newPath, privateDataDirs)
+        if (saveAsProblem != null) {
+            scope.launch { toastMessage = saveAsProblem }
+            return@saveAs
+        }
         scope.launch {
             // 落盘与历史读写必须同在 IO 线程：EditHistoryManager 走 SharedPreferences，
             // 首次访问要把整个 prefs XML 解析进内存，单文件上限 100 万字 → 主线程数十 ms 卡顿。
             // doSave 已按此写法，这里此前漏了 withContext，是同一条路径上的不一致。
+            // 与 doSave 同理：文本与修订号必须在主线程取，IO 期间的新输入不能算作已保存。
+            val snapshotText = contentValue.text
+            val snapshotRevision = textRevision
             val outcome = withContext(Dispatchers.IO) {
-                val writeResult = writeTextFile(newPath, contentValue.text, resolveCharset(), currentLineEnding, hasBom)
+                val writeResult = writeTextFile(newPath, snapshotText, resolveCharset(), currentLineEnding, hasBom)
                 if (writeResult.first) {
-                    EditHistoryManager.addHistory(newPath, contentValue.text, EditHistoryManager.HistorySource.SAVE)
+                    EditHistoryManager.addHistory(newPath, snapshotText, EditHistoryManager.HistorySource.SAVE)
                     Triple(true, null as String?, EditHistoryManager.getHistory(newPath))
                 } else Triple(false, writeResult.second, emptyList())
             }
             if (outcome.first) {
-                currentFilePath = newPath; dirty = false; lastSavedAtMs = System.currentTimeMillis()
+                currentFilePath = newPath
+                if (textRevision == snapshotRevision) dirty = false else dirty = true
+                lastSavedAtMs = System.currentTimeMillis()
                 history = outcome.third
                 toastMessage = "已保存"
             } else { toastMessage = outcome.second ?: "保存失败" }
@@ -424,24 +445,38 @@ private fun TextEditorDialogContent(
             !dirty -> toastMessage = "无改动"
             else -> {
                 isSaving = true
+                // 保存是 IO 挂起调用，期间用户可以继续打字。必须在**主线程**先把
+                // 待写文本与修订号取出来：状态读取不能跨到 Dispatchers.IO 上做
+                // （Compose 快照非线程安全），而且写出去的必须是「点击保存那一刻」的内容。
+                val snapshotText = contentValue.text
+                val snapshotRevision = textRevision
                 scope.launch {
                     val path = currentFilePath!!
                     // 成功: Triple(写盘结果, 错误信息, 最新历史)；历史读写一并放入 IO 线程
                     val outcome = withContext(Dispatchers.IO) {
-                        val writeResult = writeTextFile(path, contentValue.text, resolveCharset(), currentLineEnding, hasBom)
+                        val writeResult = writeTextFile(path, snapshotText, resolveCharset(), currentLineEnding, hasBom)
                         if (writeResult.first) {
-                            EditHistoryManager.addHistory(path, contentValue.text, EditHistoryManager.HistorySource.SAVE)
+                            EditHistoryManager.addHistory(path, snapshotText, EditHistoryManager.HistorySource.SAVE)
                             Triple(true, null as String?, EditHistoryManager.getHistory(path))
                         } else Triple(false, writeResult.second, emptyList())
                     }
                     isSaving = false
                     if (outcome.first) {
-                        dirty = false; lastSavedAtMs = System.currentTimeMillis()
+                        // 只有「保存期间没有新输入」才能清 dirty。
+                        // 无条件置 false 会把写盘期间新敲的字一起算成已保存 —— 用户看到
+                        // 「已保存」且顶栏脏标记消失，实际那部分内容从未落盘，直接丢失。
+                        if (textRevision == snapshotRevision) {
+                            dirty = false
+                        } else {
+                            dirty = true
+                            saveMessage = "已保存，但保存期间又有新修改，请再次保存"
+                        }
+                        lastSavedAtMs = System.currentTimeMillis()
                         history = outcome.third
                         toastMessage = "已保存"
                         // 每次保存成功都强制置空 saveMessage，确保状态栏只剩最新的有效提示
                         //（否则上一次失败的红字提示会在恢复后依旧停留）。
-                        saveMessage = null
+                        if (textRevision == snapshotRevision) saveMessage = null
                     } else { saveMessage = outcome.second ?: "保存失败" }
                 }
             }
@@ -2134,6 +2169,39 @@ private fun CompactSettingRow(
             fontFamily = FontFamily.Monospace
         )
     }
+}
+
+/**
+ * 校验「另存为」目标路径。纯函数，便于 JVM 单测。
+ *
+ * 背景：`performSaveAs` 此前把用户输入直接交给 `writeTextFile`，而后者在 ROOT 通道下
+ * 等价于 `cat > <path>` —— 无条件覆盖。于是另存为可以：
+ *  - 指向目录（写入必然失败，只是报错难看）；
+ *  - 用 `a/../../..` 穿越出预期根（AGENTS.md 明确要求路径必须过滤 `..`）；
+ *  - 覆盖应用自身私有文件（`/data/data/com.mixradio.droid/…`），毁掉数据库/偏好设置且不可撤销。
+ *
+ * @return null 表示通过；否则为可直接展示给用户的原因。
+ */
+internal fun validateSaveAsPath(rawPath: String, privateDataDirs: List<String> = emptyList()): String? {
+    val path = rawPath.trim()
+    if (path.isEmpty()) return "请输入保存路径"
+    if (path.contains('\u0000')) return "保存路径包含非法字符"
+    if (path.contains('\\')) return "保存路径不能包含反斜杠"
+    if (!path.startsWith("/")) return "请输入绝对路径"
+    if (path.contains("//")) return "保存路径包含空目录段"
+    val segments = path.split('/')
+    if (segments.any { it == "." || it == ".." }) return "保存路径不能包含 . 或 .."
+    if (path.trimEnd('/').isEmpty()) return "保存路径不能是根目录"
+    // 私有目录由调用方按实际安装用户注入（`dataDir` / `deviceProtectedDataDir` /
+    // `credentialProtectedDataDir` 随 userId 变化，写死 user/0 会漏掉多开与工作资料夹）。
+    for (dir in privateDataDirs) {
+        val base = dir.trimEnd('/')
+        if (base.isEmpty()) continue
+        if (path == base || path.startsWith("$base/")) {
+            return "不能把文件保存到应用私有目录"
+        }
+    }
+    return null
 }
 
 internal fun removeEmptyLines(text: String): String =

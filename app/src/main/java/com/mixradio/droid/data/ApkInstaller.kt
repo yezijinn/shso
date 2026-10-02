@@ -250,6 +250,19 @@ object ApkInstaller {
                 val obbDir = "/sdcard/Android/obb/$packageName"
                 obbTransactionLock = "$obbDir/.shso_install.lock"
                 obbLockToken = UUID.randomUUID().toString()
+
+                // **必须先建目录再取锁**：锁用 `( set -C; printf > LOCK )` 创建，
+                // 而该重定向在父目录不存在时直接失败（ENOENT），`if` 条件为假 →
+                // 走 `exit BUSY`，用户看到的是误导性的「OBB 目录正在被其他安装任务使用」，
+                // 并白等 4 次退避重试（重试永远无效，因为目录依然不存在）。
+                // 任何新游戏首次安装时 `/sdcard/Android/obb/<pkg>` 都不存在
+                // （AOSP 要到 APK 安装那一步才建），所以这是**含 OBB 的 XAPK 的必现失败**。
+                val mkdirCmd = "mkdir -p ${RootService.escapeShellArg(obbDir)}"
+                val (mkdirCode, mkdirOutput) = RootService.runCommandSync(mkdirCmd, INSTALL_TIMEOUT_MS)
+                if (mkdirCode != 0) {
+                    return@withContext InstallResult.Failure("创建 OBB 目录失败: ${mkdirOutput.trim()}")
+                }
+
                 var lockResult = acquireObbLock(obbTransactionLock, obbLockToken)
                 // 只对「确实被占用」退避重试；状态不明/文件系统错误必须立即失败，
                 // 否则用户会看到「正在被其他安装任务使用」这种无法定位的提示。
@@ -265,11 +278,6 @@ object ApkInstaller {
                         else -> "OBB 锁操作失败: ${lockResult.second.trim()}"
                     }
                     return@withContext InstallResult.Failure(reason)
-                }
-                val mkdirCmd = "mkdir -p ${RootService.escapeShellArg(obbDir)}"
-                val (mkdirCode, mkdirOutput) = RootService.runCommandSync(mkdirCmd, INSTALL_TIMEOUT_MS)
-                if (mkdirCode != 0) {
-                    return@withContext InstallResult.Failure("创建 OBB 目录失败: ${mkdirOutput.trim()}")
                 }
                 val copiedObbTargets = mutableListOf<String>()
                 try {
