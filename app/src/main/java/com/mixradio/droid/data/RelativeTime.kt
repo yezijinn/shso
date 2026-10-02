@@ -28,7 +28,7 @@ object RelativeTime {
             delta < HOUR -> "${delta / MINUTE} 分钟前"
             delta < DAY -> "${delta / HOUR} 小时前"
             delta < RELATIVE_LIMIT -> "${delta / DAY} 天前"
-            else -> SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(timestamp))
+            else -> SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT).format(Date(timestamp))
         }
     }
 }

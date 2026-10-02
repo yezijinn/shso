@@ -43,9 +43,17 @@ object PolicyEngine {
         "dd", "wipe", "fastboot", "shred", "truncate", "sgdisk", "parted", "fdisk",
         "sfdisk", "gdisk", "cgdisk", "wipefs", "flash_image", "mtd", "nandwrite"
     )
-    /** 未解析变量 + 这些程序 = 提升为需确认的高危（rm -rf "$T" 在脚本里极常见，不宜一律硬拦）。 */
+    /**
+     * 未解析变量 + 这些程序 = 提升为需确认的高危（rm -rf "$T" 在脚本里极常见，不宜一律硬拦）。
+     *
+     * 写入型与移动型工具同样必须在列：它们的目标是**末操作数**，
+     * 而命令替换/变量能把目标拼成任意路径 —— `rsync -a /x $(echo /system)/bin/` 的末位
+     * 只有 `/bin/`，替换出的 `/system` 若不参与分级就等于完全不可见。
+     * 这类操作在脚本里不像 `rm -rf` 那样常见，故列 DANGEROUS 而非 CRITICAL。
+     */
     private val DANGEROUS_UNRESOLVED = setOf(
-        "rm", "rmdir", "chmod", "chown", "chgrp", "find", "sed"
+        "rm", "rmdir", "chmod", "chown", "chgrp", "find", "sed",
+        "cp", "install", "ln", "rsync", "mv"
     )
     /** 重定向写入这些设备属正常操作（重定向目标不做路径分级，避免 `ls > /dev/null` 误报）。 */
     private val SAFE_REDIRECT_DEVICES = setOf(
@@ -183,15 +191,90 @@ object PolicyEngine {
             "tee" -> evaluateTee(atom, line, snippet, findings)
             in COPY_LIKE -> evaluateCopyLike(atom, line, snippet, findings)
             "mv" -> evaluateMove(atom, line, snippet, findings)
+            // 拆掉防护体系本身的原语。此前这些程序在 evaluateAtom 的 when 里**无任何分支**，
+            // 落到末尾即 Verdict.Allow：守卫目录也没有对应包装器（PATH 前置对其完全无效），
+            // 于是在最高档位下也能无声关掉 MAC、删光全部 root 模块（root 与守卫同时消失）。
+            "setenforce" -> findings.add(
+                Finding("SELINUX_TOGGLE", RiskLevel.CRITICAL, "切换 SELinux 模式（关闭后全部强制访问控制失效）", snippet, line)
+            )
+            "resetprop" -> findings.add(
+                Finding("PROP_OVERRIDE", RiskLevel.CRITICAL, "修改 Android 系统属性（可绕过属性级安全策略）", snippet, line)
+            )
+            "mount", "umount" -> evaluateMount(atom, line, snippet, findings)
+            "magisk" -> evaluateMagisk(atom, line, snippet, findings)
         }
 
         // 2) 重定向写入：覆盖 `cat img > /dev/block/by-name/boot` 这类不经 dd 的写入
         evaluateRedirects(atom, line, snippet, findings)
     }
 
+    /**
+     * mount / umount：改写挂载点即改写「路径 → 实际内容」的映射。
+     * `mount -o remount,rw /system` 把只读系统分区变可写，此后任何普通写命令都能落盘；
+     * 叠加 `mount -o bind <任意目录> /system/app` 更是把任意可写目录顶到系统目录下。
+     */
+    private fun evaluateMount(atom: CommandParser.Atom, line: Int?, snippet: String, findings: ArrayList<Finding>) {
+        val targets = atom.operands.filter { it.startsWith("/") }
+        val remountRw = atom.args.any { it.contains("remount") } &&
+            atom.args.any { it.contains("rw") }
+        val bind = atom.args.any { it.contains("bind") }
+        val touchesProtected = targets.any {
+            PathClassifier.classify(it) == PathClassifier.PathClass.CRITICAL
+        }
+        val level = when {
+            touchesProtected && (remountRw || bind) -> RiskLevel.CRITICAL
+            remountRw || bind -> RiskLevel.DANGEROUS
+            targets.isNotEmpty() -> RiskLevel.WARNING
+            else -> return
+        }
+        val what = when {
+            remountRw && bind -> "以读写方式 bind 挂载"
+            remountRw -> "重挂载为可写"
+            bind -> "bind 挂载"
+            else -> "改挂载"
+        }
+        findings.add(
+            Finding(
+                "MOUNT_MODIFY", level,
+                "$what：${targets.joinToString(", ").ifEmpty { "未指定挂载点" }}",
+                snippet, line
+            )
+        )
+    }
+
+    /**
+     * magisk：只拦「拆掉防护体系」的子命令，其余（`-v` / `list` 等只读查询）零干预。
+     *
+     * `magisk --remove-modules` 会删掉全部已安装模块 —— 包括本项目的守卫模块，
+     * 即 root 能力与运行时防护同时消失，属不可逆的变砖级操作。
+     * 注意 `magisk` 在解析层被当作 wrapper 前缀剥掉过（见 [CommandParser]），
+     * 所以这里要同时看 program 与原始操作数。
+     */
+    private fun evaluateMagisk(atom: CommandParser.Atom, line: Int?, snippet: String, findings: ArrayList<Finding>) {
+        val all = atom.args + atom.operands
+        val critical = all.any {
+            it == "--remove-modules" || it == "--remove-module" ||
+                it == "--uninstall" || it == "--resetprop" || it == "--remove"
+        }
+        if (critical) {
+            findings.add(
+                Finding(
+                    "MAGISK_TAMPER", RiskLevel.CRITICAL,
+                    "卸载/重置 Magisk 模块或属性（会同时移除 root 能力与本项目的守卫模块）",
+                    snippet, line
+                )
+            )
+            return
+        }
+        if (all.any { it.startsWith("--install") || it.startsWith("--patch") }) {
+            findings.add(
+                Finding("MAGISK_PATCH", RiskLevel.DANGEROUS, "安装或修补 Magisk 模块（引导期生效）", snippet, line)
+            )
+        }
+    }
+
     /** truncate：把目标截断为 0/指定大小，对系统/数据分区等同破坏。 */
-    private fun evaluateTruncate(atom: CommandParser.Atom, line: Int?, snippet: String, findings: ArrayList<Finding>) {
-        for (t in atom.operands) {
+    private fun evaluateTruncate(atom: CommandParser.Atom, line: Int?, snippet: String, findings: ArrayList<Finding>) {        for (t in atom.operands) {
             when (PathClassifier.classify(t)) {
                 PathClassifier.PathClass.CRITICAL -> findings.add(
                     Finding("TRUNCATE_SYSTEM", RiskLevel.CRITICAL, "截断系统/设备文件: ${t.take(120)}", snippet, line)

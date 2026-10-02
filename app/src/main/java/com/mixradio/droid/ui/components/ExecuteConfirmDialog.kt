@@ -101,6 +101,17 @@ fun ExecuteConfirmDialog(
 
     val report = scanReport
     val hasCritical = report != null && report.findings.any { it.level == RiskLevel.CRITICAL }
+    /**
+     * 扫描是否处于「无法判定」状态：应当扫描（`.sh` + 扫描开启）却没拿到报告。
+     * 两种成因：内容读不出来（root-only、超过扫描上限、`stat`/`cat` 失败），
+     * 或扫描仍在进行（报告尚未回填）。
+     *
+     * 此前这两种情况都只留一行提示文字，确认按钮照样 enabled：
+     * `hasCritical` 因 report==null 而为 false → 不要求打字 → 一键以 root 执行。
+     * `ScriptAuditor` 里那套「拿不到内容即拒绝」的 fail-closed 只在自动执行链路生效，
+     * 手动确认链路完全绕开它 —— 档位 ≥2 的扫描门禁对不可读脚本形同虚设。
+     */
+    val scanUnresolved = isSh && scanEnabled && report == null
     // 「输入 EXECUTE」属**档位 3 专属**能力：档位 2 只需普通确认（点「确认执行」即可）。
     // 判定依据必须是档位 3（而非档位 ≥2 的 scanEnabled），否则档位 2 会被强制打字，与文档语义不符。
     val needTypedConfirm = needTypedExecuteConfirm(securityLevel, hasCritical)
@@ -148,7 +159,7 @@ fun ExecuteConfirmDialog(
             )
             when {
                 scanNote != null -> Text(
-                    text = "⚠ $scanNote",
+                    text = "⚠ $scanNote\n扫描未完成，已阻止执行以免绕过内容检查",
                     style = AuroraTextStyles.body2,
                     color = AuroraTokens.Error
                 )
@@ -255,7 +266,7 @@ fun ExecuteConfirmDialog(
             }
             Button(
                 onClick = { onConfirm(runAsRootChecked) },
-                enabled = info != null && typedOk,
+                enabled = info != null && typedOk && !scanUnresolved,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = AuroraTokens.Error,
                     contentColor = Color.White

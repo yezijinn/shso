@@ -64,6 +64,12 @@ fun InstallConfirmDialog(
     var confirmedSha256 by remember { mutableStateOf<String?>(null) }
     var stagedPath by remember { mutableStateOf<String?>(null) }
     var lockedInstallAsRoot by remember { mutableStateOf(willInstallAsRoot) }
+    // staged 副本的**所有权**标记。一旦 onConfirm 交出，弹窗就不再负责删除：
+    // 否则 onConfirm 里把 pendingInstallItem 置 null 会让 show 变 false，
+    // 本 LaunchedEffect 重启后走 else 分支把副本删掉，而 startInstall 的协程
+    // 还要用它算 sha256、再喂给 ApkInstaller —— 两条 Main 派发谁先跑取决于帧时序，
+    // 表现为「安装时好时坏 / 报安装包在确认后发生变化」。
+    var stagedConsumed by remember { mutableStateOf(false) }
 
     LaunchedEffect(show, fileItem?.path) {
         info = if (show && fileItem != null) {
@@ -72,18 +78,22 @@ fun InstallConfirmDialog(
             val staged = stageApkForInstall(context, fileItem.path)
             stagedPath = staged?.first
             confirmedSha256 = staged?.second
+            stagedConsumed = false
             val sizeLabel = staged?.first?.let { java.io.File(it).length() }?.let { "$it B" }
             currentInfo.copy(
                 sizeLabel = sizeLabel ?: currentInfo.sizeLabel,
                 sha256 = confirmedSha256 ?: "无法生成安装副本"
             )
         } else {
-            stagedPath?.let { java.io.File(it).delete() }
+            // 仅在所有权未交出时清理（用户直接关闭弹窗 / 换了目标文件）
+            if (!stagedConsumed) stagedPath?.let { java.io.File(it).delete() }
             stagedPath = null
             confirmedSha256 = null
             null
         }
     }
+
+    val handOffStaged = { stagedConsumed = true }
 
     AuroraWindowDialog(
         show = show && fileItem != null,
@@ -152,11 +162,12 @@ fun InstallConfirmDialog(
             Button(
                 onClick = {
                     val confirmed = info ?: return@Button
-                    onConfirm(
-                        confirmedSha256 ?: return@Button,
-                        lockedInstallAsRoot,
-                        stagedPath ?: return@Button
-                    )
+                    val sha = confirmedSha256 ?: return@Button
+                    val staged = stagedPath ?: return@Button
+                    // 先交出所有权，再回调：回调会把 pendingInstallItem 置 null，
+                    // 本弹窗随即关闭并重启 LaunchedEffect，此时不得再删副本。
+                    handOffStaged()
+                    onConfirm(sha, lockedInstallAsRoot, staged)
                 },
                 enabled = info != null && confirmedSha256 != null,
                 colors = ButtonDefaults.buttonColors(

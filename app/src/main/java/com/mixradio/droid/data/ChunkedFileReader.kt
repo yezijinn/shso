@@ -53,14 +53,29 @@ object ChunkedFileReader {
         else -> total
     }
 
-    data class LoadResult(
-        val text: String,
-        val charset: java.nio.charset.Charset,
-        val hasBom: Boolean,
-        val totalBytes: Long,
-        val loadedBytes: Int,
-        val offsetBytes: Long
-    )
+data class LoadResult(
+    val text: String,
+    val charset: java.nio.charset.Charset,
+    val hasBom: Boolean,
+    val totalBytes: Long,
+    val loadedBytes: Int,
+    val offsetBytes: Long
+) {
+    /**
+     * 是否读到了文件的全部内容。
+     *
+     * 分块读取途中任何一次 `readRange` 返回空（ROOT 通道的 `dd|base64` 失败、被拒、超时）
+     * 或**短读**（`dd` 输出被截断时 `readRangeRoot` 只 `copyOfRange` 到 `raw.size`），
+     * `loadAll` 的循环都会 `break`，而调用方此前只看 `text` 不看字节数，
+     * 于是把残缺内容当成完整原文载入编辑器并标记为「未修改」。
+     * 用户看不出任何异常，一次无关编辑后 `writeTextFile` 就用这份残缺内容
+     * **整文件覆盖**原文件 —— 截断或内容错位，且不可撤销。
+     *
+     * 唯一的调用点（`TextEditorDialog`）只在 `total <= MAX_LOAD_BYTES` 时调 `loadAll`，
+     * 此时 `cappedLoadBytes` 不封顶，故 `loadedBytes < totalBytes` 一定是读失败而非有意截断。
+     */
+    val isComplete: Boolean get() = totalBytes <= 0L || loadedBytes.toLong() >= totalBytes
+}
 
     /** 加载文件前若干字节用于编码检测；上限 1MB。 */
     fun readHead(filePath: String, headBytes: Int = (CHUNK_BYTES).toInt()): ByteArray {

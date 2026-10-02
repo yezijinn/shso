@@ -54,6 +54,19 @@ object RootService {
         return if (SAFE_ARG.matcher(arg).matches()) arg else "'" + arg.replace("'", "'\\''") + "'"
     }
 
+    /**
+     * 生成 `pkill -f` 可用的**字面量**匹配串。
+     *
+     * [escapeShellArg] 只防 shell 解释，对 `pkill -f` 无效 —— 后者把参数当**扩展正则**（ERE）
+     * 匹配整条 cmdline。于是路径里的正则元字符会被解释：`/data/adb/shso/v1.2.sh` 的 `.`
+     * 匹配任意字符，能一并命中 `v1X2yzh`。该兜底路径以 root 身份执行，误杀的是任意 uid 的进程。
+     *
+     * 实现放在 [com.mixradio.droid.data.security.ShellEscapes]：纯字符串函数，
+     * 不该挂在带 Android 静态初始化的 `RootService` 上，否则 JVM 单测无法加载。
+     */
+    internal fun escapeEreLiteral(literal: String): String =
+        com.mixradio.droid.data.security.ShellEscapes.escapeEreLiteral(literal)
+
     var isRootGranted by mutableStateOf<Boolean?>(null)
         private set
 
@@ -123,6 +136,39 @@ object RootService {
      * 命令退出时只有计数未变才清理状态。
      */
     private val terminalCommandGeneration = AtomicLong(0)
+
+    /**
+     * 「当前活动进程」槽位的**同步占用标记**。
+     *
+     * 原实现只有 `isTaskRunning` 一个判据，而它要到 [runTerminalCommand] 内部才置 true，
+     * 其间要跨过：派发到 IO → 策略判定 → `withContext(Main)` 往返 → `guardPrefixOrDegrade`
+     * （守卫缓存为空时同步探测，最长 5s）→ `ProcessBuilder("su")`。
+     * 这段窗口里 [isTerminalBusy] 恒为 false，于是：
+     *  - 连点两次「发送」→ 两条命令同时起来；
+     *  - 终端命令与文件页「执行」并发 → 两条执行线各自写 `activeProcess` / `currentTaskName`，
+     *    后者还会 cancel 掉前者的批量发布循环（**前者的输出从此不再显示**），
+     *    且共用同一个 `.run.pgid` 互相覆盖，「结束进程」会杀错对象。
+     *
+     * 标记在**判定之前**同步置位（CAS），使判定与占用成为一个临界区；
+     * [runTerminalCommand] 再按代际自检，标记已被别人抢走就直接杀掉自己刚起的进程。
+     * 值为 0 表示空闲。
+     */
+    private val terminalSlotOwner = AtomicLong(0)
+
+    /**
+     * 尝试同步占用槽位。成功返回本次的占用令牌（从 1 开始），已被占用返回 0。
+     * 令牌即发起方的 [nextSlotToken]，用于后续自检与释放。
+     */
+    private fun tryClaimTerminalSlot(): Long {
+        val token = nextSlotToken.incrementAndGet()
+        return if (terminalSlotOwner.compareAndSet(0L, token)) token else 0L
+    }
+
+    private fun releaseTerminalSlot(token: Long) {
+        terminalSlotOwner.compareAndSet(token, 0L)
+    }
+
+    private val nextSlotToken = AtomicLong(0)
 
     /**
      * 终端一次性命令的终止兜底上限。
@@ -274,9 +320,10 @@ object RootService {
      *
      * @param guardedCmd 已拼好守卫 PATH 前缀的完整 shell 命令
      * @param displayName 展示名（「运行中」状态与通知标题）
+     * @param slotToken 本次占用的槽位令牌；非 0 时在起进程后自检归属，被抢走就直接杀掉自己
      * @return 退出码；超时返回 -1
      */
-    private suspend fun runTerminalCommand(guardedCmd: String, displayName: String): Int {
+    private suspend fun runTerminalCommand(guardedCmd: String, displayName: String, slotToken: Long = 0L): Int {
         val generation = terminalCommandGeneration.incrementAndGet()
         // 先作废上一轮的 pgid 记录再启动，确保随后读到的一定来自本次命令（与 executeFile 同法）。
         runCatching { runPgidFile?.delete() }
@@ -294,6 +341,16 @@ object RootService {
         // 关闭子进程 stdin：本通道只读输出、从不喂输入（交互输入走 processWriter 那条链路）。
         runCatching { process.outputStream.close() }
 
+        // 槽位归属自检：起进程期间可能已被 kill/新任务抢走，此时不得再写全局句柄，
+        // 否则会覆盖别人的 activeProcess/currentTaskName，并 cancel 掉对方的发布循环。
+        if (slotToken != 0L && terminalSlotOwner.get() != slotToken) {
+            runCatching { process.destroyForcibly() }
+            withContext(Dispatchers.Main) {
+                appendOutputDirect("\n[shso] 任务槽位已被接管，本次命令已取消\n")
+            }
+            return -1
+        }
+
         withContext(Dispatchers.Main) {
             isTaskRunning = true
             currentTaskName = displayName
@@ -305,7 +362,8 @@ object RootService {
             processPid = pidOfProcess(process)
         }
         // 复用任务用的批量发布通道：它按 isTaskRunning 存活，命令结束即自行退出并 flush 残留。
-        HyperCore.startBatchFlushLoop(scope, { isTaskRunning }) { appendOutputDirect(it) }
+        // 记下归属令牌：命令可重叠，收尾时只能停自己那个循环。
+        val flushLoop = HyperCore.startBatchFlushLoop(scope, { isTaskRunning }) { appendOutputDirect(it) }
         // 长命令保活（与脚本任务同源）：切到后台后不被 ROM 立刻回收，通知里也提供「结束进程」出口。
         // 延迟 [KEEPALIVE_DELAY_MS] 再拉起，避免 `ls` / `echo` 这类秒回命令闪一下通知。
         scope.launch {
@@ -349,7 +407,8 @@ object RootService {
         withContext(Dispatchers.Main) {
             // 先停发布循环（并等它刷完本地积压），再写超时说明——
             // 否则命令最后 ≤250ms 的输出会落在说明行之后。
-            HyperCore.stopBatchFlushLoop()
+            // 带令牌：只停本命令的循环，不误停重叠命令的。
+            HyperCore.stopBatchFlushLoop(flushLoop)
             HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
             if (!finished) {
                 appendOutputDirect("\n[shso] 命令长时间无结束（>${TERMINAL_COMMAND_TIMEOUT_MS / 60_000}分钟），已强制终止\n")
@@ -465,17 +524,18 @@ object RootService {
     /**
      * 执行脚本/二进制文件。
      *
-     * 安全改造（方案 §6.1 / §8-P4）：
-     * - [runAsRoot]：null=按档位自动（档位 3 默认非 Root，其余 Root）；true/false 显式指定（确认框勾选）；
-     * - [riskApproved]：调用方（ExecuteConfirmDialog）已展示风险项并获用户确认；false 时（自动执行链路）
-     *   档位 ≥2 下扫描脚本内容，CRITICAL 未获批直接拦截；
-     * - chmod 777 → 仅 .so/.bin 等「直接执行」形态 chmod 755；.sh 一律经 `sh` 运行，不改动用户文件权限；
-     * - 档位 ≥2 且守卫模块就绪时 PATH 前置 guard 目录（运行时拦截 rm/dd/mkfs 等）。
+     * 本函数由点击直接调用（`MainActivity` / `HomePage` / `FilePage`），**运行在 UI 线程**。
+     * 而前置段里有两处最长数秒的阻塞：
+     *  - [guardPrefixOrDegrade] → `guardBinDirReady()` → `runCommandSync("test -x …", 5_000)`；
+     *  - [ScriptAuditor.readScriptContent] → 两次 `su`（`stat -c %s` 10s、`cat|head -c` 15s）
+     *    再加最多 2MB 文本的逐行解析。
+     * 二者都命中时是确定性的 ANR（系统弹「应用无响应」，用户强制停止后任务丢失）。
+     * 故前置段整体搬进 IO 协程，通过 [executeFilePreflight] 的返回值传回判定结果，
+     * 状态写入仍留在主线程。
      */
     fun executeFile(filePath: String, runAsRoot: Boolean? = null, riskApproved: Boolean = false) {
         val file = File(filePath)
         val fileName = file.name
-        val parentDir = file.parent ?: "/data/adb/shso"
         val isSh = fileName.endsWith(".sh", ignoreCase = true)
         val isSo = fileName.endsWith(".so", ignoreCase = true)
 
@@ -484,15 +544,43 @@ object RootService {
             return
         }
 
+        scope.launch(Dispatchers.IO) {
+            when (val pre = executeFilePreflight(filePath, isSh, runAsRoot, riskApproved)) {
+                is Preflight.Denied -> Unit                       // 已在 IO 侧落审计并输出原因
+                is Preflight.Allowed -> withContext(Dispatchers.Main) {
+                    startExecution(filePath, fileName, isSh, isSo, pre.level, pre.useRoot, pre.guardPrefix)
+                }
+            }
+        }
+    }
+
+    /** [executeFile] 前置段的判定结果。 */
+    private sealed interface Preflight {
+        /** 允许执行，携带后续拼命令所需的信息。 */
+        data class Allowed(
+            val level: Int,
+            val useRoot: Boolean,
+            val guardPrefix: String
+        ) : Preflight
+
+        /** 已拒绝（不可读 / 命中高危 / 扫描不完整），原因已落审计并输出到终端。 */
+        data object Denied : Preflight
+    }
+
+    /**
+     * [executeFile] 的前置段：守卫前缀 + 脚本内容扫描。**必须在 IO 线程调用。**
+     */
+    private fun executeFilePreflight(
+        filePath: String,
+        isSh: Boolean,
+        runAsRoot: Boolean?,
+        riskApproved: Boolean
+    ): Preflight {
         val level = currentSecurityLevel()
         val useRoot = runAsRoot ?: (level < SecurityLevels.MAXIMUM)
         // 守卫不可用时不再阻断（档位 2 是默认档位，阻断会让默认档位完全不可用）；
         // 改为落审计 + 首次醒目告警后放行。守卫的自动安装由 GuardModuleInstaller.ensureInstalled 负责。
         val guardPrefix = if (useRoot) guardPrefixOrDegrade(CommandSource.SCRIPT_FILE, filePath) else ""
-
-        if (isTaskRunning) {
-            killCurrentProcess()
-        }
 
         // 安全门控：脚本内容扫描（自动执行等未经确认框的链路）
         if (level >= SecurityLevels.STANDARD && !riskApproved && isSh) {
@@ -517,7 +605,7 @@ object RootService {
                         "\n[shso 安全拦截] 脚本内容含高危操作，已拒绝自动执行：\n$reasons\n" +
                             "（可在文件页手动点击「执行」并逐项确认风险后继续）\n"
                     )
-                    return
+                    return Preflight.Denied
                 }
             } else if (note != "ok") {
                 appendOutputDirect("\n[shso 安全提示] $note，已按保守策略拒绝自动执行\n")
@@ -525,8 +613,26 @@ object RootService {
                     CommandSource.SCRIPT_FILE, AuditVerdict.DENIED, "SCRIPT_UNREADABLE",
                     RiskLevel.DANGEROUS, filePath
                 )
-                return
+                return Preflight.Denied
             }
+        }
+        return Preflight.Allowed(level, useRoot, guardPrefix)
+    }
+
+    /** [executeFile] 的启动段（主线程）：置状态、起前台服务、派发执行协程。 */
+    private fun startExecution(
+        filePath: String,
+        fileName: String,
+        isSh: Boolean,
+        isSo: Boolean,
+        level: Int,
+        useRoot: Boolean,
+        guardPrefix: String
+    ) {
+        val parentDir = File(filePath).parent ?: "/data/adb/shso"
+
+        if (isTaskRunning) {
+            killCurrentProcess()
         }
 
         lastExecutedPath = filePath
@@ -567,7 +673,7 @@ object RootService {
             "$filePath (身份=${if (useRoot) "root" else "non-root"}, 档位=$level)"
         )
 
-        HyperCore.startBatchFlushLoop(scope, { isTaskRunning }) { flushedText ->
+        val fileFlushLoop = HyperCore.startBatchFlushLoop(scope, { isTaskRunning }) { flushedText ->
             appendOutputDirect(flushedText)
         }
 
@@ -641,7 +747,7 @@ object RootService {
                     if (executionJob === coroutineContext[Job]) {
                         // 先停发布循环并等它把积压刷完，再写「退出」文案：
                         // 否则循环里最后 ≤250ms 的输出会落在文案之后（看起来像退出码打在输出前面）。
-                        HyperCore.stopBatchFlushLoop()
+                        HyperCore.stopBatchFlushLoop(fileFlushLoop)
                         HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
                         lastExitCode = exitCode
                         if (appSettings?.showShsoBanner != false) {
@@ -710,7 +816,9 @@ object RootService {
      * 终端是否已被占用：已有命令/任务在跑，且不是可写入的交互进程（交互态下输入直写常驻 shell，
      * 不占用新槽位）。
      */
-    private fun isTerminalBusy(): Boolean = isTaskRunning && processWriter == null
+    private fun isTerminalBusy(): Boolean =
+        // 槽位已被同步占用（命令在途、尚未置 isTaskRunning）同样算忙
+        terminalSlotOwner.get() != 0L || (isTaskRunning && processWriter == null)
 
     /** 说明为何拒绝本次终端输入。 */
     private suspend fun reportTerminalBusy() {
@@ -727,10 +835,19 @@ object RootService {
             scope.launch { reportTerminalBusy() }
             return false
         }
+        // 一次性命令：在派发协程**之前**同步占用槽位，闭合「判定通过 → isTaskRunning 置位」之间的窗口。
+        // 交互输入（text 为空）不占用槽位 —— 它写的是已有进程。
+        var slotToken = 0L
+        if (text.isNotEmpty()) {
+            slotToken = tryClaimTerminalSlot()
+            if (slotToken == 0L) {
+                scope.launch { reportTerminalBusy() }
+                return false
+            }
+        }
         scope.launch(Dispatchers.IO) {
             try {
-                if (isTaskRunning && processWriter != null) {
-                    // 交互态：硬规则拦截（fail on critical），其余放行 + 审计
+                if (isTaskRunning && processWriter != null) {                    // 交互态：硬规则拦截（fail on critical），其余放行 + 审计
                     if (!confirmed) {
                         val hard = RootCommandGateway.checkInteractiveHardRules(text)
                         if (hard != null) {
@@ -750,11 +867,8 @@ object RootService {
                     processWriter?.write(text + "\n")
                     processWriter?.flush()
                 } else if (text.isNotEmpty()) {
-                    // 已有一条命令/任务在跑（且不是可写入的交互进程）时拒绝新的终端命令：
-                    // 「当前活动进程」只有一个槽位，并发执行会让中断 / 结束进程只能作用到最新一条，
-                    // 先启动的那条变成无法回收的孤儿。
-                    // 同步检查已拦掉绝大多数情况，这里兜住「检查通过后状态才被占用」的竞态。
-                    if (isTerminalBusy()) {
+                    // 槽位已在派发前同步占用；若被别人抢走（不应发生，兜底）立即退出。
+                    if (terminalSlotOwner.get() != slotToken) {
                         reportTerminalBusy()
                         return@launch
                     }
@@ -788,7 +902,7 @@ object RootService {
                     val guardPrefix = guardPrefixOrDegrade(CommandSource.USER_TERMINAL, text)
                     // 走可中断 + 流式回吐的通道：长命令期间顶栏「运行中」、
                     // 「中断 / 结束进程」可用，输出边跑边显示（见 runTerminalCommand）。
-                    val exitCode = runTerminalCommand(guardPrefix + text, commandDisplayName(text))
+                    val exitCode = runTerminalCommand(guardPrefix + text, commandDisplayName(text), slotToken)
                     SecurityAuditLog.log(
                         CommandSource.USER_TERMINAL, AuditVerdict.FINISHED, null, RiskLevel.SAFE, text, exitCode = exitCode
                     )
@@ -802,6 +916,9 @@ object RootService {
                 withContext(Dispatchers.Main) {
                     appendOutputDirect("[发送失败: ${e.message}]\n")
                 }
+            } finally {
+                // 任何提前退出（拦截 / 异常 / 取消）都必须归还槽位，否则终端永久占死
+                if (slotToken != 0L) releaseTerminalSlot(slotToken)
             }
         }
         return true
@@ -832,7 +949,9 @@ object RootService {
                     // 不可退化为按文件名匹配：同一脚本「覆盖启动」时，新任务的命令行里含同样的文件名，
                     // `pkill -9 -f <文件名>` 会把刚启动的新任务一并杀死（表现为覆盖启动后脚本秒退）。
                     targetPath?.takeIf { it.isNotBlank() }?.let { path ->
-                        runCommandSync("pkill -9 -f ${escapeShellArg(path)} 2>/dev/null")
+                        // 必须转 ERE 元字符：pkill -f 把参数当扩展正则，
+                        // 路径里的 `.` `(` `+` 等会被解释而误杀无关进程（且以 root 身份执行）。
+                        runCommandSync("pkill -9 -f ${escapeShellArg(escapeEreLiteral(path))} 2>/dev/null")
                     }
                 }
                 if (targetPid > 0) {

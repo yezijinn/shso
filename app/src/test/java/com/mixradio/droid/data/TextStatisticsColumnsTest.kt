@@ -26,11 +26,15 @@ class TextStatisticsColumnsTest {
     }
 
     @Test
-    fun `末尾换行：columns 含空尾段，lines 计入换行`() {
-        // "a\n" → split('\n') = ["a",""] → 最长行 1；countLines 把末尾 '\n' 算一行 → lines=2
+    fun `末尾换行：columns 含空尾段，lines 不把尾部空行算作一行`() {
+        // "a\n" → split('\n') = ["a",""] → 最长行仍是 1。
+        // lines 必须按 TextStatistics.countLines 的 KDoc 契约（"abc\n" → 1）与
+        // TextCompare.countLines、SparseLineIndex、编辑器行号口径统一：
+        // 末尾换行之后的「空行」不是一行。此前本用例把「多算一行」当成期望值固化了，
+        // 与 countLines 自身契约相反，也让统计面板的行数恒比真实值多 1。
         val s = TextStatistics.compute("a\n")
         assertEquals(2, s.chars)
-        assertEquals(2, s.lines)
+        assertEquals(1, s.lines)
         assertEquals(1, s.columns)
         assertEquals(1, s.english)
         assertEquals(1, s.symbols)

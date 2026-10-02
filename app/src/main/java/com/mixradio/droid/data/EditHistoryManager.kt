@@ -100,7 +100,12 @@ object EditHistoryManager {
     data class HistoryEntry(
         val content: String,
         val timestamp: Long,
-        val source: HistorySource = HistorySource.AUTO
+        val source: HistorySource = HistorySource.AUTO,
+        /**
+         * 内容是否因超限被截断。为 true 时 [content] 只是**尾部片段**，
+         * 恢复它会丢掉文件开头，见 [addHistory]。
+         */
+        val truncated: Boolean = false
     )
 
     /**
@@ -113,22 +118,25 @@ object EditHistoryManager {
 
     /**
      * 添加一条历史记录（追加到最前）。
-     *  - 内容超过 [MAX_CONTENT_CHARS] 时截断（取末尾）
+     *  - 内容超过 [MAX_CONTENT_CHARS] 时截断（取末尾）并置 [HistoryEntry.truncated]
      *  - 与最新一条相同则跳过（类 git：无变更不入库）
      *  - 文件历史超过 [MAX_HISTORY_PER_FILE] 时淘汰最旧条目
+     *
+     * 截断取「末尾」是为了让 SharedPreferences 单条体积可控，但代价是**恢复时丢掉文件开头**：
+     * 编辑器对 `entry.content` 无条件 `setEditorContent(..., markDirty = true)`，
+     * 用户点一次恢复、随手一存，前 (N - 200000) 字就被覆盖消失且无任何提示。
+     * 故此处必须打标，由 UI 决定是否允许恢复。
      */
     @Synchronized
     fun addHistory(filePath: String, content: String, source: HistorySource = HistorySource.AUTO) {
         ensureMigrated()
-        val safeContent = if (content.length > MAX_CONTENT_CHARS) {
-            content.substring(content.length - MAX_CONTENT_CHARS)
-        } else {
-            content
-        }
+        val truncated = content.length > MAX_CONTENT_CHARS
+        val safeContent = if (truncated) content.substring(content.length - MAX_CONTENT_CHARS) else content
 
         val entries = readFile(filePath)
-        val merged = HistoryMerge.apply(entries, HistoryEntry(safeContent, System.currentTimeMillis(), source))
-            ?: return
+        val merged = HistoryMerge.apply(
+            entries, HistoryEntry(safeContent, System.currentTimeMillis(), source, truncated)
+        ) ?: return
         writeFile(filePath, trimToBudget(merged))
     }
 
@@ -173,7 +181,8 @@ object EditHistoryManager {
                     obj.optLong("timestamp", 0L),
                     // 旧数据无 source 字段：按「停顿快照」处理（历史默认来源）
                     runCatching { HistorySource.valueOf(obj.optString("source", HistorySource.AUTO.name)) }
-                        .getOrDefault(HistorySource.AUTO)
+                        .getOrDefault(HistorySource.AUTO),
+                    obj.optBoolean("truncated", false)
                 )
             }.sortedByDescending { it.timestamp }
         } catch (_: Throwable) {
@@ -192,6 +201,8 @@ object EditHistoryManager {
                 put("content", e.content)
                 put("timestamp", e.timestamp)
                 put("source", e.source.name)
+                // 旧记录没有该字段，optBoolean 默认 false，天然按「未截断」处理
+                put("truncated", e.truncated)
             })
         }
         return arr

@@ -372,23 +372,32 @@ object GuardModuleInstaller {
         }
     }
 
-    suspend fun ensureInstalled(context: Context): Boolean = installMutex.withLock {
-        if (guardBinDirReady(forceRefresh = true) && !needsUpgrade(context)) return@withLock true
-        return@withLock try {
-            val (ok, msg) = install(context)
-            if (!ok) {
+    /**
+     * 确保守卫模块已安装且为最新。
+     *
+     * 整个函数体（含 [guardBinDirReady] 的同步 `su` 探测与 install 的多步 `su`）**必须离开主线程**：
+     * 调用方是 `MainActivity` 与 `SettingsPage` 的 `LaunchedEffect` / 点击回调（Main 调度器），
+     * 冷启动（root 已授权、档位 ≥2）与改档后都会命中，阻塞主线程最长 5s → ANR。
+     */
+    suspend fun ensureInstalled(context: Context): Boolean = withContext(Dispatchers.IO) {
+        installMutex.withLock {
+            if (guardBinDirReady(forceRefresh = true) && !needsUpgrade(context)) return@withLock true
+            return@withLock try {
+                val (ok, msg) = install(context)
+                if (!ok) {
+                    SecurityAuditLog.log(
+                        CommandSource.INTERNAL_APP, AuditVerdict.FAILED, "GUARD_AUTO_INSTALL_FAILED", RiskLevel.DANGEROUS,
+                        msg
+                    )
+                }
+                ok && guardBinDirReady(forceRefresh = true)
+            } catch (e: Exception) {
                 SecurityAuditLog.log(
                     CommandSource.INTERNAL_APP, AuditVerdict.FAILED, "GUARD_AUTO_INSTALL_FAILED", RiskLevel.DANGEROUS,
-                    msg
+                    e.message ?: "异常"
                 )
+                false
             }
-            ok && guardBinDirReady(forceRefresh = true)
-        } catch (e: Exception) {
-            SecurityAuditLog.log(
-                CommandSource.INTERNAL_APP, AuditVerdict.FAILED, "GUARD_AUTO_INSTALL_FAILED", RiskLevel.DANGEROUS,
-                e.message ?: "异常"
-            )
-            false
         }
     }
 

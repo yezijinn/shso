@@ -49,6 +49,8 @@ object TextCompare {
     private const val LF: Byte = 10
     private const val CR: Byte = 13
     private const val PROGRESS_STEP = 5000L
+    /** 编码探测取样字节数：与编辑器首块同量级，足以判定 BOM / NUL 分布 / 可解码性。 */
+    private const val CHARSET_PROBE_BYTES = 1 shl 20
     private const val MISSING = "<缺失>"
 
     /**
@@ -83,8 +85,9 @@ object TextCompare {
             when (mode) {
                 Mode.LINE_BY_LINE -> {
                     // 仅输出「内容相同的行」：行号 + 行内容；不相同的全部排除。
-                    val sa = LineScanner(srcA, charset)
-                    val sbScan = LineScanner(srcB, charset)
+                    // 每个文件用**自己**探测出的字符集解码（见 MappedFile.detectedCharset）
+                    val sa = LineScanner(srcA, srcA.detectedCharset)
+                    val sbScan = LineScanner(srcB, srcB.detectedCharset)
                     var lineNo = 0L
                     var hasA = sa.next()
                     var hasB = sbScan.next()
@@ -119,7 +122,7 @@ object TextCompare {
                     val setSmall = HashSet<String>(cap)
                     val minInSmall = HashMap<String, Int>(cap)
 
-                    val ss = LineScanner(small, charset)
+                    val ss = LineScanner(small, small.detectedCharset)
                     var n = 0L
                     var lineNo = 0
                     while (ss.next()) {
@@ -136,7 +139,7 @@ object TextCompare {
                     if (!cancelled) {
                         // 大文件流式扫描：命中小文件集合者即为共同行；记录全局最小行号（两文件取最小）
                         val resultMin = HashMap<String, Int>(hashCapacity(minInSmall.size.coerceAtLeast(16)))
-                        val ls = LineScanner(large, charset)
+                        val ls = LineScanner(large, large.detectedCharset)
                         lineNo = 0
                         while (ls.next()) {
                             n++; lineNo++
@@ -240,27 +243,60 @@ object TextCompare {
         val dataStart: Int,
         private val tmp: String?
     ) {
+        /**
+         * 本文件**自身**的字符集（按首块内容探测）。
+         *
+         * 不能沿用调用方传入的「当前文件 A 的字符集」：`run()` 用同一个 charset 实例
+         * 同时扫 A、B 并落盘。选文件对话框只按**后缀**过滤、不校验编码，于是
+         * UTF-8 的 A 配 GB18030 的 B 时，B 的字节全被解成 U+FFFD，与 A 的行集合零交集 ——
+         * 提示「对比完成，共同 **0** 行」，是**静默错误结果**，用户会据此认为两文件毫无共同内容。
+         */
+        val detectedCharset: Charset by lazy {
+            if (dataStart >= size) return@lazy Charsets.UTF_8
+            val n = minOf(CHARSET_PROBE_BYTES, size - dataStart)
+            val head = ByteArray(n)
+            val dup = buffer.duplicate()
+            dup.position(dataStart)
+            dup.get(head, 0, n)
+            CharsetDetector.detect(head).charset
+        }
+
         companion object {
             fun open(tempDir: String, path: String): MappedFile {
                 // ① APP 自身可读 → 直接 mmap（零拷贝，最快路径）
-                runCatching {
+                // 大小守卫必须**逃出 runCatching**：`CompareException` 原本被包在里面，
+                // 抛出会被 `runCatching` 吞掉并继续往下走，于是「文件过大」这条分支
+                // 实际不可达，>2GB 的文件仍会进 ROOT 分支被整份 cat 进 cacheDir ——
+                // 白占数 GB 空间、可能把缓存写满，且最终报的是「无法读取文件」而非「过大」。
+                if (File(path).isFile && File(path).canRead()) {
                     val file = File(path)
-                    if (file.isFile && file.canRead()) {
-                        val ch = FileInputStream(file).channel
-                        val len = ch.size()
-                        if (len > Int.MAX_VALUE) {
-                            ch.close()
-                            throw CompareException("文件过大（>${Int.MAX_VALUE / 1024 / 1024}MB）: ${file.name}")
-                        }
-                        if (len > 0L) {
-                            val buf = ch.map(FileChannel.MapMode.READ_ONLY, 0, len) as MappedByteBuffer
-                            return MappedFile(ch, buf, len.toInt(), bomOffset(buf, len.toInt()), null)
-                        }
-                        ch.close()
+                    val ch = FileInputStream(file).channel
+                    val len = runCatching { ch.size() }.getOrElse {
+                        runCatching { ch.close() }
+                        throw CompareException("无法获取文件大小: ${file.name}")
                     }
+                    if (len > Int.MAX_VALUE) {
+                        ch.close()
+                        throw CompareException("文件过大（>${Int.MAX_VALUE / 1024 / 1024}MB）: ${file.name}")
+                    }
+                    if (len > 0L) {
+                        val buf = ch.map(FileChannel.MapMode.READ_ONLY, 0, len) as MappedByteBuffer
+                        return MappedFile(ch, buf, len.toInt(), bomOffset(buf, len.toInt()), null)
+                    }
+                    ch.close()
                 }
                 // ② ROOT：先 cat 到可读临时文件（顺序直拷），再 mmap
                 if (RootService.isRootGranted == true) {
+                    // 同样的守卫必须在 cat **之前**：否则超限文件已经被整份拷进 cacheDir
+                    val (statCode, statOut) = RootService.runCommandSync(
+                        "stat -c %s ${RootService.escapeShellArg(path)} 2>/dev/null", 10_000L
+                    )
+                    val declared = if (statCode == 0) statOut.trim().toLongOrNull() else null
+                    if (declared != null && declared > Int.MAX_VALUE) {
+                        throw CompareException(
+                            "文件过大（>${Int.MAX_VALUE / 1024 / 1024}MB）: ${File(path).name}"
+                        )
+                    }
                     val tmp = "$tempDir/_shso_cmp_${System.currentTimeMillis()}.tmp"
                     val (code, err) = RootService.runCommandSync(
                         "cat ${RootService.escapeShellArg(path)} > ${RootService.escapeShellArg(tmp)}; " +
@@ -320,7 +356,7 @@ object TextCompare {
 
     //  输出
     private fun writeHeader(sb: StringBuilder, mode: Mode, pathA: String, pathB: String) {
-        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT).format(Date())
         sb.append("# 文本对比结果\n")
         sb.append("# 时间: ").append(stamp).append('\n')
         sb.append("# 模式: ").append(mode.displayName).append('（').append(mode.desc).append("）\n")
@@ -356,7 +392,7 @@ object TextCompare {
 
     /** 结果文件名：`文本对比_YYYYMMDD_n<ext>`，n 从 0 起按目录内已存在文件递增。 */
     suspend fun nextOutputPath(dir: String, currentFilePath: String): String {
-        val date = SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(Date())
+        val date = SimpleDateFormat("yyyyMMdd", Locale.ROOT).format(Date())
         val prefix = "文本对比_${date}_"
         val ext = currentFilePath.substringAfterLast('.', "").let {
             if (it.isEmpty() || it == currentFilePath) "" else ".$it"
@@ -382,7 +418,7 @@ object TextCompare {
 
     private fun extensionOf(name: String): String =
         name.substringAfterLast('.', "").let {
-            if (it.isEmpty() || it == name) "" else it.lowercase(Locale.getDefault())
+            if (it.isEmpty() || it == name) "" else it.lowercase(Locale.ROOT)
         }
 
     private fun canonical(path: String): String =

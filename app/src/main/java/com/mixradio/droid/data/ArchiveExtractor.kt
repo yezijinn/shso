@@ -118,7 +118,7 @@ object ArchiveExtractor {
      * 同一文件其余位置（`FileItem`）本来就用无参形式，此处统一。
      */
     private fun kindOf(name: String): Kind? {
-        val lower = archiveName(name).lowercase()
+        val lower = archiveName(name).lowercase(Locale.ROOT)
         return when {
             lower.endsWith(".zip") -> Kind.ZIP
             lower.endsWith(".7z") -> Kind.SEVENZ
@@ -131,7 +131,7 @@ object ArchiveExtractor {
     /** 去除全部压缩/归档后缀后的基础名（如 a.tar.gz → a；a.gz → a）。 */
     fun baseName(name: String): String {
         val normalized = archiveName(name)
-        val lower = normalized.lowercase()
+        val lower = normalized.lowercase(Locale.ROOT)
         val suffix = TAR_EXTENSIONS.firstOrNull { lower.endsWith(it) }
             ?: SINGLE_EXTENSIONS.firstOrNull { lower.endsWith(it) }
             ?: ".zip".takeIf { lower.endsWith(".zip") }
@@ -235,7 +235,7 @@ object ArchiveExtractor {
     /** 按格式打开解压流（tar 或单文件压缩型）。 */
     private fun openDecompress(path: String): InputStream {
         val base = BufferedInputStream(FileInputStream(path))
-        val lower = archiveName(path).lowercase()
+        val lower = archiveName(path).lowercase(Locale.ROOT)
         return when {
             lower.endsWith(".tar") -> base
             lower.endsWith(".tgz") || lower.endsWith(".tar.gz") || lower.endsWith(".gz") ->

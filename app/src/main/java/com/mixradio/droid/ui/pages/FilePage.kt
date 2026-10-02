@@ -154,6 +154,14 @@ fun FilePage(
     var pendingInstallItem by rememberSaveable(stateSaver = FileItemSaver) { mutableStateOf<FileItem?>(null) }
 
     var selectedItem by remember { mutableStateOf<FileItem?>(null) }
+    // 各弹窗的**目标快照**。不能一律回读共享的 selectedItem：
+    // 外部唤起（singleTask → onNewIntent）会无条件改写该槽位，而 show*Dialog 标志不会被清，
+    // 于是弹窗先被隐藏、用户下次点任意文件又以新目标重现 —— 标题/预填值是旧文件，
+    // 确认时作用在另一个文件上（删除、改名、chmod/chown 均不可撤销）。
+    var renameTargetItem by remember { mutableStateOf<FileItem?>(null) }
+    var deleteTargetItem by remember { mutableStateOf<FileItem?>(null) }
+    var permissionTargetItem by remember { mutableStateOf<FileItem?>(null) }
+    var modeTargetItem by remember { mutableStateOf<FileItem?>(null) }
     var showActionDialog by remember { mutableStateOf(false) }
     var isInstalling by remember { mutableStateOf(false) }
     // 图片浏览弹窗的宿主开关与目标项必须 rememberSaveable：
@@ -480,8 +488,15 @@ fun FilePage(
         }
         val parent = File(target.path).parent ?: INTERNAL_STORAGE_PATH
         highlightPath = target.path
-        // 关闭任何停留的旧弹窗，避免遮挡定位结果
+        // 关闭任何停留的旧弹窗，避免遮挡定位结果。
+        // 四个破坏性/改属性弹窗必须连**目标快照**一起清：只清 show 标志的话，
+        // 弹窗会因 selectedItem 变 null 而隐藏、但标志仍为 true，用户下次点任意文件
+        // 又以新目标重现（标题与预填值还是旧文件），确认时作用在另一个文件上。
         showActionDialog = false
+        showRenameDialog = false; renameTargetItem = null
+        showDeleteDialog = false; deleteTargetItem = null
+        showPermissionDialog = false; permissionTargetItem = null; permissionMetadata = null
+        showModeDialog = false; modeTargetItem = null
         selectedItem = null
         multiSelectMode = false
         selectedPaths.clear()
@@ -541,13 +556,22 @@ fun FilePage(
 
     // 隐藏文件 / 排序偏好变化时后台重算展示列表，无需重新列目录
     LaunchedEffect(appSettings.showHiddenFiles, appSettings.fileSortMode, nameQuery) {
+        // 抓取基准代次：refresh() 有 refreshGenRef 守卫，本特效此前**没有任何守卫**，
+        // 且抓到的是当时的 fileList。进新目录（refresh 在 IO 中）时立刻改搜索/排序，
+        // 就会基于**旧目录**的列表算一遍；若它晚于 refresh 落盘，路径栏是新目录、
+        // 列表是旧目录内容，而此后 key 不再变化、永远不会再重算 ——
+        // 随后的删除/移动/重命名作用到用户看不见的路径。
+        val gen = refreshGenRef[0]
         val source = fileList
         val showHidden = appSettings.showHiddenFiles
         val sortMode = appSettings.fileSortMode
         val query = nameQuery
-        displayFileList = withContext(Dispatchers.Default) {
+        val computed = withContext(Dispatchers.Default) {
             applyFileViewSettings(source, showHidden, sortMode, query)
         }
+        // 期间目录已被刷新/切换：refresh 会自己算出正确的 displayFileList，丢弃本次
+        if (gen != refreshGenRef[0]) return@LaunchedEffect
+        displayFileList = computed
     }
 
     // 切目录清空过滤词：否则新目录会沿用旧关键字，表现为「目录打不开」（实为空结果）
@@ -907,6 +931,7 @@ fun FilePage(
                                                     } else {
                                                         // 非多选：长按弹 进入/退出多选模式
                                                         showModeDialog = true
+                                        modeTargetItem = item
                                                     }
                                                 }
                                             }
@@ -1283,17 +1308,19 @@ fun FilePage(
                             if (metadata == null) {
                                 feedbackMessage = message
                             } else {
-                                permissionMetadata = metadata
-                                showPermissionDialog = true
+                    permissionMetadata = metadata
+                    permissionTargetItem = item
+                    showPermissionDialog = true
                             }
                         }
                     }
                 }
 
                 ActionTextRow("重命名", AuroraTokens.Text) {
-                    showActionDialog = false
-                    renameInput = item.name
-                    showRenameDialog = true
+                showActionDialog = false
+                renameInput = item.name
+                renameTargetItem = item
+                showRenameDialog = true
                 }
 
                 // 拷贝：仅文件（文件夹不显示），复制为同级 _n 递增序号副本
@@ -1322,6 +1349,7 @@ fun FilePage(
 
                 ActionTextRow("删除", AuroraTokens.Error) {
                     showActionDialog = false
+                    deleteTargetItem = item
                     showDeleteDialog = true
                 }
             }
@@ -1416,8 +1444,8 @@ fun FilePage(
         }
     }
 
-    if (showRenameDialog && selectedItem != null) {
-        val item = selectedItem!!
+    if (showRenameDialog && renameTargetItem != null) {
+        val item = renameTargetItem!!
         AuroraWindowDialog(
             show = true,
             title = "重命名",
@@ -1477,8 +1505,8 @@ fun FilePage(
         }
     }
 
-    if (showDeleteDialog && selectedItem != null) {
-        val item = selectedItem!!
+    if (showDeleteDialog && deleteTargetItem != null) {
+        val item = deleteTargetItem!!
         AuroraWindowDialog(
             show = true,
             title = "确认删除",
@@ -1521,8 +1549,8 @@ fun FilePage(
         }
     }
 
-    if (showPermissionDialog && selectedItem != null && permissionMetadata != null) {
-        val item = selectedItem!!
+    if (showPermissionDialog && permissionTargetItem != null && permissionMetadata != null) {
+        val item = permissionTargetItem!!
         val metadata = permissionMetadata!!
         FilePermissionDialog(
             show = true,
@@ -1817,8 +1845,8 @@ fun FilePage(
     }
 
     // 多选模式：长按文件弹出的「进入/退出多选模式」
-    if (showModeDialog && selectedItem != null) {
-        val item = selectedItem!!
+    if (showModeDialog && modeTargetItem != null) {
+        val item = modeTargetItem!!
         AuroraWindowDialog(
             show = true,
             title = "多选模式",

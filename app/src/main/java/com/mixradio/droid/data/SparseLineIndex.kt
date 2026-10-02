@@ -92,6 +92,7 @@ class SparseLineIndex(
                 val lf: Byte = 0x0A.toByte()
                 val nul: Byte = 0.toByte()
                 var pos = 0L
+                var endsWithLf = false
                 while (pos < total) {
                     val raw = reader.read(filePath, pos, minOf(READ_BLOCK, total - pos))
                     if (raw.isEmpty()) break
@@ -108,6 +109,11 @@ class SparseLineIndex(
                             }
                             b += 2
                         }
+                        // UTF-16 末单元可能是奇数长度残留，只认完整单元
+                        val tailAt = if (raw.size % 2 == 0) raw.size - 2 else raw.size - 1
+                        endsWithLf = tailAt >= 0 && tailAt + 1 < raw.size &&
+                            (if (charset == Charsets.UTF_16BE) raw[tailAt] == nul && raw[tailAt + 1] == lf
+                             else raw[tailAt] == lf && raw[tailAt + 1] == nul)
                     } else {
                         for (b in raw.indices) {
                             if (raw[b] == lf) {
@@ -115,10 +121,16 @@ class SparseLineIndex(
                                 if (count % GRANULARITY == 0) list.add(pos + b + 1L)
                             }
                         }
+                        endsWithLf = raw[raw.size - 1] == lf
                     }
                     pos += raw.size
                 }
-                SparseLineIndex(list.toLongArray(), count + 1, total, GRANULARITY)
+                // 行数口径必须与分段回退路径（TextEditorDialog 里 `split('\n')` + 末尾空串则 dropLast）
+                // 以及 TextCompare.countLines 一致：文件以换行结尾时**不多算一行**。
+                // 原实现无条件 `count + 1`，于是几乎所有 POSIX 文本文件（都以换行结尾）
+                // 的行号数比真实值多 1，且随「索引是否建成」在 N 与 N+1 之间跳变。
+                val lines = if (endsWithLf) count else count + 1
+                SparseLineIndex(list.toLongArray(), lines, total, GRANULARITY)
             }.getOrNull()
         }
     }
@@ -145,7 +157,21 @@ class ChunkedDocument(
         override fun removeEldestEntry(entry: MutableMap.MutableEntry<Int, ByteArray>): Boolean = size > CHUNK_CACHE_ENTRIES
     }
 
-    /** 返回第 [chunkIndex] 块（文件区间 [chunkIndex*chunkSize, chunkSize)）的原始字节，命中则免 IO。 */
+    /**
+     * 返回第 [chunkIndex] 块（文件区间 [chunkIndex*chunkSize, chunkSize)）的原始字节，命中则免 IO。
+     *
+     * 必须加锁：本类的唯一调用方 [IndexedLineProvider.load] 挂在 `Dispatchers.IO` 上，而
+     * 巨型文件的 `LazyColumn` 里每个可见行各自 launch 一次 load，十几个可见行会同时进到这里。
+     * `LinkedHashMap(accessOrder=true)` 的 `get()` 走 `afterNodeAccess` 改写 before/after 双向链表，
+     * `put()` 走 `afterNodeInsertion` + `removeEldestEntry` 遍历 —— JDK/Android 均标注该组合
+     * **非线程安全**。并发下会出现链表自环（`getNode` 死循环，IO 线程永久卡死）、
+     * `ConcurrentModificationException`，或扩容期丢 entry 导致 `getChunk` 返回错位块
+     * （虚拟列表静默显示错行内容）。
+     *
+     * 锁粒度取整个 `getChunk`：块大小 256KB，读一次本身就要走 IO，
+     * 持锁期间不会成为热点；换来的是缓存与返回值的强一致。
+     */
+    @Synchronized
     fun getChunk(chunkIndex: Int): ByteArray {
         cache[chunkIndex]?.let { return it }
         val off = chunkIndex.toLong() * chunkSize
@@ -179,7 +205,17 @@ class IndexedLineProvider(
     /** 行级缓存已被 [ChunkedDocument] 的字节块 LRU 取代，故 peek 恒返回 null（按需行由 [load] 现取）。 */
     fun peek(i: Int): String? = null
 
-    /** 加载第 [i] 行：从最近索引点按 256KB 块读取、整体解码后切出第 i 行，返回其完整文本。 */
+    /**
+     * 加载第 [i] 行：从最近索引点按 256KB 块读取、整体解码后切出第 i 行，返回其完整文本。
+     *
+     * 两条约束（缺一即产生静默错误结果）：
+     *  1. 换行计数必须**增量**。原实现在循环条件里对已累积的全部字节 `toByteArray()` 再全量数一遍，
+     *     累积到 4MB 上限要 16 轮，单次 load 的复制+扫描量约 8MB，而每个可见行都独立付一次。
+     *  2. 命中 [MAX_READ_BYTES] 上限说明**这一行本身就超过 4MB**，此时手上的字节只是前缀。
+     *     原实现直接 `split('\n').getOrNull(...)` 把前缀里的残缺行当成完整行返回，
+     *     只读浏览里该行尾部被静默丢弃，用户复制/比对该行拿到的就是残缺数据。
+     *     现显式标记截断并追加可见标记，不再冒充完整行。
+     */
     suspend fun load(i: Int): String = withContext(Dispatchers.IO) {
         val floor = (i / granularity) * granularity
         val startOffset = index.lineStartOffset(floor)   // 索引点 = 换行后，必为字符边界（含 UTF-16）
@@ -188,29 +224,43 @@ class IndexedLineProvider(
         val out = ByteArrayOutputStream()
         val first = doc.getChunk(firstChunk)
         if (first.size > skip) out.write(first, skip, first.size - skip)
+        // 增量换行计数：只扫新写入的块并累加
+        var newlines = if (first.size > skip) countNewlines(first, skip, first.size) else 0
+        val need = i - floor + 1
         var ci = firstChunk + 1
-        while (true) {
-            // 已覆盖第 i 行（含其后的换行）即停止：countNewlines >= i-floor+1 表示 [floor, i] 均为完整行。
-            if (countNewlines(out.toByteArray()) >= i - floor + 1) break
-            if (out.size() > MAX_READ_BYTES) break        // 极端超长行保护（≈4MB 仍无换行则放弃）
+        var truncated = false
+        while (newlines < need) {
+            if (out.size() > MAX_READ_BYTES) {          // 极端超长行保护（≈4MB 仍无换行）
+                truncated = true
+                break
+            }
             val chunk = doc.getChunk(ci)
-            if (chunk.isEmpty()) break                    // EOF：最后一行无尾随换行也到此终止
+            if (chunk.isEmpty()) break                   // EOF：最后一行无尾随换行也到此终止
             out.write(chunk)
+            newlines += countNewlines(chunk, 0, chunk.size)
             ci++
         }
         val bytes = out.toByteArray()
         if (bytes.isEmpty()) return@withContext ""
-        String(bytes, charset).split('\n').getOrNull(i - floor) ?: ""
+        val line = String(bytes, charset).split('\n').getOrNull(i - floor) ?: ""
+        // 截断标记必须让用户看得见：只读浏览里不能把残缺行当完整行渲染/复制
+        if (truncated) "$line…（本行超过 ${MAX_READ_BYTES / 1024 / 1024}MB，已截断显示）" else line
     }
 
-    /** charset 感知的换行计数：UTF-16 按 2 字节 LF 单元，其余按单字节 0x0A。 */
-    private fun countNewlines(bytes: ByteArray): Int {
+    /** charset 感知的区间换行计数：UTF-16 按 2 字节 LF 单元，其余按单字节 0x0A。 */
+    private fun countNewlines(bytes: ByteArray): Int = countNewlines(bytes, 0, bytes.size)
+
+    private fun countNewlines(bytes: ByteArray, from: Int, to: Int): Int {
         val utf16 = charset == Charsets.UTF_16 || charset == Charsets.UTF_16LE || charset == Charsets.UTF_16BE
-        if (!utf16) return bytes.count { it == 0x0A.toByte() }
+        if (!utf16) {
+            var n = 0
+            for (i in from until to) if (bytes[i] == 0x0A.toByte()) n++
+            return n
+        }
         val be = charset == Charsets.UTF_16BE
         var n = 0
-        var b = 0
-        while (b + 1 < bytes.size) {
+        var b = if (from % 2 == 0) from else from + 1   // UTF-16 单元须 2 字节对齐
+        while (b + 1 < to) {
             val isLf = if (be) bytes[b] == 0.toByte() && bytes[b + 1] == 0x0A.toByte()
             else bytes[b] == 0x0A.toByte() && bytes[b + 1] == 0.toByte()
             if (isLf) n++

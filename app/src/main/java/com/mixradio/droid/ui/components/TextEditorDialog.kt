@@ -278,6 +278,16 @@ private fun TextEditorDialogContent(
                 isLargeFile = !editable          // 仅表示「巨型只读浏览」，驱动分段 UI
                 if (editable) {
                     val load = ChunkedFileReader.loadAll(path)
+                    // 读不满 = 内容残缺（ROOT 通道 dd|base64 失败/超时，或短读造成空洞）。
+                    // 此时绝不能把残缺文本当原文交给编辑器：它会被标成「未修改」，
+                    // 用户毫无察觉，一次无关编辑后保存就把原文件覆盖成残缺内容。
+                    // 走既有的 loadError 通道 —— doSave 已按 `loadError != null` 阻止保存。
+                    if (!load.isComplete) {
+                        loadError = "读取不完整（${load.loadedBytes}/${load.totalBytes} 字节），已阻止编辑以防保存时损坏原文件"
+                        setEditorContent("", markDirty = false)
+                        dirty = false
+                        return@withContext
+                    }
                     currentCharset = (overrideCharset ?: load.charset).name()
                     hasBom = load.hasBom
                     currentLineEnding = LineEnding.detect(load.text)
@@ -807,6 +817,14 @@ private fun TextEditorDialogContent(
         onRestore = { entry ->
             // 类 git 回退：恢复到所选历史版本。当前内容若与该版本不同，
             // 先把当前内容存为新历史（保证可再撤回），再恢复。
+            //
+            // 截断条目只存了尾部片段（超 [EditHistoryManager.MAX_CONTENT_CHARS] 时为控体积所迫）。
+            // 无条件套用会把编辑器替换成残缺内容，用户随后一存，文件开头就被覆盖消失。
+            // 故必须拦下并说明，让用户改用「另存为」把片段存成独立文件。
+            if (entry.truncated) {
+                toastMessage = "该历史条目因体积超限只保存了文件尾部，恢复会丢失开头，请改用「另存为」"
+                return@HistoryDialog
+            }
             scope.launch {
                 // 整段（含末尾的 getHistory）都在 IO 线程：SharedPreferences 解析 + JSON
                 // 解析最坏可达每文件 100 万字，放在主线程就是一次可感知的掉帧。

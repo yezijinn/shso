@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package com.mixradio.droid.data.syntax
 
+import java.util.Locale
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
@@ -96,7 +97,7 @@ object SyntaxPackStore {
     }
 
     private fun splitKeys(raw: String): List<String> =
-        raw.split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+        raw.split(',').map { it.trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }
 
     private fun save(ctx: Context, packs: List<SyntaxPack>) {
         val f = indexFile(ctx)
@@ -166,7 +167,7 @@ object SyntaxPackStore {
 
     /** 文件名 → 语言 id（先全名匹配、再扩展名匹配）；未导入对应语法包时返回 null。 */
     fun languageIdFor(ctx: Context, fileName: String?): String? {
-        val name = fileName?.substringAfterLast('/')?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+        val name = fileName?.substringAfterLast('/')?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() } ?: return null
         val map = keyOverridesCached(ctx)
         val ext = name.substringAfterLast('.', "")
         return map[name] ?: ext.takeIf { it.isNotEmpty() }?.let { map[it] }
@@ -285,8 +286,12 @@ object SyntaxPackStore {
                                 indexNames[id] = names
                             }
                         }
-                        name.lowercase().endsWith(".json") -> {
-                            val id = sanitize(name.removeSuffix(".json"))
+                        name.lowercase(Locale.ROOT).endsWith(".json") -> {
+                            // 必须用 substringBeforeLast 而不是 removeSuffix：
+                            // 上面的判定是大小写无关的，而 removeSuffix **大小写敏感**，
+                            // `Kotlin.Json` 会原样返回 → sanitize 得 "kotlinjson"，
+                            // 与 `kotlin.json` 写出的键不一致，语法包静默不高亮。
+                            val id = sanitize(name.substringBeforeLast('.'))
                             if (id.isNotEmpty()) grammars[id] = data
                         }
                     }
@@ -331,7 +336,7 @@ object SyntaxPackStore {
 
     private fun readStringArray(arr: JSONArray?): List<String> {
         if (arr == null) return emptyList()
-        return (0 until arr.length()).mapNotNull { arr.optString(it).trim().lowercase().takeIf { s -> s.isNotEmpty() } }
+        return (0 until arr.length()).mapNotNull { arr.optString(it).trim().lowercase(Locale.ROOT).takeIf { s -> s.isNotEmpty() } }
     }
 
     private fun ingest(
@@ -367,5 +372,5 @@ object SyntaxPackStore {
 
     /** 语法 id 只允许字母数字与下划线：它同时是文件名与 scope 尾段。 */
     private fun sanitize(raw: String): String =
-        raw.lowercase().filter { it.isLetterOrDigit() || it == '_' }
+        raw.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() || it == '_' }
 }

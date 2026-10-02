@@ -199,13 +199,35 @@ object SecurityAuditLog {
     /**
      * ROOT 侧写入前置：目标是软链 / 非常规文件时先删除，删不掉就返回 false 让调用方放弃写入。
      * 删除后再确认一次，避免"删了但目录里仍是链接"（如挂载点 / 竞态）。
+     *
+     * 额外校验**属主与权限位**。`/data/adb/shso` 按产品要求必须是 0777（供第三方文件管理器互访，
+     * 见 [RootFileManager.ensureShsoDir]），因此该目录本身不可信：
+     * 任意应用都能 `unlink(audit.log)` 再放入自己的普通文件，或直接 `chmod 666`。
+     * 原实现只判「是否软链 / 是否常规文件」，攻击者自建的**普通文件**完全通过检查，
+     * 随后的 `cat >> ` 把伪造记录混进唯一的事后追溯依据。
+     *
+     * 判据：存在时必须是 root 属主（`[ -O ]`，以 root 身份执行即判当前属主为 root），
+     * 且组/其它位无写权限（`find -perm /022`）。
+     * 不满足即视为「已被第三方接管」，删除后重建 root 私有文件；删不掉则放弃写入。
+     *
+     * 权限位判定用 `find -perm /022` 而非 `$(( 0$m & 022 ))`：Android 的 mksh **不支持**
+     * 算术展开里的位运算符（真机实测 `sh -c 'echo $(( 0600 & 022 ))'` 返回非 0），
+     * 那种写法会恒判为「不可信」而把正常审计文件反复删掉。
      */
     private fun prepareRootTarget(): Boolean {
         val script = buildString {
             append("mkdir -p $ROOT_LOG_DIR; ")
             append("if [ -L $ROOT_LOG_PATH ] || { [ -e $ROOT_LOG_PATH ] && [ ! -f $ROOT_LOG_PATH ]; }; then ")
             append("/system/bin/rm -f -- $ROOT_LOG_PATH || exit 9; fi; ")
-            append("if [ -L $ROOT_LOG_PATH ] || { [ -e $ROOT_LOG_PATH ] && [ ! -f $ROOT_LOG_PATH ]; }; then exit 9; fi; true")
+            append("if [ -e $ROOT_LOG_PATH ]; then ")
+            append("if ! [ -O $ROOT_LOG_PATH ]; then /system/bin/rm -f -- $ROOT_LOG_PATH || exit 9; fi; ")
+            append("if [ -n \"\$(find $ROOT_LOG_PATH -maxdepth 0 -type f -perm /022 2>/dev/null)\" ]; then ")
+            append("/system/bin/rm -f -- $ROOT_LOG_PATH || exit 9; fi; ")
+            append("fi; ")
+            append("if [ -L $ROOT_LOG_PATH ] || { [ -e $ROOT_LOG_PATH ] && [ ! -f $ROOT_LOG_PATH ]; }; then exit 9; fi; ")
+            // 新建时收紧为 0600，避免又被第三方改写
+            append("[ -e $ROOT_LOG_PATH ] || { umask 077 && : > $ROOT_LOG_PATH; }; ")
+            append("chmod 600 $ROOT_LOG_PATH 2>/dev/null; true")
         }
         return try {
             RootService.runCommandSync(script, 5_000L).first == 0
@@ -221,13 +243,23 @@ object SecurityAuditLog {
             if (code != 0) return
             val size = sizeOut.trim().toLongOrNull() ?: return
             if (size <= MAX_BYTES) return
-            // 临时名带 PID：固定名会被并发轮转互踩，也可被预置软链接管 `>` 的落点。
-            val tmp = "$ROOT_LOG_PATH.tmp.\$\$"
+            // 临时文件用 mktemp 在同目录创建（O_EXCL + 不可预测名）。
+            //
+            // 原实现用固定名 + PID 后缀，并以 `[ -e $tmp ]` 作为「是否已存在」的判据：
+            // 对**悬空软链** `[ -e ]` 为 false，于是既不删除、也不拒绝，
+            // 随后的 `> $tmp` 由 root 跟随该软链在攻击者指定路径创建文件。
+            // 落点若是 Magisk/KernelSU 模块目录，等于下一次开机的 root 代码执行。
+            // 目录本身是 0777（见 RootFileManager.ensureShsoDir），预置软链无门槛。
+            val dir = ROOT_LOG_PATH.substringBeforeLast('/', "/data/adb/shso")
             val script = buildString {
-                append("[ -e $tmp ] && /system/bin/rm -f -- $tmp; ")
-                append("tail -c $KEEP_BYTES -- $ROOT_LOG_PATH > $tmp && [ -f $tmp ] ")
-                append("|| { /system/bin/rm -f -- $tmp; exit 1; }; ")
-                append("mv -f -- $tmp $ROOT_LOG_PATH")
+                append("d=").append(RootService.escapeShellArg(dir)).append("; ")
+                append("t=\$(mktemp \"\$d/.audit.XXXXXX\" 2>/dev/null) || exit 1; ")
+                append("[ -n \"\$t\" ] && [ ! -L \"\$t\" ] || { rm -f -- \"\$t\"; exit 1; }; ")
+                append("tail -c $KEEP_BYTES -- $ROOT_LOG_PATH > \"\$t\" ")
+                append("|| { /system/bin/rm -f -- \"\$t\"; exit 1; }; ")
+                append("[ -f \"\$t\" ] && [ ! -L \"\$t\" ] ")
+                append("|| { /system/bin/rm -f -- \"\$t\"; exit 1; }; ")
+                append("mv -f -- \"\$t\" $ROOT_LOG_PATH")
             }
             if (RootService.runCommandSync(script, 10_000L).first != 0) recordFailure("审计轮转失败")
         } catch (_: Exception) {

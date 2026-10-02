@@ -7,6 +7,7 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.listSaver
 import java.time.Instant
 import java.time.ZoneId
+import java.time.chrono.IsoChronology
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -65,7 +66,7 @@ data class FileItem(
     val permissions: String = ""
 ) {
     val extension: String
-        get() = if (isDirectory) "" else name.substringAfterLast('.', "").lowercase()
+        get() = if (isDirectory) "" else name.substringAfterLast('.', "").lowercase(Locale.ROOT)
 
     /** 剥除「.数字」尾缀后的真实扩展名（兼容腾讯产品下载后追加 .1 的情况，如 qq.apk.1）。 */
     val realExtension: String
@@ -76,7 +77,7 @@ data class FileItem(
             if (suffixMatch != null) {
                 base = base.substring(0, suffixMatch.range.first)
             }
-            return if (isDirectory) "" else base.substringAfterLast('.', "").lowercase()
+            return if (isDirectory) "" else base.substringAfterLast('.', "").lowercase(Locale.ROOT)
         }
 
     val isExecutableScript: Boolean
@@ -153,7 +154,19 @@ data class FileItem(
         }
 
     private companion object {
-        private val FILE_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+        /**
+         * 文件修改时间格式化。
+         *
+         * 两个「区域无关」都要显式指定，缺一即在部分区域下错得离谱：
+         *  - `Locale.ROOT`：避免土耳其语等 locale 的大小写折叠规则；
+         *  - `IsoChronology`：`DateTimeFormatter.ofPattern` 默认取 locale 的**默认历法**，
+         *    CLDR 规定 `th-TH` 是佛历、`ja-JP-u-ca-japanese` 是日本历，
+         *    此时 `yyyy` 取的是该历法的 YEAR 字段 —— 文件列表所有时间会显示成 2569 年。
+         */
+        private val FILE_DATE_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.ROOT)
+                .withChronology(IsoChronology.INSTANCE)
+                .withZone(ZoneId.systemDefault())
     }
 }
 

@@ -63,6 +63,7 @@ import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraTokens
 import com.mixradio.droid.ui.theme.AuroraWindowDialog
 import com.mixradio.droid.ui.theme.auroraTextFieldColors
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -109,19 +110,26 @@ fun BuiltInFilePicker(
     var newFileName by remember { mutableStateOf("") }
     var newFileExt by remember { mutableStateOf("") }
 
+    // 目录加载代次：每次 loadDirectory 自增，落盘前校验。
+    // listFiles 要 fork su（100~500ms），快速连点两个文件夹时先点的 A 可能后完成，
+    // 于是 currentDir=B 而 fileList=A —— 看到的目录内容与路径行不符。
+    // 文件页「移动文件」用它选目标目录时，用户会点到一个只在错误列表里存在的子目录。
+    val loadGen = remember { intArrayOf(0) }
+    // Job 本身不需要触发重组；用数组包一层以绕开 Compose 的委托要求。
+    // 元素类型放宽为 Job：`scope.launch` 返回的是已完成的 Job 而非 CompletableJob。
+    val loadJobHolder = remember { arrayOf<Job>(Job()) }
+
     fun loadDirectory(path: String) {
+        val gen = ++loadGen[0]
+        loadJobHolder[0].cancel()
         isLoading = true
         selectedFile = null
-        scope.launch {
+        loadJobHolder[0] = scope.launch {
             try {
                 // 先探测目录是否真实存在（不可用 isEmpty 判断——合法空目录也返回空列表）
                 val exists = RootFileManager.pathExists(path)
-                fileList = if (exists) {
-                    RootFileManager.listFiles(path)
-                } else {
-                    emptyList()
-                }
-                currentDir = if (exists) {
+                val loaded = if (exists) RootFileManager.listFiles(path) else emptyList()
+                val resolved = if (exists) {
                     // 加载成功：开启记忆时记录为「上次浏览目录」
                     if (appSettings.rememberDirectory) {
                         RootFileManager.rememberedDirectory = path
@@ -140,10 +148,15 @@ fun BuiltInFilePicker(
                     }
                     fallback
                 }
+                // 已被更新的请求取代：丢弃本次结果（含副作用），否则列表与路径行会错位
+                if (gen != loadGen[0]) return@launch
+                fileList = loaded
+                currentDir = resolved
             } catch (_: Exception) {
+                if (gen != loadGen[0]) return@launch
                 fileList = emptyList()
             } finally {
-                isLoading = false
+                if (gen == loadGen[0]) isLoading = false
             }
         }
     }

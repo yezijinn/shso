@@ -20,7 +20,7 @@
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 387 tests / 0 failures / 1 skipped |
+| 单元测试 | 409 tests / 0 failures / 1 skipped |
 | lint | 0 errors / 31 warnings |
 | release 体积 | 2.18 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
@@ -33,11 +33,115 @@
 | 当前安全档位 | 设备上为 **3**（验证后如需还原请手动切回 0） |
 | 已知环境坑 | `adb shell su -c "a; b"` 的 `;` 会让后半段以 shell 用户执行 → 必须 `su -c 'sh script.sh'` |
 | 已知环境坑 | 守卫实际读 `/data/adb/shso_guard/policy.conf`（**优先于**模块自带 `policy.conf`）；改策略只改模块那份会不生效，且调试脚本覆写后必须还原，否则 `protect=/data` 会静默消失、所有用例变放行 |
+| 已知环境坑 | Android 的 mksh **不支持**算术展开里的位运算符（`$(( 0600 & 022 ))` 真机实测返回非 0）。判权限位只能用 `find -perm /022` 或 `stat -c %A` 逐位取，别写位与 |
 | 发版 | tag `20261002`（纯数字，与 `versionCode` 对齐）；双端同名 Release 覆盖旧 APK |
 
 ---
 
 ## 待办
+
+### A53. 第三轮全面 BUG 深挖（2026-10-02）
+
+- [x] **四路并行审计**（前两轮已覆盖守卫、解压安装、编辑器、文件操作、外部唤起）：
+  - 终端与执行引擎（`RootService` / `AnsiParser` / `TerminalPage`）
+  - 安全子系统（`data/security/` 全目录）
+  - UI 状态层（`FilePage` / `HomePage` / `SettingsPage` / `MainActivity` / 各对话框）
+  - 数据服务层（`AppSettings` / `EditHistoryManager` / `SyntaxPackStore` / `TextCompare` /
+    `ChunkedFileReader` / `SparseLineIndex` / `HyperCore` / `TextStatistics`）
+  - 共报 60+ 条；**逐条读代码复核后**修 20 项，剔除误报（`StatsArchive` 等备份类在本仓不存在；
+    `selectedItem` 的实际机制是「弹窗被隐藏后以新目标重现」而非直接换目标）
+
+- [x] **数据一致性 / 数据丢失（6 项）**
+  - [x] `ChunkedDocument.cache` 是无同步的 access-order `LinkedHashMap`，而
+    `IndexedLineProvider.load` 挂在 `Dispatchers.IO`、每个可见行各自 launch 一次 ——
+    并发下链表自环（IO 线程永久卡死）或返回错位块（虚拟列表静默显示错行）。加 `@Synchronized`
+  - [x] `ChunkedFileReader.loadAll` 把「读不满/短读」当读完：调用方只看 `text`，
+    残缺内容被标成「未修改」，用户随手一存就整文件覆盖原文件。新增 `LoadResult.isComplete`，
+    编辑器读不满时走既有 `loadError` 通道拒绝编辑
+  - [x] `IndexedLineProvider.load` 命中 4MB 上限后仍把**前缀**当完整行返回（尾部静默丢弃），
+    且循环条件里对已累积字节 `toByteArray()` 再全量数换行（单次 load 约 8MB 复制+扫描）。
+    改增量计数 + 显式截断标记
+  - [x] 稀疏索引无条件 `count + 1` 算行数，与分段回退路径（`split('\n')` + 末尾空串则 dropLast）
+    及 `TextCompare` 口径相反：以换行结尾的文件行号数多 1，且随「索引是否建成」跳变。
+    改为按是否以换行结尾取值
+  - [x] `EditHistoryManager` 超出 20 万字时**只存尾部**，恢复即丢文件开头且无提示。
+    `HistoryEntry` 增加 `truncated`（并落盘），编辑器对截断条目拒绝恢复并提示改用「另存为」
+  - [x] `InstallConfirmDialog` 在 `onConfirm` 同一帧删除 staged 副本，而 `startInstall`
+    的协程还要用它算 sha256、再喂给 `ApkInstaller` —— 两条 Main 派发谁先跑取决于帧时序，
+    安装表现为「时好时坏」。引入 `stagedConsumed` 所有权标记
+
+- [x] **安全性（6 项）**
+  - [x] `$(...)` 与反引号替换的产物被单独解析成独立原子、**外层完全看不到该片段**：
+    `rsync -a /x $(echo /system)/bin/` 的外层操作数只剩 `[/x, /bin/]`，末位不受保护 → 放行，
+    内层 `/system` 从不参与分级。改为在外层 `current` 留 `$` 标记使 `hasUnresolvedVar` 生效，
+    并把 `cp/install/ln/rsync/mv` 加入 `DANGEROUS_UNRESOLVED`
+  - [x] `setenforce` / `resetprop` / `mount` / `umount` / `magisk --remove-modules`
+    在 `evaluateAtom` 里**无任何分支**，落到末尾即 Allow；守卫也没有对应包装器。
+    新增 `SELINUX_TOGGLE` / `PROP_OVERRIDE` / `MOUNT_MODIFY` / `MAGISK_TAMPER` 规则
+  - [x] `resolveProgram` 把 `magisk` 当 wrapper 剥到词尾时 `break`，**参数被一并丢弃**
+    （`magisk --remove-modules` 的 args 变空列表），导致新规则也看不到子命令。
+    改为剥到词尾时只消费程序名本身
+  - [x] 收尾兜底 `pkill -9 -f <路径>` 以 root 执行，`escapeShellArg` 只防 shell 解释、
+    对 `pkill -f` 的 ERE 无效：路径里的 `.` 匹配任意字符（`v1.2.sh` 会命中 `v1X2yzh`）。
+    新增 `ShellEscapes.escapeEreLiteral`（不转义 `/` 与 `-`：括号外本即字面量，
+    `\/` 属未定义行为）。**该函数不挂在 `RootService` 上** —— 后者静态初始化依赖 Android，
+    JVM 单测加载不了
+  - [x] 审计轮转的临时名 `audit.log.tmp.<pid>` 可被预置**悬空软链**劫持：
+    `[ -e $tmp ]` 对悬空链为 false → 不删除 → `> $tmp` 由 root 跟随软链在攻击者指定路径建文件
+    （落点是 Magisk 模块目录即等于下次开机的 root 代码执行）。改用 `mktemp`（O_EXCL + 不可预测名）
+    并显式拒绝软链。**真机反证**：旧写法确实被劫持（受害文件被创建），新写法未创建
+  - [x] 审计日志所在目录 `/data/adb/shso` 按产品要求必须是 0777（第三方文件管理器互访），
+    因此任意应用都能替换/改权限审计文件。`prepareRootTarget` 增加**属主 + 权限位**校验
+    （`[ -O ]` + `find -perm /022`），不合规则删除重建并收紧为 0600。
+    **真机验证**：App 启动后日志已自动变为 `600 root` 且写入正常
+  - [x] 执行确认框把「扫描不可用/未完成」当 fail-open：`.sh` 读不出或超 2MB 时
+    `report == null` → `hasCritical=false` → 确认按钮仍 enabled → 一键以 root 执行。
+    改为 `scanUnresolved` 时禁用确认按钮
+
+- [x] **并发（4 项）**
+  - [x] 终端「当前活动进程」槽位只有 `isTaskRunning` 一个判据，而它到 `runTerminalCommand`
+    内部才置 true，其间要跨过策略判定 + 守卫探测（缓存冷时最长 5s）→ 判定与置位之间存在数秒窗口，
+    可并发跑两条命令或命令与脚本互相覆盖全局句柄并 cancel 掉对方的发布循环。
+    新增同步 CAS 占位标记 `terminalSlotOwner` + 归属令牌自检
+  - [x] `HyperCore.stopBatchFlushLoop()` 无归属令牌，旧命令收尾会停掉**新命令**仍在跑的发布循环
+    （其输出退化为结束后一次性喷出）。改为返回 Job 令牌、按令牌停
+  - [x] `BuiltInFilePicker.loadDirectory` 无代次守卫，连点两个文件夹时 `currentDir` 与 `fileList` 会错位
+  - [x] `FilePage` 的「搜索/排序变化」特效对 `displayFileList` 的写入**没有任何守卫**，
+    且基于旧 `fileList` 起算，可让路径栏是新目录而列表是旧目录内容
+
+- [x] **功能逻辑 / 状态正确性（1 项）**
+  - [x] 动作/重命名/删除/权限/多选模式五个弹窗共享同一个 `selectedItem`，
+    外部唤起会改写它而 `show*Dialog` 标志不清 → 弹窗先被隐藏、用户下次点任意文件
+    又以新目标重现（标题与预填值仍是旧文件），确认时作用在另一个文件上。改为各弹窗独立目标快照
+
+- [x] **性能 / ANR（2 项）**
+  - [x] `executeFile` 的前置段（守卫探测最长 5s + 脚本扫描两次 `su` 共 25s 超时 + 2MB 逐行解析）
+    跑在 UI 线程 → 确定性 ANR。拆为 `executeFilePreflight`（IO）+ `startExecution`（Main）
+  - [x] `GuardModuleInstaller.ensureInstalled` 整体缺 `withContext(Dispatchers.IO)`，
+    冷启动与改档后由 `MainActivity` / `SettingsPage` 在主线程调用 → 最长 5s 阻塞
+
+- [x] **兼容性（4 项）**
+  - [x] 16 处无参 `lowercase()/uppercase()` 未指定 `Locale.ROOT`：`"INI"` 在土耳其语下折成 `ını`，
+    含大写 `I` 的扩展名整批打不开、对比选文件器互过滤、语法包键匹配不上
+    （`ArchiveExtractor` 此前只有注释、并未真改）
+  - [x] 4 处日期格式化随区域取默认历法：`th-TH` 佛历 / `ja-JP-u-ca-japanese` 日本历下
+    `yyyy` 取该历法 YEAR，文件时间显示成 2569 年。统一 `Locale.ROOT`，
+    `DateTimeFormatter` 另加 `IsoChronology`
+  - [x] `TextStatistics.countLines` 与自身 KDoc 契约相反（`"abc\n"` 返回 2），
+    且与 `TextCompare` 口径不一致。改为末尾换行时减 1。
+    **注意**：原单测把「多算一行」当成期望值固化了，已同步改为统一口径并在用例里写明理由
+  - [x] `SyntaxPackStore.importZip` 用 `removeSuffix(".json")`（大小写敏感）配
+    大小写无关的 `endsWith` 判定：`Kotlin.Json` 得到 id `kotlinjson`，与 `kotlin.json`
+    写出的键不一致 → 语法包静默不高亮。改用 `substringBeforeLast('.')`
+
+- [x] **回归**：409 tests / 0 failures / 1 skipped；lint 0 errors / 31 warnings；
+  `build_apk.py` 红线通过（2.18 MB）；真机安装并冷启动无崩溃；
+  守卫 `common.sh` 语法自检通过、`device-symlink.sh` 语义未受影响
+- [x] **真机专项验证**
+  - [x] `find -perm /022` 权限判定 9/9 通过（600/644/640/755/4755 保留；666/620/777/466 清除）
+  - [x] 审计轮转软链劫持：旧写法被劫持（受害文件被创建），`mktemp` 版未创建
+  - [x] App 启动后审计日志自动收紧为 `600 root`、写入正常（当天 1290 条）、无临时文件残留
+  - [x] `/data/adb/shso_guard/policy.conf` 与模块自带仅 `mode=` 行序不同，条目无缺失
 
 ### A52. 发版 20261002（2026-10-02）
 

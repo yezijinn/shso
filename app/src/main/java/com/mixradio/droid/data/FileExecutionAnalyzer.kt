@@ -3,6 +3,7 @@
 
 package com.mixradio.droid.data
 
+import java.util.Locale
 import java.io.File
 import java.util.UUID
 import java.security.MessageDigest
@@ -69,7 +70,7 @@ suspend fun computeSha256Strict(path: String): String? = withContext(Dispatchers
             return@runCatching digest.digest().joinToString("") { "%02X".format(it) }
         }
         val (_, output) = RootService.runCommandSync("sha256sum " + RootService.escapeShellArg(path))
-        Regex("^\\s*([0-9a-fA-F]{64})").find(output)?.groupValues?.get(1)?.uppercase()
+        Regex("^\\s*([0-9a-fA-F]{64})").find(output)?.groupValues?.get(1)?.uppercase(Locale.ROOT)
     }.getOrNull()
 }
 
@@ -120,7 +121,7 @@ private fun detectContentLocal(file: File): Pair<String, String> {
     val hasNull = sample.any { it == 0.toByte() }
     val printable = sample.count { it in 9..13 || it in 32..126 }
     val ratio = if (len == 0) 1f else printable.toFloat() / len
-    val ext = file.extension.lowercase()
+    val ext = file.extension.lowercase(Locale.ROOT)
 
     return if (hasNull || ratio < 0.7f) {
         extTypeLabel(ext, binary = true) to "二进制 / 加密"
@@ -140,7 +141,7 @@ private fun detectContentLocal(file: File): Pair<String, String> {
  *    否则路径里的 `data` 等字样会污染判定（`/data/adb/...` 命中 `contains("data")`）。
  */
 internal fun classifyFileTypeLine(line: String, ext: String): Pair<String, String> {
-    val lower = line.substringAfter(": ", line).lowercase()
+    val lower = line.substringAfter(": ", line).lowercase(Locale.ROOT)
     val typeLabel = when {
         lower.contains("elf") -> "ELF 二进制 (.so / 可执行)"
         lower.contains("shell script") -> "Shell Script"
@@ -184,7 +185,7 @@ private fun computeSha256(path: String, file: File, readable: Boolean): String {
         } else {
             val (_, out) = RootService.runCommandSync("sha256sum " + RootService.escapeShellArg(path))
             val match = Regex("""^\s*([0-9a-fA-F]{64})""").find(out)
-            match?.groupValues?.get(1)?.uppercase() ?: "计算失败（无 Root 或无法读取）"
+            match?.groupValues?.get(1)?.uppercase(Locale.ROOT) ?: "计算失败（无 Root 或无法读取）"
         }
     } catch (e: Exception) {
         "计算失败：${e.message?.take(40) ?: "未知错误"}"

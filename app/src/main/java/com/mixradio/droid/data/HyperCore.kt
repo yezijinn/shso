@@ -78,13 +78,21 @@ $rootLine
         logBatchQueue.clear()
     }
 
+    /**
+     * 启动批量发布循环，返回**归属令牌**（本次循环的 Job）。
+     *
+     * 必须把令牌交给调用方：[stopBatchFlushLoop] 无条件 `cancelAndJoin()` 当前循环，
+     * 而终端命令允许重叠（`RootService.terminalCommandGeneration` 就是为此存在）。
+     * 命令 A 结束时调 stop 会把属于命令 B 的循环一起取消掉 —— B 全程无实时输出，
+     * 日志只在队列里堆积、结束后一次性喷出，用户观感是「终端卡住不刷新」。
+     */
     fun startBatchFlushLoop(
         scope: CoroutineScope,
         isTaskRunningProvider: () -> Boolean,
         onFlush: (String) -> Unit
-    ) {
+    ): Job {
         batchFlushJob?.cancel()
-        batchFlushJob = scope.launch(Dispatchers.Main) {
+        val job = scope.launch(Dispatchers.Main) {
             // 保留 16ms tick 去 drain 队列（防止队列无界增长），但先累积到 pending，
             // 满足阈值（距上次发布 ≥ minIntervalMs，或累积 ≥ backlogChars）才发布一次，降低重组频率。
             val pending = StringBuilder()
@@ -119,6 +127,8 @@ $rootLine
                 }
             }
         }
+        batchFlushJob = job
+        return job
     }
 
     suspend fun flushBatchQueueImmediate(onFlush: (String) -> Unit) = withContext(Dispatchers.Main) {
@@ -141,9 +151,13 @@ $rootLine
      * 循环持有最多 `minIntervalMs` 的未发布文本，若只在 finally 里自然退出，
      * 这段残留会落在总结行**之后**——日志读起来就是「退出码打在了最后几行输出前面」。
      */
-    suspend fun stopBatchFlushLoop() {
-        batchFlushJob?.cancelAndJoin()
-        batchFlushJob = null
+    suspend fun stopBatchFlushLoop(owner: Job? = null) {
+        val job = batchFlushJob
+        // 归属校验：只停属于自己的循环。命令可重叠，旧命令收尾时若无条件停，
+        // 会把新命令仍在跑的发布循环一起取消（其输出退化为结束后一次性喷出）。
+        if (owner != null && job !== owner) return
+        job?.cancelAndJoin()
+        if (batchFlushJob === job) batchFlushJob = null
     }
 
     /**

@@ -3,6 +3,7 @@
 package com.mixradio.droid.data.syntax
 
 import android.content.Context
+import java.util.Locale
 
 /**
  * 语言标识（供 UI 展示）。
@@ -17,7 +18,7 @@ object SyntaxPackTags {
     /** 文件列表用的短标签（尽量 ≤6 字符，避免挤压行内空间）。 */
     fun tagFor(context: Context, fileName: String?): String? {
         val id = SyntaxPackStore.languageIdFor(context, fileName) ?: return null
-        return SHORT[id] ?: id.take(7).uppercase()
+        return SHORT[id] ?: id.take(7).uppercase(Locale.ROOT)
     }
 
     /** 编辑器顶栏用的语言名（可读全称，保持官方大小写）。 */

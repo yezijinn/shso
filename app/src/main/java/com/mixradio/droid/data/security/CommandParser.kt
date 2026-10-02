@@ -187,6 +187,7 @@ object CommandParser {
                             chr == '`' -> {
                                 val close = text.indexOf('`', j + 1)
                                 if (close == -1) { j = n } else {
+                                    current.append('$')   // 同上：引号内替换也必须让外层可见
                                     expandSubstitution(text.substring(j + 1, close), depth, atoms, state)
                                     j = close + 1
                                 }
@@ -200,8 +201,17 @@ object CommandParser {
                 // 反斜杠转义
                 ch == '\\' && i + 1 < n -> { current.append(text[i + 1]); i += 2 }
                 // 命令替换 $(...)（$((...)) 算术：不透明跳过，不产生可执行原子）
+                //
+                // 必须在**外层** current 里留一个 '$' 标记。替换产物被单独解析成独立原子后，
+                // 外层若不留痕，该片段就对外层判定完全不可见：
+                //   rsync -a /data/local/tmp/x $(echo /system)/bin/
+                // 外层 operands 只剩 [/data/local/tmp/x, /bin/]，末位 /bin/ 不受保护 → 放行，
+                // 而内层 echo 的 /system 从不作为 rsync 的目标参与分级 → 静默写入系统分区。
+                // 留痕后 hasUnresolvedVar 置位，配合 PolicyEngine 的未解析变量升级即 fail-closed。
+                // 标记只用于分析（token 文本不参与命令拼装，真实执行的是原始文本），无副作用。
                 ch == '$' && i + 1 < n && text[i + 1] == '(' -> {
                     val inner = extractParen(text, i + 1)
+                    current.append('$')
                     if (inner.first != null) expandSubstitution(inner.first!!, depth, atoms, state)
                     i = inner.second
                 }
@@ -209,6 +219,7 @@ object CommandParser {
                 ch == '`' -> {
                     val close = text.indexOf('`', i + 1)
                     if (close == -1) { i = n } else {
+                        current.append('$')
                         expandSubstitution(text.substring(i + 1, close), depth, atoms, state)
                         i = close + 1
                     }
@@ -414,7 +425,15 @@ object CommandParser {
                     break
                 }
             }
-            if (idx >= words.size) break
+            if (idx >= words.size) {
+                // 剥到词尾都没遇到「真实程序名」：说明这些都是 wrapper 自己的选项，
+                // 而 wrapper 就是被执行的程序（`magisk --remove-modules`、`busybox --install-x`）。
+                // 此时必须**只消费程序名本身**（consumed=1），把选项原样留在 args 里 ——
+                // 否则 `magisk --remove-modules` 的 args 会变成空列表，
+                // PolicyEngine 的 magisk 分支看不到任何子命令，`evaluateAtom` 的 when
+                // 也没有对应分支，整条命令落到 Allow。
+                return program to 1
+            }
             program = words[idx].substringAfterLast('/')
             idx++                       // 消费真实程序名（busybox 的 applet 等）
         }

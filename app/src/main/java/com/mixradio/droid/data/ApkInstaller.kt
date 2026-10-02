@@ -23,6 +23,7 @@ import java.io.File
 import java.io.ByteArrayOutputStream
 import java.util.UUID
 import android.os.Process
+import java.util.Locale
 
 /**
  * APK / XAPK 安装器（root 静默）。
@@ -198,7 +199,7 @@ object ApkInstaller {
                         // 跳过目录条目与 manifest 之外的元数据
                         if (header.isDirectory) continue
 
-                        val lower = entryName.lowercase()
+                        val lower = entryName.lowercase(Locale.ROOT)
                         when {
                             entryName == "manifest.json" -> {
                                 if (header.uncompressedSize > MAX_XAPK_MANIFEST_BYTES) {

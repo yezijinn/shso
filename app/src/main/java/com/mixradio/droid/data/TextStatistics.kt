@@ -103,6 +103,11 @@ object TextStatistics {
                 i++
             }
         }
+        // 末尾是换行符时那个「空行」不是一行：绝大多数 POSIX 文本文件都以换行结尾，
+        // 不减 1 会让统计面板的「行数」恒比真实值多 1（"abc\n" 被算成 2 行，与本函数
+        // KDoc 契约相反），也与 TextCompare.countLines 的口径对不上。
+        val last = text[n - 1]
+        if (last == '\n' || last == '\r') count--
         return count
     }
 
