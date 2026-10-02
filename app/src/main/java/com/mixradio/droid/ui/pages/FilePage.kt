@@ -105,17 +105,35 @@ import com.mixradio.droid.ui.components.TextEditorDialog
 import com.mixradio.droid.ui.components.applyFileViewSettings
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraTokens
+
 import com.mixradio.droid.ui.theme.AuroraWindowDialog
 import com.mixradio.droid.ui.theme.auroraTextFieldColors
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+/**
+ * 批量操作的进程级作用域。
+ *
+ * 批量删除/移动/重命名是不可撤销的磁盘副作用，且逐项 fork `su`（几十到几百毫秒一项），
+ * 全程可能持续数分钟。这类循环的完成与否必须由「跑完并报出结论」决定，而不是由
+ * 一次旋屏、分屏或系统改字号决定 —— 后者会让循环在中途被取消，而取消只在**下一项
+ * 入口**才被观察，于是用户看到的是「删了一部分、没有任何提示、列表还显示着已删的文件」。
+ *
+ * 用 `SupervisorJob`：单项失败不应连累整个循环（各项失败本就要收集成明细上报）。
+ */
+private val batchJobScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
 @Composable
 fun FilePage(
@@ -128,12 +146,16 @@ fun FilePage(
     /**
      * 批量删除的执行 scope：**不随组合销毁**。
      *
-     * 用页面级 `rememberCoroutineScope()` 时，旋屏/Activity 重建会取消正在跑的循环，
+     * 页面级 `rememberCoroutineScope()` 会让旋屏/Activity 重建取消正在跑的循环，
      * 而 `RootFileManager.delete` 每一项各自 `withContext(IO)`，取消只在**下一项入口**
      * 才被观察 —— 于是删到第 k 个即静默停止，`feedbackMessage` 与 `refresh()` 永不执行，
      * 列表仍显示已删文件，用户既不知道删到哪、也不知道重跑会把已删项计为失败。
+     *
+     * 故此处用文件级的进程作用域（见文件末尾 [batchJobScope]）：批量是不可撤销的
+     * 磁盘副作用，必须跑到有明确结论为止，不能由一次旋屏决定其命运。
+     * 收尾 `finally` 另加 `NonCancellable` 兜底。
      */
-    val batchScope = rememberCoroutineScope()
+    val batchScope = batchJobScope
     // 批量任务开始时冻结的目录：执行期间用户切目录/被外部唤起改写目录，
     // 删除仍会继续落在旧目录，而收尾 refresh 的是新目录 —— 用户全程看不见删了什么。
     val batchDirGuard = remember { arrayOf<String?>(null) }
@@ -630,6 +652,31 @@ fun FilePage(
         if (nameQuery.isNotEmpty()) nameQuery = ""
     }
 
+    // 选中集必须始终是**当前可见列表**的子集。
+    //
+    // 此前选中集不随名称筛选收敛：多选 5 个文件 → 用搜索把它们全筛掉（列表显示
+    // 「无匹配项」，可见 0 个）→ 长按任意文件批量删除，确认框只报「选中的 5 个项目」，
+    // 逐项删的却是那 5 个屏幕上根本不存在的文件，且批量删除不可撤销。
+    // 另一侧：「全选文件」取的是筛选后的子集，清掉筛选词后按钮文案又变回「全选」，
+    // 再点一次不是取消而是把全量并入选择集，口径随筛选词漂移。
+    //
+    // 这里在筛选词变化后把选中集裁剪到可见范围，并如实告知被裁掉的数量 ——
+    // 「静默删掉用户的选择」也比「静默删掉用户的文件」可接受，但两者都不该静默。
+    LaunchedEffect(nameQuery) {
+        if (nameQuery.isEmpty()) return@LaunchedEffect
+        val visible = displayFileList.mapTo(HashSet()) { it.path }
+        val dropped = selectedPaths.count { it !in visible }
+        if (dropped <= 0) return@LaunchedEffect
+        val kept = selectedPaths.filter { it in visible }
+        selectedPaths.clear()
+        selectedPaths.addAll(kept)
+        feedbackMessage = if (kept.isEmpty()) {
+            "筛选后无匹配项，已清空 $dropped 个选择"
+        } else {
+            "筛选后移除了 $dropped 个不可见项，剩余 ${kept.size} 个"
+        }
+    }
+
     val listFontSize = appSettings.fileListFontSize.sp
     val listSecondaryFontSize = (appSettings.fileListFontSize - 5f).coerceAtLeast(8f).sp
 
@@ -652,7 +699,7 @@ fun FilePage(
                         .background(AuroraTokens.SurfaceHover)
                         .clickable(enabled = currentDirectory != "/") {
                             val parent = File(currentDirectory).parent ?: "/"
-                            currentDirectory = parent
+                            navigateTo(parent)
                         },
                     contentAlignment = Alignment.Center
                 ) {
@@ -1234,7 +1281,7 @@ fun FilePage(
             onDismissRequest = { showBookmarksDialog = false },
             onNavigate = { path ->
                 showBookmarksDialog = false
-                currentDirectory = path
+                navigateTo(path)
             }
         )
     }
@@ -1568,7 +1615,7 @@ fun FilePage(
             } else {
                 "您确定要删除 \"${single?.name}\" 吗？此操作无法撤销。"
             },
-            onDismissRequest = { showDeleteDialog = false; batchDeletePaths = emptyList() }
+            onDismissRequest = { showDeleteDialog = false; batchDeletePaths = emptyList(); deleteTargetItem = null }
         ) {
             Row(
                 modifier = Modifier
@@ -1577,7 +1624,7 @@ fun FilePage(
                 horizontalArrangement = Arrangement.End
             ) {
                 Button(
-                    onClick = { showDeleteDialog = false; batchDeletePaths = emptyList() },
+                    onClick = { showDeleteDialog = false; batchDeletePaths = emptyList(); deleteTargetItem = null },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = AuroraTokens.SurfaceHover,
                         contentColor = AuroraTokens.Text
@@ -1594,27 +1641,44 @@ fun FilePage(
                         if (isBatch) {
                             isBatchRunning = true
                             batchDirGuard[0] = currentDirectory
+                            val frozenDir = currentDirectory
+                            val targets = batchPaths
                             batchScope.launch {
                                 var ok = 0
                                 val failures = ArrayList<String>()
+                                var interrupted = false
                                 try {
-                                    batchPaths.forEach { p ->
+                                    targets.forEach { p ->
+                                        // 每项入口检查取消：RootFileManager.delete 内部
+                                        // 各自 withContext(IO)，取消只在这里才被观察。
+                                        if (!currentCoroutineContext().isActive) {
+                                            interrupted = true
+                                            return@forEach
+                                        }
                                         val (s, reason) = RootFileManager.delete(p)
                                         if (s) ok++ else failures += "${File(p).name}（$reason）"
                                     }
                                 } finally {
-                                    withContext(Dispatchers.Main) {
+                                    // NonCancellable：收尾必须跑到有明确结论为止。
+                                    // 放在可取消的上下文里时，withContext(Main) 的块体
+                                    // 根本不会执行（以 CancellationException 恢复），
+                                    // 于是提示不弹、refresh 不跑、isBatchRunning 永不复位。
+                                    withContext(NonCancellable + Dispatchers.Main) {
                                         isBatchRunning = false
                                         batchDirGuard[0] = null
-                                        feedbackMessage = if (failures.isEmpty()) {
-                                            "已删除 $ok 个项目"
-                                        } else {
-                                            "删除完成：$ok 成功 / ${failures.size} 失败：" +
-                                                failures.take(2).joinToString("；")
+                                        feedbackMessage = buildString {
+                                            if (interrupted) append("删除被中断：已完成 $ok 个项目，")
+                                            else append("已删除 $ok 个项目")
+                                            if (failures.isNotEmpty()) {
+                                                append("；失败 ${failures.size} 个：")
+                                                append(failures.take(2).joinToString("；"))
+                                            }
                                         }
                                         selectedPaths.clear()
                                         multiSelectMode = false
-                                        refresh()
+                                        // 刷新回批量开始时的那个目录：期间目录可能被外部
+                                        // 唤起改写，而用户要确认的正是被删了哪些文件。
+                                        if (currentDirectory == frozenDir) refresh()
                                     }
                                 }
                             }
@@ -1751,7 +1815,7 @@ fun FilePage(
                                 targetPath = "/$targetPath"
                             }
                             showJumpPathDialog = false
-                            currentDirectory = targetPath
+                            navigateTo(targetPath)
                         },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = AuroraTokens.Accent,
@@ -2012,7 +2076,18 @@ fun FilePage(
                     // 批量删除必须经确认：单文件路径有「此操作无法撤销」确认框，
                     // 批量却一点即逐个 `rm -rf`，误触（多选时手指落点偏移是常事）
                     // 就是不可逆的批量丢失，且无回收站、失败项无明细。
-                    batchDeletePaths = selectedPaths.toList()
+                    val targets = selectedPaths.toList()
+                    if (targets.isEmpty()) {
+                        feedbackMessage = "没有选中的项目"
+                        return@ActionTextRow
+                    }
+                    // 必须显式清掉单文件目标：对文件 A 弹过删除框后按「取消」，
+                    // onDismissRequest 只清 batchDeletePaths、deleteTargetItem 仍是陈旧的 A；
+                    // 此处若不重置，1606 行的守卫因 deleteTargetItem != null 成立，
+                    // 弹出的却是**单文件**确认框、目标是上一次取消的那个文件 ——
+                    // 用户在一个看起来是批量操作的入口上删掉了另一个文件。
+                    deleteTargetItem = null
+                    batchDeletePaths = targets
                     showDeleteDialog = true
                 }
 

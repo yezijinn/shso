@@ -1023,7 +1023,9 @@ object RootService {
                 withTimeoutOrNull(2000L) { targetJob?.join() }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    if (executionJob === targetJob) {
+                    // 同上：不能用裸 executionJob === targetJob，终端命令路径下它恒真，
+                    // 于是「结束 A 失败」的提示会写进期间新启动的 B 的日志。
+                    if (stillOwnsExecution(targetJob)) {
                         if (appSettings?.showShsoBanner != false) {
                             appendOutputDirect("\n[shso Engine] 结束进程失败: ${e.message}\n")
                         }
@@ -1127,7 +1129,13 @@ object RootService {
                     // 避免 UI 一直显示 RUNNING 却无任何说明。
                     delay(3000)
                     withContext(Dispatchers.Main) {
-                        if (isTaskRunning && executionJob === targetJob) {
+                        // 必须用 stillOwnsExecution，不能用裸 `executionJob === targetJob`：
+                        // 终端一次性命令这条路径上 targetJob 恒为 null、executionJob 也恒为 null，
+                        // 判据恒真。于是 SIGINT 生效、进程 1 秒内退出、用户紧接着启动命令 B，
+                        // t+3s 时 isTaskRunning 为 true（B 在跑）且 null === null 成立 →
+                        // 把「进程未响应 SIGINT」写进 **B 的日志**，用户会据此去点
+                        // 「结束进程」，把 B 杀掉。这正是 stillOwnsExecution 要消除的归属漏洞。
+                        if (isTaskRunning && stillOwnsExecution(targetJob)) {
                             appendOutputDirect("\n[shso Engine] 进程未响应 SIGINT，可点击「结束进程」强制终止\n")
                         }
                     }

@@ -198,39 +198,61 @@ fun TerminalPage(
     val ansiParser = remember(terminalDefaultColor) {
         cachedParse?.parser ?: IncrementalAnsiParser(terminalDefaultColor)
     }
+    // 解析代次：组件离/进组合或换色时 +1。in-flight 的解析块没有挂起点、取消打不断，
+    // 用它判断「本结果是否已过期」，避免旧协程把 consumedLog 回写成较旧值。
+    val parseGenRef = remember { intArrayOf(0) }
+    val myGen = remember(terminalDefaultColor) { parseGenRef[0]++ }
     var parsedOutput by remember(terminalDefaultColor) {
         mutableStateOf(cachedParse?.result ?: ParsedAnsiResult(emptyList()))
     }
 
     // 解析移出主线程：成本与整个日志窗口（250k）成正比，每次发布都会重解析。
     // conflate() 保证同一时刻只有一个解析在跑，中间值直接丢弃。
+    //
+    // 解析器是**进程级缓存**（TerminalParseCache.state），旋转屏幕后新组合拿到的还是
+    // 同一个实例。而下面这个块是纯 CPU、没有挂起点，协程取消打不断它 —— 于是旧 Activity
+    // 那个 in-flight 块与新 Activity 的首个 collect 会在两个 Default worker 上同时
+    // `curText.append` / `curCols.add` / `completed.add`：
+    // ArrayIndexOutOfBounds / StringIndexOutOfBounds 穿出 LaunchedEffect 直接崩进程；
+    // 即使不崩，旧协程把 consumedLog 回写成较旧值，下次 startsWith 判错 → 重复行或整段丢行。
+    // 故整块同步，并加代次守卫禁止过期协程写回。
     LaunchedEffect(terminalDefaultColor) {
         // 仅「换色 / 首次进入」需要清空重建；复用缓存解析器时保留其状态与进度。
         if (parseHolder.state?.parser !== ansiParser) {
-            ansiParser.reset()
+            synchronized(ansiParser) {
+                ansiParser.reset()
+            }
             parseHolder.state = null
         }
         snapshotFlow { RootService.outputLog }
             .conflate()
             .collect { log ->
                 // 复用缓存时首轮日志常与缓存进度一致，此时无需任何解析。
-                val prev = parseHolder.state?.consumedLog ?: ""
+                val prev = synchronized(ansiParser) { parseHolder.state?.consumedLog ?: "" }
                 if (log == prev) return@collect
                 val snap = withContext(Dispatchers.Default) {
-                    if (log.length > prev.length && log.startsWith(prev)) {
-                        // 追加：只解析新增部分
-                        ansiParser.feed(log.substring(prev.length))
-                    } else {
-                        // 整体替换（清屏 / 横幅重生成 / 滑动窗口裁剪掉了头部）：无法复用状态，回落全量解析。
-                        ansiParser.reset()
-                        ansiParser.feed(log)
+                    val result = synchronized(ansiParser) {
+                        if (log.length > prev.length && log.startsWith(prev)) {
+                            // 追加：只解析新增部分
+                            ansiParser.feed(log.substring(prev.length))
+                        } else {
+                            // 整体替换（清屏 / 横幅重生成 / 滑动窗口裁剪掉了头部）：无法复用状态，回落全量解析。
+                            ansiParser.reset()
+                            ansiParser.feed(log)
+                        }
+                        val r = ansiParser.snapshot()
+                        // 进度与结果随 feed 在同一个非挂起块内落定：本协程随后被取消（旋转重建组合）也不会
+                        // 出现「解析器已前进、进度没记」——否则重进会把同一段再喂一次，日志出现重复行。
+                        // 代次守卫：解析期间若发生了新一轮（换色 / 组件离组合重建），
+                        // 本结果已过期，写回会让新组合按错误的进度重喂。
+                        if (parseGenRef[0] == myGen) {
+                            parseHolder.state?.let { it.consumedLog = log; it.result = r }
+                        }
+                        r
                     }
-                    val result = ansiParser.snapshot()
-                    // 进度与结果随 feed 在同一个非挂起块内落定：本协程随后被取消（旋转重建组合）也不会
-                    // 出现「解析器已前进、进度没记」——否则重进会把同一段再喂一次，日志出现重复行。
-                    parseHolder.state?.let { it.consumedLog = log; it.result = result }
                     result
                 }
+                if (parseGenRef[0] != myGen) return@collect
                 if (parseHolder.state == null) {
                     parseHolder.state = TerminalParseState(terminalDefaultColor, ansiParser, log, snap)
                         .also { TerminalParseCache.state = it }

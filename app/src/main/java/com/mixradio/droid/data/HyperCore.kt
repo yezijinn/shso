@@ -74,8 +74,17 @@ $rootLine
         logBatchQueue.offer(chunk)
     }
 
+    /**
+ * 批量发布代次。`clearBatchQueue()` 递增它，发布循环发现变化即丢弃自己已积累
+ * 但尚未发布的 [StringBuilder] 积压 —— 否则「清屏」清掉的输出会在下一个 tick
+ * 被回灌回屏幕。跨线程可见，故 @Volatile。
+ */
+@Volatile
+private var batchFlushEpoch: Int = 0
+
     fun clearBatchQueue() {
         logBatchQueue.clear()
+        batchFlushEpoch++
     }
 
     /**
@@ -97,6 +106,12 @@ $rootLine
             // 满足阈值（距上次发布 ≥ minIntervalMs，或累积 ≥ backlogChars）才发布一次，降低重组频率。
             val pending = StringBuilder()
             var lastFlushMs = System.currentTimeMillis()
+            // 清屏代次：clearBatchQueue() 只清共享队列，清不掉本循环**局部**的 pending
+            // （最多 250ms / 400k 字符）。用户点「清屏」后 outputLog 已清空，
+            // 而下一个 ≤16ms 的 tick 就把这批刚被清掉的旧输出整段 flush 回去，
+            // 屏幕上闪回一批旧内容且新旧无法区分。
+            // 故用代次把「清屏」传导进循环：代次一变即丢弃本循环的积压。
+            var seenEpoch = batchFlushEpoch
             // 发布节流：每次发布都有固定主线程开销（组合 + 可见行布局 + 重绘失效），
             // 成本与发布次数成正比、与 item 数无关。250ms ≈ 4 次/秒，
             // 洪流输出下可显著降低占用，刷新延迟几乎无感。
@@ -106,6 +121,13 @@ $rootLine
             try {
                 while (isActive && isTaskRunningProvider()) {
                     delay(16.milliseconds)
+                    if (batchFlushEpoch != seenEpoch) {
+                        // 「清屏」发生：丢弃本循环已积累但尚未发布的旧输出。
+                        pending.setLength(0)
+                        seenEpoch = batchFlushEpoch
+                        lastFlushMs = System.currentTimeMillis()
+                        continue
+                    }
                     if (logBatchQueue.isNotEmpty()) {
                         while (true) {
                             val item = logBatchQueue.poll() ?: break

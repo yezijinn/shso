@@ -332,17 +332,72 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
         }
         // 覆盖模式：逐字符按列写（真实终端语义）
         val cols = colsSnapshot ?: materializeCols()
+        // 列号是 UTF-16 码元下标，而代理对（emoji / 部分增补平面字符）占两个码元。
+        // 落笔若只写一个码元就会把代理对劈开、留下**孤立代理**：
+        //   `printf '😀\rX\n'` → curText = "X\uDE00"，显示成 X 后跟一个替换符，
+        //   plainText 还会把这个残缺代理带进剪贴板。
+        // 现实触发不是构造出来的：进度条/spinner 收尾缩窄、pv/pip 末帧、
+        // docker 拉层回显都会「打印一行 emoji 标题 + 回车覆盖成一行更短的 OK」。
+        //
+        // 修法是**落笔时整对清除**，而不是挪动 curCol：挪列会改变列计数语义，
+        // 与退格/光标移动的真实终端行为不一致。
         var k = from
         while (k < to) {
             if (curCol < curText.length) {
-                curText.setCharAt(curCol, s[k])
-                cols[curCol] = style
+                val cp = s.codePointAt(k)
+                val cpLen = Character.charCount(cp)
+                if (curCol + cpLen <= curText.length) {
+                    if (cpLen == 2) {
+                        curText.setCharAt(curCol, Character.highSurrogate(cp))
+                        curText.setCharAt(curCol + 1, Character.lowSurrogate(cp))
+                        for (i in 0 until 2) cols[curCol + i] = style
+                    } else {
+                        // BMP 单码元：原样写入。
+                        // 不能走 Character.highSurrogate —— 对 cp <= 0xFFFF 它返回
+                        // D800 + (cp >> 10)，会把 ASCII 与中文全写成代理字符。
+                        clearSurrogatePairAt(curCol)
+                        curText.setCharAt(curCol, s[k])
+                        cols[curCol] = style
+                    }
+                } else {
+                    // 目标区放不下整个码点：清掉可能横跨边界的代理对，再按单码元收尾。
+                    clearSurrogatePairAt(curCol)
+                    curText.setCharAt(curCol, s[k])
+                    cols[curCol] = style
+                }
+                curCol += cpLen
+                // 必须按**码元数**前进。只 +1 的话，代理对的下一步会把低代理当成
+                // 一个独立码元再读一次：codePointAt(低代理) 返回它本身、charCount=1，
+                // 于是走单码元分支的 clearSurrogatePairAt 把刚写好的高代理抹成空格，
+                // 再把低代理写回原位 —— 结果是「空格 + 孤立低代理」。
+                k += cpLen
             } else {
                 curText.append(s[k])
                 cols.add(style)
+                curCol++
+                k++
             }
-            curCol++
-            k++
+        }
+    }
+
+    /**
+     * 若 [index] 落在某个代理对内部，把**整对**清成空格，避免留下孤立代理。
+     *
+     * · 落在高代理上 → 清 (index, index+1)
+     * · 落在低代理上 → 清 (index-1, index)
+     * 否则不动。代价 O(1)。
+     */
+    private fun clearSurrogatePairAt(index: Int) {
+        if (index < 0 || index >= curText.length) return
+        val ch = curText[index]
+        if (Character.isHighSurrogate(ch) && index + 1 < curText.length &&
+            Character.isLowSurrogate(curText[index + 1])
+        ) {
+            curText.setCharAt(index + 1, ' ')
+        } else if (Character.isLowSurrogate(ch) && index > 0 &&
+            Character.isHighSurrogate(curText[index - 1])
+        ) {
+            curText.setCharAt(index - 1, ' ')
         }
     }
 
@@ -372,6 +427,13 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
     private fun eraseInLine(params: String) {
         when (params.toIntOrNull() ?: 0) {
             0 -> {
+                if (curCol >= curText.length) return
+                // 同 writeSegment：截断点必须落在码元边界，否则会把代理对劈开、
+                // 留下孤立代理（`😀X\b\bESC[K` → 残留孤立高代理）。
+                if (Character.isLowSurrogate(curText[curCol])) {
+                    curCol--
+                    if (curCol < 0) curCol = 0
+                }
                 if (curCol >= curText.length) return
                 curText.setLength(curCol)
                 val cols = curCols

@@ -31,6 +31,15 @@ import io.github.rosemoe.sora.widget.schemes.SchemeDarcula
 class SoraEditorController {
     internal var editor: CodeEditor? = null
 
+    /**
+     * 编辑器控件是否已挂载。
+     *
+     * [text] 在未挂载时返回空串，而「空串」与「一个真的空文件」无法区分 —— 调用方
+     * 若据此写盘，加载期间（大文本加载数秒，此间控件尚未进入组合）会把已有的
+     * 缓冲内容整体替换成 0 字节。凡是要「取全文并写回」的路径都必须先判这个。
+     */
+    val isAttached: Boolean get() = editor != null
+
     /** 当前全文（按需调用；大文本为 O(n) 一次遍历，勿逐键调用）。 */
     fun text(): String = editor?.text?.toString() ?: ""
 

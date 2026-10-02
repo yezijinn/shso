@@ -170,8 +170,13 @@ private fun TextEditorDialogContent(
 
     var overrideCharset by remember { mutableStateOf<Charset?>(null) }
 
-    /** 把编辑器当前全文同步到 [contentValue]（按需调用：保存 / 查找 / 对比 / 统计 / 历史）。 */
+/** 把编辑器当前全文同步到 [contentValue]（按需调用：保存 / 查找 / 对比 / 统计 / 历史）。 */
     fun syncSnapshot() {
+        // 控件未挂载时 controller.text() 返回空串，而空串与「真的空文件」不可区分。
+        // 加载期间（大文件走 root 通道要数秒，此间编辑器尚未进入组合、DisposableEffect
+        // 已把 controller.editor 置 null）若照单全收，已载入的缓冲内容会被整体替换成空串，
+        // 随后任何一次保存/另存为都会用 0 字节覆盖原文件。
+        if (!soraEditor.isAttached) return
         val t = soraEditor.text()
         if (t != contentValue.text) contentValue = TextFieldValue(t, TextRange(t.length))
     }
@@ -401,6 +406,18 @@ private fun TextEditorDialogContent(
     // 旧方案需对全文做 AnnotatedString 计算且与输入文本逐帧校验，大文本是纯开销。
     // 另存为的落盘动作：抽成局部函数，供「直接保存」与「确认覆盖后保存」共用。
     val performSaveAs: (String) -> Unit = saveAs@{ newPath ->
+        // 与 doSave 同款的守卫，这里此前只有路径校验：
+        // · 加载中：contentValue 可能仍为空或只有首块，写盘必然损坏目标文件
+        // · 读取失败：编辑器里的内容不是完整原文
+        // · isSaving：另存为原先不置位也不检查，可与「保存」并发写同一路径
+        when {
+            isSaving -> { scope.launch { toastMessage = "正在保存，请稍候" }; return@saveAs }
+            isLoading -> { scope.launch { toastMessage = "正在加载，请稍候再保存" }; return@saveAs }
+            loadError != null -> {
+                scope.launch { toastMessage = "文件读取失败，已阻止保存以防损坏原文件" }
+                return@saveAs
+            }
+        }
         // 另存为的目标路径来自用户输入 / 覆盖确认弹窗，零校验就直接交给
         // writeTextFile：空串、纯目录、含 `..` 的相对穿越、以及应用私有路径
         // （/data/data/com.mixradio.droid/…）都会被接受。
@@ -411,20 +428,26 @@ private fun TextEditorDialogContent(
             scope.launch { toastMessage = saveAsProblem }
             return@saveAs
         }
+        // 落盘前强制从编辑器取一次全文：contentValue 是惰性快照，刚输入完可能还没同步。
+        syncSnapshot()
+        isSaving = true
         scope.launch {
-            // 落盘与历史读写必须同在 IO 线程：EditHistoryManager 走 SharedPreferences，
-            // 首次访问要把整个 prefs XML 解析进内存，单文件上限 100 万字 → 主线程数十 ms 卡顿。
-            // doSave 已按此写法，这里此前漏了 withContext，是同一条路径上的不一致。
-            // 与 doSave 同理：文本与修订号必须在主线程取，IO 期间的新输入不能算作已保存。
+            // 与 doSave 对齐：文本、修订号、编码、行尾、BOM 全部在主线程取，
+            // 作为普通参数传进 IO 块。Compose state 跨线程读不保证可见顺序，
+            // 放在 IO 块里还会与主线程的 syncSnapshot() 直接竞争。
             val snapshotText = contentValue.text
             val snapshotRevision = textRevision
+            val snapshotCharset = resolveCharset()
+            val snapshotLineEnding = currentLineEnding
+            val snapshotBom = hasBom
             val outcome = withContext(Dispatchers.IO) {
-                val writeResult = writeTextFile(newPath, snapshotText, resolveCharset(), currentLineEnding, hasBom)
+                val writeResult = writeTextFile(newPath, snapshotText, snapshotCharset, snapshotLineEnding, snapshotBom)
                 if (writeResult.first) {
                     EditHistoryManager.addHistory(newPath, snapshotText, EditHistoryManager.HistorySource.SAVE)
                     Triple(true, null as String?, EditHistoryManager.getHistory(newPath))
                 } else Triple(false, writeResult.second, emptyList())
             }
+            isSaving = false
             if (outcome.first) {
                 currentFilePath = newPath
                 if (textRevision == snapshotRevision) dirty = false else dirty = true
@@ -656,7 +679,13 @@ private fun TextEditorDialogContent(
         },
         showLineNumber = showLineNumber,
         onShowLineNumberChange = { showLineNumber = it; appSettings.updateEditorShowLineNumber(it) },
-        hasBom = hasBom, onHasBomChange = { hasBom = it },
+        hasBom = hasBom, onHasBomChange = { newBom ->
+            // 切换 BOM 会改变整份文件的字节布局（首部多/少 3 字节），必须置脏：
+            // 否则「无改动」分支直接吐提示把这次设置吞掉，之后用户随便改一个字再保存，
+            // 整个文件的 BOM 就被重写了 —— 而设置面板显示的是新值，用户无从预期。
+            if (newBom != hasBom) dirty = true
+            hasBom = newBom
+        },
         chunkedBrowsing = isLargeFile,
         fontSize = fontSize, onFontSizeChange = { fontSize = it; appSettings.updateEditorFontSize(it) },
         autoSaveSeconds = autoSaveSeconds,
@@ -674,7 +703,12 @@ private fun TextEditorDialogContent(
             }
         },
         lineEnding = currentLineEnding,
-        onLineEndingChange = { le -> currentLineEnding = le },
+        onLineEndingChange = { le ->
+            // 同 onHasBomChange：行尾风格改动会让 writeTextFile 对**整个文件**做行尾重写，
+            // 不置脏就会被「无改动」提示吞掉，再在下次保存时静默全量改写。
+            if (le != currentLineEnding) dirty = true
+            currentLineEnding = le
+        },
         onSyntaxPacksClick = { showSyntaxPacks = true },
         onSaveAsClick = { syncSnapshot(); showSaveAsDialog = true },
         onDismiss = { showSettingsDialog = false }
@@ -898,14 +932,42 @@ private fun TextEditorDialogContent(
         onSave = {
             showUnsavedDialog = false
             if (currentFilePath == null) { showSaveAsDialog = true; return@UnsavedChangesDialog }
+            // 与 doSave 同一套守卫：加载中 / 读取失败时 contentValue 不是完整原文。
+            if (isLoading) { toastMessage = "正在加载，已阻止保存以防损坏原文件"; return@UnsavedChangesDialog }
+            if (loadError != null) { toastMessage = "文件读取失败，已阻止保存以防损坏原文件"; return@UnsavedChangesDialog }
+            if (isSaving) { toastMessage = "正在保存，请稍候"; return@UnsavedChangesDialog }
+            // 落盘前从编辑器取一次全文，否则关闭前最后一段输入会丢。
+            syncSnapshot()
             isSaving = true
+            val saveTarget = currentFilePath!!
             scope.launch {
+                // 文本/修订号/编码/行尾/BOM 全部在主线程取。此前把 contentValue.text
+                // 放在 IO 块里读，会与主线程 syncSnapshot() 的赋值直接竞争，
+                // 取到关闭前一刻的旧快照。
+                val snapshotText = contentValue.text
+                val snapshotRevision = textRevision
+                val snapshotCharset = resolveCharset()
+                val snapshotLineEnding = currentLineEnding
+                val snapshotBom = hasBom
                 val (ok, msg) = withContext(Dispatchers.IO) {
-                    writeTextFile(currentFilePath!!, contentValue.text, resolveCharset(), currentLineEnding, hasBom)
+                    writeTextFile(saveTarget, snapshotText, snapshotCharset, snapshotLineEnding, snapshotBom)
                 }
                 isSaving = false
-                if (ok) { dirty = false; lastSavedAtMs = System.currentTimeMillis(); onDismissRequest() }
-                else toastMessage = msg ?: "保存失败"
+                if (!ok) {
+                    toastMessage = msg ?: "保存失败"
+                    return@launch
+                }
+                // 写盘期间用户可能又敲了字（关闭未保存弹窗后编辑器立刻恢复可编辑）。
+                // 此前无条件 dirty=false 并关闭编辑器 —— 这批字符既没写盘也不留在编辑器，
+                // 且没有任何提示。现不关闭并提示，用户可再次保存。
+                if (textRevision != snapshotRevision) {
+                    dirty = true
+                    toastMessage = "保存期间又有新修改，请再次保存"
+                    return@launch
+                }
+                dirty = false
+                lastSavedAtMs = System.currentTimeMillis()
+                onDismissRequest()
             }
         },
         onDiscard = { showUnsavedDialog = false; onDismissRequest() },
@@ -1005,6 +1067,17 @@ private suspend fun writeTextFile(
             )
             val resolved = if (linkCode == 0) linkOut.trim().ifEmpty { filePath } else filePath
             val escapedTarget = RootService.escapeShellArg(resolved)
+
+            // 目标不能是已存在的目录。`mv <tmp> <已存在目录>` 是「移进该目录」语义，
+            // 返回 0 且不覆盖任何东西 —— 于是 writeTextFile 报成功、界面弹「已保存」，
+            // 而用户填的路径根本没被写入，目录里反而多出一个隐藏的 .shso_edit_*.tmp。
+            // validateSaveAsPath 只查 `..`、反斜杠与私有目录，不判「目标是目录」。
+            val (isDirCode, _) = RootService.runCommandSync(
+                "[ -d $escapedTarget ]", 10_000L
+            )
+            if (isDirCode == 0) {
+                return@withContext Pair(false, "目标是已存在的目录，未写入：$resolved")
+            }
 
             // 覆盖前记录原权限/属主，用于写入后还原
             val (statCode, statOut) = RootService.runCommandSync(
