@@ -55,6 +55,9 @@ internal object HistoryMerge {
 object EditHistoryManager {
     /** 旧版：所有文件共用一个大 JSON 数组。仅用于一次性迁移。 */
     private const val KEY_LEGACY = "edit_history"
+
+/** 迁移失败时保留 legacy 原文的键名（改名而非删除，便于事后人工恢复）。 */
+private const val KEY_LEGACY_UNMIGRATED = "edit_history.unmigrated"
     private const val KEY_PREFIX = "history:"
     private const val MAX_HISTORY_PER_FILE = 20
 
@@ -133,7 +136,11 @@ object EditHistoryManager {
         val truncated = content.length > MAX_CONTENT_CHARS
         val safeContent = if (truncated) content.substring(content.length - MAX_CONTENT_CHARS) else content
 
-        val entries = readFile(filePath)
+        // 读取失败时**直接放弃本次写入**，绝不能拿「空列表」去覆写。
+        // 此前 readFile 把解析异常（含 OOM）降级成 emptyList()，这里随即
+        // HistoryMerge.apply(emptyList(), new) → writeFile(单条) 覆写同一 key：
+        // 一次 OOM 就把该文件 20 条历史全部抹掉，且不可恢复。
+        val entries = readFileOrNull(filePath) ?: return
         val merged = HistoryMerge.apply(
             entries, HistoryEntry(safeContent, System.currentTimeMillis(), source, truncated)
         ) ?: return
@@ -170,8 +177,15 @@ object EditHistoryManager {
 
     private fun keyFor(filePath: String) = KEY_PREFIX + filePath
 
-    private fun readFile(filePath: String): List<HistoryEntry> {
-        val raw = prefs.getString(keyFor(filePath), null) ?: return emptyList()
+    /**
+     * 读取某文件的历史；**解析失败返回 null**，与「本来就没有历史（空列表）」区分开。
+     *
+     * 调用方必须区分两者：把失败当成空列表就等于「用一条新记录覆盖掉全部旧历史」。
+     * 失败时同时把损坏原文另存一份，供事后人工恢复。
+     */
+    private fun readFileOrNull(filePath: String): List<HistoryEntry>? {
+        val key = keyFor(filePath)
+        val raw = prefs.getString(key, null) ?: return emptyList()
         return try {
             val arr = JSONArray(raw)
             (0 until arr.length()).mapNotNull { i ->
@@ -186,9 +200,15 @@ object EditHistoryManager {
                 )
             }.sortedByDescending { it.timestamp }
         } catch (_: Throwable) {
-            emptyList()
+            // 备份损坏原文再放弃本次写入：直接覆盖等于把用户的编辑历史清零。
+            runCatching {
+                prefs.edit { putString("$key.corrupt.${System.currentTimeMillis()}", raw) }
+            }
+            null
         }
     }
+
+    private fun readFile(filePath: String): List<HistoryEntry> = readFileOrNull(filePath).orEmpty()
 
     private fun writeFile(filePath: String, entries: List<HistoryEntry>) {
         prefs.edit { putString(keyFor(filePath), entriesToJson(entries).toString()) }
@@ -216,32 +236,51 @@ object EditHistoryManager {
     private fun ensureMigrated() {
         if (!prefs.contains(KEY_LEGACY)) return
         val legacy = prefs.getString(KEY_LEGACY, null)
-        prefs.edit {
-            if (!legacy.isNullOrBlank()) {
-                try {
-                    val arr = JSONArray(legacy)
-                    val byFile = LinkedHashMap<String, MutableList<HistoryEntry>>()
-                    for (i in 0 until arr.length()) {
-                        val obj = arr.optJSONObject(i) ?: continue
-                        val path = obj.optString("filePath")
-                        if (path.isEmpty()) continue
-                        byFile.getOrPut(path) { mutableListOf() }
-                            .add(
-                                HistoryEntry(
-                                    obj.optString("content", ""),
-                                    obj.optLong("timestamp", 0L),
-                                    runCatching { HistorySource.valueOf(obj.optString("source", HistorySource.AUTO.name)) }
-                                        .getOrDefault(HistorySource.AUTO)
-                                )
-                            )
-                    }
-                    for ((path, list) in byFile) {
-                        val trimmed = list.sortedByDescending { it.timestamp }.take(MAX_HISTORY_PER_FILE)
-                        putString(keyFor(path), entriesToJson(trimmed).toString())
-                    }
-                } catch (_: Throwable) {
-                    // 旧数据损坏：直接丢弃，不阻断使用
+        if (legacy.isNullOrBlank()) {
+            prefs.edit { remove(KEY_LEGACY) }
+            return
+        }
+        // 先在**事务外**解析并构造结果：解析失败时 legacy 绝不能被删。
+        // 此前 remove(KEY_LEGACY) 写在 catch 之外的同一个 edit 块里，
+        // 于是「解析抛异常 → 注释说直接丢弃 → 实际照删」，用户升级后全部旧历史当场蒸发。
+        val byFile = LinkedHashMap<String, MutableList<HistoryEntry>>()
+        try {
+            val arr = JSONArray(legacy)
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val path = obj.optString("filePath")
+                if (path.isEmpty()) continue
+                val raw = obj.optString("content", "")
+                // 单条也套内容预算：旧版无此上限，20 条 × 数十万字会落成数 MB 的单 key，
+                // 下一次 addHistory 解析它时极大推高 OOM 概率（进而触发上面的清空路径）。
+                val over = raw.length > MAX_CONTENT_CHARS
+                byFile.getOrPut(path) { mutableListOf() }
+                    .add(
+                        HistoryEntry(
+                            if (over) raw.substring(raw.length - MAX_CONTENT_CHARS) else raw,
+                            obj.optLong("timestamp", 0L),
+                            runCatching { HistorySource.valueOf(obj.optString("source", HistorySource.AUTO.name)) }
+                                .getOrDefault(HistorySource.AUTO),
+                            over
+                        )
+                    )
+            }
+        } catch (_: Throwable) {
+            // 迁移失败：把 legacy 原样改名为未迁移键，**保留数据**以便人工恢复。
+            runCatching {
+                prefs.edit {
+                    putString(KEY_LEGACY_UNMIGRATED, legacy)
+                    remove(KEY_LEGACY)
                 }
+            }
+            return
+        }
+        prefs.edit {
+            for ((path, list) in byFile) {
+                // 迁移同样走体积预算，避免一次迁移写出超预算的单 key
+                val trimmed = trimToBudget(list.sortedByDescending { it.timestamp }
+                    .take(MAX_HISTORY_PER_FILE))
+                putString(keyFor(path), entriesToJson(trimmed).toString())
             }
             remove(KEY_LEGACY)
         }

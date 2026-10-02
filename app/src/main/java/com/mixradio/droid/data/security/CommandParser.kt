@@ -38,6 +38,12 @@ object CommandParser {
          */
         val redirects: List<String> = emptyList(),
         /**
+         * **无法静态判定的重定向目标**：含变量（`> $T/build.prop`）、进程替换
+         *（`bash <(curl …)`）等。「写到哪」在静态层不可知，必须上报而不是丢弃 ——
+         * 丢弃会让这条 root 写入对整套策略完全不可见。
+         */
+        val unresolvedRedirects: List<String> = emptyList(),
+        /**
          * 原子中残留未解析的变量/替换（`$x`、`${x}`）。解析器只展开 `$(...)`/反引号，
          * 变量无法静态求值 —— 策略层对「破坏性程序 + 含变量」的组合按 fail-closed 处理。
          */
@@ -314,6 +320,25 @@ object CommandParser {
     }
 
     /** 由 token 列表构造原子：剥前缀、识别 sh -c 递归、提取操作数/重定向。 */
+    /**
+     * 判断一个重定向目标串是「无法静态判定的文件路径」而非「fd 复制」。
+     *
+     * fd 复制（`2>&1`、`&>2`、`2>&-`）不是文件，忽略是安全的。
+     * 而含变量 / 进程替换 / 引号残留的目标是**未知写点**，必须上报 ——
+     * 否则「以 root 写到哪」这件事在策略层就彻底不可见。
+     */
+    private fun looksLikeRedirectTarget(target: String): Boolean {
+        if (target.isEmpty()) return false
+        // fd 复制：纯数字或 `&`，可带 `-`（关闭）
+        if (target.all { it.isDigit() || it == '&' || it == '-' }) return false
+        // 相对路径重定向（`> out.txt`、`> ./log`）：shell 解析为「当前工作目录 + 该名」，
+        // 写点本身是明确的，只是基准未知。按 cwd 落在未知位置不等于「写到系统分区」，
+        // 对它 fail-closed 会把 `echo hi > log.txt` 这类日常写法全部拦下。
+        // 真正的不可知是**目标里含变量 / 命令替换 / 进程替换** —— 值可以指向任意绝对路径。
+        if ('$' in target || '`' in target || target.startsWith("(") || target.contains("\$(")) return true
+        return false
+    }
+
     private fun buildAtom(tokens: MutableList<String>, segmentId: Int, nested: Boolean, atoms: ArrayList<Atom>, depth: Int) {
         val original = tokens.toList()
 
@@ -321,6 +346,8 @@ object CommandParser {
         //    仅识别**词首**为重定向操作符的 token（引号内的 > 已在 walk 中并入同一 token 且不以
         //    操作符开头，如 sed 's/a>b/c'），故不会误伤。
         val redirects = ArrayList<String>()
+        // 重定向目标无法静态判定（含变量 / 进程替换），见下方说明
+        val unresolvedRedirects = ArrayList<String>()
         val words = ArrayList<String>(original.size)
         var ri = 0
         while (ri < original.size) {
@@ -337,10 +364,23 @@ object CommandParser {
                 ri++          // 目标来自下一个 token，一并消费
             }
             // 仅保留「绝对路径」目标；`2>&1` 这类 fd 复制（纯数字/&N/-）不是文件，忽略
-            if (target.startsWith("/")) redirects.add(target)
+            if (target.startsWith("/")) {
+                redirects.add(target)
+            } else if (looksLikeRedirectTarget(target)) {
+                // 目标不是 fd 复制，却也不是可判定的绝对路径 —— **必须保留**。
+                //
+                // 此前这里既不记录、又把该 token 从 words 里消费掉，于是
+                //   T=/system; cat /dev/urandom > $T/build.prop
+                // 的重定向目标完全消失：`evaluateRedirects` 拿不到目标，
+                // `hasUnresolvedVar`（只扫 words）也看不到那个 `$` → 整条 Verdict.Allow。
+                // 结果是以 root 覆写 /system/build.prop，而守卫没有 cat 包装器，
+                // 两层防护同时失明。
+                // 进程替换 `bash <(curl …)` 同理：`rest` 是 "(curl"，被当成普通操作数丢掉。
+                unresolvedRedirects.add(target)
+            }
             ri++
         }
-        if (words.isEmpty()) return   // 整段只有重定向（如 `> f`），无命令可判定
+        if (words.isEmpty() && redirects.isEmpty() && unresolvedRedirects.isEmpty()) return
 
         // 1) 程序名 basename + 前缀剥离（busybox/toybox/env/nohup/timeout/stdbuf/sudo/magisk）
         //    路径类参数（PATH=/x、/usr/bin/env 等）含斜杠，要兼顾 basename 和赋值形态：
@@ -355,7 +395,10 @@ object CommandParser {
         val operands = args.filter { it.isNotEmpty() && !it.startsWith("-") }
 
         // 3) 残留未解析变量（$x / ${x}）：解析器只展开 $(...) 与反引号，变量无法静态求值
-        val hasUnresolvedVar = words.any { it.indexOf('$') >= 0 }
+        //    未解析的**重定向目标**同样要计入：那个 token 已从 words 里消费掉，
+        //    只扫 words 会漏掉 `> $T/build.prop`（详见下方 unresolvedRedirects）。
+        val hasUnresolvedVar = words.any { it.indexOf('$') >= 0 } ||
+            unresolvedRedirects.any { it.indexOf('$') >= 0 }
         // 程序名本身含变量：真实命令不可知（$IFS 拼命令等），必须 fail-closed
         val firstToken = original.first()
         val programUnresolved = firstToken.indexOf('$') >= 0
@@ -381,6 +424,7 @@ object CommandParser {
                 nested = nested,
                 segmentId = segmentId,
                 redirects = redirects,
+                unresolvedRedirects = unresolvedRedirects,
                 hasUnresolvedVar = hasUnresolvedVar,
                 programAmbiguous = programAmbiguous,
                 programUnresolved = programUnresolved

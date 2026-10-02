@@ -125,6 +125,15 @@ class SparseLineIndex(
                     }
                     pos += raw.size
                 }
+                // 扫描完整性校验：必须真的读到 total 字节。
+                // 读取中途失败（root 通道 su 被拒 / 授权弹窗未确认 / 60s 超时且丢弃了
+                // 已读部分）会让上面 `raw.isEmpty()` 直接 break，count 停在半路甚至为 0，
+                // 而 `getOrNull()` 不抛异常 → 依然返回 lines=1 的「有效」索引。
+                // 调用方随即 `chunkedLines = emptyList()` 把本来正确的首块行全丢掉，
+                // UI 变成 totalLines=1 的单行空白、loadError 为空、无任何提示：
+                // 整个 >32MB 文件「内容不可见」，用户以为文件是空的。
+                // 扫不全就返回 null，让调用方继续用首块行兜底。
+                if (pos < total) return@withContext null
                 // 行数口径必须与分段回退路径（TextEditorDialog 里 `split('\n')` + 末尾空串则 dropLast）
                 // 以及 TextCompare.countLines 一致：文件以换行结尾时**不多算一行**。
                 // 原实现无条件 `count + 1`，于是几乎所有 POSIX 文本文件（都以换行结尾）
@@ -176,7 +185,9 @@ class ChunkedDocument(
         cache[chunkIndex]?.let { return it }
         val off = chunkIndex.toLong() * chunkSize
         val b = reader.read(filePath, off, chunkSize.toLong())
-        if (b.isNotEmpty()) cache[chunkIndex] = b
+        // 只缓存**满块**。短读（末尾块，或文件被截断后读到的残块）一旦进缓存，
+        // 会在整个 LRU 生命周期内稳定返回过期内容，而上层无从察觉。
+        if (b.size == chunkSize) cache[chunkIndex] = b
         return b
     }
 }
@@ -223,6 +234,14 @@ class IndexedLineProvider(
         val skip = (startOffset - firstChunk.toLong() * CHUNK_SIZE).toInt()
         val out = ByteArrayOutputStream()
         val first = doc.getChunk(firstChunk)
+        // 索引失效守卫：startOffset 落在首块**之外**说明 `lineStartOffset` 返回了陈旧偏移
+        // （文件被外部截断/重写，索引与块缓存全程无 size/mtime 校验）。
+        // 此时首块读到的 `first.size` 全部 ≤ skip，若仍让游标从 firstChunk+1 起步，
+        // 首个稀疏点覆盖的 1024 行会整体前移 —— split('\n').getOrNull(i - floor)
+        // 取到的是文件里更靠后的另一行，而行号看起来仍然「正确」。
+        // 短读还会被 getChunk 当成完整块缓存，错位在整个 LRU 生命周期内不自愈。
+        // 正确做法是判索引失效并返回空，由上层重建，而不是跳过首块继续累积。
+        if (firstChunk >= 0 && first.size <= skip) return@withContext ""
         if (first.size > skip) out.write(first, skip, first.size - skip)
         // 增量换行计数：只扫新写入的块并累加
         var newlines = if (first.size > skip) countNewlines(first, skip, first.size) else 0

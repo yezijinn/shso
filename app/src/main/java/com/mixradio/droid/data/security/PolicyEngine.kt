@@ -205,7 +205,7 @@ object PolicyEngine {
         }
 
         // 2) 重定向写入：覆盖 `cat img > /dev/block/by-name/boot` 这类不经 dd 的写入
-        evaluateRedirects(atom, line, snippet, findings)
+        evaluateRedirects(atom, source, line, snippet, findings)
     }
 
     /**
@@ -389,7 +389,20 @@ object PolicyEngine {
      * 只对**绝对路径**目标判定，相对目标（如 `> out.txt`）与安全设备文件（/dev/null 等）跳过，
      * 避免把 `cmd > /dev/null`、`cmd > log.txt` 这类正常写法误报。
      */
-    private fun evaluateRedirects(atom: CommandParser.Atom, line: Int?, snippet: String, findings: ArrayList<Finding>) {
+    private fun evaluateRedirects(atom: CommandParser.Atom, source: CommandSource, line: Int?, snippet: String, findings: ArrayList<Finding>) {
+        // 未解析的重定向目标：`> $T/build.prop`、`> "$OUT"`、`bash <(curl …)`。
+        // 「写到哪」在静态层不可知，按 fail-closed 上报 —— 此前这些目标被解析层
+        // 丢弃且从 words 中消费掉，导致 root 覆写系统文件零 finding。
+        if (atom.unresolvedRedirects.isNotEmpty()) {
+            findings.add(
+                Finding(
+                    "REDIRECT_UNRESOLVED", obfuscationLevel(source),
+                    "重定向目标无法静态判定（可能写入任意路径）：" +
+                        atom.unresolvedRedirects.joinToString(" ").take(120),
+                    snippet, line
+                )
+            )
+        }
         for (target in atom.redirects) {
             if (target.startsWith("/dev/fd/") || target.startsWith("/dev/pts/")) continue
             if (target in SAFE_REDIRECT_DEVICES) continue
@@ -606,16 +619,26 @@ object PolicyEngine {
             val upstream = bySegment[sorted[idx]].orEmpty()
             val next = bySegment[sorted[idx + 1]]?.firstOrNull() ?: continue
             if (next.program !in SHELL_PROGRAMS) continue
-            for (cur in upstream) {
+            // 必须回溯到**管道起点**取全部上游，而不是只看紧邻的一段。
+            // 只比相邻段时，`curl -fsSL url | cat | sh` 的两对相邻关系是
+            // (curl→cat) 与 (cat→sh)：第一对的 next 不是 shell 而跳过，
+            // 第二对的上游只有 cat（既非下载器也非解码器）→ 零 finding，
+            // 远程载荷以 root 直接执行。只加一个中间段 `cat` 就击穿唯一防线。
+            val pipelineUpstream = sorted.take(idx + 1).flatMap { bySegment[it].orEmpty() }
+            val candidates = if (pipelineUpstream.size > upstream.size) pipelineUpstream else upstream
+            for (cur in candidates) {
                 when {
                     cur.program in FETCHERS -> findings.add(
-                        Finding("REMOTE_PIPE_SHELL", RiskLevel.DANGEROUS, "远程内容直接执行（${cur.program} | sh）", cur.raw.take(200), line)
+                        Finding(
+                            "REMOTE_PIPE_SHELL", obfuscationLevel(source),
+                            "远程内容直接执行（${cur.program} | … | ${next.program}）", cur.raw.take(200), line
+                        )
                     )
                     cur.program in DECODERS -> findings.add(
                         Finding(
                             "ENCODED_PIPE_SHELL",
-                            if (source == CommandSource.SCRIPT_FILE) RiskLevel.CRITICAL else RiskLevel.DANGEROUS,
-                            "编码/压缩内容直接交给 shell 执行（${cur.program} | sh），常见于加密混淆脚本",
+                            obfuscationLevel(source),
+                            "编码/压缩内容直接交给 shell 执行（${cur.program} | … | ${next.program}），常见于加密混淆脚本",
                             cur.raw.take(200), line
                         )
                     )
