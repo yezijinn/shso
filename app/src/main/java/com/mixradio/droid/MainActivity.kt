@@ -145,14 +145,29 @@ class MainActivity : ComponentActivity() {
      * 而 Google Photos / Chrome 这类只设 `clipData`、完全不设 `EXTRA_STREAM`。
      */
     private fun resolveIncomingUri(intent: Intent): String? {
-        intent.dataString?.takeIf { it.isNotEmpty() }?.let { return it }
-        @Suppress("DEPRECATION")
-        streamExtraToUri(intent.extras?.get(Intent.EXTRA_STREAM))?.let { return it }
-        // clipData 可能含多项（SEND_MULTIPLE），当前只处理第一项
-        intent.clipData?.let { clip ->
-            if (clip.itemCount > 0) return clip.getItemAt(0).uri?.toString()
-        }
-        return null
+        // 整段包 runCatching：这是一条**对外**的入口，发送方完全不可信。
+        // 任何一步抛出都不该让 shso 崩在 onCreate/onNewIntent 里
+        // （singleTask 下每次外部唤起都崩，表现为「分享到 shso 直接闪退」）。
+        return runCatching {
+            intent.dataString?.takeIf { it.isNotEmpty() }?.let { return@runCatching it }
+            // 按类型取，而不是 `extras.get(key)`：后者会先 unparcel 整个 Bundle，
+            // 发送方塞入只有它自己 APK 才有定义的自定义 Parcelable 时，
+            // 本进程 Class.forName 失败 → BadParcelableException。
+            // 类型化取值为 null 而不是抛异常，正是这里要的语义。
+            @Suppress("DEPRECATION")
+            val single = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+            streamExtraToUri(single)?.let { return@runCatching it }
+            // 兼容把 stream 塞成字符串的发送方
+            @Suppress("DEPRECATION")
+            intent.getStringExtra(Intent.EXTRA_STREAM)
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { return@runCatching it }
+            // clipData 可能含多项（SEND_MULTIPLE），当前只处理第一项
+            intent.clipData?.let { clip ->
+                if (clip.itemCount > 0) return@runCatching clip.getItemAt(0).uri?.toString()
+            }
+            null
+        }.getOrNull()
     }
 
     private companion object {

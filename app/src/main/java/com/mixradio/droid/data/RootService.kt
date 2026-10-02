@@ -168,7 +168,35 @@ object RootService {
         terminalSlotOwner.compareAndSet(token, 0L)
     }
 
+    /**
+     * 本轮是否仍持有「执行权」。
+     *
+     * 不能只比 `executionJob`：终端一次性命令**从不写** executionJob，
+     * 该判据对它是恒真的（两端同为 null，或同为上一次脚本的已完成 Job）。
+     * 恒真的后果是：结束/重启一条命令时，其收尾会把**期间新启动的那条**的状态清掉、
+     * 停掉它的批量发布循环 —— 进程还在跑，顶栏却显示「待命中」，
+     * 「中断 / 结束进程」被禁用，用户失去唯一出口。
+     *
+     * 判据 = 「脚本任务看 executionJob」或「终端命令看槽位令牌」任一成立。
+     * 槽位令牌在命令结束/被拦截时于 finally 归还，startExecution 起新任务时置 0，
+     * 因此「新任务已接管」时两者皆不成立。
+     */
+    private fun stillOwnsExecution(targetJob: Job?): Boolean =
+        (targetJob != null && executionJob === targetJob) ||
+            (targetJob == null && terminalSlotOwner.get() != 0L)
+
     private val nextSlotToken = AtomicLong(0)
+
+    /** 交互态 stdin 写入互斥：同一进程可能同时有多个 sendInput 协程（连点两次「发送」）。 */
+    private val interactiveWriteLock = Any()
+
+    /**
+     * 当前生效的批量发布循环（脚本任务或终端命令之一）。
+     * [killCurrentProcess] / [restartTerminal] 的收尾要按它停止循环，
+     * 否则旧任务的收尾会停掉期间新启动那条命令的循环。
+     */
+    @Volatile
+    private var activeFlushLoop: Job? = null
 
     /**
      * 终端一次性命令的终止兜底上限。
@@ -364,6 +392,7 @@ object RootService {
         // 复用任务用的批量发布通道：它按 isTaskRunning 存活，命令结束即自行退出并 flush 残留。
         // 记下归属令牌：命令可重叠，收尾时只能停自己那个循环。
         val flushLoop = HyperCore.startBatchFlushLoop(scope, { isTaskRunning }) { appendOutputDirect(it) }
+        activeFlushLoop = flushLoop
         // 长命令保活（与脚本任务同源）：切到后台后不被 ROM 立刻回收，通知里也提供「结束进程」出口。
         // 延迟 [KEEPALIVE_DELAY_MS] 再拉起，避免 `ls` / `echo` 这类秒回命令闪一下通知。
         scope.launch {
@@ -676,12 +705,15 @@ object RootService {
         val fileFlushLoop = HyperCore.startBatchFlushLoop(scope, { isTaskRunning }) { flushedText ->
             appendOutputDirect(flushedText)
         }
+        activeFlushLoop = fileFlushLoop
 
         // 启动新任务即作废「终端一次性命令」的代际：否则那条命令稍后退出时，
         // 会按自己的代际判断把本任务的状态误清成「待命中」。
         terminalCommandGeneration.incrementAndGet()
         executionJob?.cancel()
         executionJob = scope.launch(Dispatchers.IO) {
+            // 本轮的身份：pgid 回填与状态清理都必须按它自检，否则会写到别人的槽位。
+            val myJob = coroutineContext[Job]
             var process: Process? = null
             var writer: OutputStreamWriter? = null
             try {
@@ -727,7 +759,15 @@ object RootService {
 
                 // 异步取回本次执行的进程组 id（不阻塞输出读取）。任务结束后刻意保留，
                 // 供「结束进程」兜底回收被中断后逃逸到 init 下的子孙进程。
-                scope.launch { runPgid = awaitRunPgid() }
+                //
+                // 必须按本轮 Job 自检：这个协程挂在页面级 scope 上，**不是** executionJob 的子任务，
+                // 下一轮 `executionJob?.cancel()` 收不到它。轮询最长 1.5s，期间若新任务已起并
+                // 写入了自己的 pgid，此处的迟到结果（尤其是超时归零）会把新任务的进程组冲掉，
+                // 它的「中断/结束进程」退化成只杀 su，真正的 `sh -c …` 以 root 继续跑。
+                scope.launch {
+                    val pgid = awaitRunPgid()
+                    if (executionJob === myJob) runPgid = pgid
+                }
 
                 process.inputStream.use { stream ->
                     InputStreamReader(stream, Charsets.UTF_8).use { reader ->
@@ -847,7 +887,12 @@ object RootService {
         }
         scope.launch(Dispatchers.IO) {
             try {
-                if (isTaskRunning && processWriter != null) {                    // 交互态：硬规则拦截（fail on critical），其余放行 + 审计
+                // 交互态的 writer **一次性取到局部变量**：
+                // 两次独立读全局 processWriter 会在任务收尾（把它置 null）落在
+                // write 与 flush 之间时丢掉 flush，数据留在 StreamEncoder 的 8KB 缓冲里
+                // 随 close 丢弃 —— 而输入早已回显到终端，脚本与用户都以为发出去了。
+                val w = processWriter
+                if (isTaskRunning && w != null) {                    // 交互态：硬规则拦截（fail on critical），其余放行 + 审计
                     if (!confirmed) {
                         val hard = RootCommandGateway.checkInteractiveHardRules(text)
                         if (hard != null) {
@@ -864,8 +909,11 @@ object RootService {
                         CommandSource.USER_TERMINAL, AuditVerdict.ALLOW, null, RiskLevel.SAFE,
                         "[交互态] $text"
                     )
-                    processWriter?.write(text + "\n")
-                    processWriter?.flush()
+                    // 交互写入也走互斥：StreamEncoder 非线程安全，连点两次「发送」会并发写同一流。
+                    synchronized(interactiveWriteLock) {
+                        w.write(text + "\n")
+                        w.flush()
+                    }
                 } else if (text.isNotEmpty()) {
                     // 槽位已在派发前同步占用；若被别人抢走（不应发生，兜底）立即退出。
                     if (terminalSlotOwner.get() != slotToken) {
@@ -925,7 +973,7 @@ object RootService {
     }
 
     fun killCurrentProcess() {
-        // 同步捕获本轮任务实体（Job/pid/进程组/进程句柄/任务名）：
+        // 同步捕获本轮任务实体（Job/pid/进程组/进程句柄/任务名/发布循环）：
         // 之后主线程若启动新任务（覆盖启动），这些仍是旧实体，kill 只作用于它们，绝不误杀新任务。
         val targetJob = executionJob
         val targetPid = processPid
@@ -933,6 +981,8 @@ object RootService {
         val targetProcess = activeProcess
         val targetName = currentTaskName
         val targetPath = currentTaskPath
+        val targetFlushLoop = activeFlushLoop
+        val targetSlot = terminalSlotOwner.get()
         // 只要还留有执行句柄、进程组记录或任务名就允许回收：
         // 中断后 UI 已回到待命中、但子孙进程仍可能在跑。
         if (!isTaskRunning && targetProcess == null && targetPgid <= 1 && targetName == null) return
@@ -959,9 +1009,9 @@ object RootService {
                 }
                 targetProcess?.destroyForcibly()
                 forceCloseProcess(targetProcess)
-                // 本轮仍由本 kill 接管（执行 Job 未被替换）才撤销全局句柄；
+                // 本轮仍由本 kill 接管时才撤销全局句柄；
                 // 若期间新任务已启动，句柄属于新任务，由新任务线条负责。
-                if (executionJob === targetJob) {
+                if (stillOwnsExecution(targetJob)) {
                     activeProcess = null
                     processWriter = null
                 }
@@ -984,9 +1034,17 @@ object RootService {
                     // 仅当本轮仍是当前执行协程时才 flush/清理/写文案：
                     // 若期间新任务已启动（executionJob 已替换），旧任务的残留日志不应混入新任务输出，
                     // 交由 executeFile 的 clearBatchQueue 与新的 flush loop 自行处理。
-                    if (executionJob === targetJob) {
+                    //
+                    // 必须走统一判据而不是 `executionJob === targetJob`：
+                    // 终端一次性命令**从不写** executionJob，于是该判据对它是恒真的。
+                    // 时序：脚本任务 A 在跑 → 点「结束进程」（cancel 是 body 第一句，A 的 finally
+                    // 立刻清 isTaskRunning，终端即刻空闲）→ 300~600ms 内（两次 su 往返）
+                    // 启动终端命令 B → A 的 kill 收尾落到这里：会把 **B** 的状态清掉、
+                    // 停掉 B 的发布循环，`isTaskRunning=false` 让顶栏显示「待命中」、
+                    // 「中断/结束进程」被禁用 —— B 还在跑，但用户失去了唯一的出口。
+                    if (stillOwnsExecution(targetJob)) {
                         // 停发布循环并等积压刷完，再写「已结束」文案，保证日志顺序
-                        HyperCore.stopBatchFlushLoop()
+                        HyperCore.stopBatchFlushLoop(targetFlushLoop)
                         HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
                         isTaskRunning = false
                         currentTaskName = null
@@ -1089,6 +1147,26 @@ object RootService {
         val targetPgid = runPgid
         val targetProcess = activeProcess
 
+        // 无任何活动实体时**只复位横幅，不发信号**。
+        // `runPgid` 在任务收尾时被刻意保留（供「中断后子孙进程仍在」的场景回收），
+        // 因此跑完任意命令后它仍非零；而那个 pid 早已被内核回收给别的进程，
+        // `buildProcessGroupKillCommand` 只校验「是组长、且不等于本应用 pgrp」，
+        // pid 复用后照样通过 → 以 root 整组 SIGKILL 一个完全无关的进程组。
+        val hasLiveEntity = isTaskRunning || targetProcess != null || targetPid > 0
+        if (!hasLiveEntity) {
+            runPgid = 0
+            scope.launch(Dispatchers.Main) {
+                isTaskRunning = false
+                currentTaskName = null
+                currentTaskPath = null
+                taskStartTime = 0L
+                lastExitCode = null
+                processPid = 0
+                refreshPristineBanner("工作中")
+            }
+            return
+        }
+
         scope.launch(Dispatchers.IO) {
             try {
                 targetJob?.cancel()
@@ -1104,7 +1182,7 @@ object RootService {
                 forceCloseProcess(targetProcess)
                 // 旧任务 finally 已通过代际判断清理状态；若期间新任务启动，
                 // 不能再动全局句柄（属于新任务）
-                if (executionJob === targetJob) {
+                if (stillOwnsExecution(targetJob)) {
                     activeProcess = null
                     processWriter = null
                 }
@@ -1116,16 +1194,16 @@ object RootService {
             } finally {
                 withContext(Dispatchers.Main) {
                     // 仅当本轮仍是当前执行协程时才清理状态并恢复横幅。
-                    // 不可附加 `|| targetJob == null`：若期间已有新任务启动（executionJob 非 null），
-                    // 该条件会成立并把新任务的状态误清成「待命中」。
-                    // 无任务时 targetJob 与 executionJob 同为 null，此判断本就成立，无需额外兜底。
-                    if (executionJob === targetJob) {
+                    // 走 stillOwnsExecution 而非 `executionJob === targetJob`：后者对终端命令恒真，
+                    // 会在「重启一条命令」时把期间新启动的命令状态误清成「待命中」并覆盖其横幅。
+                    if (stillOwnsExecution(targetJob)) {
                         isTaskRunning = false
                         currentTaskName = null
                         currentTaskPath = null
                         taskStartTime = 0L
                         lastExitCode = null
                         processPid = 0
+                        runPgid = 0
                         refreshPristineBanner("工作中")
                     }
                 }

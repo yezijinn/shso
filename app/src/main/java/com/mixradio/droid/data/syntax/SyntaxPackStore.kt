@@ -73,17 +73,22 @@ object SyntaxPackStore {
         if (!f.isFile) return emptyList()
         return runCatching {
             f.readLines().filter { it.isNotBlank() }.mapNotNull { line ->
-                val c = line.split('\t')
+                val c = line.split('\t').map { unescapeField(it) }
                 // 8 列 = 当前格式（含 filenames）；7 列 = 早期版本写入（无 filenames），按旧布局解析以兼容升级。
-                when {
-                    c.size >= 8 -> SyntaxPack(
+                // **必须精确等于** 8 或 7：原先写 `>= 8`，而 save() 未转义字段，
+                // 一个含制表符的 exts/source 会把该行撑成 9 列并整行右移 ——
+                // filenames 收到 exts 的第二段、sha256 收到 filenames、sizeBytes 变 0、
+                // `enabled = c[7]=="1"` 而 c[7] 是 13 位时间戳 → 该语法包**静默变成停用**，
+                // 界面毫无报错。多列整行丢弃，宁可少一个包也不要解析出字段全错的幽灵条目。
+                when (c.size) {
+                    8 -> SyntaxPack(
                         id = c[0], exts = splitKeys(c[1]).ifEmpty { listOf(c[0]) }, filenames = splitKeys(c[2]),
                         sha256 = c[3], source = c[4],
                         sizeBytes = c[5].toLongOrNull() ?: 0L,
                         addedAtMs = c[6].toLongOrNull() ?: 0L,
                         enabled = c[7] == "1"
                     )
-                    c.size == 7 -> SyntaxPack(
+                    7 -> SyntaxPack(
                         id = c[0], exts = splitKeys(c[1]).ifEmpty { listOf(c[0]) }, filenames = emptyList(),
                         sha256 = c[2], source = c[3],
                         sizeBytes = c[4].toLongOrNull() ?: 0L,
@@ -96,8 +101,40 @@ object SyntaxPackStore {
         }.getOrDefault(emptyList())
     }
 
+    /**
+     * TSV 字段转义：制表符/换行/回车是列与行的分隔符，直接落盘即错列。
+     * ext4 允许文件名含制表符（`source = "local:<path>"` 会带进来），
+     * `index.json` 里的扩展名数组同样可能含制表符。
+     * 纯函数，便于 JVM 单测。
+     */
+    internal fun escapeField(raw: String): String = raw
+        .replace("\\", "\\\\")
+        .replace("\t", "\\t")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+
+    /** [escapeField] 的逆运算。 */
+    internal fun unescapeField(raw: String): String {
+        if (!raw.contains('\\')) return raw
+        val sb = StringBuilder(raw.length)
+        var i = 0
+        while (i < raw.length) {
+            val c = raw[i]
+            if (c == '\\' && i + 1 < raw.length) {
+                when (raw[i + 1]) {
+                    't' -> { sb.append('\t'); i += 2; continue }
+                    'n' -> { sb.append('\n'); i += 2; continue }
+                    'r' -> { sb.append('\r'); i += 2; continue }
+                    '\\' -> { sb.append('\\'); i += 2; continue }
+                }
+            }
+            sb.append(c); i++
+        }
+        return sb.toString()
+    }
+
     private fun splitKeys(raw: String): List<String> =
-        raw.split(',').map { it.trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }
+        raw.split(',').map { unescapeField(it.trim()).lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }
 
     private fun save(ctx: Context, packs: List<SyntaxPack>) {
         val f = indexFile(ctx)
@@ -113,7 +150,7 @@ object SyntaxPackStore {
                     p.sizeBytes.toString(),
                     p.addedAtMs.toString(),
                     if (p.enabled) "1" else "0"
-                ).joinToString("\t")
+                ).joinToString("\t") { escapeField(it) }
             }
         )
     }
@@ -260,8 +297,29 @@ object SyntaxPackStore {
      * 整体导入语法包 zip：`index.json`（可选，声明每个语法的扩展名）+ 语法 JSON。
      * 任一语法校验失败即整体拒绝（已写入的文件会回滚删除），保证不会出现"半套"语法。
      */
-    private fun importZip(ctx: Context, bytes: ByteArray, source: String): Int {
-        val indexExts = HashMap<String, List<String>>()
+    /**
+     * 读取当前 entry 的内容，累计超过 [remaining] 立即抛错。
+     *
+     * 与 [download] 的边读边限流同口径：先按 `remaining` 预分配一个**有界**缓冲，
+     * 一旦读满即判定超限，绝不为了「读完再判」而无限增长。
+     * 纯函数（不依赖 Context），便于 JVM 单测。
+     */
+    internal fun readEntryBounded(zin: java.io.InputStream, remaining: Int): ByteArray {
+        require(remaining >= 0) { "压缩包内容超过体积上限 ${MAX_ZIP_BYTES / 1024}KB" }
+        val buf = java.io.ByteArrayOutputStream(minOf(remaining.coerceAtLeast(0), 64 * 1024))
+        val chunk = ByteArray(16 * 1024)
+        while (true) {
+            val n = zin.read(chunk)
+            if (n < 0) break
+            require(buf.size() + n <= remaining) {
+                "压缩包内容超过体积上限 ${MAX_ZIP_BYTES / 1024}KB"
+            }
+            buf.write(chunk, 0, n)
+        }
+        return buf.toByteArray()
+    }
+
+    private fun importZip(ctx: Context, bytes: ByteArray, source: String): Int {        val indexExts = HashMap<String, List<String>>()
         val indexNames = HashMap<String, List<String>>()
         val grammars = LinkedHashMap<String, ByteArray>()
         ZipInputStream(ByteArrayInputStream(bytes)).use { zin ->
@@ -270,9 +328,14 @@ object SyntaxPackStore {
             while (entry != null) {
                 if (!entry.isDirectory) {
                     val name = entry.name.substringAfterLast('/')
-                    val data = zin.readBytes()
+                    // 必须**边读边限流**，不能 `zin.readBytes()` 之后再判总量。
+                    // 单个 entry 可以声明数 GB 的未压缩大小而压缩后仅数 MB（zip 炸弹），
+                    // `readBytes()` 会先把整个 entry 物化进 ByteArrayOutputStream
+                    // （含 2~3 倍扩容余量）才轮到第 275 行的 require ——
+                    // 预算检查形同虚设，堆被打爆后进程不可恢复。
+                    // 这里的 readEntryBounded 与 download() 的边读边限流同口径。
+                    val data = readEntryBounded(zin, MAX_ZIP_BYTES - total)
                     total += data.size
-                    require(total <= MAX_ZIP_BYTES) { "压缩包内容超过体积上限 ${MAX_ZIP_BYTES / 1024}KB" }
                     when {
                         name.equals(ZIP_INDEX, ignoreCase = true) -> {
                             val arr = JSONArray(String(data, Charsets.UTF_8))

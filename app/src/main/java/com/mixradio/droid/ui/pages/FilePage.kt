@@ -125,9 +125,25 @@ fun FilePage(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    /**
+     * 批量删除的执行 scope：**不随组合销毁**。
+     *
+     * 用页面级 `rememberCoroutineScope()` 时，旋屏/Activity 重建会取消正在跑的循环，
+     * 而 `RootFileManager.delete` 每一项各自 `withContext(IO)`，取消只在**下一项入口**
+     * 才被观察 —— 于是删到第 k 个即静默停止，`feedbackMessage` 与 `refresh()` 永不执行，
+     * 列表仍显示已删文件，用户既不知道删到哪、也不知道重跑会把已删项计为失败。
+     */
+    val batchScope = rememberCoroutineScope()
+    // 批量任务开始时冻结的目录：执行期间用户切目录/被外部唤起改写目录，
+    // 删除仍会继续落在旧目录，而收尾 refresh 的是新目录 —— 用户全程看不见删了什么。
+    val batchDirGuard = remember { arrayOf<String?>(null) }
+
     // 外部唤起（「打开方式 / 分享」）待处理目标：由 ExternalOpenHub 投递。
     // 直接订阅单槽位，定位完成后由 Hub 清空；配置变更不会重投（MainActivity 侧已守卫）。
     val externalTarget = ExternalOpenHub.pending
+
+    // 本次目录跳转是否由外部 Intent 驱动：refresh() 据此决定要不要写「上次浏览目录」。
+    val pendingExternalDirectory = remember { booleanArrayOf(false) }
 
     // 记忆操作路径：开启时沿用进程内记住的上次目录（无效则回退初始目录），关闭时恒为初始目录
     val initialDirectory = if (appSettings.rememberDirectory) {
@@ -177,6 +193,10 @@ fun FilePage(
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameInput by remember { mutableStateOf("") }
     var showDeleteDialog by remember { mutableStateOf(false) }
+    /** 批量删除待确认的路径快照：确认框打开后不再随选择集变化。 */
+    var batchDeletePaths by remember { mutableStateOf<List<String>>(emptyList()) }
+    /** 批量任务进行中：屏蔽并发触发与目录切换（见 batchScope 的说明）。 */
+    var isBatchRunning by remember { mutableStateOf(false) }
 
     var showJumpPathDialog by remember { mutableStateOf(false) }
     var jumpPathInput by remember { mutableStateOf("") }
@@ -249,6 +269,22 @@ fun FilePage(
         }
     }
 
+    /**
+     * 统一切目录入口：批量破坏性任务进行中时**拒绝**切换。
+     *
+     * 批量删除的循环跑在 `batchScope`（不被旋屏取消），期间用户仍可点顶栏快捷键、
+     * 点文件夹进入、甚至被 singleTask 的外部 Intent 改写 `currentDirectory`。
+     * 删除会继续落在**旧目录**，而收尾 `refresh()` 刷的是新目录 ——
+     * Toast 浮在无关列表上，旧目录删了哪些文件用户全程不可见、不可中断、不可撤销。
+     */
+    fun navigateTo(dir: String) {
+        if (isBatchRunning) {
+            feedbackMessage = "批量操作进行中，暂不能切换目录"
+            return
+        }
+        currentDirectory = dir
+    }
+
     fun refresh(showToast: Boolean = false) {
         // 记录本次要加载的目录。切目录时旧协程不会被自动取消（它挂在页面级 scope 上，
         // 不是 LaunchedEffect(currentDirectory) 的子协程），若不校验就会用**旧目录的结果覆盖新目录**：
@@ -282,8 +318,14 @@ fun FilePage(
                     // 记忆的目录已失效（被删除/不可达）：随后回退初始目录
                     directoryLoadFailed = true
                 } else {
-                    // 目录加载成功（含合法空目录）：开启记忆时记录为「上次浏览目录」
-                    if (appSettings.rememberDirectory) {
+                    // 目录加载成功（含合法空目录）：开启记忆时记录为「上次浏览目录」。
+                    // 外部 Intent 驱动的跳转**不得**落盘：否则任意应用发一条 Intent
+                    // 就能把「上次浏览目录」永久改成它指定的任意路径（进程级持久状态篡改，
+                    // 且下次冷启动直接落在那里）。
+                    // 标志在本次落盘判定后清空：用户后续的主动导航应恢复正常记忆行为。
+                    val skipPersist = pendingExternalDirectory[0]
+                    if (skipPersist) pendingExternalDirectory[0] = false
+                    if (appSettings.rememberDirectory && !skipPersist) {
                         RootFileManager.rememberedDirectory = requestedDir
                     }
                 }
@@ -500,6 +542,13 @@ fun FilePage(
         selectedItem = null
         multiSelectMode = false
         selectedPaths.clear()
+        if (isBatchRunning) {
+            // 批量破坏性任务进行中不接受目录改写：删除循环继续落在旧目录，
+            // 而收尾刷新的是新目录，用户全程看不见删了什么。
+            feedbackMessage = "批量操作进行中，已忽略本次外部定位"
+            return@LaunchedEffect
+        }
+        pendingExternalDirectory[0] = true   // 本次跳转不落盘为「上次浏览目录」
         currentDirectory = parent
         // OPEN 模式按类型立即分派。**不能等目标出现在目录列表里**：
         // 隐藏文件（点开头）默认被列表过滤，收件箱副本也可能尚未列出，
@@ -620,21 +669,21 @@ fun FilePage(
                 FileShortcutButton(
                     label = "data",
                     selected = currentDirectory == "/",
-                    onClick = { currentDirectory = "/" },
+                    onClick = { navigateTo("/") },
                     modifier = Modifier.weight(1f)
                 )
 
                 FileShortcutButton(
                     label = INTERNAL_STORAGE_LABEL,
                     selected = currentDirectory == INTERNAL_STORAGE_PATH,
-                    onClick = { currentDirectory = INTERNAL_STORAGE_PATH },
+                    onClick = { navigateTo(INTERNAL_STORAGE_PATH) },
                     modifier = Modifier.weight(1f)
                 )
 
                 FileShortcutButton(
                     label = "shso",
                     selected = currentDirectory == RootFileManager.DEFAULT_SHSO_DIR,
-                    onClick = { currentDirectory = RootFileManager.DEFAULT_SHSO_DIR },
+                    onClick = { navigateTo(RootFileManager.DEFAULT_SHSO_DIR) },
                     modifier = Modifier.weight(1f)
                 )
 
@@ -904,7 +953,7 @@ fun FilePage(
                                                 if (isHighlighted) highlightPath = null
                                                 if (item.isDirectory) {
                                                     // 文件夹：非多选模式单击进入；多选模式文件夹不参与选择
-                                                    if (!multiSelectMode) currentDirectory = item.path
+                                                    if (!multiSelectMode) navigateTo(item.path)
                                                 } else {
                                                     if (multiSelectMode) {
                                                         // 多选模式：单击文件 = 切换选中状态
@@ -1505,13 +1554,19 @@ fun FilePage(
         }
     }
 
-    if (showDeleteDialog && deleteTargetItem != null) {
-        val item = deleteTargetItem!!
+    if (showDeleteDialog && (deleteTargetItem != null || batchDeletePaths.isNotEmpty())) {
+        val single = deleteTargetItem
+        val batchPaths = batchDeletePaths
+        val isBatch = batchPaths.isNotEmpty()
         AuroraWindowDialog(
             show = true,
-            title = "确认删除",
-            summary = "您确定要删除 \"${item.name}\" 吗？此操作无法撤销。",
-            onDismissRequest = { showDeleteDialog = false }
+            title = if (isBatch) "确认批量删除" else "确认删除",
+            summary = if (isBatch) {
+                "确定要删除选中的 ${batchPaths.size} 个项目吗？此操作无法撤销。"
+            } else {
+                "您确定要删除 \"${single?.name}\" 吗？此操作无法撤销。"
+            },
+            onDismissRequest = { showDeleteDialog = false; batchDeletePaths = emptyList() }
         ) {
             Row(
                 modifier = Modifier
@@ -1520,7 +1575,7 @@ fun FilePage(
                 horizontalArrangement = Arrangement.End
             ) {
                 Button(
-                    onClick = { showDeleteDialog = false },
+                    onClick = { showDeleteDialog = false; batchDeletePaths = emptyList() },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = AuroraTokens.SurfaceHover,
                         contentColor = AuroraTokens.Text
@@ -1532,10 +1587,42 @@ fun FilePage(
                 Button(
                     onClick = {
                         showDeleteDialog = false
-                        scope.launch {
-                            val (success, message) = RootFileManager.delete(item.path)
-                            feedbackMessage = if (success) "删除成功" else "删除失败: $message"
-                            refresh()
+                        batchDeletePaths = emptyList()
+                        deleteTargetItem = null
+                        if (isBatch) {
+                            isBatchRunning = true
+                            batchDirGuard[0] = currentDirectory
+                            batchScope.launch {
+                                var ok = 0
+                                val failures = ArrayList<String>()
+                                try {
+                                    batchPaths.forEach { p ->
+                                        val (s, reason) = RootFileManager.delete(p)
+                                        if (s) ok++ else failures += "${File(p).name}（$reason）"
+                                    }
+                                } finally {
+                                    withContext(Dispatchers.Main) {
+                                        isBatchRunning = false
+                                        batchDirGuard[0] = null
+                                        feedbackMessage = if (failures.isEmpty()) {
+                                            "已删除 $ok 个项目"
+                                        } else {
+                                            "删除完成：$ok 成功 / ${failures.size} 失败：" +
+                                                failures.take(2).joinToString("；")
+                                        }
+                                        selectedPaths.clear()
+                                        multiSelectMode = false
+                                        refresh()
+                                    }
+                                }
+                            }
+                        } else if (single != null) {
+                            val target = single
+                            scope.launch {
+                                val (success, message) = RootFileManager.delete(target.path)
+                                feedbackMessage = if (success) "删除成功" else "删除失败: $message"
+                                refresh()
+                            }
                         }
                     },
                     colors = ButtonDefaults.buttonColors(
@@ -1885,18 +1972,11 @@ fun FilePage(
             ) {
                 ActionTextRow("删除", AuroraTokens.Error) {
                     showBatchDialog = false
-                    scope.launch {
-                        var ok = 0
-                        var fail = 0
-                        selectedPaths.toList().forEach { p ->
-                            val (s) = RootFileManager.delete(p)
-                            if (s) ok++ else fail++
-                        }
-                        feedbackMessage = if (fail == 0) "已删除 $ok 个文件" else "删除完成：$ok 成功 / $fail 失败"
-                        selectedPaths.clear()
-                        multiSelectMode = false
-                        refresh()
-                    }
+                    // 批量删除必须经确认：单文件路径有「此操作无法撤销」确认框，
+                    // 批量却一点即逐个 `rm -rf`，误触（多选时手指落点偏移是常事）
+                    // 就是不可逆的批量丢失，且无回收站、失败项无明细。
+                    batchDeletePaths = selectedPaths.toList()
+                    showDeleteDialog = true
                 }
 
                 ActionTextRow("原地拷贝", AuroraTokens.Text) {
@@ -1981,14 +2061,26 @@ fun FilePage(
                         onClick = {
                             val base = batchRenameInput.trim()
                             showBatchRenameDialog = false
+                            // 必须按 rename 的真实返回值统计：原实现丢弃返回值，
+                            // 无论成功与否都提示「已批量重命名 N 个文件」——
+                            // 失败项被静默吞掉，用户以为改完了。
+                            val targets = selectedPaths.toList()
                             scope.launch {
-                                selectedPaths.toList().forEachIndexed { i, p ->
+                                var ok = 0
+                                val failures = ArrayList<String>()
+                                targets.forEachIndexed { i, p ->
                                     val file = File(p)
                                     val ext = file.extension
                                     val suffix = if (ext.isNotEmpty()) ".$ext" else ""
-                                    RootFileManager.rename(p, "${base}_$i$suffix")
+                                    val (success, reason) =
+                                        RootFileManager.rename(p, "${base}_$i$suffix")
+                                    if (success) ok++ else failures += "${file.name}（$reason）"
                                 }
-                                feedbackMessage = "已批量重命名 ${selectedPaths.size} 个文件"
+                                feedbackMessage = if (failures.isEmpty()) {
+                                    "已批量重命名 $ok 个文件"
+                                } else {
+                                    "已重命名 $ok 个，失败 ${failures.size} 个：${failures.take(2).joinToString("；")}"
+                                }
                                 selectedPaths.clear()
                                 multiSelectMode = false
                                 refresh()

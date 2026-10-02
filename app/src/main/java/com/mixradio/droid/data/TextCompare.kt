@@ -369,10 +369,22 @@ object TextCompare {
     private fun writeResult(path: String, charset: Charset, sb: StringBuilder) {
         val bytes = sb.toString().toByteArray(charset)
         if (RootService.isRootGranted == true) {
-            val tmp = "/data/local/tmp/_shso_diff_${System.currentTimeMillis()}.tmp"
+            // 临时名必须**不可预测**：`/data/local/tmp` 是 1777，任意应用都能在里面建文件。
+            // 原用 `System.currentTimeMillis()`，攻击者可读 `/proc/uptime` 推出秒级窗口后
+            // 批量预置同名**悬空软链**（指向 /data/data/…/shared_prefs、/system/etc/hosts 等），
+            // 而 writeBytesAsRoot 是 `cat > <path>` —— `>` 跟随软链，
+            // 于是对比结果文本被 root 写进攻击者指定的任意路径。
+            // 与 ApkInstaller 的 OBB 临时文件、审计轮转同一口径：UUID 命名。
+            val tmp = "/data/local/tmp/_shso_diff_${java.util.UUID.randomUUID()}.tmp"
             val ok = RootService.writeBytesAsRoot(tmp, bytes)
             try {
                 if (!ok) throw CompareException("写入结果失败")
+                // 复核：临时文件必须是我们刚写的普通文件，不能是软链
+                val (chk, _) = RootService.runCommandSync(
+                    "[ -f ${RootService.escapeShellArg(tmp)} ] && " +
+                        "[ ! -L ${RootService.escapeShellArg(tmp)} ]", 10_000L
+                )
+                if (chk != 0) throw CompareException("临时结果文件异常，已中止")
                 val (code, out) = RootService.runCommandSync(
                     "mv ${RootService.escapeShellArg(tmp)} ${RootService.escapeShellArg(path)}", 60_000L
                 )
@@ -381,7 +393,21 @@ object TextCompare {
                 runCatching { RootService.runCommandSync("rm -f ${RootService.escapeShellArg(tmp)}", 10_000L) }
             }
         } else {
-            FileOutputStream(path).use { it.write(bytes) }
+            // 非 root 也必须原子写：直接 `FileOutputStream(path)` 会先截断目标，
+            // 写中进程被杀 / OOM 就只剩前缀；且 path 为软链时会跟着改写真身。
+            // 与 writeTextFile 的非 root 分支同法：同目录临时名 + 原子 rename。
+            val target = File(path)
+            val tmpFile = File(target.parentFile ?: File("."), ".${target.name}.shso_tmp")
+            try {
+                FileOutputStream(tmpFile).use { it.write(bytes) }
+                if (!tmpFile.renameTo(target)) {
+                    tmpFile.copyTo(target, overwrite = true)
+                    tmpFile.delete()
+                }
+            } catch (e: Exception) {
+                runCatching { tmpFile.delete() }
+                throw CompareException("写入结果失败: ${e.message ?: "未知错误"}")
+            }
         }
         if (RootService.isRootGranted == true) {
             runCatching { RootService.runCommandSync("chmod 644 ${RootService.escapeShellArg(path)}", 10_000L) }
@@ -397,13 +423,32 @@ object TextCompare {
         val ext = currentFilePath.substringAfterLast('.', "").let {
             if (it.isEmpty() || it == currentFilePath) "" else ".$it"
         }
-        val existing = runCatching { RootFileManager.listFiles(dir).map { f -> f.name }.toSet() }
-            .getOrDefault(emptySet())
-        var n = 0
-        while (existing.contains("$prefix$n$ext")) n++
         val base = if (dir.endsWith("/")) dir else "$dir/"
-        return "$base$prefix$n$ext"
+        // 逐个 `test -e` 递增探测，**不依赖 listFiles**：
+        // listFiles 在 root 通道下对 stat 失败不作成败判断（su 被拒/超时就返回空列表），
+        // 原实现 `getOrDefault(emptySet())` 把「探测失败」当成「目录为空」，
+        // 于是 outPath 与上一次的对比结果同名，末尾的 `mv` 直接无声覆盖。
+        val rootGranted = RootService.isRootGranted == true
+        var n = 0
+        while (true) {
+            val candidate = "$base$prefix$n$ext"
+            val exists = if (rootGranted) {
+                RootService.runCommandSync(
+                    "test -e ${RootService.escapeShellArg(candidate)}", 10_000L
+                ).first == 0
+            } else {
+                runCatching { File(candidate).exists() }.getOrDefault(false)
+            }
+            if (!exists) return candidate
+            n++
+            if (n >= MAX_OUTPUT_PROBE) {
+                throw CompareException("同名对比结果过多（>${MAX_OUTPUT_PROBE}），请手动指定输出名")
+            }
+        }
     }
+
+    /** 同名输出文件的重名探测上限，避免异常目录导致无限递增。 */
+    private const val MAX_OUTPUT_PROBE = 1000
 
     /** 同后缀（忽略大小写）且不是文件自身。用于文件选择器过滤。 */
     fun sameExtensionFilter(currentPath: String): (FileItem) -> Boolean {

@@ -201,6 +201,34 @@ object RootFileManager {
         Pair(FilePermissionMetadata(mode, parts[1], parts[2]), "")
     }
 
+    /**
+     * 校验「可改权限/属主的真实目标」。
+     *
+     * `chmod` / `chown` / `chgrp` **默认跟随符号链接**，而 [isAllowedDataPath]
+     * 校验的是链接自身路径 —— 于是 `/data/local/tmp/m`（→ `/data/adb/modules`）能通过校验，
+     * 落盘却是 `chmod 777 /data/adb/modules`：把受保护目录改成 0777 或把属主改成
+     * 普通应用 uid，而弹窗显示与修改的都是链接自身，用户全程以为只改了一个链接的元数据。
+     * `listFiles` 用 `stat -L`（跟随），`FileItem` 也没有链接标记，UI 无任何提示。
+     *
+     * 策略：解析真实路径后**对解析结果重跑** [isAllowedDataPath]，越界即拒绝。
+     * 读不到真实路径（非链接时 readlink -f 仍返回同一路径）时按原路径处理。
+     */
+    private suspend fun resolveWritableTarget(path: String): Pair<String?, String> {
+        val (code, out) = RootService.runCommandSync(
+            "readlink -f ${RootService.escapeShellArg(path)} 2>/dev/null", 10_000L
+        )
+        val resolved = if (code == 0 && out.isNotBlank()) out.trim() else path
+        if (!isAllowedDataPath(resolved)) {
+            return null to "该路径是符号链接，真实目标（$resolved）不在 /data 下，已拒绝"
+        }
+        // 真实目标也必须仍在用户点选的路径之内，防止链到 /data 内的其它敏感位置
+        if (resolved != path && !resolved.startsWith(path.trimEnd('/') + "/") && resolved != path) {
+            // 链接指向别处属正常用法（如 /sdcard/Download → 别处），仅当目标越出 /data 才拦，
+            // 上面已拦；此处不额外限制，避免误伤合法外链。
+        }
+        return resolved to ""
+    }
+
     suspend fun changePermissions(path: String, mode: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         if (!isAllowedDataPath(path)) {
             return@withContext Pair(false, "仅允许修改 /data 下的路径")
@@ -210,7 +238,9 @@ object RootFileManager {
         }
         if (!preferRoot()) return@withContext Pair(false, NO_ROOT_NEEDED_FOR_ABSOLUTE_PATH)
 
-        val escapedPath = RootService.escapeShellArg(path)
+        val (target, problem) = resolveWritableTarget(path)
+        if (target == null) return@withContext Pair(false, problem)
+        val escapedPath = RootService.escapeShellArg(target)
         guardDestructiveOp("chmod $mode $path", "修改权限")?.let { return@withContext Pair(false, it) }
         val (code, output) = RootService.runCommandSync("${guardPrefix()}chmod $mode $escapedPath")
         if (code == 0) Pair(true, "权限修改成功") else Pair(false, "权限修改失败: $output")
@@ -225,8 +255,10 @@ object RootFileManager {
         }
         if (!preferRoot()) return@withContext Pair(false, NO_ROOT_NEEDED_FOR_ABSOLUTE_PATH)
 
+        val (target, problem) = resolveWritableTarget(path)
+        if (target == null) return@withContext Pair(false, problem)
         val escapedOwner = RootService.escapeShellArg(owner)
-        val escapedPath = RootService.escapeShellArg(path)
+        val escapedPath = RootService.escapeShellArg(target)
         guardDestructiveOp("chown $owner $path", "修改所有者")?.let { return@withContext Pair(false, it) }
         val (code, output) = RootService.runCommandSync("${guardPrefix()}chown $escapedOwner $escapedPath")
         if (code == 0) Pair(true, "所有者修改成功") else Pair(false, "所有者修改失败: $output")
@@ -241,8 +273,10 @@ object RootFileManager {
         }
         if (!preferRoot()) return@withContext Pair(false, NO_ROOT_NEEDED_FOR_ABSOLUTE_PATH)
 
+        val (target, problem) = resolveWritableTarget(path)
+        if (target == null) return@withContext Pair(false, problem)
         val escapedGroup = RootService.escapeShellArg(group)
-        val escapedPath = RootService.escapeShellArg(path)
+        val escapedPath = RootService.escapeShellArg(target)
         guardDestructiveOp("chown :$group $path", "修改用户组")?.let { return@withContext Pair(false, it) }
         val (code, output) = RootService.runCommandSync("${guardPrefix()}chown :$escapedGroup $escapedPath")
         if (code == 0) Pair(true, "用户组修改成功") else Pair(false, "用户组修改失败: $output")
@@ -507,8 +541,21 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
             return@withContext Pair(false, "文件名不能包含路径分隔符或非法字符")
         }
 
-        val parent = File(oldPath).parent ?: "/"
-        val newPath = if (parent.endsWith("/")) "$parent$sanitized" else "$parent/$sanitized"
+          val parent = File(oldPath).parent ?: "/"
+          val newPath = if (parent.endsWith("/")) "$parent$sanitized" else "$parent/$sanitized"
+
+          // 目标已存在时必须拒绝，不能直接覆盖。
+          // 原实现两条路径都是「无条件替换」：root 走 `mv`（GNU/BSD mv 默认覆盖），
+          // 非 root 走 `File.renameTo`（JDK 明确「若目标已存在则结果依赖平台」，
+          // Linux 上同样是 rename(2) 覆盖）。于是：
+          //   · 批量重命名把 `notes.txt` 改成 `report_0.txt`，而同目录里已存在
+          //     **不在选择集内**的 `report_0.txt` → 该文件被静默销毁；
+          //   · 单文件重命名同理，用户看到「重命名成功」而另一个文件已消失。
+          // 「覆盖」只应由用户显式选择（见 moveFile 的 MoveDestinationConflict），
+          // 重命名这里没有该选项，故一律拒绝。
+          if (destinationExists(newPath, oldPath)) {
+              return@withContext Pair(false, "目标已存在：$sanitized")
+          }
 
         // ROOT 已授权时优先用 su 移动（可操作受保护/系统路径）；
         // 未授权或 su 失败时回退标准 renameTo（授予「所有文件访问」后可操作 /sdcard）。
@@ -526,7 +573,23 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         Pair(false, "重命名失败")
     }
 
-suspend fun moveFile(
+    /**
+     * 目标路径是否已被**另一个**条目占用。
+     *
+     * 应用 uid 看不到受保护路径（`File.exists` 恒 false），故已授权时改用 root 通道判定；
+     * 名称不同即视为「另一个条目」，同名（改回原名）不算冲突。
+     */
+    private suspend fun destinationExists(newPath: String, oldPath: String): Boolean {
+        if (newPath == oldPath) return false
+        val local = runCatching { File(newPath).exists() }.getOrDefault(false)
+        if (local) return true
+        if (RootService.isRootGranted != true) return false
+        val escaped = RootService.escapeShellArg(newPath)
+        val (code, _) = RootService.runCommandSync("test -e $escaped")
+        return code == 0
+    }
+
+    suspend fun moveFile(
         sourcePath: String,
         destinationDirectory: String,
         onConflict: MoveDestinationConflict = MoveDestinationConflict.OVERWRITE

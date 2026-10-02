@@ -20,7 +20,7 @@
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 409 tests / 0 failures / 1 skipped |
+| 单元测试 | 422 tests / 0 failures / 1 skipped |
 | lint | 0 errors / 31 warnings |
 | release 体积 | 2.18 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
@@ -34,11 +34,96 @@
 | 已知环境坑 | `adb shell su -c "a; b"` 的 `;` 会让后半段以 shell 用户执行 → 必须 `su -c 'sh script.sh'` |
 | 已知环境坑 | 守卫实际读 `/data/adb/shso_guard/policy.conf`（**优先于**模块自带 `policy.conf`）；改策略只改模块那份会不生效，且调试脚本覆写后必须还原，否则 `protect=/data` 会静默消失、所有用例变放行 |
 | 已知环境坑 | Android 的 mksh **不支持**算术展开里的位运算符（`$(( 0600 & 022 ))` 真机实测返回非 0）。判权限位只能用 `find -perm /022` 或 `stat -c %A` 逐位取，别写位与 |
+| 已知环境坑 | 设备的 `shared_prefs` 读不到（SELinux 拦 su 直读），且 pager 把四个 Tab 装在同一个 Activity 里 → **无法从设备侧观测外部唤起被接受还是被拒**。这类判定只能靠 JVM 单测覆盖谓词本身；设备侧只能验证「不崩、前台稳定」 |
 | 发版 | tag `20261002`（纯数字，与 `versionCode` 对齐）；双端同名 Release 覆盖旧 APK |
 
 ---
 
 ## 待办
+
+### A54. 第四轮全面 BUG 深挖（2026-10-02）
+
+前三轮已覆盖守卫、安装解压、编辑器、文件操作、外部唤起、执行引擎、安全子系统、UI 状态层、数据服务层。
+A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐前三轮明确推迟的项 + 首次深审生命周期层。
+
+- [x] **四路审计**（共报 70+ 条，逐条读代码复核后修 18 项）
+  - 跨维度模式横扫：`runCommandSync` 全量调用点 / shell 拼接 / `File` 与路径切分 /
+    Compose 状态 / `catch` 与 `runCatching` / IO 边界 / JSON-TSV-偏好存储 / 原子与可见性
+  - 生命周期与意图层：`MainActivity` / `ShsoApplication` / `HomePage` / `ExternalOpen` / Manifest
+  - 终端渲染与执行收尾：`AnsiParser` / `TerminalPage` / `kill` / `restart` / `awaitRunPgid`
+  - 批量操作与守卫安装窗口 / 权限弹窗 / 语法包读写
+  - 对「此前已报未修」的 A~H / A~F 逐条给判定，结论多为**部分成立**（例如 `sendInterrupt`
+    的静默失效被「中断」按钮的 `enabled` 挡住、`runCommandSync` 超时分支的
+    `StringBuilder` 单写者不会抛异常），据实收窄而非照单全收
+
+- [x] **安全性（6 项）**
+  - [x] **导出 alias 无路径约束 → 跨应用私有数据越权读取**。`ExternalOpenActivity` exported
+        且无 `android:permission`，而 `resolveToRealPath` 对 `file://` 直接取 path、
+        对 `content://` 采信对方 provider 的 `_data` 列，全程无白名单。任意应用构造
+        `file:///data/data/com.mixradio.droid/shared_prefs/xxx.xml` 即可让 shso **以 root 身份**
+        stat 并把文本渲染上屏。现：外部 `file://` 须过白名单（共享存储 + `/data/local/tmp`），
+        任何来源一律拒绝本进程私有目录
+  - [x] 外部 Intent 不得改写持久化的「上次浏览目录」（`refresh()` 按 `pendingExternalDirectory` 跳过落盘，
+        用后即清，不影响用户后续主动导航）
+  - [x] `intent.extras` 裸 `get(EXTRA_STREAM)` 会先 unparcel 整个 Bundle，发送方塞入只有它自己
+        APK 才有定义的自定义 Parcelable 即抛 `BadParcelableException`（singleTask 下每次分享都崩）。
+        改为按类型取值 + 整段 `runCatching`
+  - [x] **文本对比结果临时名可预测且落在 1777 目录** → root 跟随软链覆盖任意文件。
+        `System.currentTimeMillis()` 可由 `/proc/uptime` 推算窗口，`writeBytesAsRoot` 是
+        `cat > `（跟随软链）。改 UUID 命名 + 写后复核非软链
+  - [x] 编辑器覆盖写临时名同样是 `nanoTime + Random(9000)`（ART 上即 CLOCK_MONOTONIC，
+        9000 种取值），目标目录可能是 1777/777 → 改 UUID + 复核
+  - [x] 改权限/属主/用户组**跟随符号链接**：`/data/local/tmp/m → /data/adb/modules` 能过
+        `isAllowedDataPath`（校验的是链接自身），落盘却是 `chmod 777 /data/adb/modules`。
+        现 `readlink -f` 解析后对真实目标重跑白名单
+
+- [x] **数据丢失（5 项）**
+  - [x] **批量重命名用裸 `mv` 覆盖未选中文件**：root 走 `mv`、非 root 走 `renameTo`（Linux 上同为
+        rename(2) 覆盖），而返回值被丢弃 → 提示恒为「已批量重命名 N 个文件」。
+        `rename` 增加目标存在性判定（已授权时走 root 通道），批量层统计真实成功/失败并列出失败项
+  - [x] **批量删除无二次确认**（单文件有「此操作无法撤销」确认框），且跑在页面级 scope 上，
+        旋屏即被取消 → 静默半完成、提示与刷新永不执行。改为复用确认框 + 不随组合销毁的 scope
+        + `finally` 里无条件刷新
+  - [x] 批量执行期间可切目录/被外部唤起改写目录，删除继续落在用户看不见的旧目录。统一
+        `navigateTo` 入口，批量进行中拒绝切换
+  - [x] 文本对比非 root 分支「就地截断直写」→ 目标只剩前缀，且软链被跟随改写真身。改原子写
+  - [x] 对比结果重名探测依赖 `listFiles`，而它在 root 通道下对 stat 失败不作成败判断
+        （su 被拒即返回空列表）→ 回落 `_0` 覆盖上一次结果。改为逐个 `test -e` 递增 + 探测上限
+
+- [x] **并发（4 项）**
+  - [x] **`executionJob === targetJob` 对终端命令恒真**（终端命令从不写 executionJob），
+        于是「结束进程 / 重启终端」一条命令的收尾会清掉**期间新启动那条**的状态、停掉它的
+        发布循环、覆盖它的横幅 —— 进程还在跑，顶栏却显示「待命中」，用户失去唯一出口。
+        改为统一判据 `stillOwnsExecution`（脚本看 Job、终端看槽位令牌）
+  - [x] `restartTerminal` 对**上一轮残留的 `runPgid`** 发 root `kill -9 -- -pgid`，而该 pid
+        早已被内核回收、`buildProcessGroupKillCommand` 只校验「是组长且非本应用组」，
+        pid 复用后照样通过 → 以 root 整组误杀无关进程组。现无活动实体时只复位不发信号，收尾清 `runPgid`
+  - [x] `executeFile` 的 pgid 轮询挂在页面级 scope（不是 executionJob 子任务，下一轮 cancel 不到），
+        迟到结果（尤其超时归零）会冲掉新任务的进程组 → 改按该轮 Job 自检
+  - [x] 交互态 stdin 两次独立读全局 `processWriter`（收尾置 null 落在 write/flush 之间即丢 flush），
+        且无互斥（连点两次「发送」并发写同一 StreamEncoder）。改为局部快照 + 互斥锁
+
+- [x] **边界条件 / 异常处理（3 项）**
+  - [x] **语法包 zip 炸弹**：单 entry 可声明数 GB 未压缩体积而压缩后仅数 MB，
+        `zin.readBytes()` 先整体物化才判总量 → 预算检查形同虚设、必 OOM。改边读边限流
+  - [x] 损坏/截断的 7z：结构解析失败与「空归档」折叠成同一空结构 → 走到加密预检分支，
+        被反复索要密码，真实原因永久隐藏。`RootPeek` 增加 `parseFailed` 区分
+  - [x] `safeDest` 对条目名 `.`/`..`/`./`/空串归一后解析成**解压目标目录本身**，
+        写失败后调用方的 `dest.delete()` 会删掉本次原子预留的目标目录，后续条目写到目录外被丢弃。
+        显式拒绝并给唯一占位名
+
+- [x] **数据一致性（1 项）**
+  - [x] `index.tsv` 字段未转义：含制表符的 `exts`（`readStringArray` 只 trim）或文件名
+        （ext4 允许制表符，`source="local:<path>"`）会把行撑成 9 列，读回时整行右移 →
+        `enabled` 取到 13 位时间戳 → 该语法包**静默变停用**且不高亮；含换行则整包从列表消失
+        而导入提示报成功。写侧转义、读侧反转义，并把列数判据从 `>= 8` 收紧为 `== 8 || == 7`
+        （多列整行丢弃，宁可少一个包也不要解析出字段全错的幽灵条目）
+
+- [x] **回归**：422 tests / 0 failures / 1 skipped；lint 0 errors / 31 warnings；
+      `build_apk.py` 红线通过（2.18 MB）
+- [x] **真机验证**：安装并冷启动无崩溃；私有目录 / `/data/adb` / 恶意 `content://` /
+      畸形 SEND Intent 四类输入后 `MainActivity` 均稳定前台、`FATAL=0`
+      （「接受还是拒绝」无法从设备侧观测，判定由 8 条 JVM 断言覆盖谓词本身）
 
 ### A53. 第三轮全面 BUG 深挖（2026-10-02）
 

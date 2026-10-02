@@ -989,7 +989,14 @@ private suspend fun writeTextFile(
         // 不能走 String.getBytes 的静默 `?` 替换——那会让用户在毫无提示的情况下丢内容。
         val bytes = TextEncoder.encode(finalText, charset, writeBom)
             .getOrElse { return@withContext Pair(false, it.message ?: "编码失败") }
-        val suffix = "${System.nanoTime()}_${kotlin.random.Random.nextInt(1000, 9999)}"
+        // 临时文件名必须**不可预测**。
+        // 原用 `nanoTime + Random(1000,9999)`：ART 上 nanoTime 就是 CLOCK_MONOTONIC，
+        // 同设备任何应用都能用 /proc/uptime 推出秒级窗口，Random 只有 9000 取值 ——
+        // 攻击者按窗口 × 9000 批量预置同名**软链**。而目标目录可能是 1777
+        // （如 /data/local/tmp）或 777，writeBytesAsRoot 的 `cat > ` 会跟随软链，
+        // 于是保存一个文件即可让 root 在攻击者指定路径创建/覆盖文件。
+        // 与 ApkInstaller 的 OBB 临时文件、审计轮转、文本对比结果同一口径：UUID。
+        val suffix = java.util.UUID.randomUUID().toString()
 
         if (RootService.isRootGranted == true) {
             // 解析真实路径（软链写入真身，不替换链接）；readlink 不可用/非软链时退回原路径
@@ -1010,6 +1017,14 @@ private suspend fun writeTextFile(
             val escapedTmp = RootService.escapeShellArg(tmpFile)
             val writeOk = RootService.writeBytesAsRoot(tmpFile, bytes)
             if (!writeOk) return@withContext Pair(false, "写入临时文件失败")
+            // 复核：必须是刚写出的普通文件而非软链（纵深防御，即便命名已不可预测）
+            val (chkCode, _) = RootService.runCommandSync(
+                "[ -f $escapedTmp ] && [ ! -L $escapedTmp ]", 10_000L
+            )
+            if (chkCode != 0) {
+                runCatching { RootService.runCommandSync("rm -f $escapedTmp", 10_000L) }
+                return@withContext Pair(false, "临时文件异常，已中止保存")
+            }
             val (mvCode, mvOut) = RootService.runCommandSync("mv $escapedTmp $escapedTarget", 60_000L)
             if (mvCode != 0) {
                 // 失败时清理临时文件，避免在系统目录留下垃圾

@@ -154,7 +154,12 @@ object ArchiveExtractor {
     }
 
     /** 一级目录结构预读结果：顶层条目名集合 + 其中属于目录的集合。 */
-    private data class RootPeek(val topLevel: Set<String>, val topLevelDirs: Set<String>) {
+    private data class RootPeek(
+    val topLevel: Set<String>,
+    val topLevelDirs: Set<String>,
+    /** 结构解析是否失败（与「合法的空归档」区分）。 */
+    val parseFailed: Boolean = false
+) {
         /** 条件 A：仅 1 个顶层条目且为目录。 */
         val singleTopFolder: String?
             get() = if (topLevel.size == 1) topLevelDirs.firstOrNull() else null
@@ -222,7 +227,10 @@ object ArchiveExtractor {
     } catch (e: ExtractionLimitException) {
         throw e
     } catch (_: Exception) {
-        RootPeek(emptySet(), emptySet())
+        // 解析失败必须与「空归档」区分开。原实现两者都返回空结构，
+        // 于是损坏/截断的 7z 走到下面的加密头预检分支 → 反复向用户索要密码，
+        // 真实原因（文件已损坏）被永久隐藏。
+        RootPeek(emptySet(), emptySet(), parseFailed = true)
     }
 
     /** 取条目路径的第一段（去掉前导 / 与 ./）。 */
@@ -301,6 +309,11 @@ object ArchiveExtractor {
 
             // 7z 加密头预检：peekRoot 读取加密头失败会得到空结构。
             // 若 7z 且无密码，先尝试以无密码打开确认是否为加密导致，是则返回 NeedPassword。
+            // 但必须先排除「解析失败」：损坏/截断的 7z 同样得到空结构，
+            // 会被误判成加密 → 用户被反复索要对密码、永远解不出来，真实原因被隐藏。
+            if (rootPeek.parseFailed) {
+                return@withContext ExtractResult.Failure("压缩包已损坏或不是有效的归档文件")
+            }
             if (kind == Kind.SEVENZ && password.isNullOrEmpty() && rootPeek.topLevel.isEmpty()) {
                 val sevenZ = try {
                     org.apache.commons.compress.archivers.sevenz.SevenZFile.Builder().setFile(File(archivePath)).get()
@@ -602,13 +615,33 @@ object ArchiveExtractor {
         while (n.startsWith("/")) n = n.substring(1)
         while (n.startsWith("../")) n = n.removePrefix("../")
         n = n.replace(Regex("(^|/)\\.\\.(/|$)"), "/").trim()
+        // 单点段（`.`）也要剥掉：`./` 与 `.` 归一后同样只剩 target 自身。
+        while (n.startsWith("./")) n = n.removePrefix("./")
+        n = n.trim('/')
+        // 归一后可能什么都不剩（条目名是 `..`、`.`、`./` 或空串，
+        // 例如 stripTopFolder 在条目名恰等于顶层前缀时会产出空串）。
+        // `File(target, "")` 会被归一化成 **target 本身**，于是
+        // `FileOutputStream(target)` 抛异常后，调用方的 `dest.delete()` 会把本次
+        // 原子预留的目标目录删掉，后续条目写到 `dest.parentFile` 之外被丢弃。
+        // 这里显式拒绝：条目名无效时用一个稳定且唯一的占位名。
+        if (n.isEmpty() || n == "." || n == "..") {
+            val stamp = Integer.toHexString(entryName.hashCode())
+            return File(target, "unnamed_$stamp")
+        }
         val candidate = File(target, n)
         val fallback = File(target, candidate.name.ifEmpty { "unnamed" })
         return try {
             val base = File(target).canonicalFile
             val real = candidate.canonicalFile
             val basePath = base.path
-            if (real.path == basePath || real.path.startsWith(basePath + File.separator)) real else fallback
+            if (real.path == basePath) {
+                // 解析结果就是 target 自身：同样不可写（与空名同因）
+                fallback
+            } else if (real.path.startsWith(basePath + File.separator)) {
+                real
+            } else {
+                fallback
+            }
         } catch (_: Exception) {
             fallback
         }

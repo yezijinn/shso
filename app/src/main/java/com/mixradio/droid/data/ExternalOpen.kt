@@ -270,12 +270,73 @@ object ExternalOpen {
     }
 
     /**
+     * 外部 Intent 落地路径的白名单。
+     *
+     * `file://` URI **不携带任何授权** —— 发送方只是断言了一个路径字符串。
+     * 而 shso 是 ROOT 工具：拿到路径后 `FilePage` 会用 `stat -L` / `find`（root 通道）
+     * 打开它，文本类还会直接进编辑器渲染。于是任意应用可以构造
+     * `file:///data/data/com.mixradio.droid/shared_prefs/xxx.xml` 让 shso
+     * **以 root 身份读出并显示本进程乃至其它应用的私有数据**（令牌常在 prefs 里），
+     * 全程无需用户真正选中过那个文件。
+     *
+     * 为什么只卡 `file://`：`content://` 背后是系统授予的读权限，
+     * 意味着用户在发送方应用里确实选中了某个文件 —— 那才是「分享」的语义。
+     * 现代文件管理器也都用 FileProvider 而非 `file://` 分享，卡掉 `file://` 不影响正常分享。
+     */
+    @Suppress("SdCardPath")
+    private val EXTERNAL_FILE_URI_ALLOWED_PREFIXES = listOf(
+        INTERNAL_STORAGE_PATH,   // /storage/emulated/0（normalizeSdCardAlias 已把 /sdcard 归一到这里）
+        "/storage/self/primary",
+        "/data/local/tmp"
+    )
+
+    /**
+     * 本进程私有目录：无论 URI 来自哪里都不得由外部 Intent 打开（无任何合法分享场景）。
+     *
+     * 这里是**故意的绝对路径字面量**（`SdCardPath` lint 命中同款）：安全白名单必须写死
+     * 真实路径前缀，用 `Environment.getExternalStorageDirectory()` 之类的相对推导反而会
+     * 让白名单随环境漂移。与本文件既有的 `/sdcard` 归一常量同性质。
+     */
+    @Suppress("SdCardPath")
+    private val APP_PRIVATE_PREFIXES = listOf(
+        "/data/data/com.mixradio.droid",
+        "/data/user/0/com.mixradio.droid",
+        "/data/user_de/0/com.mixradio.droid"
+    )
+
+    /**
+     * 判断一个**外部来源**解析出的路径是否允许被 shso 直接使用。
+     * 纯函数，便于 JVM 单测。
+     */
+    fun isExternalPathAllowed(
+        path: String,
+        allowedPrefixes: List<String> = EXTERNAL_FILE_URI_ALLOWED_PREFIXES,
+        appPrivatePrefixes: List<String> = APP_PRIVATE_PREFIXES
+    ): Boolean {
+        val p = path.trimEnd('/')
+        if (p.isEmpty()) return false
+        for (priv in appPrivatePrefixes) {
+            val base = priv.trimEnd('/')
+            if (p == base || p.startsWith("$base/")) return false
+        }
+        return allowedPrefixes.any { p == it.trimEnd('/') || p.startsWith(it.trimEnd('/') + "/") }
+    }
+
+    /**
      * 尝试把 URI 解析成真实文件路径；解析不出返回 null（调用方改用拷贝）。
      * 纯读取，无副作用。
+     *
+     * 信任边界：`file://` 来自外部 Intent 时必须过 [isExternalPathAllowed]；
+     * `content://` 背后的 `_data` 由**对方的 provider** 提供，同样不可全信，
+     * 但它至少伴随一次真实的读权限授予，故只额外拒绝本进程私有目录。
      */
     fun resolveToRealPath(context: Context, uri: Uri): String? {
+        val isFileScheme = uri.scheme?.lowercase(Locale.ROOT) == "file"
         when (uri.scheme?.lowercase(Locale.ROOT)) {
-            "file" -> return uri.path?.let { normalizeSdCardAlias(it) }
+            "file" -> {
+                val path = uri.path?.let { normalizeSdCardAlias(it) } ?: return null
+                return path.takeIf { isExternalPathAllowed(it) }
+            }
             "content" -> Unit
             else -> return null
         }
@@ -283,13 +344,23 @@ object ExternalOpen {
         val authority = uri.authority.orEmpty()
         val documentId = uri.lastPathSegment
         if (authority == "com.android.externalstorage.documents") {
-            decodeExternalStorageDocumentId(documentId)?.let { return it }
+            decodeExternalStorageDocumentId(documentId)?.let { candidate ->
+                if (isExternalPathAllowed(candidate)) return candidate
+            }
         }
         if (authority == "com.android.providers.downloads.documents") {
-            decodeRawDownloadDocumentId(documentId)?.let { return it }
+            decodeRawDownloadDocumentId(documentId)?.let { candidate ->
+                if (isExternalPathAllowed(candidate)) return candidate
+            }
         }
         // 2) 其余（media / downloads 数字 ID / 带 _data 的 provider）：查询 DATA 列
-        return queryDataColumn(context, uri)
+        val fromProvider = queryDataColumn(context, uri) ?: return null
+        // 私有目录在任何来源下一律拒绝；`file://` 的白名单更严（无授权），
+        // provider 来源只额外挡私有目录（其余交给「用户确实选中过」这一前提）。
+        return fromProvider.takeIf { path ->
+            val p = path.trimEnd('/')
+            APP_PRIVATE_PREFIXES.none { base -> p == base || p.startsWith("$base/") }
+        }
     }
 
     private fun queryDataColumn(context: Context, uri: Uri): String? = runCatching {
