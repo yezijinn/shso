@@ -137,7 +137,10 @@ python build_apk.py              # 一条命令完成构建：签名 + 版本规
 ## 注意事项
 
 - 代码文件头统一：`// Copyright 2026, shso contributors` +
-  `// SPDX-License-Identifier: Apache-2.0`；提交信息按既有惯例书写。
+  `// SPDX-License-Identifier: GPL-3.0-or-later`；提交信息按既有惯例书写。
+- 许可为 **GPL-3.0-or-later**（强 Copyleft，衍生作品须同协议开源）。
+  新增文件一律带上述 SPDX 头；改守卫模块后必须 `python module/shso_guard/gen_wrappers.py`
+  → `python tools/pack_guard_module.py` → 升 `module.prop` 的 `version=`。
 - 签名配置在 `app/build.gradle.kts`（V2+V3，debug 复用 release 签名）；
   `release.jks` 不在仓库内。
 - 所有 `su -c` 路径必须单引号转义（`replace("'", "'\\''")`）；

@@ -1,3 +1,5 @@
+# Copyright 2026, shso contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
 # shso_guard 测试
 
 守卫模块的外部黑盒测试，不依赖 Android 工具链，可在任意 POSIX shell 上运行；

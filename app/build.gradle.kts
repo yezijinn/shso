@@ -1,5 +1,5 @@
-// Copyright 2026, KernelEX contributors
-// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026, shso contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 import java.time.LocalDate
 import java.time.ZoneId

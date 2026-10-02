@@ -14,23 +14,133 @@
 
 ---
 
-## 当前状态速览（2026-09-22）
+## 当前状态速览（2026-10-02）
 
 | 项 | 值 |
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
-| 单元测试 | 289 tests / 0 failures / 1 skipped |
-| release 体积 | 2.09 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
+| 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
+| 单元测试 | 371 tests / 0 failures / 1 skipped |
+| lint | 0 errors / 25 warnings / 4 hints |
+| release 体积 | 2.17 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
 | 编辑器内核 | Sora Editor 0.23.6（打开即可编辑；语法由外置语法包提供） |
 | 语法包 | 62 语言 / 187 扩展名，`syntax-packs.zip`(37KB)，永固直链 tag `syntaxpacks-v2` |
-| 守卫模块 | v1.3.1（真机已装并验证拦截） |
-| 真机 | BIYLBAFQQSS8DA69（PACM00 / Android 10 / 1080×2280 / 底部导航 y=2156） |
-| 当前安全档位 | 设备上为 0（验证拦截需切到 ≥2） |
+| 守卫模块 | **v1.4.1**（真机已装并验证拦截）；重打包走 `tools/pack_guard_module.py` |
+| OBB 事务锁 | 单文件 `set -C`(O_EXCL) 原子 CAS；真机 8 进程并发恰好 1 成功 |
+| 审计判定 | `AuditVerdict` 枚举（`DENIED` 与 `DEGRADED` 分离）；来源含 `FILE_MANAGER` |
+| 真机 | BIYLBAFQQSS8DA69，PACM00 / Android 10 / 1080×2280 / Magisk root |
+| 当前安全档位 | 设备上为 **3**（验证后如需还原请手动切回 0） |
+| 已知环境坑 | `adb shell su -c "a; b"` 的 `;` 会让后半段以 shell 用户执行 → 必须 `su -c 'sh script.sh'` |
 
 ---
 
 ## 待办
+
+### B1. GPL-3.0 协议切换（2026-10-02）
+
+- [x] **协议切换 Apache-2.0 → GPL-3.0-or-later**：完成
+  - `LICENSE` 换为 GPL-3.0 全文（UTF-8 / LF / 无 BOM，取自 SPDX license-list-data）
+  - 98 个源文件 SPDX 头改为 `GPL-3.0-or-later`（含 `proguard-rules.pro`、`build.gradle.kts`）
+  - 守卫模块 43 个脚本补 SPDX 头并经 `gen_wrappers.py` 重新生成；`module.prop` 升 v1.4.0
+  - README 新增第三方许可表；`docs/PROJECT.md` 新增「许可证」小节
+  - 兼容性核对：Sora Editor 为 LGPL-2.1（允许以 GPL-3.0 组合分发），
+    其余依赖 Apache-2.0 / 公有领域，均与 GPL-3.0 兼容
+  - 顺带修正 `app/build.gradle.kts` 首行署名误写为 `KernelEX contributors`
+
+### B2. 守卫打包工具化（2026-10-02）
+
+- [x] **新增 `tools/pack_guard_module.py`**：完成
+  - 动机：原先靠手工重打包 zip，漏文件或混入 CRLF 只能靠单测事后发现
+  - 固定时间戳（1980-01-01）+ 字典序条目 + 0755/0644 权限位，保证同内容同产物
+  - 打包前后校验「zip 与源码逐字节一致」，并拦下守卫脚本里的 CRLF（会被 mksh 拒绝执行）
+  - 验证：首次运行即复现出既有 zip 的内容基线（`--check` 通过）
+
+### A50. 缺陷修复（2026-10-02）
+
+> 全部结论均以真机（PACM00 / Android 10 / Magisk）或 AOSP 源码为准，不采信推测。
+> 单测 371 / 0 failures / 1 skipped，lint 0 error，Release 载荷红线通过。
+
+#### 先证伪一条（避免按错误前提改代码）
+
+- [x] **`pm install-write` 的 SPLIT_NAME 契约**：**原判「分包名写错导致安装失败」为误判**
+  - AOSP `PackageInstallerSession.doWriteInternal` 写入期只做
+    `FileUtils.isValidExtFilename`（仅禁 `NUL` 与 `/`），**不解析 APK**
+  - 真机实测：名称传 `split0` / `base.apk` / 包名均 `Success: streamed`；
+    传绝对路径报 `Invalid name`（因含 `/`）
+  - 真实 split 名在 commit 时从 manifest 读出并改名
+  - commit 失败会回传 stdout 且 rc=4（`Failure [CODE: ...]`），判定逻辑本就正确
+  - 保留的真实改进：草稿名两两不同（`Os.open` 无 O_EXCL，同名会静默覆盖）、
+    基础包排首位、`install-create -p` 提前锁包名、XAPK 自动识别基础包
+
+#### 高危（安全 / 数据一致性）
+
+- [x] **OBB 事务锁双持锁**：`mv 临时锁目录 锁目录` 在目标已存在且是目录时把临时目录
+  移进其内部并**返回 0**（真机实测复现），并发双方都认为持锁
+  - 改为单文件 + `set -C`（`O_EXCL`）原子创建，创建即 CAS，无发布窗口
+  - 选它而非 `ln`：FUSE 不支持跨挂载点硬链接（实测 `Cross-device link`）
+- [x] **OBB 锁元数据未做数字校验**：`cut -d'|' -fN` 对无分隔符行整行返回，
+  垃圾锁文件让 mksh 的 `[ a -ge b ]` 报 `unexpected operator` 并返回非零，
+  判定链静默滑进「陈旧锁可抢占」—— 状态不明被误判为可抢占（真机实测复现）
+  - 加纯数字校验，非数字一律 21 fail-closed
+- [x] **OBB 回滚身份用秒级 mtime**：真机实测同秒替换后 `%i:%s:%Y` 三元组完全相同，
+  回滚校验形同虚设 → 改 `%i:%s:%y`（纳秒，实测可区分）
+- [x] **`addFileToShso` 的 `rm -rf` 绕过门禁与审计**，且忽略退出码
+- [x] **`readScriptContent` fail-open**：`stat` 失败时跳过 2MB 上限继续截断扫描
+- [x] **守卫安装事后校验不回滚**，故障态模块留在设备上；设置页手动安装绕过互斥锁
+- [x] **策略漏判**：`cp/mv/install -t <系统路径>`、`find -exec /system/bin/rm`、
+  `find -exec busybox rm`、管道段内第二个原子（`true && curl x | sh`）
+- [x] **ZIP 条目数预算滞后**：上限在解析器已构造完整 central directory 之后才判断
+  - 新增 `ZipEntryCountProbe`：读尾部 64KB 解析 EOCD，超限立即拒绝（解压 + XAPK 两路）
+  - ZIP64 哨兵 `0xFFFF` 按「已达上限量级」拒绝，不解析 ZIP64 记录
+- [x] **审计 verdict 语义漂移**：`BLOCK` 既表「被拒绝」也表「放行但降级」
+  - 收敛为 `AuditVerdict` 枚举；`DENIED` 与 `DEGRADED` 严格分离
+  - 新增 `CommandSource.FILE_MANAGER`（文件页破坏操作此前被记成终端输入）
+  - `DEGRADED` 在档位 0 下也留痕
+
+#### 功能 / 健壮性
+
+- [x] **7Z 零读死循环**：`read()==0 → continue` 使 `while (total < size)` 永不退出
+- [x] **压缩包后缀区域依赖**：`lowercase(Locale.getDefault())` 在 tr locale 下 `.ZIP` 失效
+- [x] **无 BOM 的 UTF-16 误判**：NUL 字节让 UTF-8 严格校验碰巧通过 → 满屏问号
+  - 双信号嗅探：NUL 分布不对称（阈值 0.18）+ 解码无控制字符噪声
+  - 补 GB18030 / UTF-8 混排 / 二进制 / 短输入等负向用例
+- [x] **已授权 ROOT 仍装不上 `/data/adb` 的 APK**：前置 `File.exists()` 走应用 uid
+  - 新增 `pathReadable`：已授权时用 root `test -f`，失败再回退 Java 判定
+- [x] **收件箱总容量可绕过**：声明大小未知时只在拷贝前检查一次 → 改为边写边判
+- [x] **重名探测上界语义错配**：`MAX_INBOX_FILES`（文件总数）被当重名重试上界
+- [x] **注释与实现相反**：档位 fallback 注释写「保守取 STANDARD」而实现返回 `OFF`；
+  守卫降级审计注释称由 `RootFileManager` 落，实际不落
+
+#### 性能 / 体验
+
+- [x] **`copyFile` 的 N+1 次 su fork**：重名 N 次就 fork N+1 次
+  - 改为单条 shell 内用 `set -C` 依次 O_EXCL 占位；
+    **文件名派生的 base/suffix/parent 各自 escapeShellArg**（此前内联未转义 = 注入）
+  - 真机验证：中文+空格名、序号递增、644 权限、注入载荷被完整引号包裹
+- [x] **编辑器历史 IO 在主线程**：另存为与历史回退两处
+  - `doSave` 写法正确，`performSaveAs` / `onRestore` 漏了 `withContext(IO)`
+- [x] **编辑器零 `rememberSaveable`**：`dirty` 丢失会绕过未保存守卫；
+  编码复位为 UTF-8 会把 GB18030 文件写坏
+- [x] **组合期阻塞 I/O**：`canExtractTo`（切目录即重跑）、`Typeface.createFromFile`
+- [x] **FilePage 整页重组**：组合期直读 `RootService.isRootGranted`，ROOT 状态一变
+  触发 2000+ 行重组 → 改为 `LaunchedEffect` 落到本地 state
+- [x] **无 ROOT 时改权限仍 fork su**：改为提前返回并说明原因
+
+#### 验证
+
+- 单测新增 2 个类 / 56 例：`InstallAndBudgetHardeningTest`（22）、
+  `PolicyCoverageGapTest`（17）、`CharsetDetectorTest`（17）
+- 守卫测试套件 56 例全通过（新增 4 例 `-t` 回归）
+- 真机：守卫 v1.4.0 → v1.4.1 升级、`mode=enforce`、
+  `rm /system`·`rm /data/adb/modules`·`toybox rm`·`find -exec 绝对路径`·`cp -t` 全部 DENY
+- 真机 OBB 锁：8 进程并发恰好 1 成功、垃圾元数据 21、活锁 17、陈旧锁回收、
+  外部替换目标后回滚正确放弃删除
+- 真机端到端：终端 `cp -t /system/bin …` 被 App 侧静态层硬拦（`COPY_SYSTEM`），
+  审计落 `DENIED`；文件页拷贝中文+空格名成功
+- Release：`app-release.apk` 2,271,609 bytes，lint 0 error / 25 warnings / 4 hints
+
+### B. 安全后续（未安排）
 
 ### A. 本轮计划（编辑器与文件页体验）
 
@@ -518,7 +628,7 @@
 
 ### A39. OBB 锁原子接管修复（2026-09-30，历史记录）
 
-- [x] **修复锁回收与并发重试**：后续由 A42、A43、A44 持续收口，以下保留原始记录
+- [x] **修复锁回收与并发重试**：后续已由 A42 及后续条目收口，以下保留原始记录
   - 陈旧锁先改名隔离，接管失败不删除未知路径
   - 活锁按有限次数短退避重试，降低合法并发安装的随机失败
 
@@ -552,11 +662,21 @@
   - `[Medium][兼容性]` 多文件分享仍只取第一项，`MainActivity.kt:147-155`
   - 本轮未发现新的终端、审计或守卫注入问题；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
 
+### A45. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][文档/状态]` A39 仍标记为 `[/]`，而 A42 已标记完成；A31~A44 多处重复记录同一锁问题，当前 TASKS 不能准确表达实际完成状态，发布前容易误读。
+  - `[High][并发/安全]` A42 quarantine 仍保留旧锁清理链路，A43/A44 已确认其非原子窗口；当前实现未形成可证明的 compare-and-swap。
+  - `[High][安全]` 解压仍以 `FileOutputStream(dest)` 跟随路径写入，符号链接替换可逃逸 canonical 检查；需要无跟随链接的原子文件创建模型，不能靠继续增加路径判断解决。
+  - `[Medium][性能]` ZIP `fileHeaders` 仍整体加载后才检查条目上限。
+  - `[Medium][兼容性]` 多文件分享仍只取第一项。
+  - 本轮未发现新的终端、审计字段注入、守卫路径注入；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
 ### A42. OBB 重试与 quarantine 竞态修复（2026-09-30，历史记录）
 
 - [x] **修复重试控制流和 quarantine 误删**：完成
   - 成功获取锁后立即退出重试，不再重复 acquire 自己持有的锁
-  - quarantine 目录名先用原子 `mkdir` 预占；后续审查继续覆盖锁接管竞态
+  - quarantine 目录名先用原子 `mkdir` 预占；锁接管边界仍见 A43/A44 遗留风险
   - 验证：316 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线通过；APK 已安装并启动，进程 `26524`；SHA-256 `77B9C9F2CD384AEBD4E06265DF7D80D0EA89A7C0E2008588E99E912D5A88EAB5`
 
 ### A43. 全面 BUG 挖掘（2026-09-30）
@@ -568,6 +688,44 @@
   - `[Medium][性能]` ZIP central directory 仍整体加载，`ArchiveExtractor.kt:383`
   - `[Medium][兼容性]` 多文件分享仍只消费首项，`MainActivity.kt:147-155`
   - 本轮未发现新的终端、审计或守卫注入问题；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A46. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][文档/状态]` A39 仍标记为 `[/]`，A42 已完成；A31~A45 含大量同一锁问题的历史重复记录，当前任务状态无法直接作为发布依据。
+  - `[High][安全/一致性]` A39 quarantine 接管链路仍存在外部替换窗口，当前 `mv` 后没有受所有权保护的清理策略，`ApkInstaller.kt:313-329`
+  - `[High][安全]` 解压写入依旧跟随 `safeDest()` 路径，canonical 检查无法阻止检查后符号链接替换，`ArchiveExtractor.kt:382-494`、`546-561`
+  - `[Medium][性能]` ZIP central directory 仍在预算检查前整体加载，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享仍只取首项，`MainActivity.kt:147-155`
+  - 本轮未发现新的终端、审计或守卫注入问题；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A47. 文档状态整理（2026-09-30）
+
+- [x] **统一审查记录与发布事实**
+  - A39、A42 改为历史记录，避免与后续 A43~A46 的遗留风险重复作为当前进行中任务。
+  - 当前遗留风险集中记录在最近一次 A46：解压符号链接 TOCTOU、ZIP central directory 内存峰值、多文件分享单槽位。
+  - 已完成修复集中记录在 A21~A35；历史审查条目保留证据但不再作为当前状态依据。
+  - 文档检查：`git diff --check` 通过；未修改业务代码。
+
+### A48. 全面 BUG 挖掘（2026-09-30）
+
+- [x] **八维度复审**：本轮未操作手机
+  - `[High][并发]` A42/A39 重试控制流与 quarantine 接管仍依赖多条 shell 命令；正式锁删除、quarantine 移动、临时锁发布之间无法形成真正 CAS，外部进程可插入窗口，`ApkInstaller.kt:303-329`
+  - `[High][异常/可用性]` 活锁重试次数固定且没有区分持有者存活、状态读取失败和文件系统错误，合法并发安装可能误报“正在使用”，`ApkInstaller.kt:205-212`
+  - `[High][安全]` 解压文件写入仍跟随 `safeDest()` 路径；canonical 检查后符号链接替换可导致越界写，`ArchiveExtractor.kt:382-494`、`546-561`
+  - `[Medium][性能]` ZIP central directory 仍整体加载，`ArchiveExtractor.kt:383`
+  - `[Medium][兼容性]` 多文件分享仍只取首项，`MainActivity.kt:147-155`
+  - 本轮未发现新的终端、审计、守卫注入问题；验证基线 `316 tests / 0 failures / 1 skipped`、`lintDebug` 通过
+
+### A49. OBB 锁状态分类修复（2026-09-30 → 2026-10-02 收口）
+
+- [x] **区分锁占用、锁损坏与文件系统错误**：已由 A50 彻底重做
+  - acquire 结果不再只用退出码 17 表示所有失败
+  - 持有者存活返回 17「忙」，元数据缺失/不可解析返回 21「锁状态不明」，只对「忙」退避重试
+  - 2026-10-02 复核发现：原实现把「非数字元数据」也滑进了「陈旧锁可抢占」分支，
+    且锁发布本身不是原子的；已在 A50 中以 `set -C`(O_EXCL) 重做锁协议并加数字校验
+  - 退出码契约抽成 `ApkInstaller.ObbLockExit`，脚本构造抽成
+    `buildObbLockAcquireScript` 以便单测断言 fail-closed 分支
 
 ### A36. 全面 BUG 挖掘（2026-09-30）
 

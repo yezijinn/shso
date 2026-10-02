@@ -1,4 +1,6 @@
 #!/system/bin/sh
+# Copyright 2026, shso contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
 # 设备侧：验证 needs_realpath 快速路径的正确性（符号链接绕过）+ 交错计时
 G=/data/local/tmp/gt/guard
 W=/data/local/tmp/gtw

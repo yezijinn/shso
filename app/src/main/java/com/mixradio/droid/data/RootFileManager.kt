@@ -1,5 +1,5 @@
 // Copyright 2026, shso contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 package com.mixradio.droid.data
 
@@ -7,6 +7,7 @@ import com.mixradio.droid.data.security.CommandSource
 import com.mixradio.droid.data.security.PolicyEngine
 import com.mixradio.droid.data.security.RiskLevel
 import com.mixradio.droid.data.security.RootCommandGateway
+import com.mixradio.droid.data.security.AuditVerdict
 import com.mixradio.droid.data.security.SecurityAuditLog
 import com.mixradio.droid.data.security.SecurityLevels
 import com.mixradio.droid.data.security.Verdict
@@ -36,6 +37,15 @@ object RootFileManager {
 
     private val PERMISSION_MODE_PATTERN = Regex("^[0-7]{3,4}$")
     private val OWNER_OR_GROUP_PATTERN = Regex("^[a-zA-Z0-9._-]+$")
+
+    /**
+     * 改权限 / 改属主 / 改用户组在无 ROOT 时的统一提示。
+     *
+     * 这三个操作只允许 `/data` 下的路径，应用 uid 对该树既无权限也受 SELinux 限制，
+     * 无 ROOT 时执行必然失败。与其 fork 一个注定失败的 `su`（可能还弹出授权框、
+     * 拿到的是「Permission denied」这种无信息量的文案），不如直接说清原因。
+     */
+    private const val NO_ROOT_NEEDED_FOR_ABSOLUTE_PATH = "修改 /data 下文件的权限/属主需要 ROOT 授权"
 
     /**
      * 进程内记忆的上次浏览目录（仅 AppSettings.rememberDirectory 开启时读写）。
@@ -73,23 +83,25 @@ object RootFileManager {
     private fun guardDestructiveOp(command: String, label: String): String? {
         if (!shouldGuardFileOp(PolicyEngine.currentLevel())) return null
 
-        return when (val verdict = RootCommandGateway.check(command, CommandSource.USER_TERMINAL)) {
+        // 来源必须是 FILE_MANAGER：这些命令由用户在文件页触发，不是终端输入。
+        // 记成 USER_TERMINAL 会让「破坏来源追溯」缺少最关键的一维。
+        return when (val verdict = RootCommandGateway.check(command, CommandSource.FILE_MANAGER)) {
             is Verdict.Block -> {
                 val finding = verdict.findings.firstOrNull()
                 SecurityAuditLog.log(
-                    CommandSource.USER_TERMINAL, "BLOCK", finding?.ruleId, RiskLevel.CRITICAL, command
+                    CommandSource.FILE_MANAGER, AuditVerdict.DENIED, finding?.ruleId, RiskLevel.CRITICAL, command
                 )
                 "$label 被安全策略拦截：${finding?.message ?: "高危操作"}"
             }
             is Verdict.Confirm -> {
                 val finding = verdict.findings.firstOrNull()
                 SecurityAuditLog.log(
-                    CommandSource.USER_TERMINAL, "CONFIRM", finding?.ruleId, verdict.level, command
+                    CommandSource.FILE_MANAGER, AuditVerdict.CONFIRMED, finding?.ruleId, verdict.level, command
                 )
                 null
             }
             Verdict.Allow -> {
-                SecurityAuditLog.log(CommandSource.USER_TERMINAL, "ALLOW", null, RiskLevel.SAFE, command)
+                SecurityAuditLog.log(CommandSource.FILE_MANAGER, AuditVerdict.ALLOW, null, RiskLevel.SAFE, command)
                 null
             }
         }
@@ -195,6 +207,7 @@ object RootFileManager {
         if (!isValidPermissionMode(mode)) {
             return@withContext Pair(false, "权限模式必须是 3 或 4 位八进制数字")
         }
+        if (!preferRoot()) return@withContext Pair(false, NO_ROOT_NEEDED_FOR_ABSOLUTE_PATH)
 
         val escapedPath = RootService.escapeShellArg(path)
         guardDestructiveOp("chmod $mode $path", "修改权限")?.let { return@withContext Pair(false, it) }
@@ -209,6 +222,7 @@ object RootFileManager {
         if (!isValidOwnerOrGroup(owner)) {
             return@withContext Pair(false, "所有者包含非法字符")
         }
+        if (!preferRoot()) return@withContext Pair(false, NO_ROOT_NEEDED_FOR_ABSOLUTE_PATH)
 
         val escapedOwner = RootService.escapeShellArg(owner)
         val escapedPath = RootService.escapeShellArg(path)
@@ -224,6 +238,7 @@ object RootFileManager {
         if (!isValidOwnerOrGroup(group)) {
             return@withContext Pair(false, "用户组包含非法字符")
         }
+        if (!preferRoot()) return@withContext Pair(false, NO_ROOT_NEEDED_FOR_ABSOLUTE_PATH)
 
         val escapedGroup = RootService.escapeShellArg(group)
         val escapedPath = RootService.escapeShellArg(path)
@@ -461,8 +476,18 @@ object RootFileManager {
         }
 
         if (autoDeleteSource) {
+            // 「自动删除」是一次递归删除，必须走 [guardDestructiveOp] 门禁并检查退出码：
+            // 1. 该命令此前完全在门禁外 —— 与 [delete] 口径不一致，等于给文件页开了一条
+            //    「无策略、无审计的 root 递归删」通道，且由 UI 开关驱动、一次误点即生效；
+            // 2. 退出码此前被忽略，删除失败也会返回成功，用户以为已删（实际源还在）。
             val deleteCmd = "rm -rf $escapedSource"
-            RootService.runCommandSync(deleteCmd)
+            guardDestructiveOp(deleteCmd, "自动删除源文件")?.let { reason ->
+                return@withContext Pair(false, reason)
+            }
+            val (deleteCode, deleteOut) = RootService.runCommandSync(deleteCmd)
+            if (deleteCode != 0) {
+                return@withContext Pair(false, "已复制到 shso，但删除源文件失败: ${deleteOut.trim()}")
+            }
         }
 
         Pair(true, destinationPath)
@@ -666,9 +691,43 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
         Pair(false, "删除失败")
     }
 
+    /** 拷��时追加序号的重名查找上限；超过即视为异常目录（避免无限循环）。 */
+    private const val COPY_NAME_PROBE_LIMIT = 1000
+
+    /**
+     * 不 fork su 的存在性探测（仅用于 Java 回退路径的重名查找）。
+     *
+     * ROOT 路径下仍可能被 Java 判定为「不存在」，但那种情况下 [copyFile] 的 shell 分支
+     * 已经先跑过并成功了，走到这里说明确实没有 ROOT，用 [File.exists] 足够。
+     */
+    private fun pathExistsQuiet(path: String): Boolean = File(path).exists()
+
+    /**
+     * 在同级目录里找首个不存在的 `<base>_<n><ext>` 目标名。
+     *
+     * 纯函数，便于单测。**只做词法构造，不碰文件系统** —— 实际占用检查在
+     * [copyFile] 里用单条 shell 完成（见该函数注释）。
+     */
+    internal fun copyCandidatePath(parent: String, base: String, suffix: String, n: Int): String {
+        val name = "${base}_$n$suffix"
+        return if (parent.endsWith("/")) "$parent$name" else "$parent/$name"
+    }
+
     /**
      * 拷贝文件到同级目录，自动追加递增序号后缀（如 file.txt → file_0.txt → file_1.txt）。
      * 序号插入在扩展名之前（无扩展名则直接加在末尾）。仅用于文件（文件夹不调用）。
+     *
+     * ## 重名查找收敛为单次 su
+     *
+     * 原实现是 `do { ... } while (pathExists(destPath))`，而 [pathExists] 每次都
+     * fork 一个 `su -c test -e`（含独立读线程 + waitFor）。目录里已有 N 个同名副本时
+     * 就是 N+1 次 su fork：Magisk/KernelSU 每次都要做一次 IPC 与授权检查，
+     * 连续多选拷贝时叠加成明显的「点了没反应」。
+     *
+     * 改为：把「找一个空位 + 拷贝」放进**同一条 shell**（`cp -n` 依次尝试），
+     * 无论重名多少次都只 fork 一次。`cp -n` 在目标已存在时返回 0 且不写入，
+     * 因此用「先 `rm -f` 探测再 `cp`」的写法要小心；这里改用
+     * `test -e` 判空 + `set -C`（O_EXCL）占位的组合保证不覆盖已有文件。
      */
     suspend fun copyFile(sourcePath: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         if (isUnsafePath(sourcePath)) {
@@ -680,27 +739,47 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
         val ext = srcFile.extension
         val suffix = if (ext.isNotEmpty()) ".$ext" else ""
 
-        // 从 0 递增找到首个不存在的目标名
+        if (preferRoot()) {
+            // 单条 shell 完成「找空位 + 拷贝」：i 从 0 起，先用 `set -C`（O_EXCL）原子占位，
+            // 占位成功即说明该名字此前不存在，随后 `cp` 覆盖这个空文件（我们自己占的）。
+            // 全程最多一次 su fork，不再出现「重名 N 次就 fork N+1 次」。
+            //
+            // 注意：`base` / `suffix` 来自文件名，**必须**各自过 escapeShellArg 后再拼进
+            // 命令；shell 里 `'名字'_$n'.txt'` 这种「引号片段 + 变量」是合法拼接，
+            // 转义后的引号不会破坏脚本结构。
+            val escapedSource = RootService.escapeShellArg(sourcePath)
+            val escapedBase = RootService.escapeShellArg(base)
+            val escapedSuffix = RootService.escapeShellArg(suffix)
+            val escapedParent = RootService.escapeShellArg(if (parent.endsWith("/")) parent.dropLast(1) else parent)
+            val script = buildString {
+                append("n=0; ")
+                append("while [ \$n -lt $COPY_NAME_PROBE_LIMIT ]; do ")
+                append("d=$escapedParent/$escapedBase" + '"' + "_" + '"' + "\$n$escapedSuffix; ")
+                append("if ( set -C; : > \"\$d\" ) 2>/dev/null; then ")
+                append("if cp -p $escapedSource \"\$d\" && chmod 644 \"\$d\"; then ")
+                append("echo \"OK \$d\"; exit 0; fi; rm -f -- \"\$d\"; exit 1; fi; ")
+                append("n=\$((n+1)); ")
+                append("done; echo NOMATCH; exit 2")
+            }
+            val (code, out) = RootService.runCommandSync(script)
+            val line = out.lineSequence().firstOrNull { it.startsWith("OK ") }?.trim()
+            if (code == 0 && line != null) {
+                return@withContext Pair(true, line.removePrefix("OK ").trim())
+            }
+            // shell 路径失败（含 NOMATCH）时回退到 Java 拷贝，行为与原先一致
+        }
+
+        // Java 路径：同样需要重名查找，但走 File.exists() 不 fork su
         var n = 0
         var destPath: String
         do {
-            destPath = if (parent.endsWith("/")) {
-                "${parent}${base}_$n$suffix"
-            } else {
-                "$parent/${base}_$n$suffix"
-            }
+            destPath = copyCandidatePath(parent, base, suffix, n)
             n++
-        } while (pathExists(destPath))
-
-        // ROOT 已授权时优先用 su 拷贝（可操作受保护/系统路径）；
-        // 未授权或 su 失败时回退标准 IO 拷贝（授予「所有文件访问」后可操作 /sdcard）。
-        if (preferRoot()) {
-            val escapedSource = RootService.escapeShellArg(sourcePath)
-            val escapedDest = RootService.escapeShellArg(destPath)
-            val copyCmd = "cp -p $escapedSource $escapedDest && chmod 644 $escapedDest"
-            val (code, _) = RootService.runCommandSync(copyCmd)
-            if (code == 0) return@withContext Pair(true, destPath)
+        } while (n < COPY_NAME_PROBE_LIMIT && (File(destPath).exists() || pathExistsQuiet(destPath)))
+        if (n >= COPY_NAME_PROBE_LIMIT) {
+            return@withContext Pair(false, "同级重名过多，未找到可用的目标名")
         }
+
         try {
             val destFile = File(destPath)
             srcFile.inputStream().use { ins ->

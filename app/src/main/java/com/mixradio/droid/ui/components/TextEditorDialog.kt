@@ -1,5 +1,5 @@
 // Copyright 2026, shso contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 package com.mixradio.droid.ui.components
 
 import android.annotation.SuppressLint
@@ -52,6 +52,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -146,13 +147,22 @@ private fun TextEditorDialogContent(
 
     var isLoading by remember { mutableStateOf(!isNewFile) }
     var loadError by remember { mutableStateOf<String?>(null) }
-    var currentCharset by remember { mutableStateOf(Charsets.UTF_8) }
-    var currentLineEnding by remember { mutableStateOf(LineEnding.LF) }
-    var hasBom by remember { mutableStateOf(false) }
-    var overrideCharset by remember { mutableStateOf<Charset?>(null) }
 
-    // 打开即可编辑，不区分「只读 / 编辑」（对齐 MP-Manager：其编辑器基于 Sora，无模式切换）。
-    var dirty by remember { mutableStateOf(isNewFile) }
+    // 编码 / 换行 / BOM 与文件路径、未保存标记一起用 rememberSaveable：
+    // 旋转或分屏重建后若丢失，会出现两类真实的数据风险：
+    // ① [dirty] 复位为 false → 关闭时不再提示「未保存」，用户以为已存盘（实际改了但没存）；
+    // ② 编码复位为 UTF-8 → 下次保存把 GB18030 文件按 UTF-8 写回，原文件内容被改坏。
+    // 三者都是标量，rememberSaveable 的 Bundle 成本可忽略。
+    var currentCharset by rememberSaveable { mutableStateOf(Charsets.UTF_8.name()) }
+    var currentLineEnding by rememberSaveable { mutableStateOf(LineEnding.LF) }
+    var hasBom by rememberSaveable { mutableStateOf(false) }
+    var dirty by rememberSaveable { mutableStateOf(isNewFile) }
+
+    // 需要 Charset 实例时由名字解析；非法名字（跨版本改名）退回 UTF-8，不让恢复路径抛异常。
+    fun resolveCharset(): Charset =
+        runCatching { Charset.forName(currentCharset) }.getOrDefault(Charsets.UTF_8)
+
+    var overrideCharset by remember { mutableStateOf<Charset?>(null) }
 
     /** 把编辑器当前全文同步到 [contentValue]（按需调用：保存 / 查找 / 对比 / 统计 / 历史）。 */
     fun syncSnapshot() {
@@ -262,7 +272,7 @@ private fun TextEditorDialogContent(
                 isLargeFile = !editable          // 仅表示「巨型只读浏览」，驱动分段 UI
                 if (editable) {
                     val load = ChunkedFileReader.loadAll(path)
-                    currentCharset = overrideCharset ?: load.charset
+                    currentCharset = (overrideCharset ?: load.charset).name()
                     hasBom = load.hasBom
                     currentLineEnding = LineEnding.detect(load.text)
                     // 统一归一为 LF 再交给编辑器（Sora 的 Content 亦按 '\n' 断行）；保存时按 currentLineEnding 还原。
@@ -282,7 +292,7 @@ private fun TextEditorDialogContent(
                         if (isUtf16Charset(overrideCharset ?: detected.charset)) -1
                         else ChunkedFileReader.lastCompleteLineEnd(raw)
                     val det = if (alignedEnd >= 0) CharsetDetector.detect(raw.copyOf(alignedEnd)) else detected
-                    currentCharset = overrideCharset ?: det.charset
+                    currentCharset = (overrideCharset ?: det.charset).name()
                     hasBom = det.hasBom
                     currentLineEnding = LineEnding.detect(det.text)
                     // 首次 load：head 全量 split（单次 O(N)，可接受）。后续 loadMore 仅追加。
@@ -294,7 +304,7 @@ private fun TextEditorDialogContent(
                     chunkedHasMore = chunkedOffset < total
                     // 后台建立稀疏行索引，接管行渲染，释放 chunkedLines 的无限累积（防滚到底 OOM）。
                     chunkedIndexing = true
-                    val built = SparseLineIndex.build(path, currentCharset)
+                    val built = SparseLineIndex.build(path, resolveCharset())
                     if (built != null) {
                         chunkedIndex = built
                         chunkedLines = emptyList()   // 索引接管后不再需要首块行列表
@@ -376,15 +386,21 @@ private fun TextEditorDialogContent(
     // 另存为的落盘动作：抽成局部函数，供「直接保存」与「确认覆盖后保存」共用。
     val performSaveAs: (String) -> Unit = { newPath ->
         scope.launch {
-            val (ok, msg) = withContext(Dispatchers.IO) {
-                writeTextFile(newPath, contentValue.text, currentCharset, currentLineEnding, hasBom)
+            // 落盘与历史读写必须同在 IO 线程：EditHistoryManager 走 SharedPreferences，
+            // 首次访问要把整个 prefs XML 解析进内存，单文件上限 100 万字 → 主线程数十 ms 卡顿。
+            // doSave 已按此写法，这里此前漏了 withContext，是同一条路径上的不一致。
+            val outcome = withContext(Dispatchers.IO) {
+                val writeResult = writeTextFile(newPath, contentValue.text, resolveCharset(), currentLineEnding, hasBom)
+                if (writeResult.first) {
+                    EditHistoryManager.addHistory(newPath, contentValue.text, EditHistoryManager.HistorySource.SAVE)
+                    Triple(true, null as String?, EditHistoryManager.getHistory(newPath))
+                } else Triple(false, writeResult.second, emptyList())
             }
-            if (ok) {
+            if (outcome.first) {
                 currentFilePath = newPath; dirty = false; lastSavedAtMs = System.currentTimeMillis()
-                EditHistoryManager.addHistory(newPath, contentValue.text, EditHistoryManager.HistorySource.SAVE)
-                history = EditHistoryManager.getHistory(newPath)
+                history = outcome.third
                 toastMessage = "已保存"
-            } else { toastMessage = msg ?: "保存失败" }
+            } else { toastMessage = outcome.second ?: "保存失败" }
         }
     }
 
@@ -412,7 +428,7 @@ private fun TextEditorDialogContent(
                     val path = currentFilePath!!
                     // 成功: Triple(写盘结果, 错误信息, 最新历史)；历史读写一并放入 IO 线程
                     val outcome = withContext(Dispatchers.IO) {
-                        val writeResult = writeTextFile(path, contentValue.text, currentCharset, currentLineEnding, hasBom)
+                        val writeResult = writeTextFile(path, contentValue.text, resolveCharset(), currentLineEnding, hasBom)
                         if (writeResult.first) {
                             EditHistoryManager.addHistory(path, contentValue.text, EditHistoryManager.HistorySource.SAVE)
                             Triple(true, null as String?, EditHistoryManager.getHistory(path))
@@ -505,7 +521,7 @@ private fun TextEditorDialogContent(
                             scope.launch {
                                 loadNextChunk(
                                     filePath = currentFilePath ?: return@launch, fromOffset = chunkedOffset,
-                                    charset = currentCharset,
+                                    charset = resolveCharset(),
                                     onResult = { text, newOffset, hasMore ->
                                         // 仅追加新行到行列表，不重建旧行 → O(chunkSize) 而非 O(totalLoaded)。
                                         // 行尾 \n 处理：「abc\n」split 后得到 ["abc", ""]，这里再 drop 末端空行
@@ -539,7 +555,7 @@ private fun TextEditorDialogContent(
                                 chunkedLines = chunkedLines,
                                 chunkedIndex = chunkedIndex,
                                 chunkedFilePath = currentFilePath ?: "",
-                                chunkedCharset = currentCharset,
+                                chunkedCharset = resolveCharset(),
                                 showLineNumber = showLineNumber,
                                 fontSize = fontSize.sp,
                                 wordWrap = wordWrap
@@ -600,15 +616,15 @@ private fun TextEditorDialogContent(
         fontSize = fontSize, onFontSizeChange = { fontSize = it; appSettings.updateEditorFontSize(it) },
         autoSaveSeconds = autoSaveSeconds,
         onAutoSaveChange = { autoSaveSeconds = it; appSettings.updateEditorAutoSaveInterval(it) },
-        charset = currentCharset,
+        charset = resolveCharset(),
         onCharsetChange = { cs ->
             // 切换编码 = 丢弃当前内存内容、按新编码从磁盘重新解码。
             // 有未保存修改时必须阻断：否则重载后编辑被静默覆盖；
             // 若重载失败，内容为空而 dirty 仍为 true，保存会把文件截断为 0 字节。
             if (!isNewFile && dirty) {
                 toastMessage = "有未保存的修改，请先保存后再切换编码"
-            } else if (cs != currentCharset) {
-                currentCharset = cs; overrideCharset = cs
+            } else if (cs.name() != currentCharset) {
+                currentCharset = cs.name(); overrideCharset = cs
                 if (!isNewFile) { setEditorContent("", markDirty = false); isLoading = true }
             }
         },
@@ -702,7 +718,7 @@ private fun TextEditorDialogContent(
             onConfirm = { mode ->
                 val pathA = currentFilePath ?: return@DiffModeDialog
                 val pathB = diffTargetPath ?: return@DiffModeDialog
-                val charset = currentCharset
+                val charset = resolveCharset()
                 diffTargetPath = null
                 diffRunning = true
                 diffProgressLines = 0L
@@ -757,15 +773,17 @@ private fun TextEditorDialogContent(
             // 类 git 回退：恢复到所选历史版本。当前内容若与该版本不同，
             // 先把当前内容存为新历史（保证可再撤回），再恢复。
             scope.launch {
-                withContext(Dispatchers.IO) {
+                // 整段（含末尾的 getHistory）都在 IO 线程：SharedPreferences 解析 + JSON
+                // 解析最坏可达每文件 100 万字，放在主线程就是一次可感知的掉帧。
+                history = withContext(Dispatchers.IO) {
                     val cur = contentValue.text
                     if (cur != entry.content) {
                         EditHistoryManager.addHistory(
-                        currentFilePath ?: "", cur, EditHistoryManager.HistorySource.DRAFT
-                    )
+                            currentFilePath ?: "", cur, EditHistoryManager.HistorySource.DRAFT
+                        )
                     }
+                    EditHistoryManager.getHistory(currentFilePath ?: "")
                 }
-                history = EditHistoryManager.getHistory(currentFilePath ?: "")
                 setEditorContent(entry.content, markDirty = true)
                 showHistoryDialog = false
             }
@@ -830,7 +848,7 @@ private fun TextEditorDialogContent(
             isSaving = true
             scope.launch {
                 val (ok, msg) = withContext(Dispatchers.IO) {
-                    writeTextFile(currentFilePath!!, contentValue.text, currentCharset, currentLineEnding, hasBom)
+                    writeTextFile(currentFilePath!!, contentValue.text, resolveCharset(), currentLineEnding, hasBom)
                 }
                 isSaving = false
                 if (ok) { dirty = false; lastSavedAtMs = System.currentTimeMillis(); onDismissRequest() }

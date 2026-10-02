@@ -1,5 +1,5 @@
 // Copyright 2026, shso contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 package com.mixradio.droid.data
 
@@ -40,6 +40,14 @@ object ArchiveExtractor {
     internal const val MAX_EXTRACT_ENTRY_BYTES = 512L * 1024 * 1024
     internal const val MAX_EXTRACT_ENTRIES = 20_000
 
+    /**
+     * 连续零读（`read()` 返回 0）的容忍上限。
+     *
+     * 单次 0 读可能是压缩流分块边界的正常现象；连续多次说明底层流已无法推进，
+     * 再循环下去就是死循环。取 64 次足以覆盖任何合法分块。
+     */
+    private const val MAX_ZERO_READS = 64
+
     internal class ExtractionBudget {
         var entries = 0
             private set
@@ -66,6 +74,24 @@ object ArchiveExtractor {
 
     internal class ExtractionLimitException(message: String) : Exception(message)
 
+    /**
+     * **预算前置**：在让 ZIP 解析器构造 central directory 之前，先用
+     * [ZipEntryCountProbe] 读文件尾部 64KB 拿到条目数。
+     *
+     * 顺序很关键 —— 原来的 `zip.fileHeaders` 一行就已经把 N 万个 `FileHeader`
+     * 对象分配进内存了，「条目数超过上限」的判断发生在**分配之后**，对
+     * 「只靠条目数爆炸」的 zip bomb 完全无效。
+     *
+     * 探针读不到（空文件 / 非 ZIP / 截断）时返回 null 并放行给后续解析器，
+     * 由它给出更准确的报错；这里只负责**提前拦住能提前判断的情况**。
+     */
+    internal fun probeZipEntryCountOrThrow(path: String) {
+        val count = ZipEntryCountProbe.probe(File(path)) ?: return
+        if (count >= MAX_EXTRACT_ENTRIES) {
+            throw ExtractionLimitException("压缩包条目数超过 $MAX_EXTRACT_ENTRIES")
+        }
+    }
+
     /** 压缩包/文件类型分类。 */
     private enum class Kind { ZIP, SEVENZ, TAR, SINGLE }
 
@@ -83,9 +109,16 @@ object ArchiveExtractor {
     /** 所有已知格式均可解压（rar 已彻底移除）。 */
     fun isExtractable(name: String): Boolean = kindOf(name) != null
 
-    /** 识别压缩包类型；未知格式返回 null。 */
+    /**
+     * 识别压缩包类型；未知格式返回 null。
+     *
+     * 后缀比对必须用**区域无关**的小写化（Kotlin 的无参 `lowercase()`，等价 `Locale.ROOT`）。
+     * 原先的 `lowercase(Locale.getDefault())` 在土耳其语等 locale 下会把 `I` 映射成
+     * `ı`（点无 i），`.ZIP` → `.zıp`，于是**用户切换系统语言后所有 zip 都识别不出来**。
+     * 同一文件其余位置（`FileItem`）本来就用无参形式，此处统一。
+     */
     private fun kindOf(name: String): Kind? {
-        val lower = archiveName(name).lowercase(Locale.getDefault())
+        val lower = archiveName(name).lowercase()
         return when {
             lower.endsWith(".zip") -> Kind.ZIP
             lower.endsWith(".7z") -> Kind.SEVENZ
@@ -98,7 +131,7 @@ object ArchiveExtractor {
     /** 去除全部压缩/归档后缀后的基础名（如 a.tar.gz → a；a.gz → a）。 */
     fun baseName(name: String): String {
         val normalized = archiveName(name)
-        val lower = normalized.lowercase(Locale.getDefault())
+        val lower = normalized.lowercase()
         val suffix = TAR_EXTENSIONS.firstOrNull { lower.endsWith(it) }
             ?: SINGLE_EXTENSIONS.firstOrNull { lower.endsWith(it) }
             ?: ".zip".takeIf { lower.endsWith(".zip") }
@@ -202,7 +235,7 @@ object ArchiveExtractor {
     /** 按格式打开解压流（tar 或单文件压缩型）。 */
     private fun openDecompress(path: String): InputStream {
         val base = BufferedInputStream(FileInputStream(path))
-        val lower = archiveName(path).lowercase(Locale.getDefault())
+        val lower = archiveName(path).lowercase()
         return when {
             lower.endsWith(".tar") -> base
             lower.endsWith(".tgz") || lower.endsWith(".tar.gz") || lower.endsWith(".gz") ->
@@ -251,6 +284,15 @@ object ArchiveExtractor {
             } catch (e: Exception) {
                 runCatching { targetFile?.delete() }
                 ExtractResult.Failure("解压失败: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+
+        // ZIP 条目数预算前置：必须在任何解析器触碰 central directory 之前
+        if (kind == Kind.ZIP) {
+            try {
+                probeZipEntryCountOrThrow(archivePath)
+            } catch (e: ExtractionLimitException) {
+                return@withContext ExtractResult.Failure(e.message ?: "压缩包条目数超限")
             }
         }
 
@@ -460,9 +502,9 @@ object ArchiveExtractor {
             } else {
                 org.apache.commons.compress.archivers.sevenz.SevenZFile.Builder().setFile(file).setPassword(password.toCharArray()).get()
             }
-                archive.use { sevenZ ->
-                    while (true) {
-                        val entry = sevenZ.nextEntry ?: break
+            archive.use { sevenZ ->
+                while (true) {
+                    val entry = sevenZ.nextEntry ?: break
                     if (!entry.isDirectory && entry.size < 0L) {
                         throw IllegalStateException("7Z 条目大小未知，拒绝解压")
                     }
@@ -480,10 +522,22 @@ object ArchiveExtractor {
                     FileOutputStream(dest).use { out ->
                         val buffer = ByteArray(64 * 1024)
                         var total = 0L
+                        // 连续零读上限：commons-compress 的 SevenZFile 在部分畸形/加密
+                        // 条目上会返回 0 而不推进，原实现是 `if (read == 0) continue`，
+                        // 于是 `while (total < entry.size)` 永远转下去 —— 表现为
+                        // 「解压卡住、界面无任何反应」，且目标文件已被 createNewFile 占用。
+                        // 单次 0 读可能是合法的分块边界，连续多次则说明流已无法推进。
+                        var zeroReads = 0
                         while (total < entry.size) {
                             val read = sevenZ.read(buffer)
                             if (read < 0) throw IllegalStateException("7Z 条目提前结束")
-                            if (read == 0) continue
+                            if (read == 0) {
+                                if (++zeroReads > MAX_ZERO_READS) {
+                                    throw IllegalStateException("7Z 条目读取无进展，已中止")
+                                }
+                                continue
+                            }
+                            zeroReads = 0
                             budget.consume(read)
                             out.write(buffer, 0, read)
                             total += read

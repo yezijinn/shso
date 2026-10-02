@@ -1,4 +1,6 @@
 #!/bin/sh
+# Copyright 2026, shso contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
 # shso_guard 安装脚本（customize.sh）
 #
 # 两种安装方式：

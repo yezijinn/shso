@@ -23,7 +23,7 @@ Android ROOT 环境下的图形化执行工具：运行 `.sh` 脚本与 `.so` / 
 | 层 | 技术 |
 |---|---|
 | 语言 / 运行时 | Kotlin 2.4.0，JVM 21 |
-| UI | AndroidX Compose Material 3（compose-bom 2026.08.00）+ 自研极光玻璃主题（`ui/theme/Aurora*`） |
+| UI | AndroidX Compose Material 3（compose-bom 2026.09.00）+ 自研极光玻璃主题（`ui/theme/Aurora*`） |
 | 并发 | kotlinx-coroutines 1.10.1（全局 object 单例 + Compose `mutableStateOf` 驱动 UI） |
 | 序列化 | kotlinx-serialization-core |
 | 构建 | AGP 9.2.1，Version Catalog，开启 configuration-cache |
@@ -42,6 +42,7 @@ shso-main/
 │   ├── guard/<cmd>               # 命令包装器（由 gen_wrappers.py 从 guard-template.sh 生成）
 │   ├── policy.conf               # 默认策略（protect= / allow= / mode=）
 │   └── gen_wrappers.py           # 包装器生成器：改守卫需重新生成并重打包 zip
+├── tools/pack_guard_module.py    # 确定性打包 module/shso_guard → assets/shso_guard.zip（含一致性与 CRLF 校验）
 ├── settings.gradle.kts           # 自包含工程：仅 include(":app")
 ├── gradle/libs.versions.toml     # 唯一版本管理入口
 ├── gradle.properties             # 8G JVM、R8 gradual、Dokka V2 实验开关
@@ -50,10 +51,11 @@ shso-main/
     └── java/com/mixradio/droid/
         ├── data/                 # 核心逻辑层
         │   ├── RootService.kt        # ROOT 执行引擎（单例，进程组回收 + 终端命令通道）
-        │   ├── RootFileManager.kt    # 全盘文件操作
-        │   ├── ApkInstaller.kt       # APK / XAPK 安装（单文件 + 分包会话安装）
+        │   ├── RootFileManager.kt    # 全盘文件操作（危险操作统一门禁）
+        │   ├── ApkInstaller.kt       # APK / XAPK 安装（单文件 + 分包会话 + OBB 事务锁）
         │   ├── ApkExtractor.kt       # 提取已安装应用安装包（纯函数可测）
-        │   ├── ArchiveExtractor.kt   # 压缩包解压（防 Zip Slip）
+        │   ├── ArchiveExtractor.kt   # 压缩包解压（防 Zip Slip + 条目预算前置）
+        │   ├── ZipEntryCountProbe.kt # ZIP 中央目录条目数前置探针（读尾部 EOCD，零分配）
         │   ├── ChunkedFileReader.kt  # 大文件分段读取（128KB 载入阈值 / 32MB 只读上限）
         │   ├── ExternalOpen.kt       # 外部唤起（打开方式/分享）URI 解析、收件箱拷贝、投递 Hub
         │   ├── AnsiParser.kt         # ANSI/OSC 增量解析（私有模式 / 退格 / 行内擦除）
@@ -160,11 +162,39 @@ stat 失败或路径非法时禁止动作分派。
 
 ### 安全约束（改动必守）
 
-- `su -c` 参数路径一律单引号转义。
+- `su -c` 参数路径一律单引号转义。**拼进命令的每个可变片段**（含从文件名派生的
+  目录名/基础名/后缀）都要各自过一次 `escapeShellArg`，不能只转义整条路径。
 - 文件操作过滤 `..`、`\`、`\0`。
 - ROOT 鉴权带协程超时，防止授权管理器卡死导致 ANR。
-- 解压落盘先词法剥离、再 `canonicalFile` 二次校验（防 Zip Slip，含符号链接逃逸）。
+- 解压落盘先词法剥离、再 `canonicalFile` 二次校验（防 Zip Slip）；符号链接替换竞态仍需更底层的无跟随写入方案，不能仅依赖该检查。
 - 中断与结束进程按进程组发信号，发信号前校验目标确为组长且不等于本应用所在组。
+- **跨进程互斥必须用 `O_EXCL` 类原语，不能用「mv 到目标位置」**。POSIX 的
+  `mv dir1 dir2` 在 dir2 已存在且是目录时会把 dir1 移进其内部并返回 0，
+  两边都会认为成功（真机已实测）。当前唯一可用的原语是 `set -C` + `>` 重定向
+  （`O_CREAT|O_EXCL`），它在 emulated/FUSE 上同样生效，而 `ln` 硬链接不行
+  （跨挂载点报 `Cross-device link`）。
+- **shell 里的整数比较前必须先校验操作数是纯数字**。`cut -d'|' -fN` 对
+  「无分隔符」的行会整行返回，垃圾输入会让 mksh 的 `[ a -ge b ]` 报
+  `unexpected operator` 并返回非零，把判定链静默导向错误分支。
+
+### OBB 事务锁（`ApkInstaller`，XAPK 安装）
+
+OBB 落位要跨「拷贝 → 原子改名 → APK 安装 → 失败回滚」多个步骤，需要一把跨进程的锁。
+
+| 项 | 实现 |
+|---|---|
+| 锁载体 | 单个**文件** `/sdcard/Android/obb/<pkg>/.shso_install.lock`，内容单行 `token\|pid\|进程启动ticks\|created` |
+| 获取 | `( set -C; printf '%s' META > LOCK )` —— `O_EXCL` 原子创建，创建即 CAS |
+| 占用判定 | pid **与** 进程启动时间双校验（pid 会被系统复用），退出码 17 = 忙（可退避重试） |
+| 状态不明 | 字段缺失或非纯数字 → 退出码 21，fail-closed 立即拒绝，不抢占 |
+| 陈旧回收 | pid 已死 **且** 超 15 分钟 TTL → `mv` 到唯一 quarantine 名摘掉锁名，再核对隔离出的内容确实是刚判定的那把；不一致则不删并返回 21 |
+| 释放 | 只在内容首字段仍是自己 token 时删 |
+| 目标落位 | 同目录临时文件 `cp` → 原子 `mv`；目标已存在或为软链一律拒绝，不覆盖用户原有 OBB |
+| 回滚身份 | `stat -c '%i:%s:%y'`（**纳秒 mtime**）；身份取不到时该条目不进回滚表，宁可残留也不误删 |
+| 脚本可测性 | `buildObbLockAcquireScript` 为 internal 纯函数，单测对**生成的脚本文本**断言 fail-closed 分支与 CAS 收尾，避免删掉守卫分支却无人察觉 |
+
+真机验证（PACM00 / Android 10 / Magisk）：8 进程并发抢锁恰好 1 个成功、
+垃圾元数据返回 21、活锁返回 17、陈旧锁被回收、外部替换目标后回滚正确放弃删除。
 
 ### 权限位约定
 
@@ -250,6 +280,23 @@ python build_apk.py             # Windows 脚本（含 --skip-check）
   `res/` 86KB / `assets/` 72KB / `lib/` 10KB。继续瘦身只能从 dex 入手。
   `build_apk.py` 每次构建后打印该构成，并校验 ABI 白名单与 zstd 残留。
 
+## 许可证
+
+本项目以 **GPL-3.0-or-later**（强 Copyleft）开源，`LICENSE` 为 GPL-3.0 全文。
+所有自有源文件带 `// SPDX-License-Identifier: GPL-3.0-or-later`。
+
+第三方依赖保留各自许可，随 APK 分发；均为 GPL-3.0 兼容（Apache-2.0 单向兼容，
+LGPL-2.1 允许以 GPL-3.0 组合）：
+
+| 组件 | 许可 |
+|---|---|
+| Sora Editor `editor` / `language-monarch` | LGPL-2.1 |
+| `io.github.dingyi222666.monarch` / `regex-lib` / moshi / okio | Apache-2.0 |
+| zip4j / commons-compress / tukaani xz | Apache-2.0 / Apache-2.0 / 公有领域 |
+| AndroidX / Compose / Material Color Utilities | Apache-2.0 |
+
+`module/shso_guard`（含 `assets/shso_guard.zip`）同为本仓源码，一并适用 GPL-3.0-or-later。
+
 ## 页面与模块映射
 
 功能清单见 `README.md`，此处只列页面与实现的对应关系。
@@ -295,8 +342,16 @@ python build_apk.py             # Windows 脚本（含 --skip-check）
 - **审计**（`SecurityAuditLog`）：`/data/adb/shso/audit.log`（无 ROOT 回退应用私有目录），
   512KB 环形滚动；写入前清除软链与非普通文件（目录 0777，防止软链导致任意 root 写入），
   清除失败即放弃本次写入；字段经 `sanitizeField` 转义（`|` → `\u007C`、换行 → `\n`、
-  剥离控制字符）以维持「一行一条记录」；轮转使用带 PID 的唯一临时名；
-  配置类事件（守卫安装 / 卸载 / 改档 / 降级 / 审计清空）在档位 0 下仍留痕。
+  剥离控制字符）以维持「一行一条记录」；轮转使用带 PID 的唯一临时名。
+  - 记录格式：`ts | 风险等级 | 来源 | 判定 | [规则ID] | [sha256:12] | [exit:N] | 内容`。
+  - `判定`（`AuditVerdict`）是**枚举**而非裸字符串，取值与含义：
+    `ALLOW` 策略放行 / `CONFIRMED` 用户已确认后放行 / `DENIED` 被拒绝未执行 /
+    `DEGRADED` 放行但运行时守卫不可用 / `START`·`FINISHED`·`FAILED` 长任务生命周期。
+    `DENIED` 与 `DEGRADED` 必须严格区分：后者是「这台设备当时没有完整防护」的唯一证据，
+    混用会让事后追溯失效。
+  - `来源`（`CommandSource`）：`INTERNAL_APP` / `USER_TERMINAL` / `SCRIPT_FILE` /
+    `FILE_MANAGER`（文件页的破坏性操作，此前被误记为 `USER_TERMINAL`）。
+  - 档位 0 下不记录普通事件，但**配置类事件与 `DEGRADED` 始终留痕**。
 - **执行前确认**：弹风险确认框，展示文件名、路径、类型、大小、修改时间、
   SHA-256、是否以 Root 执行与脚本风险扫描结果。
 - **检查更新**（`SettingsPage`）：Gitee 优先、GitHub 备选，国内网络访问 GitHub 常不可达。
@@ -307,7 +362,14 @@ python build_apk.py             # Windows 脚本（含 --skip-check）
   否则「有标签」会被判成「无标签」，用户看到的是假的网络异常。
   状态机五态（Idle / Checking / UpToDate / Available / NetworkError），
   成功源只用于「去更新」跳转（Gitee → `releases/tag/<最新>`，GitHub → `releases`）与日志。
-- **编辑器文件阈值**：`LARGE_FILE_THRESHOLD = 128KB` 是整体载入边界（≤128KB 走 `loadAll`，超过走分块读取以支撑编辑）；`MAX_LOAD_BYTES = 32MB` 是可编辑上限，超过无法全文入 Sora 内存（OOM），退回稀疏只读浏览。
+- **编辑器文件阈值**：`LARGE_FILE_THRESHOLD = 128KB` 是 `loadAll` **内部**的读法分界
+  （≤128KB 直读 / >128KB 分块），不再决定「可编辑 vs 只读」；唯一分界是
+  `MAX_LOAD_BYTES = 32MB`，超过无法全文入 Sora 内存（OOM），退回稀疏只读浏览。
+- **编码探测**（`CharsetDetector`）：BOM → **无 BOM 的 UTF-16 嗅探** → UTF-8 严格校验 →
+  GB18030 → ISO-8859-1。UTF-16 嗅探需两个信号合取：① 偶/奇位 NUL 分布显著不对称
+  （ASCII 文本每两字节一个 `0x00`；纯中文 UTF-16 只有换行处有 NUL，占比约 0.2，
+  故阈值取 0.18 而非 0.3）② 按该编码解码后不含异常 C0 控制字符与孤立代理项。
+  只用信号 ① 会被「大量 NUL 的二进制」骗过，只用 ② 会在巧合分布下误判 GB18030/UTF-8 中文。
 - **外部 intent 面**：只有两个 `activity-alias`、只接受 `ACTION_VIEW` / `ACTION_SEND`。
   外部传入的文件**不改变任何防护语义** —— 执行类仍弹风险确认框、仍走 `ScriptAuditor` 与档位门控；
   拷贝收件箱时文件名经净化（滤 `..`、`\`、NUL 与控制字符）、体积上限 `COPY_LIMIT_BYTES`（512MB），
@@ -333,6 +395,22 @@ python build_apk.py             # Windows 脚本（含 --skip-check）
   保存时按 `currentLineEnding` 还原；改动 `LineEnding.apply` 需同步该契约。
 - 分包安装必须走会话流，且分片先拷到 `/data/local/tmp`：`pm install-write` 直接读
   `/storage/emulated/0` 会被 SELinux 拒绝（system_server 无权读 emulated 存储）。
+- **`pm install-write` 的 SPLIT_NAME 语义**（已按 AOSP `PackageInstallerSession`
+  源码与真机双向核实，勿按字面理解）：参数形式是
+  `install-write [-S BYTES] SESSION_ID SPLIT_NAME [PATH|-]`，但 `SPLIT_NAME`
+  **不是** manifest 里的 split 名。写入期只做 `FileUtils.isValidExtFilename`
+  校验（仅禁 `NUL` 与 `/`），随后按该名字落盘，**完全不解析 APK**；真实 split 名
+  在 `commit` 时才由 `PackageParser.parseApkLite` 逐个读出并统一改名为
+  `base.apk` / `split_<manifestSplitName>.apk`。因此：
+  - 名字不能是绝对路径（含 `/` 会报 `IllegalArgumentException: Invalid name`）；
+  - base 与 split 的写入**顺序无关**（一致性断言与顺序无关）；
+  - 但草稿名必须**两两不同** —— `doWriteInternal` 用
+    `Os.open(..., O_CREAT|O_WRONLY, 0644)` 落盘、**没有 O_EXCL**，同名两次写入会
+    静默覆盖成一个文件，表现为「装上了但少一个分片」；
+  - 基础包必须存在（`MODE_FULL_INSTALL` 漏写会在 commit 报
+    `INSTALL_FAILED_INVALID_APK: Full install must include a base package`）。
+  - `pm install-commit` 的失败会**回传到 stdout 并返回非 0**（形如
+    `Failure [INSTALL_PARSE_FAILED_NOT_APK: ...]`，rc=4），可直接据此判定。
 - 套件聚合（`ApkInstaller.collectApkSet`）：优先命名约定，其次 manifest 的
   「同包名 + 同版本号」；`bases.size != 1` 时退回单文件，不做猜测。
   改动需同步 `ApkInstallerSetTest`。
@@ -341,6 +419,13 @@ python build_apk.py             # Windows 脚本（含 --skip-check）
   改动需同步 `ApkExtractorTest`。
 - `Process.pid()` 在 Android 上不存在，取子进程 pid 只能反射；
   中断正确性由进程组回收保证。
+- **已授权 ROOT 时的存在性判定不要用 `java.io.File.exists()`**：它以应用 uid 判定，
+  对 `/data/adb/` 一类受保护路径恒为 false，会让「装了 ROOT 也装不上」。
+  见 `ApkInstaller.pathReadable`。
+- **KDoc 里不要出现 `/**` 序列**（例如写 `` `/data/adb/**` ``）：Kotlin 块注释**可嵌套**，
+  内层的 `/**` 会让外层注释永不闭合，编译报 `Unclosed comment`。
+- **反引号函数名里不能出现 `.` `;` `[` `]` `/` `<` `>` `:`**（JVM 限制）。
+  单测命名要避开，如 `Os.open` 要写成「写入端」。
 
 ## 排错速查
 
@@ -382,6 +467,9 @@ python build_apk.py             # Windows 脚本（含 --skip-check）
   同时升 `module.prop` 的 `version=`（版本不变，已装设备不会自动升级）。单测
   `required entries stay in sync with sources and bundled zip` 会逐条比对
   「源码目录 / zip / 必需清单」的内容，漏登记或忘记重新打包都会失败。
+- 重打包一律走 `python tools/pack_guard_module.py`（不要手工压 zip）：它固定时间戳与
+  条目顺序保证产物可复现，并在打包前后校验「zip 与源码逐字节一致」+ 拦下 CRLF
+  （守卫脚本带 CRLF 会被 Android mksh 直接拒绝执行）。
 - 守卫脚本改动后先做两步验证：设备上 `sh -n common.sh`，再跑一次含 `|` 与换行的审计用例。
   bash 的 `-n` 查不出 mksh 的两类陷阱：跨行模式会报 `no closing quote`，让整个文件解析失败、
   脚本转去读 stdin 而挂住；参数展开里未加引号的 `|` 会被当成模式交替符，替换不收敛直接死循环。

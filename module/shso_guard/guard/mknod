@@ -1,4 +1,6 @@
 #!/system/bin/sh
+# Copyright 2026, shso contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
 # shso_guard 守卫模板（mknod）
 #
 # 不变式（INVARIANT）：本文件必须与每个由它生成的守卫「除两处占位符替换外逐字节相同」：

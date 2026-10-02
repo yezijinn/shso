@@ -1,4 +1,6 @@
 #!/system/bin/sh
+# Copyright 2026, shso contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
 # shso_guard 公共库 —— 策略判定 / 路径归一化 / 审计落盘 / 决策分发
 #
 # 由 guard/<cmd> 脚本 source 调用，不可单独执行。
@@ -450,20 +452,45 @@ run_guard() {
             _n=$#
             _last=""
             if [ $_n -gt 0 ]; then eval "_last=\"\${$_n}\""; fi
+            # `-t <dir>` / `--target-directory=<dir>`：语义是「把所有源搬进 <dir>」，
+            # 此时末操作数是**源**而非目标。只判末位会让 `cp -t /system/bin a b` 放行。
+            # 一旦识别到 -t，末操作数就不再当目标判（它只是源之一），改判 -t 的值。
+            _has_t=0
+            _i=1
+            while [ $_i -le $_n ]; do
+                eval "_a=\"\${$_i}\""
+                case "$_a" in
+                    -t|--target-directory)
+                        _j=$((_i + 1))
+                        if [ $_j -le $_n ]; then
+                            eval "_b=\"\${$_j}\""
+                            _paths="$_paths $_b"
+                            _has_t=1
+                        fi
+                        ;;
+                    --target-directory=*)
+                        _paths="$_paths ${_a#--target-directory=}"
+                        _has_t=1
+                        ;;
+                esac
+                _i=$((_i + 1))
+            done
             # mv：源（除末操作数外）也要判定——移动受保护路径即销毁
             if [ "$_g_cmd" = "mv" ]; then
                 _i=1
                 while [ $_i -lt $_n ]; do
                     eval "_a=\"\${$_i}\""
                     case "$_a" in
+                        # -t 与其取值本身不是路径，跳过（取值已单独判过）
+                        -t|--target-directory) _i=$((_i + 1)) ;;
                         -*) ;;
                         *)  _paths="$_paths $_a" ;;
                     esac
                     _i=$((_i + 1))
                 done
             fi
-            # 目标（末操作数）始终判定
-            if [ -n "$_last" ]; then
+            # 目标判定：识别到 -t 时末操作数是源，不再重复当目标；否则按末位判
+            if [ "$_has_t" -eq 0 ] && [ -n "$_last" ]; then
                 case "$_last" in
                     -*) ;;
                     *)  _paths="$_paths $_last" ;;

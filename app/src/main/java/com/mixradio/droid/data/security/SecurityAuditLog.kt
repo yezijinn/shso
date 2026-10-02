@@ -1,5 +1,5 @@
 // Copyright 2026, shso contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 package com.mixradio.droid.data.security
 
@@ -134,22 +134,30 @@ object SecurityAuditLog {
     private fun now(): String = Instant.now().atZone(ZoneId.systemDefault()).format(dateFormat)
 
     /**
-     * 记录一条审计（异步落盘，不阻塞调用方）。verdict: ALLOW/CONFIRM/BLOCK。
+     * 记录一条审计（异步落盘，不阻塞调用方）。
+     *
+     * [verdict] 用 [AuditVerdict] 枚举而不是裸字符串：此前 `BLOCK` 既表示「被拒绝」
+     * 又表示「放行但守卫降级」，看日志无法区分「命令没跑」与「跑了但没防护」。
      *
      * 档位 0 下普通事件不记录；[ALWAYS_AUDITED] 中的配置类事件始终记录。
      */
     fun log(
         source: CommandSource,
-        verdict: String,
+        verdict: AuditVerdict,
         ruleId: String?,
         level: RiskLevel,
         command: String,
         scriptSha256: String? = null,
         exitCode: Int? = null
     ) {
-        if (PolicyEngine.currentLevel() <= SecurityLevels.OFF && ruleId !in ALWAYS_AUDITED) return
+        // 降级执行必须留痕：它是「当时这台设备没有运行时守卫」的唯一证据，
+        // 属于配置类事实，不随档位 0 一起静默。
+        if (PolicyEngine.currentLevel() <= SecurityLevels.OFF &&
+            ruleId !in ALWAYS_AUDITED &&
+            verdict != AuditVerdict.DEGRADED
+        ) return
 
-        val line = formatLine(now(), source, verdict, ruleId, level, command, scriptSha256, exitCode)
+        val line = formatLine(now(), source, verdict.name, ruleId, level, command, scriptSha256, exitCode)
 
         synchronized(lock) {
             entryCounter++

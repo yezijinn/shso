@@ -1,5 +1,5 @@
 // Copyright 2026, shso contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 package com.mixradio.droid.data.security
 
@@ -143,7 +143,18 @@ object ScriptAuditor {
      *
      * 超过上限时**返回 null + note**（而不是只扫描前 2MB 就当 ok）：
      * 否则「先塞 2MB 正常内容、再藏载荷」的脚本会绕过审计 —— 这是真实的漏检路径。
-     * @return (内容或 null, note)——null 时 note 说明原因
+     *
+     * ## fail-closed 的三处关键判断
+     *
+     * ROOT 路径上大小未知时**不做截断扫描**，一律拒绝：
+     * 1. `stat` 失败（路径非法 / su 被拒 / 文件已消失）→ size 为 null。此前直接跳过
+     *    2MB 上限继续 `cat | head -c 2MB`，把**被截断的内容**按「已完整扫描」返回 ok，
+     *    调用方据此放行自动执行 —— 攻击者只要让 `stat` 失败就能完全跳过审计。
+     * 2. `stat` 成功但输出非数字 → 同样视为未知。
+     * 3. 读取时实际字节数达到上限（而非「小于上限」）即判为可能超限：
+     *    内容恰好等于 2MB 时无法区分「刚好 2MB」与「被 head 截断」，按拒绝处理。
+     *
+     * @return (内容或 null, note)——null 时 note 说明原因，调用方必须拒绝自动执行
      */
     fun readScriptContent(path: String): Pair<String?, String> {
         return try {
@@ -154,19 +165,30 @@ object ScriptAuditor {
                 }
                 return Pair(file.readText(Charsets.UTF_8), "ok")
             }
-            // Root-only：先取真实大小，超限直接拒绝（不再截断扫描）
+            // Root-only：先取真实大小，任何「拿不到大小」的情况都必须 fail-closed，
+            // 否则 `stat` 失败即可绕过 2MB 上限与后续审计。
             val escaped = RootService.escapeShellArg(path)
             val (sizeCode, sizeOut) = RootService.runCommandSync("stat -c %s $escaped", 10_000L)
-            val size = if (sizeCode == 0) sizeOut.trim().toLongOrNull() else null
-            if (size != null && size > MAX_SCAN_BYTES) {
+            if (sizeCode != 0) {
+                return Pair(null, "无法确认文件大小（stat 退出码 $sizeCode），按保守策略拒绝自动执行")
+            }
+            val size = sizeOut.trim().toLongOrNull()
+                ?: return Pair(null, "无法解析文件大小（stat 输出: ${sizeOut.trim().take(32)}），按保守策略拒绝自动执行")
+            if (size > MAX_SCAN_BYTES) {
                 return Pair(null, "文件超过 2MB（$size 字节），无法完整扫描")
             }
             val (code, out) = RootService.runCommandSync(
                 "cat $escaped 2>/dev/null | head -c $MAX_SCAN_BYTES",
                 15_000L
             )
-            if (code == 0 && out.isNotEmpty()) Pair(out, "ok")
-            else Pair(null, "无法读取文件内容（su 返回 $code）")
+            when {
+                code != 0 -> Pair(null, "无法读取文件内容（su 返回 $code）")
+                // 读到的字节数达到上限：无法区分「恰好等于上限」与「被截断」，按可能超限处理
+                out.length >= MAX_SCAN_BYTES -> Pair(null, "文件大小无法确认未超限（读取已达 2MB 上限），无法完整扫描")
+                out.isEmpty() && size > 0 -> Pair(null, "文件非空但读取结果为空，无法确认内容")
+                out.isEmpty() -> Pair(out, "ok")
+                else -> Pair(out, "ok")
+            }
         } catch (e: Exception) {
             Pair(null, "读取失败: ${e.message}")
         }
