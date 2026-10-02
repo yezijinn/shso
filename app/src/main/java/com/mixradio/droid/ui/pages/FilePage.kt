@@ -1,5 +1,5 @@
 // Copyright 2026, shso contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 package com.mixradio.droid.ui.pages
 
@@ -89,6 +89,7 @@ import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.security.CommandSource
 import com.mixradio.droid.data.security.RiskLevel
+import com.mixradio.droid.data.security.AuditVerdict
 import com.mixradio.droid.data.security.SecurityAuditLog
 import com.mixradio.droid.data.displayPath
 import com.mixradio.droid.ui.components.ApkExtractDialog
@@ -216,6 +217,25 @@ fun FilePage(
     val refreshGenRef = remember { intArrayOf(0) }
     // 刷新任务引用：切目录时取消上一次，省掉无谓的 root 列目录开销。
     val refreshJobRef = remember { arrayOfNulls<kotlinx.coroutines.Job>(1) }
+
+    /**
+     * 当前目录是否可作为解压目标（null = 未测或正在测）。
+     *
+     * `ArchiveExtractor.canExtractTo` 是阻塞的文件系统探测，放在组合期（`remember`）
+     * 会在每次切目录时于主线程执行一次。改为异步测量：未测出前不禁用入口
+     * （null 视为可写），测出不可写才禁用并说明原因。
+     */
+    var extractTargetWritable by remember { mutableStateOf<Boolean?>(null) }
+
+    fun refreshExtractTargetWritable() {
+        val dir = currentDirectory
+        extractTargetWritable = null
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) { ArchiveExtractor.canExtractTo(dir) }
+            // 目录已切走则丢弃本次结果，避免用旧目录的可写性误禁新目录的入口
+            if (dir == currentDirectory) extractTargetWritable = ok
+        }
+    }
 
     fun refresh(showToast: Boolean = false) {
         // 记录本次要加载的目录。切目录时旧协程不会被自动取消（它挂在页面级 scope 上，
@@ -345,7 +365,7 @@ fun FilePage(
             installAlertMessage = null
             installStatusMessage = "正在安装 ${item.name}，请勿重复操作"
             val installMode = if (installAsRootOverride == true) "root" else "system"
-            SecurityAuditLog.log(CommandSource.INTERNAL_APP, "START", "APK_INSTALL", RiskLevel.WARNING,
+            SecurityAuditLog.log(CommandSource.INTERNAL_APP, AuditVerdict.START, "APK_INSTALL", RiskLevel.WARNING,
                 "path=${item.path} | sha256=${confirmedSha256 ?: "unconfirmed"} | mode=$installMode")
             val result = try {
                 val installAsRoot = installAsRootOverride ?: (RootService.isRootGranted == true)
@@ -389,7 +409,7 @@ fun FilePage(
             feedbackMessage = resultMessage
             SecurityAuditLog.log(
                 CommandSource.INTERNAL_APP,
-                if (result is ApkInstaller.InstallResult.Success) "ALLOW" else "FAIL",
+                if (result is ApkInstaller.InstallResult.Success) AuditVerdict.FINISHED else AuditVerdict.FAILED,
                 "APK_INSTALL",
                 RiskLevel.WARNING,
                 "path=${item.path} | sha256=${confirmedSha256 ?: "unconfirmed"} | mode=$installMode | result=$resultMessage"
@@ -1201,17 +1221,20 @@ fun FilePage(
                     // 解压以应用自身 uid 落盘：受 SELinux 限制的目录（如 `/data/adb/`）
                     // 即便 chmod 777 也可能写不进去。
                     // 先检测可写性，不可写则禁用入口并在标签上说明原因。
-                    val canExtract = remember(currentDirectory) {
-                        ArchiveExtractor.canExtractTo(currentDirectory)
-                    }
+                    //
+                    // 可写性检测是**阻塞的文件系统调用**，不能放在组合期：
+                    // `remember(currentDirectory)` 在每次切目录后都会重跑一次
+                    // `File.canWrite()`，大目录/慢存储下就是一次可感知的卡顿。
+                    // 改为在进入动作菜单后异步测一次，测完写回状态。
+                    LaunchedEffect(currentDirectory) { refreshExtractTargetWritable() }
                     ActionTextRow(
                         label = when {
                             isExtracting -> "正在解压…"
-                            !canExtract -> "自动解压文件（当前目录不可写）"
+                            extractTargetWritable == false -> "自动解压文件（当前目录不可写）"
                             else -> "自动解压文件"
                         },
                         color = AuroraTokens.Accent,
-                        enabled = !isExtracting && canExtract
+                        enabled = !isExtracting && extractTargetWritable != false
                     ) {
                         showActionDialog = false
                         startExtract(item)
@@ -2048,10 +2071,22 @@ fun FilePage(
     )
 
     // ===== 安装确认弹窗：ROOT 下 pm install 静默完成，必须显式确认后安装 =====
+    //
+    // ROOT 状态经 `LaunchedEffect` 落到本地 state，而不是在组合期直接读
+    // `RootService.isRootGranted`（那是全局 mutableStateOf）：直接读会让
+    // 「用户授予/撤销 ROOT」这一变化触发本文件两千多行的整页重组。
+    // 语义不变 —— 确认框弹出前会先 probe 一次，见下。
+    var rootGrantedForInstall by remember { mutableStateOf(RootService.isRootGranted == true) }
+    LaunchedEffect(pendingInstallItem) {
+        if (pendingInstallItem == null) return@LaunchedEffect
+        rootGrantedForInstall = withContext(Dispatchers.IO) {
+            RootService.isRootGranted == true || RootService.checkRoot()
+        }
+    }
     InstallConfirmDialog(
         show = pendingInstallItem != null,
         fileItem = pendingInstallItem,
-        willInstallAsRoot = RootService.isRootGranted == true,
+        willInstallAsRoot = rootGrantedForInstall,
         onDismiss = { pendingInstallItem = null },
         onConfirm = { confirmedSha256, installAsRoot, stagedPath ->
             val target = pendingInstallItem

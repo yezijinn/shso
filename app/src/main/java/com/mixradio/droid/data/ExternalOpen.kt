@@ -1,5 +1,5 @@
 // Copyright 2026, shso contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 package com.mixradio.droid.data
 
@@ -341,11 +341,19 @@ object ExternalOpen {
                 FileOutputStream(target).use { output ->
                     val buffer = ByteArray(64 * 1024)
                     var total = 0L
+                    var checkedBytes = existingBytes
                     while (true) {
                         val read = input.read(buffer)
                         if (read < 0) break
                         total += read
                         if (total > COPY_LIMIT_BYTES) throw IllegalStateException("文件超过 ${COPY_LIMIT_BYTES / 1024 / 1024}MB 上限")
+                        // 总容量必须**边写边判**：`declaredSize` 来自 Provider，可能是 -1（未知）
+                        // 或故意偏小。只在拷贝前检查一次的话，声明为「未知/很小」的大文件
+                        // 就能把收件箱撑到远超 MAX_INBOX_BYTES。
+                        checkedBytes += read
+                        if (checkedBytes > MAX_INBOX_BYTES) {
+                            throw IllegalStateException("收件箱总容量超过 ${MAX_INBOX_BYTES / 1024 / 1024 / 1024}GB 上限")
+                        }
                         output.write(buffer, 0, read)
                     }
                     output.flush()
@@ -361,13 +369,19 @@ object ExternalOpen {
         }
     }
 
-    /** Atomically reserve a destination before opening the provider stream. */
+    /**
+     * 原子预占目标文件名（`createNewFile`），避免并发分享同名文件互相覆盖。
+     *
+     * 重名重试上界独立于 [MAX_INBOX_FILES]（那是「文件总数」上限），
+     * 两者语义不同；此前复用同一个常量，在极端情况下会把「重名重试耗尽」
+     * 误报成「收件箱已满」。
+     */
     private fun reserveUniqueFile(dir: File, name: String): File? {
         val dot = name.lastIndexOf('.')
         val stem = if (dot > 0) name.substring(0, dot) else name
         val ext = if (dot > 0) name.substring(dot) else ""
         var index = 0
-        while (index < MAX_INBOX_FILES) {
+        while (index < MAX_NAME_PROBE) {
             val candidate = File(dir, if (index == 0) name else "${stem}_$index$ext")
             try {
                 if (candidate.createNewFile()) return candidate
@@ -378,6 +392,9 @@ object ExternalOpen {
         }
         return null
     }
+
+    /** 单个收件箱内同名文件的重名探测上限。 */
+    private const val MAX_NAME_PROBE = 1000
 
     /** 在目录内构造不冲突的文件名：`x.apk` → `x_1.apk` → `x_2.apk`… */
     fun uniqueFile(dir: File, name: String): File {

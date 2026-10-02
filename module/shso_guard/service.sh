@@ -1,4 +1,6 @@
 #!/system/bin/sh
+# Copyright 2026, shso contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
 # shso_guard late_start service 脚本
 #
 # 只做「善后保障」，不承担拦截逻辑：拦截完全由 guard/ 运行时完成（依赖 PATH 前置），

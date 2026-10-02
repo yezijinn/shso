@@ -1,10 +1,16 @@
+# Copyright 2026, shso contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
 # shso_guard
 
 shso 的运行时守卫模块：在命令被调用的时刻拦截 `rm` / `dd` / `mkfs` 等高危操作，
 保护系统分区并记录审计日志。
 
-- 模块 ID：`shso_guard`（一经发布不再修改），当前版本 v1.3.1（`module.prop` 的 `version=`）。
+- 模块 ID：`shso_guard`（一经发布不再修改），当前版本 v1.4.0（`module.prop` 的 `version=`）。
 - 相关文档：[`README.md`](../../README.md)、[`docs/PROJECT.md`](../../docs/PROJECT.md)。
+- 许可：GPL-3.0-or-later（与主仓一致，模块源码与 `assets/shso_guard.zip` 同源）。
+- v1.4.0 变更：全部守卫脚本与 `module.prop` 补 GPL SPDX 头，包装器由
+  `gen_wrappers.py` 重新生成，改动一律经 `python tools/pack_guard_module.py`
+  重打包（该脚本会同时校验 zip 与源码逐字节一致、并拦下 CRLF）。
 - v1.3.1 起，审计的四条路径都会先确认目标是普通文件：写入、轮转、清空遇到软链先清除，
   清不掉就放弃本次操作，读取则直接拒绝。`SHSO_POLICY` / `SHSO_AUDIT` 的白名单另加了
   `..` 回退拦截。

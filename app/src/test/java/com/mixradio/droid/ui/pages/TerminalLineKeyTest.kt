@@ -1,5 +1,5 @@
 // Copyright 2026, shso contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 package com.mixradio.droid.ui.pages
 
 import androidx.compose.ui.text.AnnotatedString

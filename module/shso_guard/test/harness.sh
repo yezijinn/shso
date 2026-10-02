@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright 2026, shso contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
 # shso_guard 加固后的对抗性冒烟测试（lead 自建，独立于实现者）
 #
 # 环境注意：本机是 Git Bash on Windows。
@@ -150,6 +152,14 @@ run_case BLOCK "n9)   sed --in-place（长选项）"               "$WORK/policy
 run_case BLOCK "n10)  rm -rf \$X（未解析变量 fail-closed）"   "$WORK/policy/lf.conf" rm -rf '$X'
 run_case ALLOW "n11)  ln -sf /sdcard/a /data/local/tmp/b（豁免）" "$WORK/policy/lf.conf" ln -sf /sdcard/a /data/local/tmp/b
 run_case ALLOW "n12)  tee /data/local/tmp/x（豁免）"          "$WORK/policy/lf.conf" tee /data/local/tmp/x
+
+# `-t <dir>` 语义是「把所有源搬进 dir」，末操作数是**源**而非目标。
+# 只判末位会让 `cp -t /system/bin a b` 整条放行（真机实测：toybox cp 报 Unknown option t
+# 后放行，App 侧静态层也只取末操作数），故守卫必须显式识别 -t 的取值。
+run_case BLOCK "n15)  cp -t /system/bin（目标目录形态）"     "$WORK/policy/lf.conf" cp -t /system/bin /sdcard/a /sdcard/b
+run_case BLOCK "n16)  mv -t /system/bin（目标目录形态）"     "$WORK/policy/lf.conf" mv -t /system/bin /sdcard/a
+run_case BLOCK "n17)  cp --target-directory=/system/bin"    "$WORK/policy/lf.conf" cp --target-directory=/system/bin /sdcard/a
+run_case ALLOW "n18)  cp -t /data/local/tmp（豁免目标）"   "$WORK/policy/lf.conf" cp -t /data/local/tmp /sdcard/a
 
 echo
 echo "===== 环境变量越权（SHSO_POLICY 指向可写路径的 mode=off，必须被忽略）====="

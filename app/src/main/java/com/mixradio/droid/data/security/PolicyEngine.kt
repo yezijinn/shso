@@ -1,5 +1,5 @@
 // Copyright 2026, shso contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 package com.mixradio.droid.data.security
 
@@ -207,35 +207,73 @@ object PolicyEngine {
     /**
      * cp / install / ln / rsync：**目标**是系统或设备路径 → 等于往系统里写文件。
      * 静态层必须在此拦截：仅靠运行时守卫的 PATH 包装器无法覆盖脚本自动执行链路。
+     *
+     * ## 为什么不能只看 `operands.last()`
+     *
+     * `cp -t /system/bin a b` 的语义是「把所有源搬进 `/system/bin`」，此时
+     * **最后一个操作数是源 `b`，真正的目标是选项 `-t` 的值**。只取末位会判成
+     * 「目标 = b（普通相对路径）」→ 放行，规则被一句话绕过。
+     * `mv -t` / `install -t` 同理。这里显式识别 `-t` / `--target-directory`，
+     * 取其后的值作为目标，并对**所有**出现的 `-t` 取值都判一遍。
      */
     private fun evaluateCopyLike(atom: CommandParser.Atom, line: Int?, snippet: String, findings: ArrayList<Finding>) {
-        val target = atom.operands.lastOrNull() ?: return
-        when (PathClassifier.classify(target)) {
-            PathClassifier.PathClass.CRITICAL -> findings.add(
-                Finding("COPY_SYSTEM", RiskLevel.CRITICAL, "写入系统/设备路径: ${target.take(120)}", snippet, line)
-            )
-            PathClassifier.PathClass.DANGEROUS -> findings.add(
-                Finding("COPY_DATA", RiskLevel.DANGEROUS, "写入数据分区: ${target.take(120)}", snippet, line)
-            )
-            else -> {}
+        val explicitTargets = targetDirectoryArgs(atom.args)
+        // 没有 -t 时才退回「末位操作数即目标」的常规语义
+        val targets = if (explicitTargets.isNotEmpty()) explicitTargets else listOfNotNull(atom.operands.lastOrNull())
+        for (target in targets) {
+            when (PathClassifier.classify(target)) {
+                PathClassifier.PathClass.CRITICAL -> findings.add(
+                    Finding("COPY_SYSTEM", RiskLevel.CRITICAL, "写入系统/设备路径: ${target.take(120)}", snippet, line)
+                )
+                PathClassifier.PathClass.DANGEROUS -> findings.add(
+                    Finding("COPY_DATA", RiskLevel.DANGEROUS, "写入数据分区: ${target.take(120)}", snippet, line)
+                )
+                else -> {}
+            }
         }
     }
 
     /**
+     * 提取 `-t <dir>` / `--target-directory=<dir>` / `--target-directory <dir>` 的目录值。
+     *
+     * 支持 `--target-directory=/system` 的等号形式（GNU coreutils 与 toybox 都接受）。
+     * 纯函数，便于单测。
+     */
+    internal fun targetDirectoryArgs(args: List<String>): List<String> {
+        val result = ArrayList<String>(1)
+        var expectNext = false
+        for (arg in args) {
+            if (expectNext) {
+                result += arg
+                expectNext = false
+                continue
+            }
+            when {
+                arg == "-t" || arg == "--target-directory" -> expectNext = true
+                arg.startsWith("--target-directory=") -> result += arg.substringAfter('=')
+            }
+        }
+        return result
+    }
+
+    /**
      * mv：目标是系统/设备路径 → 覆盖写入；**源**是系统路径 → 把系统文件移走同样等于破坏。
-     * 两者合并判定，取最高等级。
+     * 两者合并判定，取最高等级。同样处理 `-t` 目标目录形式。
      */
     private fun evaluateMove(atom: CommandParser.Atom, line: Int?, snippet: String, findings: ArrayList<Finding>) {
         if (atom.operands.isEmpty()) return
-        val target = atom.operands.last()
-        when (PathClassifier.classify(target)) {
-            PathClassifier.PathClass.CRITICAL -> findings.add(
-                Finding("MOVE_SYSTEM", RiskLevel.CRITICAL, "移动到系统/设备路径: ${target.take(120)}", snippet, line)
-            )
-            PathClassifier.PathClass.DANGEROUS -> findings.add(
-                Finding("MOVE_DATA", RiskLevel.DANGEROUS, "移动到数据分区: ${target.take(120)}", snippet, line)
-            )
-            else -> {}
+        val explicitTargets = targetDirectoryArgs(atom.args)
+        val targets = if (explicitTargets.isNotEmpty()) explicitTargets else listOf(atom.operands.last())
+        for (target in targets) {
+            when (PathClassifier.classify(target)) {
+                PathClassifier.PathClass.CRITICAL -> findings.add(
+                    Finding("MOVE_SYSTEM", RiskLevel.CRITICAL, "移动到系统/设备路径: ${target.take(120)}", snippet, line)
+                )
+                PathClassifier.PathClass.DANGEROUS -> findings.add(
+                    Finding("MOVE_DATA", RiskLevel.DANGEROUS, "移动到数据分区: ${target.take(120)}", snippet, line)
+                )
+                else -> {}
+            }
         }
         for (src in atom.operands.dropLast(1)) {
             when (PathClassifier.classify(src)) {
@@ -392,23 +430,78 @@ object PolicyEngine {
         }
     }
 
-    /** find -delete / -exec rm：等价递归删除，按搜索起点分级。 */
+    /**
+     * find -delete / -exec <破坏性命令>：等价递归删除，按搜索起点分级。
+     *
+     * ## 为什么要剥 wrapper 再比对
+     *
+     * 原判定只认裸 `rm`，于是 `find /system -exec /system/bin/rm {} +`、
+     * `find /system -exec busybox rm {} +`、`find /system -exec toybox rm {} +`
+     * 全部逃逸（守卫侧的 FIND 模式已经处理了 basename，这里是 App 侧静态层的同类漏洞）。
+     * 统一做法：把 `-exec`/`-execdir` 之后的**第一个非选项 token** 取 basename，
+     * 再按 basename 判定是否为破坏性命令 —— 绝对路径、busybox/toybox 派发一并覆盖。
+     *
+     * ## 分级与 ruleId 不变（重要）
+     *
+     * 命中破坏性 `-exec` 时**沿用与 `-delete` 相同的等级映射与 ruleId**（CRITICAL 路径 →
+     * `FIND_DELETE` / CRITICAL）。两者语义等价（都是 `find` 遍历该起点后删除），若把
+     * `-exec` 降一级或换 ruleId，`find /system -exec rm {} +` 就会从 Block 退成 Confirm、
+     * 且审计侧的规则词表失稳 —— 都属于安全回退。触发方式的差异写进 message 而非 ruleId。
+     */
     private fun evaluateFind(atom: CommandParser.Atom, line: Int?, snippet: String, findings: ArrayList<Finding>) {
         val hasDelete = atom.args.any { it == "-delete" }
-        val hasExecRm = atom.args.any { it.startsWith("-exec") } &&
-            atom.args.dropWhile { !it.startsWith("-exec") }.take(3).any { it == "rm" }
-        if (!hasDelete && !hasExecRm) return
+        val execCommand = findExecCommand(atom.args)
+        val execIsDestructive = execCommand != null && execCommand in FIND_EXEC_DESTRUCTIVE
+        if (!hasDelete && !execIsDestructive) return
         val start = atom.operands.firstOrNull() ?: return
+        val what = if (hasDelete) "find 递归删除" else "find -exec $execCommand"
         when (PathClassifier.classify(start)) {
             PathClassifier.PathClass.CRITICAL -> findings.add(
-                Finding("FIND_DELETE", RiskLevel.CRITICAL, "find 递归删除系统路径: ${start.take(120)}", snippet, line)
+                Finding("FIND_DELETE", RiskLevel.CRITICAL, "$what 系统路径: ${start.take(120)}", snippet, line)
             )
             PathClassifier.PathClass.DANGEROUS -> findings.add(
-                Finding("FIND_DELETE_DATA", RiskLevel.DANGEROUS, "find 递归删除数据分区: ${start.take(120)}", snippet, line)
+                Finding("FIND_DELETE_DATA", RiskLevel.DANGEROUS, "$what 数据分区: ${start.take(120)}", snippet, line)
             )
             else -> {}
         }
     }
+
+    /**
+     * `-exec` / `-execdir` 之后**真正被执行的命令**的 basename；没有则返回 null。纯函数。
+     *
+     * 需要跳过**多二进制派发器**：`find /system -exec busybox rm {} +` 的第一个非选项
+     * token 是 `busybox` 而不是 `rm`，直接取 basename 会把派发器名当成命令名，
+     * 于是 `busybox rm` / `toybox rm` 两种形态逃逸（守卫侧 FIND 模式同样按 basename
+     * 判定，此处必须对齐）。派发器名单与守卫的 `guard/<busybox|toybox>` 一致。
+     */
+    internal fun findExecCommand(args: List<String>): String? {
+        var afterExec = false
+        for (arg in args) {
+            if (!afterExec) {
+                if (arg == "-exec" || arg == "-execdir" || (arg.startsWith("-exec") && arg.length > 5)) {
+                    afterExec = true
+                }
+                continue
+            }
+            if (arg.startsWith("-")) continue
+            val base = arg.substringAfterLast('/')
+            if (base in MULTI_BINARY_DISPATCHERS) continue
+            return base
+        }
+        return null
+    }
+
+    /** 多二进制派发器：自身不是破坏命令，其后第一个 token 才是被执行的命令。 */
+    private val MULTI_BINARY_DISPATCHERS = setOf("busybox", "toybox", "magisk", "nobox", "yash")
+
+    /**
+     * `find -exec/-execdir` 委托执行的破坏性命令（按 basename 匹配，覆盖
+     * `/system/bin/rm`、`busybox rm`、`toybox rm` 等形态）。
+     */
+    private val FIND_EXEC_DESTRUCTIVE = setOf(
+        "rm", "rmdir", "shred", "unlink", "truncate", "wipe", "dd", "mkfs",
+        "mv", "chmod", "chown", "chgrp", "mknod", "ln", "tee", "install", "cp"
+    )
 
     /**
      * curl/wget | sh 与 base64/解压 | sh：远程/编码内容直接进 shell。
@@ -425,9 +518,12 @@ object PolicyEngine {
         val bySegment = atoms.groupBy { it.segmentId }
         val sorted = bySegment.keys.sorted()
         for (idx in 0 until sorted.size - 1) {
-            val cur = bySegment[sorted[idx]]?.firstOrNull() ?: continue
+            // 段内可能不止一个原子（`a && b | sh`），逐个判上游：
+            // 原先只取 firstOrNull()，段内第二个原子正好是 curl/base64 时会被漏掉。
+            val upstream = bySegment[sorted[idx]].orEmpty()
             val next = bySegment[sorted[idx + 1]]?.firstOrNull() ?: continue
-            if (next.program in SHELL_PROGRAMS) {
+            if (next.program !in SHELL_PROGRAMS) continue
+            for (cur in upstream) {
                 when {
                     cur.program in FETCHERS -> findings.add(
                         Finding("REMOTE_PIPE_SHELL", RiskLevel.DANGEROUS, "远程内容直接执行（${cur.program} | sh）", cur.raw.take(200), line)
@@ -523,7 +619,16 @@ object PolicyEngine {
             lowered.contains("bytes.fromhex") || lowered.contains("codecs.decode")
     }
 
-    /** 当前安全档位（读 AppSettings；未初始化时保守取 STANDARD）。 */
+    /**
+     * 当前安全档位（读 `AppSettings`）。
+     *
+     * 未初始化或读取异常时取 [SecurityLevels.OFF]（无防护），与 `AppSettings` 的默认值一致 ——
+     * 此前注释写的是「保守取 STANDARD」而实现返回 OFF，属于注释与实现相反的误导性文档。
+     *
+     * 取 OFF 是**产品决策**而非疏漏：新装用户默认不擅自开启命令拦截与守卫安装，
+     * 防护由用户在设置页主动开启。因此这里的「异常路径」不能用更高档位兜底，
+     * 否则 AppSettings 尚未初始化的那几秒内会静默进入 STANDARD。
+     */
     fun currentLevel(): Int = try {
         RootService.appSettings?.securityLevel ?: SecurityLevels.OFF
     } catch (_: Exception) {

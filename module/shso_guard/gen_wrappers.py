@@ -1,3 +1,5 @@
+# Copyright 2026, shso contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
 import os, re
 
 # 路径相对本脚本（位于 shso_guard/ 仓库根），与本机绝对路径解耦。

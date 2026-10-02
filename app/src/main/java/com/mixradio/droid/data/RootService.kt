@@ -1,5 +1,5 @@
 // Copyright 2026, shso contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 package com.mixradio.droid.data
 
@@ -29,6 +29,7 @@ import com.mixradio.droid.data.security.GuardPathPolicy
 import com.mixradio.droid.data.security.RiskLevel
 import com.mixradio.droid.data.security.RootCommandGateway
 import com.mixradio.droid.data.security.ScriptAuditor
+import com.mixradio.droid.data.security.AuditVerdict
 import com.mixradio.droid.data.security.SecurityAuditLog
 import com.mixradio.droid.data.security.SecurityLevels
 import com.mixradio.droid.data.security.Verdict
@@ -393,7 +394,12 @@ object RootService {
         }
     }
 
-    /** 当前安全档位（AppSettings 未初始化时保守取标准防护）。 */
+    /**
+     * 当前安全档位。
+     *
+     * `AppSettings` 未初始化时取 [SecurityLevels.OFF]，与 `AppSettings` 的默认值和
+     * `PolicyEngine.currentLevel()` 一致（此前注释写「保守取标准防护」而实现返回 OFF）。
+     */
     fun currentSecurityLevel(): Int = appSettings?.securityLevel ?: SecurityLevels.OFF
 
     /** 返回 Root 执行的守卫 PATH；受保护档位下守卫不可用时返回 null。 */
@@ -424,7 +430,7 @@ object RootService {
      * 「这次执行发生时没有运行时守卫」。
      */
     private fun reportGuardDegraded(source: CommandSource, detail: String) {
-        SecurityAuditLog.log(source, "BLOCK", "GUARD_UNAVAILABLE_DEGRADED", RiskLevel.DANGEROUS, detail)
+        SecurityAuditLog.log(source, AuditVerdict.DEGRADED, "GUARD_UNAVAILABLE_DEGRADED", RiskLevel.DANGEROUS, detail)
         if (guardDegradeWarned) return
         guardDegradeWarned = true
         scope.launch(Dispatchers.Main) {
@@ -450,7 +456,7 @@ object RootService {
     fun reportBlockedInput(block: Verdict.Block) {
         val reasons = block.findings.joinToString("\n") { "  · [${it.ruleId}] ${it.message}" }
         SecurityAuditLog.log(
-            CommandSource.USER_TERMINAL, "BLOCK",
+            CommandSource.USER_TERMINAL, AuditVerdict.DENIED,
             block.findings.firstOrNull()?.ruleId, RiskLevel.CRITICAL, block.findings.firstOrNull()?.snippet ?: ""
         )
         appendOutputDirect("\n[shso 安全拦截] 已拒绝执行以下高危操作：\n$reasons\n")
@@ -503,7 +509,7 @@ object RootService {
                         .joinToString("\n") { "  · 第 ${it.line ?: "-"} 行 [${it.ruleId}] ${it.message}" }
                         .ifEmpty { "  · 扫描未能完成（内容过长或结构过于复杂），无法确认安全性" }
                     SecurityAuditLog.log(
-                        CommandSource.SCRIPT_FILE, "BLOCK",
+                        CommandSource.SCRIPT_FILE, AuditVerdict.DENIED,
                         shown.firstOrNull()?.ruleId ?: "SCRIPT_TRUNCATED",
                         RiskLevel.CRITICAL, filePath
                     )
@@ -516,7 +522,7 @@ object RootService {
             } else if (note != "ok") {
                 appendOutputDirect("\n[shso 安全提示] $note，已按保守策略拒绝自动执行\n")
                 SecurityAuditLog.log(
-                    CommandSource.SCRIPT_FILE, "BLOCK", "SCRIPT_UNREADABLE",
+                    CommandSource.SCRIPT_FILE, AuditVerdict.DENIED, "SCRIPT_UNREADABLE",
                     RiskLevel.DANGEROUS, filePath
                 )
                 return
@@ -550,8 +556,14 @@ object RootService {
         }
         appendOutputDirect("[shso Engine] 执行身份: ${if (useRoot) "Root" else "非 Root（档位 ${SecurityLevels.nameOf(level)}）"}\n")
 
+        // verdict 区分「有守卫放行」与「无守卫降级放行」：后者是事后判断
+        // 「这台设备当时有没有完整防护」的唯一依据，不能和正常放行混在一起。
+        val guardDegraded = useRoot && guardPathPrefix() == null
         SecurityAuditLog.log(
-            CommandSource.SCRIPT_FILE, "ALLOW", null, RiskLevel.SAFE,
+            CommandSource.SCRIPT_FILE,
+            if (guardDegraded) AuditVerdict.DEGRADED else AuditVerdict.ALLOW,
+            null,
+            if (guardDegraded) RiskLevel.DANGEROUS else RiskLevel.SAFE,
             "$filePath (身份=${if (useRoot) "root" else "non-root"}, 档位=$level)"
         )
 
@@ -732,7 +744,7 @@ object RootService {
                         appendOutputDirect(if (text.isEmpty()) "\n" else "$text\n")
                     }
                     SecurityAuditLog.log(
-                        CommandSource.USER_TERMINAL, "ALLOW", null, RiskLevel.SAFE,
+                        CommandSource.USER_TERMINAL, AuditVerdict.ALLOW, null, RiskLevel.SAFE,
                         "[交互态] $text"
                     )
                     processWriter?.write(text + "\n")
@@ -759,7 +771,7 @@ object RootService {
                                 // 未经确认框的高危命令：拒绝（正常链路应由 TerminalPage 先弹框）
                                 withContext(Dispatchers.Main) {
                                     SecurityAuditLog.log(
-                                        CommandSource.USER_TERMINAL, "BLOCK",
+                                        CommandSource.USER_TERMINAL, AuditVerdict.DENIED,
                                         v.findings.firstOrNull()?.ruleId, v.level, text
                                     )
                                     appendOutputDirect("\n[shso 安全拦截] 高危命令需经风险确认（${v.findings.firstOrNull()?.message ?: ""}）\n")
@@ -778,7 +790,7 @@ object RootService {
                     // 「中断 / 结束进程」可用，输出边跑边显示（见 runTerminalCommand）。
                     val exitCode = runTerminalCommand(guardPrefix + text, commandDisplayName(text))
                     SecurityAuditLog.log(
-                        CommandSource.USER_TERMINAL, "ALLOW", null, RiskLevel.SAFE, text, exitCode = exitCode
+                        CommandSource.USER_TERMINAL, AuditVerdict.FINISHED, null, RiskLevel.SAFE, text, exitCode = exitCode
                     )
                     withContext(Dispatchers.Main) {
                         if (exitCode != 0) {

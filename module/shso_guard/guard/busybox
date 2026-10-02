@@ -1,4 +1,6 @@
 #!/system/bin/sh
+# Copyright 2026, shso contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
 # shso_guard 守卫：busybox（多二进制派发）
 #
 # 本文件【不】由 guard-template.sh 生成——结构不同于模板（见 README / 报告）：

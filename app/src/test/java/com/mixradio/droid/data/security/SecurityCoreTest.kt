@@ -1,5 +1,5 @@
 // Copyright 2026, shso contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 package com.mixradio.droid.data.security
 
@@ -189,10 +189,13 @@ class SecurityCoreTest {
         assertFalse(SecurityLevels.isValid(-1))
     }
 
-    @Test fun `RiskLevel maxOf picks higher ordinal`() {
-        assertEquals(RiskLevel.CRITICAL, RiskLevel.SAFE.maxOf(RiskLevel.CRITICAL))
-        assertEquals(RiskLevel.CRITICAL, RiskLevel.CRITICAL.maxOf(RiskLevel.WARNING))
-        assertEquals(RiskLevel.DANGEROUS, RiskLevel.WARNING.maxOf(RiskLevel.DANGEROUS))
+    @Test fun `RiskLevel ordinal order is SAFE WARNING DANGEROUS CRITICAL`() {
+        // RiskLevel.maxOf 是死代码（生产无调用方），已删除；
+        // 但「序数即风险高低」是 PolicyEngine 判定 CRITICAL/取最高等级的隐含前提，
+        // 顺序被改动会静默改变拦截强度，故用断言锁住。
+        assertTrue(RiskLevel.SAFE < RiskLevel.WARNING)
+        assertTrue(RiskLevel.WARNING < RiskLevel.DANGEROUS)
+        assertTrue(RiskLevel.DANGEROUS < RiskLevel.CRITICAL)
     }
 
     @Test fun `Verdict INTERNAL_APP short-circuits to Allow`() {

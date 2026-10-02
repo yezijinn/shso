@@ -1,5 +1,5 @@
 # Copyright 2026, shso contributors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # shso 自定义 ProGuard / R8 规则（isMinifyEnabled = true 时生效）
 #

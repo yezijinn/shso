@@ -1,5 +1,5 @@
 // Copyright 2026, shso contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 package com.mixradio.droid.data
 
@@ -49,11 +49,30 @@ object ApkInstaller {
     /** 安装大包允许的更长超时（拷贝 + pm 会话流可能超过默认 120s）。 */
     private const val INSTALL_TIMEOUT_MS = 300_000L
     private const val OBB_LOCK_TTL_SECONDS = 15 * 60L
+    /** 锁被占用时的退避重试次数（配合 acquireObbLock 的 250ms 递增退避）。 */
+    private const val OBB_LOCK_RETRY = 4
     internal const val MAX_XAPK_BYTES = 1L * 1024 * 1024 * 1024
     internal const val MAX_XAPK_ENTRY_BYTES = 512L * 1024 * 1024
     internal const val MAX_XAPK_ENTRIES = 20_000
     private const val MAX_XAPK_MANIFEST_BYTES = 1L * 1024 * 1024
     private val ANDROID_PACKAGE_NAME = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
+
+    /**
+     * OBB 事务锁的退出码契约（与 [acquireObbLock] 的 shell 脚本一一对应）。
+     *
+     * 区分「忙」与「状态不明」是必需的：忙可以退避重试，状态不明必须 fail-closed
+     * 立即失败，否则一个被外部创建/损坏的锁会把安装入口变成不可用且无从诊断。
+     */
+    internal object ObbLockExit {
+        /** 持锁者存活，或未过 TTL：可退避重试。 */
+        const val BUSY = 17
+
+        /** 锁存在但元数据缺失/不可解析，或本次隔离到的不是刚才判定的那把锁：拒绝。 */
+        const val UNKNOWN = 21
+
+        /** 写元数据 / 原子创建失败：文件系统错误。 */
+        const val PUBLISH_FAILED = 22
+    }
 
     internal fun isValidAndroidPackageName(value: String): Boolean =
         ANDROID_PACKAGE_NAME.matches(value)
@@ -61,9 +80,33 @@ object ApkInstaller {
     internal fun isValidVersionCode(value: String): Boolean = value.matches(Regex("\\d+"))
 
     /**
+     * 判定安装源是否可读。
+     *
+     * `java.io.File.exists()` 以应用 uid 判定，对 `/data/adb/` 一类 ROOT 专属路径
+     * 恒为 false——直接用它做前置检查会让「已授权 ROOT 也装不上 /data/adb 里的 APK」。
+     * 已授权 ROOT 时改用 root `test -e -f`，未授权才退回 Java 判定。
+     */
+    private suspend fun pathReadable(path: String): Boolean {
+        if (RootService.isRootGranted == true) {
+            val (code, _) = RootService.runCommandSync(
+                "test -f ${RootService.escapeShellArg(path)}", 20_000L
+            )
+            if (code == 0) return true
+            // ROOT 探测结果可能是陈旧的（刚被撤销/刚授权），回退 Java 判定再确认一次，
+            // 避免把「其实应用自己就能读」的常见路径误杀。
+        }
+        val f = File(path)
+        return f.isFile && f.canRead()
+    }
+
+    /**
      * 安装 APK（root 静默）。
      * 支持伪装名：qq.apk.1（腾讯下载追加 .1）、APK/Apk 等大小写变体——
      * 统一先拷到 /data/local/tmp 的规范名 _shso_install.apk 再安装。
+     *
+     * **注意存在性检查**：`File.exists()` 走应用 uid，对 `/data/adb/` 一类
+     * ROOT 专属路径必然返回 false。已授权 ROOT 时改用 root `test -e` 判定，
+     * 否则「装了 ROOT 也装不上 /data/adb 里的 APK」。
      *
      * **分包自动识别**：若同目录存在同一套件的分包（shso 自己提取出的
      * `<名>-<版本>-splitN.APK`，或 SAI/MT 解包的 `split_config.*.apk`），
@@ -71,13 +114,12 @@ object ApkInstaller {
      * INSTALL_FAILED_MISSING_SPLIT）。点基础包或点任意分包都能装整套。
      */
     suspend fun installApk(context: Context, apkPath: String): InstallResult = withContext(Dispatchers.IO) {
-        val file = File(apkPath)
-        if (!file.exists()) return@withContext InstallResult.Failure("APK 文件不存在: $apkPath")
+        if (!pathReadable(apkPath)) return@withContext InstallResult.Failure("APK 文件不存在或不可读: $apkPath")
 
         // 同目录聚合出「安装套件」；只有基础包时退回单文件安装
         val set = collectApkSet(context, apkPath)
         if (set.isSplit) {
-            return@withContext when (val r = installSplitApks(set.all)) {
+            return@withContext when (val r = installSplitApks(context, set.orderedWrites)) {
                 is InstallResult.Success -> InstallResult.Success("${r.message}（含 ${set.splits.size} 个分包）")
                 is InstallResult.Failure -> r
             }
@@ -117,7 +159,7 @@ object ApkInstaller {
     @SuppressLint("SdCardPath")
     suspend fun installXapk(context: Context, xapkPath: String): InstallResult = withContext(Dispatchers.IO) {
         val file = File(xapkPath)
-        if (!file.exists()) return@withContext InstallResult.Failure("文件不存在: $xapkPath")
+        if (!file.isFile) return@withContext InstallResult.Failure("文件不存在: $xapkPath")
 
         // 1. 解压 XAPK（zip4j，zip 条目名可能含中文，需 UTF-8）
         val stagingDir = File(File(xapkPath).parentFile ?: File(TMP_DIR), ".shso_xapk_${UUID.randomUUID()}")
@@ -140,6 +182,12 @@ object ApkInstaller {
             var manifestJson: JSONObject? = null
 
             try {
+                // 条目数预算前置：zip4j 的 `fileHeaders` 会一次性把整个 central directory
+                // 构造成对象列表，预算检查放在其后等于没有。详见 [ZipEntryCountProbe]。
+                val probed = ZipEntryCountProbe.probe(file)
+                if (probed != null && probed >= MAX_XAPK_ENTRIES) {
+                    return@withContext InstallResult.Failure("XAPK 条目数超过 $MAX_XAPK_ENTRIES")
+                }
                 ZipFile(xapkPath).use { zip ->
                     val headers = zip.fileHeaders
                     if (headers.size > MAX_XAPK_ENTRIES) {
@@ -203,13 +251,20 @@ object ApkInstaller {
                 obbTransactionLock = "$obbDir/.shso_install.lock"
                 obbLockToken = UUID.randomUUID().toString()
                 var lockResult = acquireObbLock(obbTransactionLock, obbLockToken)
-                for (attempt in 0 until 3) {
-                    if (lockResult.first == 0 || lockResult.first != 17) break
+                // 只对「确实被占用」退避重试；状态不明/文件系统错误必须立即失败，
+                // 否则用户会看到「正在被其他安装任务使用」这种无法定位的提示。
+                for (attempt in 0 until OBB_LOCK_RETRY) {
+                    if (lockResult.first != ObbLockExit.BUSY) break
                     delay((attempt + 1) * 250L)
                     lockResult = acquireObbLock(obbTransactionLock, obbLockToken)
                 }
                 if (lockResult.first != 0) {
-                    return@withContext InstallResult.Failure("OBB 目录正在被其他安装任务使用")
+                    val reason = when (lockResult.first) {
+                        ObbLockExit.BUSY -> "OBB 目录正在被其他安装任务使用，请稍后重试"
+                        ObbLockExit.UNKNOWN -> "无法确认 OBB 锁状态（锁文件可能已损坏或被外部占用），已拒绝安装"
+                        else -> "OBB 锁操作失败: ${lockResult.second.trim()}"
+                    }
+                    return@withContext InstallResult.Failure(reason)
                 }
                 val mkdirCmd = "mkdir -p ${RootService.escapeShellArg(obbDir)}"
                 val (mkdirCode, mkdirOutput) = RootService.runCommandSync(mkdirCmd, INSTALL_TIMEOUT_MS)
@@ -254,7 +309,7 @@ object ApkInstaller {
             val installResult = if (apkFiles.size == 1) {
                 installApk(context, apkFiles[0].absolutePath)
             } else {
-                installSplitApks(apkFiles.map { it.absolutePath })
+                installSplitApks(context, orderBaseFirst(context, apkFiles).map { it.absolutePath })
             }
             installSucceeded = installResult is InstallResult.Success
             return@withContext installResult
@@ -274,61 +329,148 @@ object ApkInstaller {
         }
     }
 
-    /** Copy beside the destination, then atomically move into the empty target path. */
+    /**
+     * 把 OBB 拷到目标旁的临时文件，再原子 `mv` 落到目标路径。
+     *
+     * 三道校验：
+     * 1. 复制前后各确认一次锁仍属本任务（事务可能被别的任务接管）；
+     * 2. 目标已存在或为软链一律拒绝，绝不覆盖用户原有 OBB；
+     * 3. `mv` 只在同目录内进行（同目录 rename 才是原子的；跨挂载点的 `mv` 会退化为
+     *    复制+删除，原子性丧失——这也是临时文件必须与目标同目录的原因）。
+     */
     private fun copyObbAtomically(
         sourcePath: String,
         targetPath: String,
         lockPath: String?,
         token: String?
     ): Pair<Int, String> {
-        val tempToken = UUID.randomUUID().toString()
-        val tempPath = "$targetPath.shso.tmp.$tempToken"
+        val tempPath = "$targetPath.shso.tmp.${UUID.randomUUID()}"
         val source = RootService.escapeShellArg(sourcePath)
         val target = RootService.escapeShellArg(targetPath)
         val temp = RootService.escapeShellArg(tempPath)
-        val lock = RootService.escapeShellArg(lockPath ?: return 21 to "OBB lock missing")
-        val tokenArg = RootService.escapeShellArg(token ?: return 21 to "OBB lock token missing")
+        val lock = RootService.escapeShellArg(lockPath ?: return ObbLockExit.UNKNOWN to "OBB lock missing")
+        val tokenArg = RootService.escapeShellArg(token ?: return ObbLockExit.UNKNOWN to "OBB lock token missing")
+        val lockOwned = "if [ \"\$(cat $lock 2>/dev/null | cut -d'|' -f1)\" != $tokenArg ]; then exit ${ObbLockExit.UNKNOWN}; fi; "
         val script = buildString {
             append("trap 'rm -f $temp' EXIT; ")
-            append("if [ \"\$(cat $lock/token 2>/dev/null)\" != $tokenArg ]; then exit 21; fi; ")
+            append(lockOwned)
             append("if [ -e $target ] || [ -L $target ]; then exit 18; fi; ")
             append("cp $source $temp || exit 19; ")
-            append("if [ \"\$(cat $lock/token 2>/dev/null)\" != $tokenArg ]; then exit 21; fi; ")
+            append(lockOwned)
             append("mv $temp $target || exit 20; ")
             append("trap - EXIT")
         }
         return RootService.runCommandSync(script, INSTALL_TIMEOUT_MS)
     }
 
+    /**
+     * OBB 落位的「文件身份」：`inode:size:mtime`，mtime 取 **纳秒**。
+     *
+     * 为什么必须是纳秒（真机 PACM00 / Android 10 实测）：`stat -c %Y` 只有秒级精度，
+     * 而 OBB 落位 + APK 安装 + 失败回滚都发生在同一秒内。实测在同一秒内连续替换同一
+     * 文件两次，`%i:%s:%Y` 三元组**完全相同**（inode 复用 + 同秒 mtime + 同样大小），
+     * 意味着「回滚前校验身份」这条防线在真实时间窗内形同虚设，外部进程可以在事务
+     * 期间把目标换成自己的文件而回滚仍会删掉它。`%y` 带纳秒，实测可区分。
+     *
+     * 身份不可解析时返回 null，调用方必须 fail-closed（不删除），不得当作「无需回滚」。
+     */
+    private fun readObbIdentity(path: String): String? {
+        val escaped = RootService.escapeShellArg(path)
+        val (code, output) = RootService.runCommandSync("stat -c '%i:%s:%y' $escaped 2>/dev/null", INSTALL_TIMEOUT_MS)
+        val value = output.trim()
+        // %i/%s 为纯数字，%y 形如 "2026-10-02 09:52:03.108011510 +0800"（含空格与 +，故整体匹配）
+        return value.takeIf { code == 0 && OBB_IDENTITY_REGEX.matches(value) }
+    }
+
+    /** 身份格式：`<inode>:<size>:<mtime>`，mtime 段允许空格、点、冒号、时区偏移与正负号。 */
+    private val OBB_IDENTITY_REGEX = Regex("\\d+:\\d+:.+")
+
+    /**
+     * 以「单文件 + O_EXCL 原子创建」实现 OBB 事务锁。
+     *
+     * ## 为什么换成文件锁而不是目录锁
+     *
+     * 原实现是「建临时锁目录 → 写元数据 → `mv $tempLock $lock`」。POSIX 的 `mv dir1 dir2`
+     * 在 dir2 已存在且是目录时，会把 dir1 **移进** dir2 内部并返回 0（真机实测确认）。
+     * 于是并发两方都会拿到「发布成功」，同时认为自己持锁 → OBB 落位与回滚互相踩。
+     * 这不是理论窗口，是**每次陈旧锁回收竞争都会稳定复现**的漏洞。
+     *
+     * 改用文件锁的三个理由：
+     * 1. `set -C`（noclobber）在 `>` 重定向时使用 `O_CREAT|O_EXCL`，**创建本身即 CAS**，
+     *    不存在「发布」步骤，也就没有「发布到已存在目标」的窗口。真机已验证在
+     *    emulated/FUSE 存储上同样生效（这是选它而非 `ln` 硬链接的原因：FUSE 不支持
+     *    跨设备硬链接，实测 `ln` 报 `Cross-device link`）。
+     * 2. `mv file file` 在目标已存在时是**覆盖**而非嵌套（与目录行为相反），
+     *    语义可预期。
+     * 3. 元数据可以一次性 `printf` 写进同一个文件，不存在「目录已建、元数据未写完」
+     *    的半成品锁（那正是 A35 引入临时目录要解决的问题，现在结构上消失了）。
+     *
+     * ## 陈旧锁回收
+     *
+     * 判定为陈旧后先 `mv` 到唯一 quarantine 名（原子改名，摘掉 `lock` 这个名字），
+     * 再核对隔离出来的那把锁内容是否就是我们判定为陈旧的那一把：
+     * - 一致 → 才是别人的陈旧残留，`rm` 后继续竞争；
+     * - 不一致 → 说明在我们读与改名之间持有者释放并有新的持有者落锁，
+     *   此时**不删除**（不能删他方活锁），返回 [ObbLockExit.UNKNOWN]，
+     *   残留的 quarantine 文件不影响后续获取（只有 `lock` 这个名字参与竞争）。
+     *
+     * 无法读取元数据时同样返回 UNKNOWN（fail-closed）：宁可拒绝一次安装，
+     * 也不把「状态不明」当成「可以抢占」。
+     *
+     * 锁内容为单行：`token|pid|startTicks|createdEpoch`
+     */
     private fun acquireObbLock(lockPath: String, token: String): Pair<Int, String> {
-        val lock = RootService.escapeShellArg(lockPath)
-        val tokenArg = RootService.escapeShellArg(token)
-        val pid = Process.myPid().toString()
-        val pidArg = RootService.escapeShellArg(pid)
-        val startTicks = processStartTicks() ?: return 21 to "无法读取当前进程启动时间"
-        val startArg = RootService.escapeShellArg(startTicks)
-        val lockToken = UUID.randomUUID().toString()
-        val tempLockPath = "$lockPath.shso.lock.$lockToken"
-        val tempLock = RootService.escapeShellArg(tempLockPath)
-        val script = buildString {
-            append("if [ -e $lock ] || [ -L $lock ]; then ")
-            append("oldPid=\$(cat $lock/pid 2>/dev/null || true); ")
-            append("oldStart=\$(cat $lock/start 2>/dev/null || true); ")
-            append("created=\$(cat $lock/created 2>/dev/null || true); ")
-            append("now=\$(date +%s 2>/dev/null || true); ")
-            append("if [ -z \"\$oldPid\" ] || [ -z \"\$oldStart\" ] || [ -z \"\$created\" ] || [ -z \"\$now\" ]; then exit 17; fi; ")
-            append("liveStart=\$(cat /proc/\$oldPid/stat 2>/dev/null | awk '{print \$22}'); ")
-            append("if [ \"\$liveStart\" = \"\$oldStart\" ]; then exit 17; fi; ")
-            append("if [ \"\$created\" -ge \"\$now\" ] || [ \"\$now\" - \"\$created\" -lt ${OBB_LOCK_TTL_SECONDS} ]; then exit 17; fi; ")
-            val quarantine = RootService.escapeShellArg("$lockPath.shso.quarantine.$lockToken")
-            // Rename to a unique path and retain it. Deleting a quarantine path
-            // after the rename would reintroduce a race with an external creator.
-            append("if ! mv $lock $quarantine 2>/dev/null; then exit 17; fi; ")
-            append("mkdir $tempLock 2>/dev/null || exit 17; trap 'rm -rf -- $tempLock' EXIT; ")
-            append("printf '%s' $tokenArg > $tempLock/token && printf '%s' $pidArg > $tempLock/pid && printf '%s' $startArg > $tempLock/start && date +%s > $tempLock/created || exit 19; ")
-            append("mv $tempLock $lock || exit 20; trap - EXIT")
-        }
+        val startTicks = processStartTicks() ?: return ObbLockExit.UNKNOWN to "无法读取当前进程启动时间"
+        val meta = RootService.escapeShellArg("$token|${Process.myPid()}|$startTicks")
+        val quarantine = RootService.escapeShellArg("$lockPath.shso.quarantine.${UUID.randomUUID()}")
+        val script = buildObbLockAcquireScript(
+            lock = RootService.escapeShellArg(lockPath),
+            meta = meta,
+            quarantine = quarantine
+        )
         return RootService.runCommandSync(script, INSTALL_TIMEOUT_MS)
+    }
+
+    /**
+     * 生成 OBB 事务锁的获取脚本。抽成独立函数是为了能在 JVM 单测里对**生成的脚本文本**
+     * 做契约断言 —— 这段判定链全在 shell 里，一旦少了某个 fail-closed 分支，
+     * 单元测试无法察觉，只能等真机复现。
+     *
+     * 参数必须已完成 [RootService.escapeShellArg] 转义。
+     */
+    internal fun buildObbLockAcquireScript(lock: String, meta: String, quarantine: String): String = buildString {
+        // 持锁者存活：拒绝（可退避重试）
+        append("if [ -e $lock ] || [ -L $lock ]; then ")
+        append("old=\$(cat $lock 2>/dev/null || true); ")
+        append("now=\$(date +%s 2>/dev/null || true); ")
+        append("oldPid=\$(echo \"\$old\" | cut -d'|' -f2); ")
+        append("oldStart=\$(echo \"\$old\" | cut -d'|' -f3); ")
+        append("oldCreated=\$(echo \"\$old\" | cut -d'|' -f4); ")
+        // 元数据不完整或**非纯数字** = 状态不明：fail-closed。
+        // 数字校验是必需的，不只是防御性写法：`cut` 对「无分隔符」的行会整行返回，
+        // 于是垃圾锁文件的三个字段都变成同一串非数字文本；直接拿去和 now 做
+        // `[ a -ge b ]` 整数比较，mksh 会报 "unexpected operator" 并返回非零，
+        // 整条判定链就顺势滑到「陈旧锁回收」分支 —— 状态不明被误判成可抢占。
+        // 真机（PACM00 / Android 10，mksh）已实测复现该路径。
+        append("for _f in \"\$oldPid\" \"\$oldStart\" \"\$oldCreated\" \"\$now\"; do ")
+        append("case \"\$_f\" in ''|*[!0-9]*) exit ${ObbLockExit.UNKNOWN};; esac; done; ")
+        // pid + 进程启动时间双校验：pid 会被系统复用，只比存活会误判为活锁。
+        // liveStart 为空/非数字表示进程已不存在（/proc 读不到），此时按「非活锁」继续走陈旧判定。
+        append("liveStart=\$(cat /proc/\$oldPid/stat 2>/dev/null | awk '{print \$22}'); ")
+        append("case \"\$liveStart\" in ''|*[!0-9]*) ;; *) if [ \"\$liveStart\" = \"\$oldStart\" ]; then exit ${ObbLockExit.BUSY}; fi;; esac; ")
+        append("if [ \"\$oldCreated\" -ge \"\$now\" ] || [ \"\$now\" - \"\$oldCreated\" -lt $OBB_LOCK_TTL_SECONDS ]; then exit ${ObbLockExit.BUSY}; fi; ")
+        // 陈旧：原子改名摘掉锁名，再核对内容确实是刚判定的那把
+        append("if mv $lock $quarantine 2>/dev/null; then ")
+        append("got=\$(cat $quarantine 2>/dev/null || true); ")
+        append("if [ -z \"\$got\" ] || [ \"\$got\" != \"\$old\" ]; then exit ${ObbLockExit.UNKNOWN}; fi; ")
+        append("rm -f -- $quarantine; ")
+        append("else exit ${ObbLockExit.BUSY}; fi; ")
+        // 真 CAS：O_EXCL 创建，只有一方能成功。这是整个协议的互斥点，
+        // 绝不能替换成「先删后建」或「mv 临时文件到位」—— 后者在目标已存在时
+        // 会把临时目录移进目标内部并返回 0，导致并发双方都认为持锁。
+        append("if ( set -C; printf '%s' $meta > $lock ) 2>/dev/null; then exit 0; fi; ")
+        // 走到这里说明 lock 又被别人占了（我们刚隔离掉的窗口内有人抢先）
+        append("exit ${ObbLockExit.BUSY}")
     }
 
     private fun processStartTicks(): String? = runCatching {
@@ -338,13 +480,29 @@ object ApkInstaller {
         stat.substring(endComm + 1).trim().split(Regex("\\s+"))[19]
     }.getOrNull()?.takeIf { it.all(Char::isDigit) }
 
+    /**
+     * 释放锁：只有内容仍是自己那把 token 才删。
+     *
+     * 校验的是**整行内容**而非某个字段：整行相等意味着持有者仍是本任务，
+     * 不会出现「token 字段被复用/串行写」导致的误删。
+     */
     private fun releaseObbLock(lockPath: String?, token: String?) {
         if (lockPath == null || token == null) return
         val lock = RootService.escapeShellArg(lockPath)
         val tokenArg = RootService.escapeShellArg(token)
-        RootService.runCommandSync("if [ \"\$(cat $lock/token 2>/dev/null)\" = $tokenArg ]; then rm -rf -- $lock; fi", INSTALL_TIMEOUT_MS)
+        RootService.runCommandSync(
+            "case \"\$(cat $lock 2>/dev/null)\" in $tokenArg\\|*) rm -f -- $lock;; esac",
+            INSTALL_TIMEOUT_MS
+        )
     }
 
+    /**
+     * 回滚本次落位的 OBB：锁仍属本任务 **且** 目标文件身份与落位时记录的一致才删。
+     *
+     * 双重校验缺一不可：锁校验防「事务已交给别人」，身份校验防「目标已被外部替换」。
+     * 身份不可解析（readObbIdentity 返回 null）时该条目根本不会进入回滚表，
+     * 从源头上避免「拿不到身份就照删」。
+     */
     private fun removeOwnedObb(targetPath: String, lockPath: String?, token: String) {
         if (lockPath == null) return
         val separator = targetPath.indexOf('|')
@@ -356,16 +514,11 @@ object ApkInstaller {
         val tokenArg = RootService.escapeShellArg(token)
         val expected = RootService.escapeShellArg(identity)
         RootService.runCommandSync(
-            "if [ \"\$(cat $lock/token 2>/dev/null)\" = $tokenArg ] && " +
-                "[ \"\$(stat -c '%i:%s:%Y' $target 2>/dev/null)\" = $expected ]; then rm -f -- $target; fi",
+            "if [ \"\$(cat $lock 2>/dev/null | cut -d'|' -f1)\" = $tokenArg ] && " +
+                "[ \"\$(stat -c '%i:%s:%y' $target 2>/dev/null)\" = $expected ]; " +
+                "then rm -f -- $target; fi",
             INSTALL_TIMEOUT_MS
         )
-    }
-
-    private fun readObbIdentity(path: String): String? {
-        val escaped = RootService.escapeShellArg(path)
-        val (code, output) = RootService.runCommandSync("stat -c '%i:%s:%Y' $escaped 2>/dev/null", INSTALL_TIMEOUT_MS)
-        return output.trim().takeIf { code == 0 && it.matches(Regex("\\d+:\\d+:\\d+")) }
     }
 
     //  安装套件识别（基础包 + 分包）
@@ -379,6 +532,17 @@ object ApkInstaller {
     internal data class ApkSet(val base: String, val splits: List<String>) {
         val all: List<String> get() = listOf(base) + splits
         val isSplit: Boolean get() = splits.isNotEmpty()
+
+        /**
+         * 写入会话的顺序：**基础包必须排在第一位**。
+         *
+         * AOSP 侧并不要求顺序（`PackageInstallerSession.validateApkInstallLocked` 对
+         * 包名/版本/签名做的是与顺序无关的一致性断言），但基础包先写有两个实际好处：
+         * 一是 `pm install-create -p` 需要包名，基础包的 manifest 才是权威来源；
+         * 二是真机实测（PACM00 / Android 10）基础包写入后才认得出 session 的包名，
+         * 先写分包会让错误信息里缺少包名线索。
+         */
+        val orderedWrites: List<String> get() = all
     }
 
     /** 同目录扫描上限：避免在塞满 APK 的目录里付出无谓的 manifest 解析开销。 */
@@ -482,6 +646,28 @@ object ApkInstaller {
         return if (splits.isEmpty()) null else ApkSet(base.absolutePath, splits)
     }
 
+    /**
+     * 把基础包排到首位，其余保持原顺序。
+     *
+     * XAPK 的条目顺序由打包者决定，`base.apk` 未必在最前。会话流需要基础包在首位：
+     * 一是 `pm install-create -p` 的包名取自基础包 manifest；
+     * 二是 `MODE_FULL_INSTALL` 漏写基础包会在 commit 时报
+     * `INSTALL_FAILED_INVALID_APK: Full install must include a base package`。
+     *
+     * 判不出基础包时（多个候选或全都不是）保持原顺序交由 AOSP 的一致性断言裁决，
+     * 不做猜测。
+     */
+    internal fun orderBaseFirst(context: Context, apks: List<File>): List<File> {
+        if (apks.size <= 1) return apks
+        val bases = apks.filter { apk ->
+            val info = archiveInfo(context.packageManager, apk) ?: return@filter false
+            !isSplitArchive(apk, info)
+        }
+        if (bases.size != 1) return apks
+        val base = bases.single()
+        return listOf(base) + apks.filter { it.absolutePath != base.absolutePath }
+    }
+
     private fun isSplitArchive(f: File, info: android.content.pm.PackageInfo): Boolean {
         if (!info.applicationInfo?.splitNames.isNullOrEmpty()) return true
         return isSplitName(f.name) || SPLIT_NAME_REGEX.containsMatchIn(f.name)
@@ -498,10 +684,50 @@ object ApkInstaller {
 
     /**
      * 安装 split 分片 APK（pm 会话流）。
+     *
+     * ## `pm install-write` 的 SPLIT_NAME 契约（已按 AOSP 源码与真机双向核实）
+     *
+     * 参数形式是 `install-write [-S BYTES] SESSION_ID SPLIT_NAME [PATH|-]`，但
+     * **SPLIT_NAME 不是 manifest 里的 split 名**。AOSP `PackageInstallerSession`：
+     * - 写入期只做 `FileUtils.isValidExtFilename(name)` 校验（仅禁 `NUL` 与 `/`），
+     *   随后 `new File(stageDir, name)` 原样落盘，**不解析 APK、不校验 split 名**；
+     * - 真实 split 名在 `commit` 时才由 `PackageParser.parseApkLite` 逐个读出，
+     *   据此把草稿文件统一改名为 `base.apk` / `split_<manifestSplitName>.apk`。
+     *
+     * 真机（PACM00 / Android 10）实测与之一致：名称传 `split0`、`base.apk`、包名
+     * 均可成功写入；传绝对路径 `/data/local/tmp/x.apk` 报
+     * `IllegalArgumentException: Invalid name`（因为含 `/`）。
+     *
+     * 因此这里的命名策略是：**基础包用 `base.apk`、分包用与清单 split 名一致的
+     * `<splitName>.apk`**，让草稿名直接等于 commit 后的规范名，改名步骤可省，
+     * 也顺带规避「草稿名与规范名撞车导致两个文件塌缩成一个」的坑。
+     *
+     * ## 基础包必须存在
+     *
+     * `pm install-create` 建的是 `MODE_FULL_INSTALL` 会话，漏写基础包在 commit 时报
+     * `INSTALL_FAILED_INVALID_APK: Full install must include a base package`。
+     * 因此 [apkPaths] 必须首元素为基础包（见 [ApkSet.orderedWrites]）。
      */
-    private suspend fun installSplitApks(apkPaths: List<String>): InstallResult = withContext(Dispatchers.IO) {
-        if (apkPaths.isEmpty()) return@withContext InstallResult.Failure("没有可安装的 APK")
+    private suspend fun installSplitApks(context: Context, apkPaths: List<String>): InstallResult =
+        withContext(Dispatchers.IO) {
+            if (apkPaths.isEmpty()) return@withContext InstallResult.Failure("没有可安装的 APK")
 
+            val basePath = apkPaths[0]
+            val baseInfo = archiveInfo(context.packageManager, File(basePath))
+            val basePkg = baseInfo?.packageName?.takeIf { it.isNotBlank() }
+            if (apkPaths.size > 1 && basePkg == null) {
+                // 基础包读不出包名：不带 -p 继续（commit 阶段仍会做一致性断言），
+                // 但要在日志与文档口径上明确「未锁定包名」。
+                Log.w(TAG, "install-create 未锁定包名：基础包 manifest 解析失败 ${basePath}")
+            }
+            installSplitApksInternal(context, apkPaths, basePkg)
+        }
+
+    private suspend fun installSplitApksInternal(
+        context: Context,
+        apkPaths: List<String>,
+        expectedPackageName: String?
+    ): InstallResult = withContext(Dispatchers.IO) {
         // 1. 拷贝所有分片到 /data/local/tmp（sdcard 直读可能受限）
         val token = UUID.randomUUID().toString()
         val tmpFiles = mutableListOf<String>()
@@ -518,31 +744,35 @@ object ApkInstaller {
                 tmpFiles.add(tmp)
             }
 
-            // 2. 计算总大小并创建会话
+            // 2. 计算总大小并创建会话。带 -p 锁包名：可以在 commit 之前就把
+            // 「装错套件」这类错误暴露出来，错误信息里也带包名。
             val totalSize = apkPaths.sumOf { File(it).length() }
-            val createCmd = "pm install-create -r -d -S $totalSize"
+            val pkgArg = expectedPackageName?.let { " -p ${RootService.escapeShellArg(it)}" } ?: ""
+            val createCmd = "pm install-create -r -d -S $totalSize$pkgArg"
             val (createCode, createOut) = RootService.runCommandSync(createCmd, INSTALL_TIMEOUT_MS)
             if (createCode != 0) {
                 return@withContext InstallResult.Failure("创建安装会话失败: ${createOut.trim()}")
             }
 
             // 会话 id 形如 "Success: created install session [123456789]"
-            sessionId = SESSION_ID_REGEX.find(createOut)?.groupValues?.get(1)
+            val session = SESSION_ID_REGEX.find(createOut)?.groupValues?.get(1)
                 ?: return@withContext InstallResult.Failure("无法解析安装会话 ID: ${createOut.trim()}")
+            sessionId = session
 
-            // 3. 写入分片
+            // 3. 写入分片。草稿名 = commit 后的规范名：基础包 base.apk、分包 split_<splitName>.apk。
+            val draftNames = draftNamesFor(apkPaths, splitNamesOf(context, apkPaths))
             for ((i, tmp) in tmpFiles.withIndex()) {
                 val size = File(tmp).length()
-                val writeCmd = "pm install-write -S $size ${sessionId} split$i ${RootService.escapeShellArg(tmp)}"
+                val draft = draftNames[i]
+                val writeCmd = "pm install-write -S $size $session ${RootService.escapeShellArg(draft)} ${RootService.escapeShellArg(tmp)}"
                 val (writeCode, writeOut) = RootService.runCommandSync(writeCmd, INSTALL_TIMEOUT_MS)
                 if (writeCode != 0) {
-                    RootService.runCommandSync("pm install-abandon ${sessionId}", INSTALL_TIMEOUT_MS)
-                    return@withContext InstallResult.Failure("写入分片 $i 失败: ${writeOut.trim()}")
+                    return@withContext InstallResult.Failure("写入分片 $i（$draft）失败: ${writeOut.trim()}")
                 }
             }
 
             // 4. 提交
-            val commitCmd = "pm install-commit ${sessionId}"
+            val commitCmd = "pm install-commit $session"
             val (commitCode, commitOut) = RootService.runCommandSync(commitCmd, INSTALL_TIMEOUT_MS)
             if (commitCode != 0 || (!commitOut.contains("Success") && !commitOut.contains("success"))) {
                 return@withContext InstallResult.Failure("提交安装失败: ${commitOut.trim().ifEmpty { "未知错误" }}")
@@ -559,6 +789,61 @@ object ApkInstaller {
             }
         }
     }
+
+    /**
+     * 为会话内的每个 APK 生成**草稿名**（写入期用的临时名）。
+     *
+     * 基础包固定 `base.apk`，分包用 `split_<manifest split 名>.apk` —— 与 AOSP
+     * `validateApkInstallLocked` 里的规范名一致，commit 时无需改名。
+     *
+     * 硬约束：**草稿名必须两两不同**。`PackageInstallerSession.doWriteInternal` 用
+     * `Os.open(..., O_CREAT|O_WRONLY, 0644)` 落盘，**没有 O_EXCL**，同名两次写入会
+     * 静默覆盖成同一个文件，表现为「装上了但少一个分片」或直接解析失败。
+     * split 名取不到或重复时按序号退化命名。
+     */
+    internal fun draftNamesFor(apkPaths: List<String>, splitNames: List<String>): List<String> {
+        if (apkPaths.isEmpty()) return emptyList()
+        val result = ArrayList<String>(apkPaths.size)
+        result += BASE_DRAFT_NAME
+        for (i in 1 until apkPaths.size) {
+            val declared = splitNames.getOrNull(i - 1)
+            val name = if (!declared.isNullOrBlank() && DRAFT_SAFE_REGEX.matches(declared)) {
+                "split_$declared.apk"
+            } else {
+                "shso_split_$i.apk"
+            }
+            var candidate = name
+            var suffix = 2
+            while (result.contains(candidate)) {
+                candidate = "shso_split_${i}_$suffix.apk"
+                suffix++
+            }
+            result += candidate
+        }
+        return result
+    }
+
+    /**
+     * 解析各分包的 manifest split 名。
+     *
+     * `getPackageArchiveInfo` 会填充 `applicationInfo.splitNames`（基础包为 null/空）。
+     * 解析失败或集合大小与分片数不符时返回空列表，交由 [draftNamesFor] 退化为序号命名
+     * ——写入期本就不校验该名字，序号命名同样正确。
+     */
+    private fun splitNamesOf(context: Context, apkPaths: List<String>): List<String> {
+        if (apkPaths.size <= 1) return emptyList()
+        val names = apkPaths.drop(1).map { apk ->
+            runCatching {
+                archiveInfo(context.packageManager, File(apk))?.applicationInfo?.splitNames
+            }.getOrNull()?.firstOrNull().orEmpty()
+        }
+        return if (names.all { it.isNotBlank() }) names else emptyList()
+    }
+
+    private const val BASE_DRAFT_NAME = "base.apk"
+
+    /** split 名必须是合法文件名（无 `/`、无 NUL），否则不能用作草稿名。 */
+    private val DRAFT_SAFE_REGEX = Regex("[A-Za-z0-9._+\\-]{1,200}")
 
     private val SESSION_ID_REGEX = Regex("\\[(\\d+)]")
 

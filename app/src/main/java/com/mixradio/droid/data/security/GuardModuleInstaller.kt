@@ -1,5 +1,5 @@
 // Copyright 2026, shso contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 package com.mixradio.droid.data.security
 
@@ -240,15 +240,29 @@ object GuardModuleInstaller {
                 }
             }
 
-            // 3) 校验
+            // 3) 事后校验（从 $MODULE_DIR 真实落位状态判定，不是从 $newDir 预判）
             val ok = RootService.runCommandSync(
                 "test -f $MODULE_DIR/module.prop -a -x $GUARD_BIN_DIR/rm", 8_000L
             ).first == 0
-            if (!ok) return@withContext Pair(false, "安装校验失败（guard/rm 不可执行）")
+            if (!ok) {
+                // 此前这里直接返回失败，**不回滚**：脚本第 5 步已把 $oldDir 删掉，
+                // 于是「装完了但校验不过」的故障态新模块被留在设备上，运行时守卫处于
+                // 半可用状态且没有任何提示。改为把当前 $MODULE_DIR 挪走并恢复旧版本；
+                // 旧版本本身也已不可用时，至少把残缺的新版本移出模块目录，
+                // 避免 Magisk 把一个不完整的模块当成有效模块加载。
+                val rollbackScript = buildString {
+                    append("if [ -d $MODULE_DIR ]; then /system/bin/rm -rf $oldDir 2>/dev/null; ")
+                    append("mv $MODULE_DIR $oldDir || /system/bin/rm -rf $MODULE_DIR; fi; ")
+                    append("/system/bin/rm -rf $oldDir 2>/dev/null; true")
+                }
+                RootService.runCommandSync(rollbackScript, 30_000L)
+                invalidateReadyCache()
+                return@withContext Pair(false, "安装校验失败（guard/rm 不可执行），已回滚到旧版本")
+            }
 
             guardBinDirReady(forceRefresh = true)
             SecurityAuditLog.log(
-                CommandSource.INTERNAL_APP, "ALLOW", "GUARD_INSTALL", RiskLevel.SAFE,
+                CommandSource.INTERNAL_APP, AuditVerdict.FINISHED, "GUARD_INSTALL", RiskLevel.SAFE,
                 "安装守卫模块 shso_guard → $MODULE_DIR"
             )
             Pair(true, "守卫模块已安装，立即生效（管理器中可见需重启）")
@@ -313,7 +327,7 @@ object GuardModuleInstaller {
         val code = RootService.runCommandSync(script, 10_000L).first
         if (code == 0) {
             SecurityAuditLog.log(
-                CommandSource.INTERNAL_APP, "ALLOW", "GUARD_POLICY_MODE", RiskLevel.SAFE,
+                CommandSource.INTERNAL_APP, AuditVerdict.FINISHED, "GUARD_POLICY_MODE", RiskLevel.SAFE,
                 "$policyDir/policy.conf mode=$mode (档位=$securityLevel)"
             )
             true
@@ -341,20 +355,37 @@ object GuardModuleInstaller {
      */
     private val installMutex = Mutex()
 
+    /**
+     * 串行化安装入口，供 UI「手动安装」使用。
+     *
+     * 设置页此前直接调 [install]，**绕过了 [installMutex]**：它可以和 MainActivity /
+     * [ensureInstalled] 触发的自动安装并发跑，两条链路都会执行
+     * `rm -rf /data/adb/.shso_guard.old` → `mv` → `rm -rf`，互相踩踏，
+     * 表现就是 v1.7 修过的那类「安装校验失败 / guard/rm 不可执行」。
+     * 走同一把锁即可根治，无需在 UI 层再加标志位。
+     */
+    suspend fun installSerialized(context: Context): Pair<Boolean, String> = installMutex.withLock {
+        try {
+            install(context)
+        } catch (e: Exception) {
+            Pair(false, "安装失败: ${e.message}")
+        }
+    }
+
     suspend fun ensureInstalled(context: Context): Boolean = installMutex.withLock {
         if (guardBinDirReady(forceRefresh = true) && !needsUpgrade(context)) return@withLock true
         return@withLock try {
             val (ok, msg) = install(context)
             if (!ok) {
                 SecurityAuditLog.log(
-                    CommandSource.INTERNAL_APP, "BLOCK", "GUARD_AUTO_INSTALL_FAILED", RiskLevel.DANGEROUS,
+                    CommandSource.INTERNAL_APP, AuditVerdict.FAILED, "GUARD_AUTO_INSTALL_FAILED", RiskLevel.DANGEROUS,
                     msg
                 )
             }
             ok && guardBinDirReady(forceRefresh = true)
         } catch (e: Exception) {
             SecurityAuditLog.log(
-                CommandSource.INTERNAL_APP, "BLOCK", "GUARD_AUTO_INSTALL_FAILED", RiskLevel.DANGEROUS,
+                CommandSource.INTERNAL_APP, AuditVerdict.FAILED, "GUARD_AUTO_INSTALL_FAILED", RiskLevel.DANGEROUS,
                 e.message ?: "异常"
             )
             false
@@ -405,7 +436,7 @@ object GuardModuleInstaller {
             guardReadyCache = false
             guardReadyAt = System.currentTimeMillis()
             SecurityAuditLog.log(
-                CommandSource.INTERNAL_APP, "ALLOW", "GUARD_UNINSTALL", RiskLevel.SAFE,
+                CommandSource.INTERNAL_APP, AuditVerdict.FINISHED, "GUARD_UNINSTALL", RiskLevel.SAFE,
                 "卸载守卫模块 $MODULE_DIR"
             )
             Pair(true, "守卫模块已卸载")

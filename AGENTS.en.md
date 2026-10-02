@@ -142,7 +142,10 @@ do not introduce multi-ABI native libraries.
 ## Notes
 
 - File header: `// Copyright 2026, shso contributors` +
-  `// SPDX-License-Identifier: Apache-2.0`; follow existing commit conventions.
+  `// SPDX-License-Identifier: GPL-3.0-or-later`; follow existing commit conventions.
+- License is **GPL-3.0-or-later** (strong copyleft). Every new file carries that SPDX
+  header; after touching the guard module run `python module/shso_guard/gen_wrappers.py`
+  then `python tools/pack_guard_module.py` and bump `version=` in `module.prop`.
 - Signing config lives in `app/build.gradle.kts` (V2+V3, debug reuses release signing);
   `release.jks` is not in the repo.
 - All `su -c` paths must use single-quote escaping (`replace("'", "'\\''")`);

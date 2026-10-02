@@ -1,4 +1,6 @@
 #!/system/bin/sh
+# Copyright 2026, shso contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
 # uninstall.sh — 模块被移除时执行
 #
 # 注意：执行时模块文件可能已被部分删除，所有操作都要先判存在。

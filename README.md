@@ -1,7 +1,7 @@
 # shso
 
 [![Release](https://img.shields.io/badge/Release-20260929-00e5ff.svg?style=flat-square)](https://github.com/yezijinn/shso/releases)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPL%20v3-blue.svg?style=flat-square)](LICENSE)
 [![Android](https://img.shields.io/badge/Android-8.0%2B%20%28API%2026%2B%29-3DDC84.svg?style=flat-square&logo=android&logoColor=white)](https://developer.android.com)
 [![ROOT](https://img.shields.io/badge/ROOT-Magisk%20%7C%20KernelSU%20%7C%20APatch-orange.svg?style=flat-square)](https://github.com/topjohnwu/Magisk)
 
@@ -349,4 +349,15 @@ python build_apk.py              # 一条命令完成构建：签名 + 版本规
 
 ## 许可证
 
-本项目基于 [Apache License 2.0](LICENSE) 开源。
+本项目基于 [GNU General Public License v3.0 或更高版本](LICENSE)（SPDX：`GPL-3.0-or-later`）开源。
+这是强 Copyleft 许可：衍生作品必须同样以 GPL-3.0-or-later 开源并公开完整源码。
+
+第三方组件保留各自许可，随 APK 一并分发：
+
+| 组件 | 许可 | 说明 |
+|---|---|---|
+| Sora Editor（`editor` / `language-monarch`） | LGPL-2.1 | 仅作库依赖使用、不改其源码；LGPL-2.1 允许以 GPL-3.0 组合分发 |
+| `io.github.dingyi222666.monarch` / `regex-lib` | Apache-2.0 | 传递依赖，Apache-2.0 与 GPL-3.0 兼容 |
+| zip4j / commons-compress / Material Color Utilities | Apache-2.0 | 同上 |
+| `org.tukaani:xz` | 公有领域 | 无限制 |
+| AndroidX / Compose / Material Icons | Apache-2.0 | 同上 |

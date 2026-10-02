@@ -1,5 +1,5 @@
 // Copyright 2026, shso contributors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 package com.mixradio.droid.ui.pages
 
@@ -459,7 +459,7 @@ fun SettingsPage(
                         } else {
                             installingGuard = true
                             scope.launch {
-                                val (ok, msg) = withContext(Dispatchers.IO) { GuardModuleInstaller.install(context) }
+                                val (ok, msg) = GuardModuleInstaller.installSerialized(context)
                                 installingGuard = false
                                 if (ok) guardInstalled = true
                                 Toast.makeText(
