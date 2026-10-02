@@ -29,14 +29,29 @@
 | 守卫模块 | **v1.4.2**（真机已装并验证拦截）；重打包走 `tools/pack_guard_module.py` |
 | OBB 事务锁 | 单文件 `set -C`(O_EXCL) 原子 CAS；真机 8 进程并发恰好 1 成功；**建目录早于取锁** |
 | 审计判定 | `AuditVerdict` 枚举（`DENIED` 与 `DEGRADED` 分离）；来源含 `FILE_MANAGER` |
-| 真机 | BIYLBAFQQSS8DA69，PACM00 / Android 10 / 1080×2280 / Magisk root |
+| 真机 | `$DEVICE`（OnePlus PACM00 / Android 10 / 1080×2280 / Magisk root） |
 | 当前安全档位 | 设备上为 **3**（验证后如需还原请手动切回 0） |
 | 已知环境坑 | `adb shell su -c "a; b"` 的 `;` 会让后半段以 shell 用户执行 → 必须 `su -c 'sh script.sh'` |
 | 已知环境坑 | 守卫实际读 `/data/adb/shso_guard/policy.conf`（**优先于**模块自带 `policy.conf`）；改策略只改模块那份会不生效，且调试脚本覆写后必须还原，否则 `protect=/data` 会静默消失、所有用例变放行 |
+| 发版 | tag `20261002`（纯数字，与 `versionCode` 对齐）；双端同名 Release 覆盖旧 APK |
 
 ---
 
 ## 待办
+
+### A52. 发版 20261002（2026-10-02）
+
+- [/] 产物与校验
+  - [x] `build_apk.py` 通过：`verifyReleasePayload` 红线、体积 2.18 MB、ABI 仅 arm64-v8a、V2+V3 签名
+  - [x] 真机安装并冷启动，无崩溃
+  - [ ] 双端各下载一次，`sha256` 与本地一致
+- [/] 文档
+  - [x] 清除入库的设备序列号，改用 `$DEVICE` 运行时推导（`TASKS.md` 9 处）
+  - [x] `校验与验证命令` 段的 `JAVA_HOME` 由 jdk-17 更正为 jdk-21（工程实际用 21）
+  - [x] `更新日志.md` 清掉「按用户要求」「上轮加的」这类代理腔措辞
+- [ ] 提交并推 `origin main` 与 `gitee main`，`git ls-remote` 复核远端 tip
+- [ ] 打纯数字 tag `20261002` 推双远端；两端建同名 Release
+- [ ] Gitee 同名附件先删再传（无 clobber）
 
 ### A51. 第二轮全面 BUG 深挖（2026-10-02）
 
@@ -389,7 +404,7 @@
   - `ApkInstaller`：XAPK 增加压缩包/条目/单条目/manifest/总解压预算，校验 Android 包名与版本号；单 APK、分包临时文件改为 UUID 隔离，失败会话统一 abandon
   - 安装确认：确认阶段生成应用私有缓存副本，实际安装只使用副本并复核哈希；确认时锁定 ROOT/系统安装器模式
   - 文件页：修复解压取消后 `isExtracting` 不复位；兼容 `.zip.1` 等压缩包尾缀
-  - 验证：`testDebugUnitTest`、`lintDebug`、`assembleRelease` 均通过；Release 载荷红线通过；Release APK 已安装至 `BIYLBAFQQSS8DA69` 并启动验证成功
+  - 验证：`testDebugUnitTest`、`lintDebug`、`assembleRelease` 均通过；Release 载荷红线通过；Release APK 已安装至 `$DEVICE` 并启动验证成功
 
 ### A9. 已知缺陷修复（2026-09-29）
 
@@ -415,7 +430,7 @@
   - 取消单文件解压时删除本次原子预占的目标文件
   - 取消归档解压时删除本次原子预占的目标目录
   - 仅清理当前任务成功预占的目标，不触碰并发任务或用户原有文件
-  - 验证：312 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线均通过；Release APK 已安装至 `BIYLBAFQQSS8DA69` 并启动成功，进程 `13527`
+  - 验证：312 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线均通过；Release APK 已安装至 `$DEVICE` 并启动成功，进程 `13527`
   - 发布产物校验：2,266,625 bytes，SHA-256 `166A330D86B3F0DBC4CB8B0DE3130FD156407A7602024B34AE874E4298991430`，V2/V3 签名通过
 
 ### A12. 全面 BUG 挖掘（2026-09-29）
@@ -443,7 +458,7 @@
 - [x] **修复 XAPK OBB 失败静默继续与 7Z 短读成功**：完成
   - OBB 目录创建/复制命令必须检查退出码，失败时停止安装并清理本次已落位 OBB
   - 7Z 非目录条目必须读满声明大小，提前 EOF 作为失败并由上层清理目标
-  - 验证：`testDebugUnitTest`、`lintDebug`、`assembleRelease`、Release 载荷红线均通过；Release APK 已安装至 `BIYLBAFQQSS8DA69` 并启动成功，进程 `23764`
+  - 验证：`testDebugUnitTest`、`lintDebug`、`assembleRelease`、Release 载荷红线均通过；Release APK 已安装至 `$DEVICE` 并启动成功，进程 `23764`
 
 ### A14. XAPK 边界与回滚安全（2026-09-29）
 
@@ -451,7 +466,7 @@
   - XAPK staging 目录创建失败立即返回
   - OBB 目标已存在或为软链时拒绝覆盖，回滚只清理本次成功复制的目标
   - 7Z 非目录条目声明大小为负时拒绝解压
-  - 验证：313 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线均通过；Release APK 已安装至 `BIYLBAFQQSS8DA69` 并启动成功，进程 `2030`
+  - 验证：313 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线均通过；Release APK 已安装至 `$DEVICE` 并启动成功，进程 `2030`
 
 ### A15. 全面 BUG 挖掘（2026-09-29）
 
@@ -491,7 +506,7 @@
   - OBB 临时文件与最终目标保持同目录，使用 `mv` 原子落位，兼容不支持跨目录硬链接的 emulated/FUSE 存储
   - 使用独占锁文件串行化同一目标的检查、复制和移动；目标已存在或变为软链时拒绝覆盖
   - 失败只清理本次临时文件，安装失败只清理本次已原子落位的目标
-  - 验证：313 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线通过；APK 已安装至 `BIYLBAFQQSS8DA69` 并启动成功，进程 `28353`
+  - 验证：313 tests / 0 failures / 1 skipped、lintDebug、assembleRelease、Release 载荷红线通过；APK 已安装至 `$DEVICE` 并启动成功，进程 `28353`
 
 ### A19. 全面 BUG 挖掘（2026-09-30）
 
@@ -895,23 +910,24 @@
 
 ```bash
 export MSYS_NO_PATHCONV=1
-export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot'
+export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot'
+export DEVICE=$(adb devices | awk 'NR==2{print $1}')   # 目标机序列号不入库
 
 ./gradlew :app:testDebugUnitTest :app:assembleDebug          # 基线 277 tests / 0 failures
 ./gradlew :app:assembleRelease                               # 含 verifyReleasePayload 红线校验
 python tools/gen_syntax_packs.py                             # 重新生成语法包（syntax-packs/ + syntax-packs.zip）
 
-adb -s BIYLBAFQQSS8DA69 install -r app/build/outputs/apk/debug/app-debug.apk
-adb -s BIYLBAFQQSS8DA69 shell "logcat -d -s shso-perf"       # 语法就绪/注册日志
-adb -s BIYLBAFQQSS8DA69 shell "su -c 'ls -ld /data/adb/shso'"        # 权限应为 777
-adb -s BIYLBAFQQSS8DA69 shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.prop'"
+adb -s $DEVICE install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s $DEVICE shell "logcat -d -s shso-perf"       # 语法就绪/注册日志
+adb -s $DEVICE shell "su -c 'ls -ld /data/adb/shso'"        # 权限应为 777
+adb -s $DEVICE shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.prop'"
 ```
 
 ---
 
 ## 真机与环境备忘
 
-### 真机操作（BIYLBAFQQSS8DA69，PACM00 / Android 10 / 1080×2280）
+### 真机操作（$DEVICE，PACM00 / Android 10 / 1080×2280）
 
 - 底部导航坐标：`主页 153 / 终端 411 / 文件 669 / 设置 927`，y = `2156`；点击后等 3–5 秒。
 - 文件页默认「内部存储」；目录恒排在文件之前。
