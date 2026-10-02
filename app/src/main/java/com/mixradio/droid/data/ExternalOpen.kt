@@ -279,9 +279,11 @@ object ExternalOpen {
      * **以 root 身份读出并显示本进程乃至其它应用的私有数据**（令牌常在 prefs 里），
      * 全程无需用户真正选中过那个文件。
      *
-     * 为什么只卡 `file://`：`content://` 背后是系统授予的读权限，
-     * 意味着用户在发送方应用里确实选中了某个文件 —— 那才是「分享」的语义。
-     * 现代文件管理器也都用 FileProvider 而非 `file://` 分享，卡掉 `file://` 不影响正常分享。
+     * 为什么 `file://` 与 `content://` 走同一份白名单：`content://` 并不因为「有读权限授予」
+     * 就更可信 —— 被授予的是 URI 本身，而解析出的落盘路径是**对方的 provider 写进游标的字符串**，
+     * 任何应用都能自建 provider 声称自己的文件在 `/data` 下任意位置。下游会用 root 去 stat /
+     * 读取 / 执行该路径，所以只能按路径本身判定。现代文件管理器都用 FileProvider 分享，
+     * 它们的真实路径都在共享存储内，卡掉这些路径不影响正常分享。
      */
     @Suppress("SdCardPath")
     private val EXTERNAL_FILE_URI_ALLOWED_PREFIXES = listOf(
@@ -326,9 +328,8 @@ object ExternalOpen {
      * 尝试把 URI 解析成真实文件路径；解析不出返回 null（调用方改用拷贝）。
      * 纯读取，无副作用。
      *
-     * 信任边界：`file://` 来自外部 Intent 时必须过 [isExternalPathAllowed]；
-     * `content://` 背后的 `_data` 由**对方的 provider** 提供，同样不可全信，
-     * 但它至少伴随一次真实的读权限授予，故只额外拒绝本进程私有目录。
+     * 信任边界：`_data` 由**对方的 provider** 提供，与系统授予的读权限无关，
+     * 不可全信。因此 `file://` 与 `content://` 一律过 [isExternalPathAllowed]。
      */
     fun resolveToRealPath(context: Context, uri: Uri): String? {
         val isFileScheme = uri.scheme?.lowercase(Locale.ROOT) == "file"
@@ -355,12 +356,17 @@ object ExternalOpen {
         }
         // 2) 其余（media / downloads 数字 ID / 带 _data 的 provider）：查询 DATA 列
         val fromProvider = queryDataColumn(context, uri) ?: return null
-        // 私有目录在任何来源下一律拒绝；`file://` 的白名单更严（无授权），
-        // provider 来源只额外挡私有目录（其余交给「用户确实选中过」这一前提）。
-        return fromProvider.takeIf { path ->
-            val p = path.trimEnd('/')
-            APP_PRIVATE_PREFIXES.none { base -> p == base || p.startsWith("$base/") }
-        }
+        // provider 来源同样只认白名单。
+        //
+        // `_data` 是**对方的 provider 写进游标的字符串**，不是系统代为解析的事实：
+        // 读权限授予的是那个 URI（authority+path），与 provider 声称的落盘位置毫无关系。
+        // 自建 provider 完全可以对任意 URI 返回 `/data/data/<别人>/files/x` 或
+        // `/data/adb/modules/x/service.sh`，且这条链路下游会用 root 去 stat / 读取 / 执行
+        // （EXECUTE 只需用户在弹窗点一次）。因此这里必须与 `file://` 同等对待，
+        // 只放行共享存储与本地临时目录 —— 一切 `/data/data/*`、`/data/user/*`、
+        // `/data/adb/*` 自然落在白名单之外。合法分享不受影响：FileProvider /
+        // MediaStore / Downloads 的真实路径本就在共享存储内。
+        return fromProvider.takeIf { isExternalPathAllowed(it) }
     }
 
     private fun queryDataColumn(context: Context, uri: Uri): String? = runCatching {

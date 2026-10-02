@@ -38,6 +38,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import com.mixradio.droid.data.OwnerCandidates
 import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.ui.theme.AuroraTextStyles
@@ -111,7 +112,16 @@ fun FilePermissionDialog(
         show = true,
         title = "文件权限与所有者",
         summary = path,
-        onDismissRequest = onDismiss
+        // 提交期间禁止返回/点外部关闭。保存要 fork 6 次 su（三步各含软链解析），
+        // Magisk 慢时按钮灰掉数秒而界面无任何「保存中」提示，用户按返回 →
+        // 组件离组合 → rememberCoroutineScope 取消协程 → withContext 在 IO 块
+        // 跑完后于续体处抛 CancellationException，于是 onSubmitSuccess() 被整段跳过：
+        // 权限已全部落盘，列表权限副行仍显示旧串。
+        onDismissRequest = { if (!submitting) onDismiss() },
+        properties = DialogProperties(
+            dismissOnBackPress = !submitting,
+            dismissOnClickOutside = !submitting
+        )
     ) {
         Text("权限", style = AuroraTextStyles.body2, color = AuroraTokens.Text)
         Spacer(modifier = Modifier.height(6.dp))
@@ -185,7 +195,7 @@ fun FilePermissionDialog(
             horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
         ) {
             PresetButton("取消", enabled = !submitting, onClick = onDismiss)
-            PresetButton("保存", enabled = !submitting) {
+            PresetButton(if (submitting) "正在保存…" else "保存", enabled = !submitting) {
                 if (!RootFileManager.isValidPermissionMode(mode) ||
                     !RootFileManager.isValidOwnerOrGroup(owner) ||
                     !RootFileManager.isValidOwnerOrGroup(group)

@@ -113,14 +113,24 @@ object ApkInstaller {
      * `<名>-<版本>-splitN.APK`，或 SAI/MT 解包的 `split_config.*.apk`），
      * 则自动改装整套（单文件 `pm install` 对分包应用必然失败：
      * INSTALL_FAILED_MISSING_SPLIT）。点基础包或点任意分包都能装整套。
+     *
+     * @param sourcePath 用户实际点中的**原始**文件路径。安装确认弹窗会把待装包暂存成
+     *   `<cacheDir>/install-confirm/<uuid>.apk`（暂存是为了校验后不被替换），而兄弟分片
+     *   的发现必须以原始目录为基准 —— 暂存目录里只有那一个 uuid 文件，按它列举永远
+     *   只得到 1 个兄弟，分包套件会被静默降级成单文件安装。传 null 表示没有暂存副本。
      */
-    suspend fun installApk(context: Context, apkPath: String): InstallResult = withContext(Dispatchers.IO) {
+    suspend fun installApk(context: Context, apkPath: String, sourcePath: String? = null): InstallResult =
+        withContext(Dispatchers.IO) {
         if (!pathReadable(apkPath)) return@withContext InstallResult.Failure("APK 文件不存在或不可读: $apkPath")
 
         // 同目录聚合出「安装套件」；只有基础包时退回单文件安装
-        val set = collectApkSet(context, apkPath)
+        val set = collectApkSet(context, sourcePath ?: apkPath)
         if (set.isSplit) {
-            return@withContext when (val r = installSplitApks(context, set.orderedWrites)) {
+            // 被点中的那一个用已校验的暂存副本安装（保持「确认后未被替换」的保证），
+            // 其余兄弟分片按各自原始路径取 —— installSplitApks 内部会再逐个 cp 到
+            // /data/local/tmp，所以这里给原始路径即可。
+            val stagedPaths = set.orderedWrites.map { if (it == sourcePath) apkPath else it }
+            return@withContext when (val r = installSplitApks(context, stagedPaths)) {
                 is InstallResult.Success -> InstallResult.Success("${r.message}（含 ${set.splits.size} 个分包）")
                 is InstallResult.Failure -> r
             }
@@ -296,8 +306,26 @@ object ApkInstaller {
                         val (copyCode, copyOutput) = copyObbAtomically(
                             obb.absolutePath, targetPath, obbTransactionLock, obbLockToken
                         )
+                        if (copyCode == OBB_EXIT_ALREADY_EXISTS) {
+                            // 目标已存在：同身份说明期望的最终状态已经成立（重复安装同一 XAPK），
+                            // 视为成功而不是失败。此前这里直接失败且脚本一个字节都没输出，
+                            // 界面只显示「复制 OBB 失败: 」，用户既看不出原因也没有自愈路径，
+                            // 该 XAPK 从此再也装不上。
+                            val existing = readObbIdentity(targetPath)
+                            if (existing != null && existing == readObbIdentity(obb.absolutePath)) {
+                                installedObbTargets += "$targetPath|$existing"
+                                continue
+                            }
+                            return@withContext InstallResult.Failure(
+                                "目标 OBB 已存在且内容不同：$targetName。" +
+                                    "为避免覆盖游戏正在使用的数据包，shso 不会替换它；" +
+                                    "请先删除该文件再重新安装：$targetPath"
+                            )
+                        }
                         if (copyCode != 0) {
-                            return@withContext InstallResult.Failure("复制 OBB 失败: ${copyOutput.trim()}")
+                            return@withContext InstallResult.Failure(
+                                "复制 OBB 失败: ${copyOutput.trim().ifEmpty { "未知错误（exit=$copyCode）" }}"
+                            )
                         }
                         copiedObbTargets += targetPath
                         readObbIdentity(targetPath)?.let { identity ->
@@ -307,8 +335,14 @@ object ApkInstaller {
                 } finally {
                     // Do not leave a partial OBB set when any copy fails or is cancelled.
                     if (copiedObbTargets.size != obbFiles.size) {
-                    copiedObbTargets.forEach { target ->
-                            RootService.runCommandSync("rm -f ${RootService.escapeShellArg(target)}", INSTALL_TIMEOUT_MS)
+                        // 走 removeOwnedObb（锁校验 + inode:size:mtime 校验），不用裸 rm -f：
+                        // 从落位到此刻已过去一个最长 300s 的 cp 窗口，期间游戏自身/文件
+                        // 管理器/旧版 shso 若按同规范名重建了该文件，无校验的 rm 会把它删掉。
+                        copiedObbTargets.forEach { target ->
+                            val identity = installedObbTargets.firstOrNull { it.startsWith("$target|") }
+                            if (identity != null) {
+                                removeOwnedObb(identity, obbTransactionLock, obbLockToken ?: return@forEach)
+                            }
                         }
                     }
                 }
@@ -363,9 +397,15 @@ object ApkInstaller {
         val script = buildString {
             append("trap 'rm -f $temp' EXIT; ")
             append(lockOwned)
-            append("if [ -e $target ] || [ -L $target ]; then exit 18; fi; ")
+            // 复制前先探一次：已存在就不必浪费一次几百 MB 的 cp。
+            // 必须 echo 出原因 —— 此前这里静默 exit，界面只显示「复制 OBB 失败: 」，
+            // 空白错误无法自愈。
+            append("if [ -e $target ] || [ -L $target ]; then echo \"目标已存在: $target\"; exit $OBB_EXIT_ALREADY_EXISTS; fi; ")
             append("cp $source $temp || exit 19; ")
             append(lockOwned)
+            // mv 之前再探一次：cp 一个几百 MB 的 OBB 最长 300s，这段时间里游戏自身/
+            // 文件管理器/未走锁的旧版可能已创建该文件，而 mv 是覆盖语义且返回 0。
+            append("if [ -e $target ] || [ -L $target ]; then echo \"复制期间目标被创建: $target\"; exit $OBB_EXIT_ALREADY_EXISTS; fi; ")
             append("mv $temp $target || exit 20; ")
             append("trap - EXIT")
         }
@@ -618,7 +658,10 @@ object ApkInstaller {
         // A) 命名约定
         nameBasedSet(tapped.name, siblings.map { it.name }.take(MAX_SIBLING_SCAN))?.let { (baseName, splitNames) ->
             val base = byName[baseName]
-            val splits = splitNames.mapNotNull { byName[it] }
+            // 同样受 MAX_SPLITS 约束：命名前缀匹配会把同目录下所有 `<名>-<版本>-splitN`
+            // 收进来，而每个都会 cp 一份到 /data/local/tmp，不设上限时一个几百个 APK 的
+            // 目录能把 /data 写满。
+            val splits = splitNames.take(MAX_SPLITS).mapNotNull { byName[it] }
             if (base != null && splits.isNotEmpty()) {
                 return ApkSet(base.absolutePath, splits.map { it.absolutePath })
             }
@@ -850,6 +893,9 @@ object ApkInstaller {
     }
 
     private const val BASE_DRAFT_NAME = "base.apk"
+
+    /** [copyObbAtomically] 的「目标已存在」退出码，调用方据此走幂等/冲突分支。 */
+    private const val OBB_EXIT_ALREADY_EXISTS = 18
 
     /** split 名必须是合法文件名（无 `/`、无 NUL），否则不能用作草稿名。 */
     private val DRAFT_SAFE_REGEX = Regex("[A-Za-z0-9._+\\-]{1,200}")

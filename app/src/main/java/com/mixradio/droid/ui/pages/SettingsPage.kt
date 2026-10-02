@@ -63,6 +63,7 @@ import com.mixradio.droid.data.PermissionChecker
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.security.GuardModuleInstaller
 import com.mixradio.droid.data.security.SecurityAuditLog
+import com.mixradio.droid.data.security.SecurityLevels
 import com.mixradio.droid.ui.theme.AuroraAccentBar
 import com.mixradio.droid.ui.theme.AuroraArrowPreference
 import com.mixradio.droid.ui.theme.AuroraTextStyles
@@ -248,6 +249,12 @@ fun SettingsPage(
     var showAuditDialog by remember { mutableStateOf(false) }
     var auditDialogLines by remember { mutableStateOf<List<String>>(emptyList()) }
     var installingGuard by remember { mutableStateOf(false) }
+
+    /**
+     * 安全档位切换进行中。切档会连带「部署守卫 + 同步 policy.conf」两次特权写入，
+     * 没有这把锁时连点会让两次同步并发（守卫目录共用一把锁，但后到的档位会覆盖先到的）。
+     */
+    var levelSyncInFlight by remember { mutableStateOf(false) }
     var guardInstalled by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         scope.launch {
@@ -416,22 +423,21 @@ fun SettingsPage(
             SettingsSecurityGroup(
                 currentLevel = appSettings.securityLevel,
                 guardInstalled = guardInstalled,
-                onLevelClicked = remember(appSettings.securityLevel) {
+                guardInstalling = installingGuard,
+                onLevelClicked = remember(appSettings.securityLevel, levelSyncInFlight) {
                     {
-                        val next = (appSettings.securityLevel + 1) % 4
+                        // 切档不是纯写偏好：≥2 档依赖守卫模块真实存在且 policy.conf 的 mode
+                        // 与档位一致。此前无论成败都先落盘再吐「守卫 PATH」，而
+                        // ensureInstalled / syncPolicyMode 的返回值被丢弃 —— Magisk 未授权、
+                        // /data 写满、策略同步超时都会让 UI 亮着「标准防护」而实际无守卫。
+                        // 现在按「先落盘→同步→失败回滚」闭环，失败必须让用户看见。
+                        if (levelSyncInFlight) return@remember
+                        val previous = appSettings.securityLevel
+                        val next = (previous + 1) % 4
                         appSettings.updateSecurityLevel(next)
-                        // 档位即时生效
-                        // 失效「守卫就绪」缓存，避免 60s TTL 内仍用旧判定；
-                        // 切到受保护档位（≥2）时确保守卫已安装（未装则用内置 zip 静默安装）；
-                        // 把档位同步为守卫 policy.conf 的 mode（0→off / 1→log / 2,3→enforce），
-                        //    否则会出现「App 说标准防护、模块实际 mode=off」的口径不一致。
+                        // 失效「守卫就绪」缓存，避免 60s TTL 内仍用旧判定
                         GuardModuleInstaller.invalidateReadyCache()
-                        scope.launch {
-                            if (GuardModuleInstaller.requiresRuntimeGuard(next)) {
-                                if (GuardModuleInstaller.ensureInstalled(context)) guardInstalled = true
-                            }
-                            GuardModuleInstaller.syncPolicyMode(next)
-                        }
+
                         val tip = when (next) {
                             AppSettings.SECURITY_OFF -> "已关闭：不审查 / 不拦截（仍记录防护配置变更）"
                             AppSettings.SECURITY_AUDIT_ONLY -> "审计：仅留痕，不拦截命令"
@@ -439,7 +445,46 @@ fun SettingsPage(
                             AppSettings.SECURITY_MAXIMUM -> "最高：脚本默认非 Root 执行 + 全档收口"
                             else -> ""
                         }
-                        Toast.makeText(context, tip, Toast.LENGTH_LONG).show()
+                        if (!GuardModuleInstaller.requiresRuntimeGuard(next)) {
+                            scope.launch {
+                                val synced = GuardModuleInstaller.syncPolicyMode(next)
+                                levelSyncInFlight = false
+                                if (synced) {
+                                    Toast.makeText(context, tip, Toast.LENGTH_LONG).show()
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        "守卫策略同步失败：模块可能仍按旧模式运行，请检查守卫部署状态",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            }
+                            return@remember
+                        }
+
+                        levelSyncInFlight = true
+                        scope.launch {
+                            val installed = GuardModuleInstaller.ensureInstalled(context)
+                            if (installed) guardInstalled = true
+                            val synced = if (installed) GuardModuleInstaller.syncPolicyMode(next) else false
+                            if (installed && synced) {
+                                Toast.makeText(context, tip, Toast.LENGTH_LONG).show()
+                            } else {
+                                // 回滚：档位不留在「看起来已开启」的状态，并按上一档重同步策略，
+                                // 否则 policy.conf 的 mode 会与新档位长期失配。
+                                appSettings.updateSecurityLevel(previous)
+                                GuardModuleInstaller.syncPolicyMode(previous)
+                                GuardModuleInstaller.invalidateReadyCache()
+                                levelSyncInFlight = false
+                                val why = if (!installed) "守卫模块部署失败" else "守卫策略同步失败"
+                                Toast.makeText(
+                                    context,
+                                    "$why，已回退到「${SecurityLevels.nameOf(previous)}」：$tip 尚未生效",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                            levelSyncInFlight = false
+                        }
                     }
                 },
                 onShowAuditLogClicked = remember(Unit) {
@@ -451,12 +496,13 @@ fun SettingsPage(
                         }
                     }
                 },
-                onInstallGuardClicked = remember(guardInstalled) {
+                onInstallGuardClicked = remember(guardInstalled, installingGuard) {
                     {
                         // 守卫已就绪：直接吐司提示，不触发安装逻辑（避免覆盖已部署模块）
                         if (guardInstalled) {
                             Toast.makeText(context, "模块已就绪", Toast.LENGTH_LONG).show()
                         } else {
+                            if (installingGuard) return@remember
                             installingGuard = true
                             scope.launch {
                                 val (ok, msg) = GuardModuleInstaller.installSerialized(context)

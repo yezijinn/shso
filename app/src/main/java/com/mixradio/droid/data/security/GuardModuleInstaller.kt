@@ -309,30 +309,37 @@ object GuardModuleInstaller {
      *
      * 守卫未就绪时静默返回 false（策略文件本身不存在时，守卫会退回内置兜底清单）。
      * 只改写 `mode=` 行，其余 `protect=` / `allow=` 用户自定义内容原样保留。
+     * 与安装共用 [installMutex]，理由见该字段注释。
      */
     suspend fun syncPolicyMode(securityLevel: Int): Boolean = withContext(Dispatchers.IO) {
         if (!guardBinDirReady()) return@withContext false
         val mode = policyModeFor(securityLevel)
         val policyDir = "/data/adb/shso_guard"
-        val script = buildString {
-            append("d=$policyDir; mkdir -p \$d; f=\$d/policy.conf; ")
-            append("[ -f \"\$f\" ] || cp $MODULE_DIR/policy.conf \"\$f\" 2>/dev/null; ")
-            append("[ -f \"\$f\" ] || : > \"\$f\"; ")
-            // 删掉既有的 mode= 行（容忍 `mode = x` 写法），再追加一行标准写法
-            append("grep -v '^[[:space:]]*mode[[:space:]]*=' \"\$f\" > \"\$f.shso.tmp\" 2>/dev/null; ")
-            append("[ -s \"\$f.shso.tmp\" ] || : > \"\$f.shso.tmp\"; ")
-            append("mv \"\$f.shso.tmp\" \"\$f\" 2>/dev/null; ")
-            append("echo 'mode=$mode' >> \"\$f\"")
-        }
-        val code = RootService.runCommandSync(script, 10_000L).first
-        if (code == 0) {
-            SecurityAuditLog.log(
-                CommandSource.INTERNAL_APP, AuditVerdict.FINISHED, "GUARD_POLICY_MODE", RiskLevel.SAFE,
-                "$policyDir/policy.conf mode=$mode (档位=$securityLevel)"
-            )
-            true
-        } else {
-            false
+        installMutex.withLock {
+            // 临时文件用 mktemp 独占，不再用固定的 policy.conf.shso.tmp。
+            // 固定名在并发下会被另一轮整体移走；本仓库 trimRootLog 已是同款做法。
+            val script = buildString {
+                append("d=$policyDir; mkdir -p \$d; f=\$d/policy.conf; ")
+                append("[ -f \"\$f\" ] || cp $MODULE_DIR/policy.conf \"\$f\" 2>/dev/null; ")
+                append("[ -f \"\$f\" ] || : > \"\$f\"; ")
+                append("t=\$(mktemp \"\$d/.policy.XXXXXX\") || exit 21; ")
+                // 删掉既有的 mode= 行（容忍 `mode = x` 写法），再追加一行标准写法
+                append("grep -v '^[[:space:]]*mode[[:space:]]*=' \"\$f\" > \"\$t\" 2>/dev/null; ")
+                append("[ -s \"\$t\" ] || : > \"\$t\"; ")
+                append("cp \"\$t\" \"\$f\" || exit 22; ")
+                append("rm -f \"\$t\"; ")
+                append("echo 'mode=$mode' >> \"\$f\"")
+            }
+            val code = RootService.runCommandSync(script, 10_000L).first
+            if (code == 0) {
+                SecurityAuditLog.log(
+                    CommandSource.INTERNAL_APP, AuditVerdict.FINISHED, "GUARD_POLICY_MODE", RiskLevel.SAFE,
+                    "$policyDir/policy.conf mode=$mode (档位=$securityLevel)"
+                )
+                true
+            } else {
+                false
+            }
         }
     }
 
@@ -352,6 +359,16 @@ object GuardModuleInstaller {
      *
      * 失败返回 false —— 调用方应降级为醒目告警后继续放行，而不是阻断全部执行
      * （硬阻断会让未装守卫的设备连 `ls` 都无法执行）。
+     *
+     * 守卫目录（`/data/adb/shso_guard`）所有改写操作共用这一把锁：[install] 与
+     * [syncPolicyMode]。
+     *
+     * 1) 两条链路都会执行 `rm -rf .old` → `mv` → 清理，互相踩踏时表现是
+     *    「安装校验失败 / guard/rm 不可执行」。
+     * 2) `syncPolicyMode` 自身是「读 policy.conf → 改写 → 写回」的多步序列。
+     *    并发进入时后一轮的写回会因临时文件已被前一轮移走而静默失败，
+     *    但两次 `echo mode=` 都成功，文件里留下两条 `mode=` 行；守卫只认最后一条，
+     *    于是实际模式由 su 完成顺序决定，与 App 档位无关。
      */
     private val installMutex = Mutex()
 

@@ -236,6 +236,7 @@ internal object SettingsPermissionIntents {
 fun SettingsSecurityGroup(
     currentLevel: Int,
     guardInstalled: Boolean,
+    guardInstalling: Boolean = false,
     onLevelClicked: () -> Unit,
     onShowAuditLogClicked: () -> Unit,
     onInstallGuardClicked: () -> Unit,
@@ -275,10 +276,21 @@ fun SettingsSecurityGroup(
         onClick = onShowAuditLogClicked
     )
     AuroraArrowPreference(
-        title = if (guardInstalled) "守卫模块：已安装" else "安装 shso_guard 守卫模块",
-        summary = if (guardInstalled) "拦截 rm/dd/mkfs 等命令运行" else "复制本 APP 内置模块到 /data/adb/modules/",
+        title = when {
+            guardInstalling -> "守卫模块：正在部署…"
+            guardInstalled -> "守卫模块：已安装"
+            else -> "安装 shso_guard 守卫模块"
+        },
+        // 部署期间改为进度文案并吞掉点击：安装是解压 + cp -R + mv 的多步特权写入，
+        // 连点会排进 installMutex 串行执行（每次都对 /data/adb/modules 做一轮
+        // rm -rf → mv），用户看到的仍是同一行文案，只能反复点。
+        summary = when {
+            guardInstalling -> "请稍候，不要重复点击"
+            guardInstalled -> "拦截 rm/dd/mkfs 等命令运行"
+            else -> "复制本 APP 内置模块到 /data/adb/modules/"
+        },
         statusSwitch = guardInstalled,
         statusSwitchEnabled = false,
-        onClick = onInstallGuardClicked
+        onClick = { if (!guardInstalling) onInstallGuardClicked() }
     )
 }

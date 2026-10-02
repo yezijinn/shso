@@ -429,7 +429,9 @@ fun FilePage(
                     ApkInstaller.InstallResult.Failure("安装包在确认后发生变化，已取消安装")
                 } else if (installAsRoot) {
                     if (item.realExtension == "apk") {
-                        ApkInstaller.installApk(context, installPath)
+                        // 第三个参数传原始路径：兄弟分片要从原始目录发现，
+                        // 而被点的这一个仍用已校验的暂存副本安装。
+                        ApkInstaller.installApk(context, installPath, item.path)
                     } else {
                         ApkInstaller.installXapk(context, installPath)
                     }
@@ -1639,6 +1641,25 @@ fun FilePage(
     if (showPermissionDialog && permissionTargetItem != null && permissionMetadata != null) {
         val item = permissionTargetItem!!
         val metadata = permissionMetadata!!
+
+        /**
+         * 三步改权限中途失败时把权限位回滚到进弹窗时的值。
+         * 属主/用户组不做回滚：用户输入的 uid/组名未必解析得到，且
+         * `chmod` 是这里唯一带越权后果的一步（777/666 会让任何人可写）。
+         */
+        suspend fun rollbackMode(path: String, originalMode: String?, reason: String): Pair<Boolean, String> {
+            val original = originalMode?.trim()
+            if (original.isNullOrEmpty() || original == "—") {
+                return false to "$reason（未能读取原权限以回滚，请手动核对）"
+            }
+            val rolled = RootFileManager.changePermissions(path, original)
+            return if (rolled.first) {
+                false to "$reason；已回滚权限为 $original"
+            } else {
+                false to "$reason；回滚到 $original 也失败：${rolled.second}"
+            }
+        }
+
         FilePermissionDialog(
             show = true,
             path = item.path,
@@ -1654,16 +1675,32 @@ fun FilePage(
                 refresh()
             },
             onSubmit = { mode, owner, group ->
-                val result = RootFileManager.changePermissions(item.path, mode).let { permissionResult ->
-                    if (!permissionResult.first) {
-                        permissionResult
-                    } else {
-                        val ownerResult = RootFileManager.changeOwner(item.path, owner)
-                        if (!ownerResult.first) ownerResult
-                        else RootFileManager.changeGroup(item.path, group)
-                    }
+                // 三步是「部分成功」语义：chmod 落盘后 chown 失败，磁盘上已是新权限，
+                // 但返回值只带最后一步的错误。此前弹窗提示「保存失败」并留在原地，
+                // 权限却已改完 —— 最坏是用户想把 777 收紧为 700，chgrp 失败后文件仍是 777
+                // 而用户以为已锁死。任一步失败即回滚到进弹窗时读到的原始 mode，
+                // 并把已执行/未执行的部分说清楚。
+                // 取组合期捕获的 metadata（进弹窗时的真实权限），而不是提交时再读
+                // permissionMetadata —— 用户在提交途中关掉弹窗会把那个 state 置 null。
+                val originalMode = metadata.mode
+                val permResult = RootFileManager.changePermissions(item.path, mode)
+                if (!permResult.first) return@FilePermissionDialog permResult
+
+                val ownerResult = RootFileManager.changeOwner(item.path, owner)
+                if (!ownerResult.first) {
+                    return@FilePermissionDialog rollbackMode(
+                        item.path, originalMode,
+                        "权限已改为 $mode，但属主修改失败：${ownerResult.second}"
+                    )
                 }
-                result
+                val groupResult = RootFileManager.changeGroup(item.path, group)
+                if (!groupResult.first) {
+                    return@FilePermissionDialog rollbackMode(
+                        item.path, originalMode,
+                        "权限与属主已改（$mode / $owner），但用户组修改失败：${groupResult.second}"
+                    )
+                }
+                groupResult
             }
         )
     }

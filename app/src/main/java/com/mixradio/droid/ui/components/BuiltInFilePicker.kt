@@ -110,6 +110,9 @@ fun BuiltInFilePicker(
     var newFileName by remember { mutableStateOf("") }
     var newFileExt by remember { mutableStateOf("") }
 
+    /** 新建文件失败原因（留空=无）。用于在新建对话框内就地提示，不静默关窗。 */
+    var newFileError by remember { mutableStateOf<String?>(null) }
+
     // 目录加载代次：每次 loadDirectory 自增，落盘前校验。
     // listFiles 要 fork su（100~500ms），快速连点两个文件夹时先点的 A 可能后完成，
     // 于是 currentDir=B 而 fileList=A —— 看到的目录内容与路径行不符。
@@ -567,12 +570,24 @@ if (directoryOnly) {
                     )
                 }
 
+                if (newFileError != null) {
+                    Text(
+                        text = newFileError!!,
+                        style = AuroraTextStyles.footnote2,
+                        color = AuroraTokens.Error,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End
                 ) {
                     Button(
-                        onClick = { showNewFileDialog = false },
+                        onClick = {
+                            newFileError = null
+                            showNewFileDialog = false
+                        },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = AuroraTokens.SurfaceHover,
                             contentColor = AuroraTokens.Text
@@ -586,12 +601,22 @@ if (directoryOnly) {
                             val name = newFileName.trim()
                             val ext = newFileExt.trim()
                             if (name.isEmpty()) {
+                                newFileError = "请输入文件名"
                                 return@Button
                             }
                             val finalName = if (ext.isNotEmpty()) "$name.$ext" else name
-                            showNewFileDialog = false
                             scope.launch {
-                                RootFileManager.createEmptyFile(currentDir, finalName)
+                                // createEmptyFile 有多条失败返回：文件名含 /、同名已存在、
+                                // 目录不可写（/system/app、/data/adb/shso 这类）。
+                                // 此前返回值被丢弃，对话框已关闭、列表刷出原样内容，
+                                // 用户以为建好了；同名冲突或只读目录下反复重试都只静默失败。
+                                val (ok, msg) = RootFileManager.createEmptyFile(currentDir, finalName)
+                                if (ok) {
+                                    newFileError = null
+                                    showNewFileDialog = false
+                                } else {
+                                    newFileError = msg
+                                }
                                 loadDirectory(currentDir)
                             }
                         },

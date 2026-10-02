@@ -38,6 +38,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -73,48 +74,79 @@ fun HomePage(
     onNavigateToTerminal: () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
-    var filePathInput by remember { mutableStateOf("") }
-    var showFilePicker by remember { mutableStateOf(false) }
-    var validationError by remember { mutableStateOf<String?>(null) }
+    // 旋转 / 分屏 / 系统改字号都会重建 Activity，普通 remember 的这些状态会静默回初值：
+    // 已输入的长路径被清空、确认弹窗无声消失、选择器浏览位置退回存储根目录。
+    var filePathInput by rememberSaveable { mutableStateOf("") }
+    var showFilePicker by rememberSaveable { mutableStateOf(false) }
+    var validationError by rememberSaveable { mutableStateOf<String?>(null) }
 
-    var currentShsoDir by remember { mutableStateOf(RootFileManager.DEFAULT_SHSO_DIR) }
+    var currentShsoDir by rememberSaveable { mutableStateOf(RootFileManager.DEFAULT_SHSO_DIR) }
     var shsoFiles by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var isScanningShso by remember { mutableStateOf(false) }
+    var shsoDirError by remember { mutableStateOf<String?>(null) }
 
     // 执行确认：点击「立即执行」先暂存路径，弹窗确认后再真正执行
-    var pendingExecutePath by remember { mutableStateOf<String?>(null) }
+    var pendingExecutePath by rememberSaveable { mutableStateOf<String?>(null) }
 
     // shso 目录文件列表：字号跟随全局文件列表字号设置（与「文件」页一致）
     val listFontSize = appSettings.fileListFontSize.sp
     val listSecondaryFontSize = (appSettings.fileListFontSize - 5f).coerceAtLeast(8f).sp
 
+    // 刷新世代守卫：连点刷新会并发 fork su，先发起的那次若后落地且以异常收尾，
+    // 会把已经成功的新结果清空。序号法见 FilePage 的 refreshGenRef。
+    val shsoGenRef = remember { intArrayOf(0) }
+
     fun refreshShsoFiles(targetDir: String = currentShsoDir) {
+        val gen = ++shsoGenRef[0]
         isScanningShso = true
+        shsoDirError = null
         currentShsoDir = targetDir
         coroutineScope.launch {
             try {
-                RootFileManager.ensureShsoDir()
+                // ensureShsoDir 的返回值此前被丢弃：创建失败时与「目录为空」不可区分，
+                // 而 /data/adb 不可写是真会发生的（只读 ROM、SELinux 拒绝、空间不足）。
+                if (!RootFileManager.ensureShsoDir()) {
+                    if (gen == shsoGenRef[0]) {
+                        shsoFiles = emptyList()
+                        shsoDirError = "$targetDir 不可创建或不可写，无法读取 shso 目录"
+                        isScanningShso = false
+                    }
+                    return@launch
+                }
                 val files = RootFileManager.listFiles(targetDir)
-                // 仅保留可执行的 .sh 脚本与 .so 二进制（目录与其它无关文件不在此列表显示）
-                val executables = files.filter { it.isSupportedExecutable }
+                // 目录必须保留：「独立存储」把文件放进 /data/adb/shso/<名>_<时间戳>/ 子目录，
+                // 过滤掉目录后首页永远看不到那些文件，而 316/391 行的「进入子目录」
+                // 与「返回上级」全部成为不可达的死代码。
+                val executables = files.filter { it.isDirectory || it.isSupportedExecutable }
                 // 一次性预计算小写名，避免比较器内逐次 lowercase（O(N log N) 次临时字符串分配）
                 val decorated = executables.map { FileItemSortKey(it, it.name.lowercase()) }
-                shsoFiles = decorated
+                val sorted = decorated
                     .sortedWith(
                         compareByDescending<FileItemSortKey> { it.item.isDirectory }
                             .thenBy { it.key }
                     )
                     .map { it.item }
-            } catch (_: Exception) {
-                shsoFiles = emptyList()
-            } finally {
-                isScanningShso = false
+                if (gen == shsoGenRef[0]) {
+                    shsoFiles = sorted
+                    isScanningShso = false
+                }
+            } catch (e: Exception) {
+                if (gen == shsoGenRef[0]) {
+                    shsoFiles = emptyList()
+                    shsoDirError = "读取失败：${e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName}"
+                    isScanningShso = false
+                }
             }
         }
     }
 
-    LaunchedEffect(Unit) {
-        refreshShsoFiles(RootFileManager.DEFAULT_SHSO_DIR)
+    // 根授权状态从 null/false 转 true 时必须重读。冷启动时 isRootGranted 尚未确定，
+    // listFiles 会走非 root 口径去列举 /data/adb/shso（应用 uid 无权遍历，返回空），
+    // 此前没有任何机制让它重读，于是整段会话里首页都显示「暂无可执行文件」，
+    // 文案还把用户往「去文件页添加」的方向引导。
+    val rootGranted = RootService.isRootGranted
+    LaunchedEffect(rootGranted == true) {
+        refreshShsoFiles(if (rootGranted == true) RootFileManager.DEFAULT_SHSO_DIR else currentShsoDir)
     }
 
     fun execute(path: String, runAsRoot: Boolean? = null, riskApproved: Boolean = false) {
@@ -328,7 +360,7 @@ fun HomePage(
                     }
 
                     IconButton(
-                        onClick = { refreshShsoFiles() },
+                        onClick = { if (!isScanningShso) refreshShsoFiles() },
                         modifier = Modifier.size(32.dp)
                     ) {
                         Icon(
@@ -366,17 +398,34 @@ fun HomePage(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text(
-                        text = "当前目录暂无可执行的 .sh / .so 文件",
-                        style = AuroraTextStyles.body2,
-                        fontWeight = FontWeight.Medium,
-                        color = AuroraTokens.TextSecondary
-                    )
-                    Text(
-                        text = "可在「文件」页面长按任意文件选择「添加到shso」",
-                        style = AuroraTextStyles.footnote2,
-                        color = AuroraTokens.TextSecondary.copy(0.7f)
-                    )
+                    // 目录不可创建 / 不可写 / 读取失败时给出真实原因，而不是一律显示
+                    // 「暂无可执行文件」并把用户往「去文件页添加」的方向引导 ——
+                    // 那些脚本其实就在目录里，只是没读到。
+                    if (shsoDirError != null) {
+                        Text(
+                            text = shsoDirError!!,
+                            style = AuroraTextStyles.body2,
+                            fontWeight = FontWeight.Medium,
+                            color = AuroraTokens.Error
+                        )
+                        Text(
+                            text = "确认 shso 目录可写，或下拉刷新重试",
+                            style = AuroraTextStyles.footnote2,
+                            color = AuroraTokens.TextSecondary.copy(0.7f)
+                        )
+                    } else {
+                        Text(
+                            text = "当前目录暂无可执行的 .sh / .so 文件",
+                            style = AuroraTextStyles.body2,
+                            fontWeight = FontWeight.Medium,
+                            color = AuroraTokens.TextSecondary
+                        )
+                        Text(
+                            text = "可在「文件」页面长按任意文件选择「添加到shso」",
+                            style = AuroraTextStyles.footnote2,
+                            color = AuroraTokens.TextSecondary.copy(0.7f)
+                        )
+                    }
                 }
             } else {
                 Column(modifier = Modifier.fillMaxWidth()) {
@@ -428,13 +477,22 @@ fun HomePage(
     }
 
     // 执行确认弹窗：点击「立即执行」必须先经风险确认
-    // 优先复用 shso 列表中的真实 FileItem（含正确大小/时间），否则按输入路径构造
-    val execItem = remember(pendingExecutePath) {
-        pendingExecutePath?.let { targetPath ->
-            shsoFiles.firstOrNull { it.path == targetPath }
-                ?: FileItem(name = File(targetPath).name, path = targetPath, isDirectory = false)
-        }
+    // 优先复用 shso 列表中的真实 FileItem（含正确大小/时间）。
+    //
+    // 不在列表里的目标（从「文件」页选择器进来的 /storage/... 路径）此前直接构造一个
+    // size=0/lastModified=0 的 FileItem，而确认弹窗的大小与最后修改时间正是取自
+    // FileItem —— 于是「高风险确认」里对真实文件显示「0 B」「—」，档位 3 的风险判断
+    // 依据失真。改为对不在列表里的目标做一次真实 stat。
+    val listedItem = pendingExecutePath?.let { p -> shsoFiles.firstOrNull { it.path == p } }
+    var statItem by remember(pendingExecutePath) { mutableStateOf<FileItem?>(null) }
+    LaunchedEffect(pendingExecutePath) {
+        statItem = null
+        val path = pendingExecutePath ?: return@LaunchedEffect
+        if (listedItem == null) statItem = RootFileManager.statFilePath(path)
     }
+    val execItem = listedItem
+        ?: statItem
+        ?: pendingExecutePath?.let { FileItem(name = File(it).name, path = it, isDirectory = false) }
     ExecuteConfirmDialog(
         show = pendingExecutePath != null,
         fileItem = execItem,

@@ -20,7 +20,7 @@
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 422 tests / 0 failures / 1 skipped |
+| 单元测试 | 432 tests / 0 failures / 1 skipped |
 | lint | 0 errors / 31 warnings |
 | release 体积 | 2.18 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
@@ -40,6 +40,120 @@
 ---
 
 ## 待办
+
+### A55. 第五轮全面 BUG 深挖（2026-10-02）
+
+前四轮已把执行引擎、安全子系统、UI 状态层、数据服务层与安装解压逐文件读过。
+A55 转攻**此前从未深审的区块** + 把前几轮明确推迟的 P1 重新定级。
+
+- [x] **四路审计**（报 70+ 条，读代码复核后修 12 项，驳回 1 条）
+  - `SettingsPage` / `SettingsPagePartials` / `AppSettings`（此前从未审）
+  - `ApkInstaller` 已覆盖部分之外的安装链路（此前从未审）
+  - `MainActivity` / `HomePage` / `ShsoApplication`（此前从未审）
+  - `BuiltInFilePicker` / `FilePermissionDialog` / `SyntaxPackDialog` /
+    `FileListViewSettings` / `InstallConfirmDialog`（此前从未审）
+  - **驳回**：`OwnerPickerDialog` 重复 LazyColumn key 崩溃。合成项 name 为「当前所有者」、
+    应用项 name 为应用名，key 分别是 `uid|当前所有者` 与 `uid|<应用名>`，不重复；
+    读代码时误按 `Entry(value, uid, …)` 的实参顺序当成 name，未定级
+
+- [x] **安全性（2 项）**
+  - [x] **`content://` 的路径列可伪造 → root 越权读取与任意代码执行**。
+        上一轮只对 `file://` 施加白名单，`content://` 采信 provider 返回的 `_data` 列，
+        仅额外拒绝本进程私有目录。**但被授予的是 URI 本身，不是 provider 写进游标的字符串**
+        —— 任意应用自建 provider 即可对任意 URI 返回 `/data/data/<别人>/files/x` 或
+        `/data/adb/modules/x/service.sh`，而下游用 root 去 stat / 读取 / 执行（扩展名判为
+        EXECUTE 时用户点一次确认即执行）。现 `content://` 与 `file://` 同受白名单约束，
+        `/data/data/*`、`/data/user/*`、`/data/adb/*` 自然落在白名单外；
+        合法分享（FileProvider / MediaStore / Downloads）真实路径都在共享存储内，不受影响
+  - [x] **改权限三步无回滚 → 越权残留且界面报失败**。`chmod` → `chown` → `chgrp`
+        依次执行，返回值只带最后一步的错误：文件当前 750，用户填了设备上不存在的用户组，
+        则 chmod 已落盘、chgrp 失败，弹窗提示「保存失败」而磁盘上已是新权限。
+        反向更危险：用户想把 777 收紧为 700，chgrp 失败后文件**仍是 777** 而用户以为已锁死。
+        现 chown/chgrp 任一失败即回滚 chmod 到进弹窗时读到的原始 mode，并说明已执行/未执行部分
+
+- [x] **fail-open（2 项，本项目最高危的一类）**
+  - [x] **守卫部署失败后 UI 仍宣称「已开启防护」**。切档顺序是「先落盘 → 再确保守卫已安装 →
+        再同步策略」，而 `ensureInstalled` 的 false 与 `syncPolicyMode` 的返回值**都被丢弃**，
+        随后无条件弹出含「守卫 PATH」字样的提示。Magisk 未授权、`/data` 写满、策略同步超时，
+        都会让档位停在 2/3 而守卫缺失。唯一全局降级信号 `reportGuardDegraded`
+        只写终端输出、全局只报一次、且**完全不覆盖文件页**（`guardPrefix()` 用 `orEmpty()`
+        把 null 吞成空串，文件页的 chmod/chown/mv/rm -rf 零审计裸跑）。
+        现改为「落盘 → 同步 → 失败回滚到上一档并按上一档重同步」，且必须 Toast 原因；
+        另加 `levelSyncInFlight` 挡连点
+  - [x] **`syncPolicyMode` 无互斥 + 固定临时名 → `policy.conf` 留下两条 `mode=`**。
+        切档行是唯一入口且无防抖，两个 `syncPolicyMode`（外加冷启动那次）会并发跑在
+        同一个文件、同一个固定临时名 `policy.conf.shso.tmp` 上：A 的 `mv` 移走 tmp 后
+        B 的 `mv` 因文件已不存在而**静默失败**（`2>/dev/null`），但两次 `echo mode=` 都成功，
+        文件里留下两条 `mode=` 行；守卫只认最后一条，于是实际模式由 su 完成顺序决定，
+        与 App 档位无关。现与 `install` 共用 `installMutex`，临时文件改 `mktemp` 独占
+
+- [x] **功能逻辑（5 项）**
+  - [x] **分包应用必然装不上**。安装确认弹窗把待装包暂存成
+        `<cacheDir>/install-confirm/<uuid>.apk`（暂存是为了校验后不被替换），
+        而兄弟分片的发现以**待装文件所在目录**为基准 —— 暂存目录里只有那一个 uuid 文件，
+        列举结果恒为 1 个兄弟，套件被静默降级成单文件 `pm install`，
+        分包应用 100% 报「缺少分包」。同文件非 ROOT 分支用的是 `item.path`（原始路径），
+        说明这个基准差异本就是个笔误。现 `installApk` 增加原始路径参数：
+        套件从原始目录发现，被点中的那一个仍用已校验的暂存副本安装，两者兼顾；
+        命名约定的分片数也补上 `MAX_SPLITS` 上限（此前只有 manifest 分组有限制，
+        一个几百个 APK 的目录能把 /data/local/tmp 写满）
+  - [x] **含 OBB 的 XAPK 重复安装必然失败且错误信息为空白**。目标已存在时脚本
+        `exit 18` 且**一个字节都没往 stdout/stderr 写**，界面渲染成「复制 OBB 失败: 」；
+        该 XAPK 从此永久装不上，界面既不说明原因也没有自愈路径。现同身份视为幂等成功
+        （期望的最终状态已成立），异身份给出点名道姓的可操作提示；脚本本身也 echo 原因
+  - [x] **`copyObbAtomically` 的「目标已存在」检查与 `mv` 之间隔着整个 `cp`**。
+        拷几百 MB 最长 300s，这段时间游戏自身/文件管理器可能已创建该文件，
+        而 `mv` 是覆盖语义且返回 0 —— 静默覆盖他人数据，与注释承诺的「绝不覆盖」不符。
+        现 `mv` 之前再探一次（两次检查之间只留一次 rename）
+  - [x] **首页 shso 列表整段会话不可用**。冷启动时 `isRootGranted` 尚未确定，
+        列举走非 root 口径去读 `/data/adb/shso`（应用 uid 无权遍历，返回空），
+        而**没有任何机制让它在 root 转正后重读** → 首页一直显示「暂无可执行文件」，
+        文案还把用户往「去文件页添加」的方向引导。现以 `rootGranted == true` 为
+        `LaunchedEffect` 的 key，转正即重读
+  - [x] **「独立存储」添加的文件在首页永远看不到**。`isSupportedExecutable` 两个分支都带
+        `!isDirectory`，把目录一并滤掉 → `addFileToShso` 建出的 `<名>_<时间戳>/` 子目录不可见，
+        子目录里的脚本也就不可见，而「进入子目录」「返回上级」全部成为不可达的死代码。
+        现过滤条件放行目录
+  - [x] 附带：`ensureShsoDir()` 的返回值此前被丢弃，创建失败与「目录为空」不可区分；
+        现失败/读取失败给出真实原因而不是一律显示「暂无可执行文件」
+
+- [x] **数据一致性（2 项）**
+  - [x] **OBB 部分成功的回滚会删掉别人的文件**。`obbFiles=[A,B]`，A 落位成功、
+        B 因空间不足失败 → 内层 `finally` 对 A 直接 `rm -f`。而从落位到此刻已过去一个
+        最长 300s 的 `cp` 窗口，期间游戏自身/文件管理器/未走锁的旧版 shso 若按同规范名
+        重建了该文件，这条无校验的 `rm` 就把它删了；外层带锁 + inode:size:mtime 校验的
+        `removeOwnedObb` 随后 stat 失败成为空操作，保护形同虚设。现复用同一校验删除路径
+  - [x] **执行确认弹窗对真实文件显示「0 B」「—」**。不在 shso 列表里的目标
+        （从「文件」页选择器进来的 `/storage/...` 路径）直接构造一个 size=0/lastModified=0 的
+        `FileItem`，而弹窗的大小与时间正取自它 —— 高风险确认弹窗的元数据说谎，
+        档位 3 的风险判断依据失真。现对不在列表里的目标做真实 stat（`statFilePath` 是挂起函数，
+        故改为状态 + 协程，不能塞进 `remember`）
+  - [x] **内置文件选择器丢弃 `createEmptyFile` 返回值**。同名已存在、文件名含 `/`、
+        目录不可写（`/system/app`、`/data/adb/shso`）三条失败路径全部丢弃，
+        对话框已关闭、列表刷出原样内容、**零提示**。同一交互在文件页是有提示的，
+        两处口径不一致。现失败就地把原因显示在新建对话框内并保留对话框
+
+- [x] **并发 / 生命周期（3 项）**
+  - [x] **首页刷新无世代守卫**。连点刷新并发 fork su，先发起的那次若后落地且以异常收尾，
+        会把已成功的新结果清空；旧协程的 `finally` 还会提前把「正在读取目录…」擦掉。
+        现加 `refreshGenRef` 世代守卫（与文件页同款），并于扫描中禁用刷新按钮
+  - [x] **首页输入与确认流程用普通 `remember` 承载**。旋转 / 分屏 / 系统改字号都会重建
+        Activity → 已输入的长路径被清空、执行确认弹窗无声消失、选择器浏览位置退回存储根目录。
+        现改 `rememberSaveable`（文件页此前已就同类状态明确记录过「这就是数据丢失」）
+  - [x] **「安装守卫模块」行无防重入**。`installingGuard` 此前是只写状态、从不参与渲染，
+        连点两次会排进 `installMutex` 串行跑完整链路（每次一轮 `rm -rf` → `mv`），
+        而行文案不变，用户以为没点上而继续点。现部署期间显示「正在部署…」并吞掉点击
+
+- [x] **回归**：432 tests / 0 failures / 1 skipped；lint 0 errors / 31 warnings；
+      `build_apk.py` 红线通过（2.2 MB）
+- [x] **真机验证**
+  - 首页同时列出子目录（📁 文件夹）与顶层脚本（26 B）→ 目录过滤已解除、root 转正后重读生效
+  - `policy.conf` 的 `mode=` 行**恰好 1 条**、`protect=` 14 条完整、无残留临时文件
+    → mktemp 改动未破坏策略文件；`guard/rm` 在 enforce 档下真实拦截生效
+  - 探针文件已全部清理；`FATAL=0`
+  - **一项未做到**：守卫部署失败回滚与改权限回滚需要「先制造失败」才能观测，
+        设备侧无法稳定构造（需要断开 Magisk 授权或填入不存在的用户组后走 UI），
+        该两条由代码路径复核 + 单测覆盖映射判定（`policyModeFor` / `requiresRuntimeGuard`）
 
 ### A54. 第四轮全面 BUG 深挖（2026-10-02）
 
