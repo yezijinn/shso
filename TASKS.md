@@ -41,17 +41,33 @@
 
 ### A52. 发版 20261002（2026-10-02）
 
-- [/] 产物与校验
+- [x] 产物与校验
   - [x] `build_apk.py` 通过：`verifyReleasePayload` 红线、体积 2.18 MB、ABI 仅 arm64-v8a、V2+V3 签名
   - [x] 真机安装并冷启动，无崩溃
-  - [ ] 双端各下载一次，`sha256` 与本地一致
-- [/] 文档
+  - [x] 双端各下载一次，`sha256` 与本地一致
+- [x] 文档
   - [x] 清除入库的设备序列号，改用 `$DEVICE` 运行时推导（`TASKS.md` 9 处）
   - [x] `校验与验证命令` 段的 `JAVA_HOME` 由 jdk-17 更正为 jdk-21（工程实际用 21）
-  - [x] `更新日志.md` 清掉「按用户要求」「上轮加的」这类代理腔措辞
-- [ ] 提交并推 `origin main` 与 `gitee main`，`git ls-remote` 复核远端 tip
-- [ ] 打纯数字 tag `20261002` 推双远端；两端建同名 Release
-- [ ] Gitee 同名附件先删再传（无 clobber）
+- [x] 提交并推 `origin main` 与 `gitee main`，`git ls-remote` 复核远端 tip
+- [x] 打纯数字 tag `20261002` 推双远端；两端建同名 Release
+- [x] Gitee 同名附件先删再传
+
+产物：`app-release.apk`，2 290 093 字节，`sha256=01701399adddb6e56cfb36417d2bd9f5464280193000dd24ed08ac13fc4908da`
+
+发版踩坑（下次直接绕开）：
+
+- **Gitee API v5 无单附件删除端点**。`assets` 数组不返回附件 id（只有上传响应里给 `id`），
+  `DELETE /releases/{id}/attach_files/{name}` 返回 404。清除旧版 APK 只能
+  「删整个 Release → 用同 tag/name/body 重建 → 不带附件」，源码 zip/tar.gz 由 Gitee 自动重生成。
+- **PowerShell 5.1 会毁掉 CJK 正文**。`Invoke-RestMethod` 按 ANSI 码页解码响应，
+  读回来的中文已是乱码；再拿这份乱码回写就等于二次损坏。
+  Gitee API v5 的表单与 JSON 两种提交实测都会被按 latin-1 落库，**只有用 Python
+  显式 UTF-8 收发才正确**。同理 `Out-File -Encoding utf8` 会写 BOM，
+  `gh release create --notes-file` 会把 BOM 带进 GitHub 正文（表现为两端正文差 1 字符）。
+- 上面的乱码可逆：`true = utf8_decode(latin1_bytes(stored))`，逐层还原即可取回真身。
+  `20260922` 正文就是这样从 2609 字符还原成 1359 字的完整中文。
+- 核验正文可读性必须**抓网页**而不是读 API 响应：API 响应在 PS 里解码即坏，
+  网页是真值的呈现面。判据用正则 `[\u4e00-\u9fff]` 找中文、用 `[ÃÅÆåæ\u0080-\u009f]` 找乱码。
 
 ### A51. 第二轮全面 BUG 深挖（2026-10-02）
 
