@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 336 tests / 0 failures / 1 skipped |
+| 单元测试 | 340 tests / 0 failures / 1 skipped |
 | lint | 0 errors / 31 warnings |
 | release 体积 | 2.08 MB，`verifyReleasePayload` 红线通过 |
 | 条目预算 | 中央目录**零分配结构遍历**取精确条目数（不信自报字段、不按体积折算） |
@@ -2183,5 +2183,41 @@ adb -s $DEVICE shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.
       `B站专栏-shso分享.md`、`app/build.gradle.kts` 注释；`更新日志.md` 与 `docs/archive/` 属历史记录，不改
 - [x] **验证**：`:app:compileDebugKotlin` 通过；`:app:testDebugUnitTest --rerun-tasks` 全绿；
       `:app:lintRelease` 0 errors / 31 warnings；`:app:assembleRelease` 成功，APK 2.08 MB
-- [ ] **设备侧清理**：`/data/adb/modules/shso_guard` 与 `/data/adb/shso_guard/` 仍需卸载 / 清除
+- [x] **设备侧清理**：`/data/adb/modules/shso_guard`、`/data/adb/modules_update/shso_guard`、
+      `/data/adb/shso_guard` 已删除；`audit.log` 与 `/data/local/tmp` 下的守卫副本、探针目录已清除；
+      复验 `which rm` → `/system/bin/rm`、`$PATH` 无守卫目录
+
+---
+
+### A68. 修终端输出不显示与退出码缺失（2026-10-03）
+
+移除守卫后真机复测发现两个**先前已存在**的缺陷（`d6c3b0f` 即有，非本次移除引入），
+两者叠加导致「脚本确实执行、但终端输出区完全空白」。
+
+- [x] **根因 1 · 解析代次守卫恒为假**（`TerminalPage`）
+    - `val myGen = remember(terminalDefaultColor) { parseGenRef[0]++ }` 用的是**后置**自增：
+      表达式值是自增前的旧值，写进 `parseGenRef[0]` 的是新值，于是 `myGen` 恒等于
+      `parseGenRef[0] - 1`，两处 `parseGenRef[0] == myGen` 守卫**永不成立**。
+    - 后果：`snapshotFlow` 每次 collect 都在解析完的结果上直接 `return`，`parsedOutput`
+      永不更新 → 输出区空白（横幅、脚本输出、退出码全无）。真机日志实测 `gen=1/0` 佐证。
+    - 修法：改为前置自增 `++parseGenRef[0]`，使当前组合的代次与计数器恒相等、
+      重新组合后仍严格递增（旧协程照旧被判过期）。
+
+- [x] **根因 2 · Job 代际比较用错对象**（`RootService` 三处）
+    - `if (executionJob === coroutineContext[Job])` 在 `withContext(Dispatchers.Main)`
+      与 `withContext(NonCancellable + Dispatchers.Main)` 块内，取到的是 kotlinx 为该次
+      上下文创建的协程对象，与 `launch` 返回并赋给 `executionJob` 的那个并非同一实例，
+      **恒不相等**。真机日志实测 `kz{Active}@942d6b0` vs `ly1{Active}@aff3929`。
+    - 后果：任务结束块整体被跳过 —— 退出码永不显示、发布循环不停止、
+      `isTaskRunning` / `lastExitCode` 不复位（进程早已退出，顶栏仍显示「运行中」）。
+    - 修法：三处一律改与协程入口处已捕获的 `myJob` 比较（该处本就是为代际判定而取）。
+
+- [x] **回归测试**：新增 `TerminalGenerationGuardTest`（4 例）锁定代次语义 ——
+  后置自增必失效、前置自增恒成立、重新组合严格递增、连续多次组合仅最后一次有效。
+  **340 tests / 0 failures / 1 skipped**
+
+- [x] **验证**：`:app:lintRelease` 0 errors / 31 warnings；Release 2.08 MB；
+      真机 `BIYLBAFQQSS8DA69` 实测脚本执行、终端一次性命令、实时流式回显、
+      中文与彩色 Emoji、退出码、`whoami`→`root`、`id -u`→`0`、PATH 无守卫目录，
+      全程 `FATAL=0` / `ANR=0`
 

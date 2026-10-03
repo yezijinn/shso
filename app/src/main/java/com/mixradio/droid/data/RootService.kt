@@ -615,7 +615,12 @@ object RootService {
                 HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
                 // 本次执行仍是当前任务（代际判断）才写「退出」文案；被新任务/重启取代后由对方写
                 withContext(Dispatchers.Main) {
-                    if (executionJob === coroutineContext[Job]) {
+                    // 必须比 myJob（协程入口处捕获的引用），不能比 coroutineContext[Job]：
+                    // 后者在 withContext 块内是 kotlinx 为该次上下文创建的 ScopeCoroutine，
+                    // 与 launch 返回并赋给 executionJob 的那个 Job 并非同一对象，
+                    // 恒不相等 —— 于是本块整体被跳过：退出码永不显示、发布循环不停止、
+                    // isTaskRunning 与 lastExitCode 不复位（任务早已结束，UI 却仍显示「运行中」）。
+                    if (executionJob === myJob) {
                         // 先停发布循环并等它把积压刷完，再写「退出」文案：
                         // 否则循环里最后 ≤250ms 的输出会落在文案之后（看起来像退出码打在输出前面）。
                         HyperCore.stopBatchFlushLoop(fileFlushLoop)
@@ -632,7 +637,7 @@ object RootService {
                 // flush/清理统一交给 finally 处理，避免取消路径上挂起引发二次抛错。
                 if (coroutineContext[Job]?.isCancelled != true) {
                     withContext(Dispatchers.Main) {
-                        if (executionJob === coroutineContext[Job]) {
+                        if (executionJob === myJob) {
                             lastExitCode = -1
                             if (appSettings?.showShsoBanner != false) {
                                 appendOutputDirect("\n[shso Engine] 异常终止: ${e.message}\n")
@@ -644,8 +649,10 @@ object RootService {
                 // 任何取消路径（kill/restart/覆盖启动）必然走到这里；
                 // 但只有本次仍是当前执行协程（执行 Job 未被替换）时才清理 Compose 状态。
                 // 关键：executionJob 在协程外已切换到新值（覆盖启动先 cancel 再赋新 job），
-                // 因此 finally 里比较「执行 Job 是否仍是本协程」可判定代际。
-                val isCurrentJob = executionJob === coroutineContext[Job]
+                // 因此比较「执行 Job 是否仍是本协程」可判定代际 —— 比的必须是入口捕获的
+                // myJob：finally 里带 NonCancellable 的 withContext 会把 coroutineContext[Job]
+                // 换成 NonCancellable，拿它比恒为 false，清理永不执行（状态卡在「运行中」）。
+                val isCurrentJob = executionJob === myJob
                 // 清理必须用局部引用：覆盖启动后全局 processWriter 已属于新任务，旧任务不得动它。
                 // withContext(Dispatchers.Main)+NonCancellable：被取消协程的 finally 里不允许挂起切换，
                 // 且必须保证「清理状态」这段即使协程已取消也完整执行。

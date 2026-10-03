@@ -186,8 +186,12 @@ fun TerminalPage(
     }
     // 解析代次：组件离/进组合或换色时 +1。in-flight 的解析块没有挂起点、取消打不断，
     // 用它判断「本结果是否已过期」，避免旧协程把 consumedLog 回写成较旧值。
+    //
+    // 必须用**前置**自增：表达式 `p[0]++` 的值是自增**前**的旧值，写进 p[0] 的是新值，
+    // 于是 myGen 恒等于 p[0] - 1，两处 `p[0] == myGen` 守卫恒为假 —— 每次 collect 都在
+    // 解析完的结果上直接 return，parsedOutput 永不更新，终端输出区永远空白。
     val parseGenRef = remember { intArrayOf(0) }
-    val myGen = remember(terminalDefaultColor) { parseGenRef[0]++ }
+    val myGen = remember(terminalDefaultColor) { ++parseGenRef[0] }
     var parsedOutput by remember(terminalDefaultColor) {
         mutableStateOf(cachedParse?.result ?: ParsedAnsiResult(emptyList()))
     }
