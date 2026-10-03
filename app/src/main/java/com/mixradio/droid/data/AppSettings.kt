@@ -51,9 +51,6 @@ class AppSettings private constructor(context: Context) {
     var customFontName by mutableStateOf(prefs.getString(KEY_CUSTOM_FONT_NAME, "") ?: "")
         private set
 
-    var showHyperCoreBanner by mutableStateOf(prefs.getBoolean(KEY_SHOW_HYPERCORE_BANNER, true))
-        private set
-
     var showShsoBanner by mutableStateOf(prefs.getBoolean(KEY_SHOW_SHSO_BANNER, true))
         private set
 
@@ -194,11 +191,6 @@ class AppSettings private constructor(context: Context) {
         }
     }
 
-    fun setHyperCoreBanner(enable: Boolean) {
-        showHyperCoreBanner = enable
-        prefs.edit { putBoolean(KEY_SHOW_HYPERCORE_BANNER, enable) }
-    }
-
     fun setShsoBanner(enable: Boolean) {
         showShsoBanner = enable
         prefs.edit { putBoolean(KEY_SHOW_SHSO_BANNER, enable) }
@@ -304,7 +296,6 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_CUSTOM_FONT_ENABLED = "custom_font_enabled"
         private const val KEY_CUSTOM_FONT_PATH = "custom_font_path"
         private const val KEY_CUSTOM_FONT_NAME = "custom_font_name"
-        private const val KEY_SHOW_HYPERCORE_BANNER = "show_hypercore_banner"
         private const val KEY_SHOW_SHSO_BANNER = "show_shso_banner"
         private const val KEY_REMEMBER_DIRECTORY = "remember_directory"
         /** 旧键（无序 StringSet）：仅用于首次迁移，迁移后删除。 */

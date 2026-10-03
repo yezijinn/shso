@@ -3,7 +3,6 @@
 
 package com.mixradio.droid.data
 
-import android.os.Build
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -31,52 +30,11 @@ object HyperCore {
     private const val MAX_LOG_LENGTH = 250_000
     private const val PRUNE_TARGET_LENGTH = 180_000
 
-    fun detectEnvironmentInfo(): String {
-        val arch = if (Build.SUPPORTED_ABIS.isNotEmpty()) Build.SUPPORTED_ABIS[0] else "arm64-v8a"
-        val androidVer = Build.VERSION.RELEASE
-        val sdkInt = Build.VERSION.SDK_INT
-        return "Android $androidVer (API $sdkInt) / $arch"
-    }
-
-    fun detectKernelInfo(): String {
-        val osVer = System.getProperty("os.version") ?: "Linux"
-        return "Linux $osVer"
-    }
-
     /**
-     * 生成引擎启动横幅。
-     *
-     * @param rootGranted ROOT 探测结果：true=已获得 / false=未获得 / null=尚未探测，
-     *   权限行据此输出对应文案（不再写死 ROOT）。
+     * 启动横幅与任务头已移除：终端不再输出引擎信息、运行环境、内核与任务路径，
+     * 也不再提供对应开关。环境与内核探测随之失去唯一消费者，一并删除。
+     * 此处只保留日志批处理与滑窗所需的纯工具函数。
      */
-    fun generateEngineBanner(statusText: String = "工作中", rootGranted: Boolean? = null): String {
-        val env = detectEnvironmentInfo()
-        val kernel = detectKernelInfo()
-        val rootLine = when (rootGranted) {
-            true -> "[HyperCore Engine] 当前权限：ROOT"
-            false -> "[HyperCore Engine] 无ROOT 请先授予ROOT权限再使用"
-            null -> "[HyperCore Engine] 当前权限：检测中…"
-        }
-        return """[HyperCore Engine] 引擎初始化成功
-$rootLine
-[HyperCore Engine] 运行环境：$env
-[HyperCore Engine] 系统内核：$kernel
-[HyperCore Engine] 运行状态：$statusText
-========================================
-"""
-    }
-
-    fun generateTaskHeader(fileName: String, filePath: String, parentDir: String, showHyperCore: Boolean): String {
-        val sb = StringBuilder()
-        if (!showHyperCore) {
-            sb.append("========================================\n")
-        }
-        sb.append("[shso Engine] 启动任务: $fileName\n")
-        sb.append("[shso Engine] 路径: $filePath\n")
-        sb.append("[shso Engine] 工作目录: $parentDir\n")
-        sb.append("========================================\n")
-        return sb.toString()
-    }
 
     fun queueLogChunk(chunk: String) {
         logBatchQueue.offer(chunk)

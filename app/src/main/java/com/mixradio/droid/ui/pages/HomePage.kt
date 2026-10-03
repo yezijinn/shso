@@ -164,6 +164,10 @@ fun HomePage(
         }
 
         validationError = null
+        // 执行后必须清空输入框：否则残留内容会与下一次键入/选择拼接成
+        // `/data/adb/shso//data/adb/shso/x.sh` 这类畸形路径，报错原因还指向 cd，
+        // 与真实问题（路径被拼接）毫无关联，极难自查。
+        filePathInput = ""
         RootService.executeFile(trimmed, runAsRoot)
         onNavigateToTerminal()
     }

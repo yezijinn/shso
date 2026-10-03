@@ -76,15 +76,8 @@ object RootService {
     var taskStartTime by mutableLongStateOf(0L)
         private set
 
-    var outputLog by mutableStateOf(HyperCore.generateEngineBanner("工作中", isRootGranted))
+    var outputLog by mutableStateOf("")
         private set
-
-    /**
-     * 输出是否仍是「纯引擎横幅」（尚未混入任务/命令输出），以及该横幅对应的 ROOT 状态。
-     * 用于 ROOT 探测完成后原位刷新横幅，避免误覆盖已跑完任务的日志。
-     */
-    private var outputIsPristineBanner: Boolean = true
-    private var pristineBannerRoot: Boolean? = null
 
     var lastExitCode by mutableStateOf<Int?>(null)
         private set
@@ -206,41 +199,15 @@ object RootService {
 
     fun initSettings(settings: AppSettings) {
         appSettings = settings
-        refreshPristineBanner()
-    }
-
-    fun detectEnvironmentInfo(): String = HyperCore.detectEnvironmentInfo()
-    fun detectKernelInfo(): String = HyperCore.detectKernelInfo()
-    fun generateEngineBanner(statusText: String = "工作中"): String = HyperCore.generateEngineBanner(statusText, isRootGranted)
-
-    /**
-     * 将当前输出置为「纯引擎横幅」；横幅关闭时置空。
-     */
-    private fun refreshPristineBanner(statusText: String = "工作中") {
-        val showHyperCoreBanner = appSettings?.showHyperCoreBanner ?: true
-        pristineBannerRoot = if (showHyperCoreBanner) isRootGranted else null
-        outputLog = if (showHyperCoreBanner) HyperCore.generateEngineBanner(statusText, isRootGranted) else ""
-        outputIsPristineBanner = true
     }
 
     /**
      * 上报最新 ROOT 探测结果（MainActivity 每次前台 ON_RESUME 探测后调用）。
-     * 仅在当前输出仍是纯横幅且无任务运行时原位重写横幅，保证权限行文案与真实探测一致，
-     * 且不会覆盖已跑完任务的输出日志。
+     *
+     * 横幅已移除，这里只更新权限状态本身。
      */
     fun reportRootState(granted: Boolean) {
         isRootGranted = granted
-        if (isTaskRunning || !outputIsPristineBanner) return
-        val showHyperCoreBanner = appSettings?.showHyperCoreBanner ?: true
-        if (!showHyperCoreBanner) return
-        // 在分页/拖动期间 outputLog 最大 250k 字符，== 仍是 O(N) 字节扫描。
-        // 这里先把生成的 banner 缓存一次，再加长度快速短路：长度不等 ⇒ 一定不是当前横幅；
-        // 长度相等再做一次完整 equals。在 250k 字符串场景下把最坏比较降到 1 次长度读取。
-        val expected = HyperCore.generateEngineBanner("工作中", pristineBannerRoot)
-        if (outputLog.length == expected.length && outputLog == expected) {
-            pristineBannerRoot = granted
-            outputLog = HyperCore.generateEngineBanner("工作中", granted)
-        }
     }
 
     suspend fun checkRoot(force: Boolean = false): Boolean = withContext(Dispatchers.IO) {
@@ -510,10 +477,8 @@ object RootService {
         lastExecutedPath = filePath
 
         HyperCore.clearBatchQueue()
-        val showHyperCoreBanner = appSettings?.showHyperCoreBanner ?: true
         val showShsoBanner = appSettings?.showShsoBanner ?: true
 
-        refreshPristineBanner("工作中")
         isTaskRunning = true
         currentTaskName = fileName
         currentTaskPath = filePath
@@ -529,10 +494,7 @@ object RootService {
         } catch (_: Exception) {
         }
 
-        if (showShsoBanner) {
-            appendOutputDirect(HyperCore.generateTaskHeader(fileName, filePath, parentDir, showHyperCoreBanner))
-        }
-        appendOutputDirect("[shso Engine] 执行身份: ${if (useRoot) "Root" else "非 Root"}\n")
+        appendOutputDirect("[shso] 执行身份: ${if (useRoot) "Root" else "非 Root"}\n")
 
         val fileFlushLoop = HyperCore.startBatchFlushLoop(scope, { isTaskRunning }) { flushedText ->
             appendOutputDirect(flushedText)
@@ -555,7 +517,7 @@ object RootService {
                 elapsed += 1000
                 if (producedAnyOutput.get()) return@launch
                 if (elapsed % 10_000L == 0L) {
-                    appendOutputDirect("[shso Engine] 仍在执行，已运行 ${formatElapsed(elapsed)}…\n")
+                    appendOutputDirect("[shso] 仍在执行，已运行 ${formatElapsed(elapsed)}…\n")
                 }
             }
         }
@@ -653,10 +615,10 @@ object RootService {
                         heartbeatJob.cancel()
                         if (appSettings?.showShsoBanner != false) {
                             if (!producedAnyOutput.get()) {
-                                appendOutputDirect("\n[shso Engine] 脚本执行完成，未产生任何输出\n")
+                                appendOutputDirect("\n[shso] 脚本执行完成，未产生任何输出\n")
                             }
                             appendOutputDirect(
-                                "[shso Engine] 任务已退出，退出码: $exitCode，用时 ${formatElapsed(elapsedMs)}\n"
+                                "[shso] 任务已退出，退出码: $exitCode，用时 ${formatElapsed(elapsedMs)}\n"
                             )
                         }
                     }
@@ -670,7 +632,7 @@ object RootService {
                         if (executionJob === myJob) {
                             lastExitCode = -1
                             if (appSettings?.showShsoBanner != false) {
-                                appendOutputDirect("\n[shso Engine] 异常终止: ${e.message}\n")
+                                appendOutputDirect("\n[shso] 异常终止: ${e.message}\n")
                             }
                         }
                     }
@@ -852,7 +814,7 @@ object RootService {
                     // 于是「结束 A 失败」的提示会写进期间新启动的 B 的日志。
                     if (stillOwnsExecution(targetJob)) {
                         if (appSettings?.showShsoBanner != false) {
-                            appendOutputDirect("\n[shso Engine] 结束进程失败: ${e.message}\n")
+                            appendOutputDirect("\n[shso] 结束进程失败: ${e.message}\n")
                         }
                     }
                 }
@@ -879,7 +841,7 @@ object RootService {
                         lastExitCode = 137
                         processPid = 0
                         if (appSettings?.showShsoBanner != false) {
-                            appendOutputDirect("\n[shso Engine] 用户已手动结束进程\n")
+                            appendOutputDirect("\n[shso] 用户已手动结束进程\n")
                         }
                     }
                 }
@@ -961,7 +923,7 @@ object RootService {
                         // 把「进程未响应 SIGINT」写进 **B 的日志**，用户会据此去点
                         // 「结束进程」，把 B 杀掉。这正是 stillOwnsExecution 要消除的归属漏洞。
                         if (isTaskRunning && stillOwnsExecution(targetJob)) {
-                            appendOutputDirect("\n[shso Engine] 进程未响应 SIGINT，可点击「结束进程」强制终止\n")
+                            appendOutputDirect("\n[shso] 进程未响应 SIGINT，可点击「结束进程」强制终止\n")
                         }
                     }
                 }
@@ -995,7 +957,9 @@ object RootService {
                 taskStartTime = 0L
                 lastExitCode = null
                 processPid = 0
-                refreshPristineBanner("工作中")
+                // 空闲态点「重启终端」必须有回应：静默返回会让用户以为按钮坏了。
+                // 横幅已移除，这里给一句明确反馈。
+                appendOutputDirect("[shso] 当前没有运行中的进程，终端已是最新状态\n")
             }
             return
         }
@@ -1037,7 +1001,6 @@ object RootService {
                         lastExitCode = null
                         processPid = 0
                         runPgid = 0
-                        refreshPristineBanner("工作中")
                     }
                 }
             }
@@ -1046,12 +1009,10 @@ object RootService {
 
     fun clearOutput() {
         HyperCore.clearBatchQueue()
-        outputIsPristineBanner = false
         outputLog = ""
     }
 
     private fun appendOutputDirect(text: String) {
-        outputIsPristineBanner = false
         outputLog = HyperCore.appendWithSlidingWindow(outputLog, text)
     }
 }
