@@ -658,4 +658,44 @@ class SecurityCoreTest {
         val quoted = "it's".replace("'", "'\\''")
         assertEquals("it'\\''s", quoted)
     }
+
+    // ========================================================================
+    // 守卫策略同步 / 安装回滚文案
+    // ========================================================================
+
+    @Test fun `策略同步不得把 policy_conf 静默清空`() {
+        // 回归护栏：原脚本是 `grep -v … > "$t" 2>/dev/null;`（丢掉 grep 退出码）
+        // 接 `[ -s "$t" ] || : > "$t"`（主动保证 $t 为空）再 `cp "$t" "$f"`。
+        // $f 不可读 / /data 写满 / grep 缺失时，policy.conf 会被**清空**，
+        // 用户自定义的 protect= / allow= 全部丢失，脚本仍以 0 退出并提示「同步成功」。
+        val s = File("src/main/java/com/mixradio/droid/data/security/GuardModuleInstaller.kt").readText()
+        val fn = s.indexOf("suspend fun syncPolicyMode")
+        assertTrue("应能找到 syncPolicyMode", fn > 0)
+        val body = s.substring(fn, fn + 4000)
+        assertTrue("必须判 grep 的退出码", body.contains("""append("g=\$?; ")"""))
+        assertTrue(
+            "grep 失败必须与「文件本来只有 mode 行」区分并中止",
+            body.contains("exit 23")
+        )
+        // 真机实测：`grep -v` 全部行被过滤时退出码是 1（全新安装后 policy.conf 只有
+        // mode 行就是这个状态），只有 ≥2 才是真错误。写成 `g != 0` 会把正常配置判成失败。
+        assertTrue("错误判据必须是 g >= 2", body.contains("[ \\" + '$' + "g -ge 2 ]"))
+        assertFalse("不得用 g != 0 作为错误判据", body.contains("[ \\" + '$' + "g -ne 0 ]"))
+        assertTrue("覆盖前必须留备份", body.contains(""".bak"""))
+        assertFalse(
+            "不能再用「grep 结果为空就当作合法空内容」把失败变成清空",
+            body.contains("[ -s \\\"\\\$t\\\" ] || : > \\\"\\\$t\\\";")
+        )
+    }
+
+    @Test fun `安装校验失败不得声称已回滚到旧版本`() {
+        // 安装脚本成功路径末尾已 `rm -rf $oldDir`，回滚阶段旧目录并不存在，
+        // 无条件声称「已回滚到旧版本」会让用户以为防护还在，实际守卫已被整体移除。
+        val s = File("src/main/java/com/mixradio/droid/data/security/GuardModuleInstaller.kt").readText()
+        assertFalse(
+            "不得出现『已回滚到旧版本』的固定文案",
+            s.contains("已回滚到旧版本")
+        )
+        assertTrue("必须区分首次安装与覆盖安装的提示", s.contains("守卫已移除，将在下次启动重装"))
+    }
 }

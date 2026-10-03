@@ -245,11 +245,15 @@ object GuardModuleInstaller {
                 "test -f $MODULE_DIR/module.prop -a -x $GUARD_BIN_DIR/rm", 8_000L
             ).first == 0
             if (!ok) {
-                // 此前这里直接返回失败，**不回滚**：脚本第 5 步已把 $oldDir 删掉，
-                // 于是「装完了但校验不过」的故障态新模块被留在设备上，运行时守卫处于
-                // 半可用状态且没有任何提示。改为把当前 $MODULE_DIR 挪走并恢复旧版本；
-                // 旧版本本身也已不可用时，至少把残缺的新版本移出模块目录，
-                // 避免 Magisk 把一个不完整的模块当成有效模块加载。
+                // 把当前 $MODULE_DIR 挪走并删除，避免 Magisk 把一个不完整的模块当成有效
+                // 模块加载。**这里恢复不了旧版本**：安装脚本第 5 步成功时已经
+                // `rm -rf $oldDir`，旧目录此时并不存在。首次安装更是从来没有旧版本。
+                // 所以提示必须按实际情况说，不能一律声称恢复了先前版本 ——
+                // 那会让用户以为防护还在，实际守卫模块已被整体移除，
+                // 之后的 root 执行全部走「无守卫降级」分支。
+                val hadOldVersion = RootService.runCommandSync(
+                    "[ -d $MODULE_DIR ] && echo yes || echo no", 5_000L
+                ).second.trim() == "yes"
                 val rollbackScript = buildString {
                     append("if [ -d $MODULE_DIR ]; then /system/bin/rm -rf $oldDir 2>/dev/null; ")
                     append("mv $MODULE_DIR $oldDir || /system/bin/rm -rf $MODULE_DIR; fi; ")
@@ -257,7 +261,11 @@ object GuardModuleInstaller {
                 }
                 RootService.runCommandSync(rollbackScript, 30_000L)
                 invalidateReadyCache()
-                return@withContext Pair(false, "安装校验失败（guard/rm 不可执行），已回滚到旧版本")
+                return@withContext Pair(
+                    false,
+                    if (hadOldVersion) "安装校验失败（guard/rm 不可执行），已移除本次安装的版本"
+                    else "安装校验失败（guard/rm 不可执行），守卫已移除，将在下次启动重装"
+                )
             }
 
             guardBinDirReady(forceRefresh = true)
@@ -323,9 +331,23 @@ object GuardModuleInstaller {
                 append("[ -f \"\$f\" ] || cp $MODULE_DIR/policy.conf \"\$f\" 2>/dev/null; ")
                 append("[ -f \"\$f\" ] || : > \"\$f\"; ")
                 append("t=\$(mktemp \"\$d/.policy.XXXXXX\") || exit 21; ")
-                // 删掉既有的 mode= 行（容忍 `mode = x` 写法），再追加一行标准写法
+                // 删掉既有的 mode= 行（容忍 `mode = x` 写法），再追加一行标准写法。
+                //
+                // 必须区分「grep 没匹配到要保留的行」与「grep 本身失败」。真机实测
+                // （toybox grep，mksh）：`grep -v '^mode='` 在**所有行都被过滤**时退出码
+                // 是 **1**、输出为空 —— 这恰好就是「policy.conf 里只有 mode 行」这个
+                // 全新安装后的正常状态，不能当成错误；而文件读不了 / grep 缺失等真正
+                // 的失败退出码是 **2**。所以判据是 `g >= 2`，不能写成 `g != 0`
+                // （那会把只剩 mode 行的正常配置判成失败，档位从此同步不进去）。
+                //
+                // 此前这里完全丢掉退出码、紧接着 `[ -s "$t" ] || : > "$t"` 主动保证
+                // $t 为空，再 `cp "$t" "$f"`：一旦 grep 失败就会把 policy.conf **清空**，
+                // 用户自定义的 protect= / allow= 全部丢失，脚本却仍以 0 退出并提示
+                // 「同步成功」—— 与本函数 KDoc 承诺的「其余内容原样保留」正好相反。
                 append("grep -v '^[[:space:]]*mode[[:space:]]*=' \"\$f\" > \"\$t\" 2>/dev/null; ")
-                append("[ -s \"\$t\" ] || : > \"\$t\"; ")
+                append("g=\$?; ")
+                append("if [ \$g -ge 2 ]; then /system/bin/rm -f \"\$t\"; exit 23; fi; ")
+                append("cp \"\$f\" \"\$f.bak\" 2>/dev/null; ")
                 append("cp \"\$t\" \"\$f\" || exit 22; ")
                 append("rm -f \"\$t\"; ")
                 append("echo 'mode=$mode' >> \"\$f\"")

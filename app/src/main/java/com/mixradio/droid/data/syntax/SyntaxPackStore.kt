@@ -178,6 +178,40 @@ object SyntaxPackStore {
     }
 
     /**
+     * 一次导入事务里对单个语法文件的写入记录。
+     *
+     * 记 [backup] 而非只记文件路径，是因为**覆盖已存在的语法**同样需要回滚：
+     * 更新语法包是最常见的用法，此时目标文件本就存在，直接 `delete()` 会把上一份
+     * 能正常高亮的语法删掉，而清单 [indexFile] 仍指向它 —— 用户侧表现是
+     * 「某些语言突然没有高亮」，且没有任何界面提示。
+     */
+    private class FileWrite(val file: File, val backup: ByteArray?)
+
+    /**
+     * 写入语法文件并登记回滚信息。已存在的文件先把原内容读进内存作为备份。
+     *
+     * 内存占用受整包上限约束（[MAX_ZIP_BYTES]），不会出现无界增长。
+     */
+    private fun writeGrammarFile(file: File, data: ByteArray, written: MutableList<FileWrite>) {
+        file.parentFile?.mkdirs()
+        val backup = if (file.isFile) runCatching { file.readBytes() }.getOrNull() else null
+        file.writeBytes(data)
+        written += FileWrite(file, backup)
+    }
+
+    /** 撤销一次导入：还原被覆盖的旧内容，只删除本次新建的文件。 */
+    private fun rollback(written: List<FileWrite>) {
+        for (w in written.asReversed()) {
+            val old = w.backup
+            if (old != null) {
+                runCatching { w.file.writeBytes(old) }
+            } else {
+                runCatching { w.file.delete() }
+            }
+        }
+    }
+
+    /**
      * 启用的语法包：**匹配键 → 语法 id**。
      * 键同时包含扩展名与无扩展名文件名（如 `dockerfile`），均由编辑器传入的小写键匹配。
      */
@@ -236,6 +270,15 @@ object SyntaxPackStore {
         require(trimmed.startsWith("https://")) { "仅支持 https:// 地址" }
         val bytes = download(trimmed)
         if (bytes.size >= 2 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()) {
+            // 摘要必须整包比对。此前 zip 分支根本没把 expectedSha256 传下去，
+            // 而「从仓库下载」按钮预填的正是 zip 直链 —— 用户在弹窗里填了 SHA-256、
+            // 弹窗也写着「填写则校验」，实际却一次都没比对就落盘并报成功。
+            if (!expectedSha256.isNullOrBlank()) {
+                val digest = sha256(bytes)
+                require(digest.equals(expectedSha256.trim(), ignoreCase = true)) {
+                    "SHA-256 不匹配（实际 $digest）"
+                }
+            }
             importZip(ctx, bytes, trimmed)
         } else {
             val fileName = trimmed.substringAfterLast('/').substringBefore('?')
@@ -374,13 +417,11 @@ object SyntaxPackStore {
         }
 
         val packs = list(ctx).filterNot { p -> grammars.containsKey(p.id) }.toMutableList()
-        val written = mutableListOf<File>()
+        val written = mutableListOf<FileWrite>()
         try {
             for ((id, data, digest) in validated) {
                 val file = fileFor(ctx, id)
-                file.parentFile?.mkdirs()
-                file.writeBytes(data)
-                written += file
+                writeGrammarFile(file, data, written)
                 packs += SyntaxPack(
                     id = id, exts = indexExts[id] ?: listOf(id), filenames = indexNames[id] ?: emptyList(),
                     sha256 = digest, source = source,
@@ -390,8 +431,9 @@ object SyntaxPackStore {
             save(ctx, packs)
             invalidateCache()
         } catch (e: Throwable) {
-            // 落盘失败：回收已写入文件，避免留下"有文件无清单"的僵尸语法。
-            written.forEach { runCatching { it.delete() } }
+            // 落盘失败：还原本次导入动过的文件。只删本次新建的，覆盖过的必须还原旧内容，
+            // 否则「更新语法包」失败会把原本可用的高亮删光而清单仍指向它们。
+            rollback(written)
             throw e
         }
         return grammars.size
@@ -418,16 +460,23 @@ object SyntaxPackStore {
         val resolved = runCatching { readStringArray(json.optJSONArray("extensions")) }.getOrDefault(emptyList())
         val names = runCatching { readStringArray(json.optJSONArray("filenames")) }.getOrDefault(emptyList())
         val file = fileFor(ctx, id)
-        file.parentFile?.mkdirs()
-        file.writeBytes(bytes)
-        val pack = SyntaxPack(
-            id = id, exts = exts ?: resolved.ifEmpty { listOf(id) }, filenames = names,
-            sha256 = digest, source = source,
-            sizeBytes = bytes.size.toLong(), addedAtMs = System.currentTimeMillis(), enabled = true
-        )
-        save(ctx, list(ctx).filterNot { it.id == id } + pack)
-        invalidateCache()
-        return pack
+        val written = mutableListOf<FileWrite>()
+        try {
+            writeGrammarFile(file, bytes, written)
+            val pack = SyntaxPack(
+                id = id, exts = exts ?: resolved.ifEmpty { listOf(id) }, filenames = names,
+                sha256 = digest, source = source,
+                sizeBytes = bytes.size.toLong(), addedAtMs = System.currentTimeMillis(), enabled = true
+            )
+            save(ctx, list(ctx).filterNot { it.id == id } + pack)
+            invalidateCache()
+            return pack
+        } catch (e: Throwable) {
+            // 清单写失败时文件已是新内容，会造成「索引里的 sha256/size 与磁盘文件不符」。
+            // 回滚让两者重新一致。
+            rollback(written)
+            throw e
+        }
     }
 
     private fun sha256(bytes: ByteArray): String =
