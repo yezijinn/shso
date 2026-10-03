@@ -26,7 +26,7 @@
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
 | 编辑器内核 | Sora Editor 0.23.6（打开即可编辑；语法由外置语法包提供） |
 | 语法包 | 62 语言 / 187 扩展名，`syntax-packs.zip`(37KB)，永固直链 tag `syntaxpacks-v2` |
-| 守卫模块 | **v1.4.2**（真机已装并验证拦截）；重打包走 `tools/pack_guard_module.py` |
+| 守卫模块 | **v1.4.3**（真机已装并验证拦截）；重打包走 `tools/pack_guard_module.py` |
 | OBB 事务锁 | 单文件 `set -C`(O_EXCL) 原子 CAS；真机 8 进程并发恰好 1 成功；**建目录早于取锁** |
 | 审计判定 | `AuditVerdict` 枚举（`DENIED` 与 `DEGRADED` 分离）；来源含 `FILE_MANAGER` |
 | 真机 | `$DEVICE`（OnePlus PACM00 / Android 10 / 1080×2280 / Magisk root） |
@@ -40,6 +40,73 @@
 ---
 
 ## 待办
+
+### A58. 第八轮全面 BUG 深挖（2026-10-03）
+
+前七轮已把 Kotlin 侧走完。A58 首次进入**守卫模块的 shell 实现**（真正的运行时拦截层），
+并把前七轮确认存在但未修的最高危项落地。
+
+- [x] **审计范围**
+  - `module/shso_guard/guard/common.sh`（682 行，核心判定 + 审计日志）、`guard-template.sh`、
+    `service.sh`、`customize.sh`、`uninstall.sh`、`gen_wrappers.py`、`guard/` 下 33 个包装器（只看模式）
+  - 前提已实测：`guard/` 下**没有** `curl`/`sh`/`cat`/`python` 包装器（调用返回 exit=127），
+    故「下载后直接执行」「解释器内联执行」这类形态**完全依赖 Kotlin 静态判定**，
+    守卫层不是兜底 → 静态层与守卫层任何一处 fail-open 都直接等于越权
+
+- [x] **守卫层 fail-open（2 项 P0，均已实证闭合）**
+  - [x] **`find` 只收集绝对路径 → 相对起始路径的销毁命令零判定放行**。
+        `for _a in "$@"; case "$_a" in /*) _paths="$_paths $_a"` 只收绝对路径，
+        于是 `cd /data/adb/shso && find . -delete`、`find .. -delete`、
+        `find /sdcard /data -delete` 中受保护的那个、`find -delete`（POSIX find 无路径时默认 `.`）
+        的 `_paths` 全为空 → 末尾 `for _p in $_paths` 一次都不进 → `_verdict` 停在 `ALLOW`。
+        `cd / && find . -delete` 是能删掉 `/system` 内容的形态。
+        修法：销毁型 find 额外收集「取值型选项之外的相对操作数」→ `FIND_RELATIVE_OPERAND`；
+        完全没有起始路径 → `FIND_NO_OPERAND`。取值型选项（`-name`/`-type`/`-maxdepth` 等 30 个）
+        的下一个 token 必须跳过，否则 `find -name keepme /sdcard -delete` 会被误伤。
+        新增 `_find_destruct` 把「是否含破坏性动作」带到函数末尾的判定处
+  - [x] **`normalize_path` 只解析第一处符号链接 → 尾段里的后续软链不解析**。
+        逐级扫描定位**第一处**软链后 `realpath "$_np_acc"`，再把剩余分量原样拼回；
+        而尾段是在解析之后才被拼上去的，其中的软链不再解析。
+        绕过形态：`/data/local/tmp/a` → `/system`，`/system/x` 又是软链指向 `/data/adb/modules`，
+        则 `rm /data/local/tmp/a/x/y` 归一化成 `/system/x/y`（不在保护清单）
+        而真实目标 `/data/adb/modules/y` 在清单里。
+        修法：词法收尾后**复查**结果里是否仍有软链，有则再 `realpath` 一次；
+        无 `realpath` 且仍存在软链则按不可判定拒绝（fail-closed）。
+
+- [x] **已核实为 fail-closed、不予改动的点**（避免下轮重复排查）
+  - `load_policy` 三处回退方向正确（文件缺失→内置兜底+`enforce`；`mode` 非法→`enforce`；
+    `common.sh` 缺失→直接拒绝）
+  - 策略文件并发截断只会变严不会变松（内置兜底清单恒定在前）
+  - `--`、`-t DIR`/`-tDIR`/`--target-directory=`、`of=` 三种空格变体、
+    `sed -ni`/`-i.bak`/`--in-place`、`eraseInLine`、递归深度超限 → 均正确 DENY
+  - 含空格/换行/制表符的路径经分词后只可能多出 token，方向偏 fail-closed
+  - `realpath` 缺失或软链悬空 → `_NORM_PATH` 置空 → `PATH_UNRESOLVABLE` DENY
+  - `mv -t` 只判目标目录不判源、`ln` 硬链接搬运受保护 inode：真实存在但 A58 未修，
+    已记入下方待办
+
+- [x] **真机验证（全部用真实包装器 + 真实 PATH，非 source 内部函数）**
+  - 隔离两级软链（策略只 `protect=/data/adb/modules`，排除 `protect=/data` 的干扰）：
+    **修复前 `exit=0` 放行**（归一化停在 `/data/local/tmp/fb/inner/deep`），
+    **修复后 `exit=1` 拦截**（归一化正确为 `/data/adb/modules`）；`/data/adb/modules` 目录仍在
+  - `find` 矩阵：`.`/`..`/无起始路径/`-name a.txt -delete`/`/data -delete`/`/system -delete`
+    全部 `exit=1` 已拦截；`/sdcard -name a.txt`、`. -name a.txt`、
+    `/sdcard -maxdepth 2 -name x`、`/data -name a.txt` 全部 `exit=0` 正常放行（无误伤）
+  - 由**新 APK 自动重装**的 v1.4.3（`GUARD_INSTALL` 审计日志佐证，非手工替换）复测同一矩阵，
+    结果一致
+  - 打包产物核对：`assets/shso_guard.zip` 内 `guard/common.sh` 含两处修复标记、
+    `module.prop` 为 `v1.4.3`、`sh -n` 通过
+  - APK 冷启动 `FATAL=0`；探针文件已清理
+- [x] **过程教训（已写入本文件，避免重犯）**
+  - 插桩副本用 PowerShell `WriteAllLines` 生成会得到 **CRLF**，mksh 在 `case ... in` 处直接
+    语法报错（`unexpected 'in'`），一度误判为源码被改坏；改用 `WriteAllText` + 显式 `\n`
+  - `[IO.File]::ReadAllLines` **不继承** PowerShell 的 `Set-Location`，相对路径会解析到错误目录；
+    `git show > file` 会被 PowerShell 重新编码破坏字节，必须走 `cmd /c` 才字节级保真
+  - 自建 harness（`source common.sh` 后直接调 `run_guard`）**不可信**：`enforce` 模式下 DENY 会
+    `exit 1` 把脚本后续全部终止，看起来像「全部 ALLOW」。最终改用真实包装器 + 真实 PATH 才拿到
+    可信结论
+
+- [x] **回归**：452 tests / 0 failures / 1 skipped；lint 0 errors / 31 warnings；
+      `build_apk.py` 红线通过（2.2 MB）
 
 ### A57. 第七轮全面 BUG 深挖（2026-10-02）
 

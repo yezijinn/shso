@@ -143,6 +143,42 @@ normalize_path() {
     IFS="$_np_oifs"
 
     [ -z "$_np_out" ] && _np_out="/"
+
+    # --- 第二级软链复查（关键）---
+    # 上面的扫描**只定位第一处**软链，`realpath` 也只作用在 `_np_acc`（含第一处软链的
+    # 那一段）。拼回 `_np_rest` 之后，尾段里若**还有**软链就不会再被解析 ——
+    # 而尾段是在解析之后的文件系统状态下才被重新拼上去的。
+    #
+    # 具体绕过：`/data/local/tmp/a` → `/system`（软链 a），
+    # `/system/x` 又是软链指向 `/data/adb/modules`。
+    # 命令 `rm /data/local/tmp/a/x/y`：
+    #   第一处软链 = a，realpath → /system，尾段 /x/y 拼成 `/system/x/y`；
+    #   而 `/system/x` 不在保护清单里、真实目标 `/data/adb/modules/y` 在 → 放行。
+    # 故必须复查；有 realpath 就再解析一次，没有 realpath 则按不可判定拒绝。
+    _np_recheck=0
+    _np_acc=""; _np_oifs="$IFS"; IFS='/'
+    for _np_seg in $_np_out; do
+        [ -z "$_np_seg" ] && continue
+        _np_acc="$_np_acc/$_np_seg"
+        if [ -L "$_np_acc" ]; then _np_recheck=1; break; fi
+    done
+    IFS="$_np_oifs"
+    if [ $_np_recheck -eq 1 ]; then
+        if command -v realpath >/dev/null 2>&1; then
+            _np_rp=$(realpath "$_np_out" 2>/dev/null)
+            if [ -n "$_np_rp" ]; then
+                _np_out="$_np_rp"
+            else
+                _NORM_PATH=""
+                return 1
+            fi
+        else
+            # 无 realpath 且仍存在软链：解析不出真实目标 → fail-closed
+            _NORM_PATH=""
+            return 1
+        fi
+    fi
+
     strip_slash "$_np_out"
     _NORM_PATH="$_SLASH_STRIPPED"
     return 0
@@ -413,6 +449,10 @@ guard_operand_mode() {
 run_guard() {
     _g_cmd="$1"; _g_mode="$2"; shift 2
     _paths=""
+    # 每条命令都要重置：否则上一条 find 判出的相对操作数会残留到下一条命令上
+    _find_rel_operand=""
+    # FIND 分支的「是否含破坏性动作」要带到函数末尾的判定处，故用独立变量承载
+    _find_destruct=0
 
     case "$_g_mode" in
         DD)
@@ -548,6 +588,8 @@ run_guard() {
                 _i=$((_i + 1))
             done
             if [ $_destruct -eq 1 ]; then
+                # 带到函数末尾的判定处（无起始路径的销毁型 find 要用）
+                _find_destruct=1
                 # 收集**全部**绝对路径操作数。
                 # 旧实现「取第一个非选项参数就 break」有两个漏洞：
                 #  1) 被前置选项骗过——`find -name keepme /system -delete` 把选项值 `keepme`
@@ -561,6 +603,33 @@ run_guard() {
                         /*)  _paths="$_paths $_a" ;;
                     esac
                 done
+
+                # 相对起始路径必须 fail-closed。
+                # 上面只收绝对路径，于是 `cd /data/adb/shso && find . -delete`、
+                # `find .. -delete`、`find -delete`（find 无路径时默认 `.`）
+                # 的 _paths 全为空 → 下面的 `for _p in $_paths` 一次都不进 →
+                # _verdict 停在 ALLOW，整条销毁命令零判定放行。
+                # `cd / && find . -delete` 同理，是能删掉 /system 内容的形态。
+                #
+                # 需要跳过「取值的选项」：`-name keepme`、`-type f`、`-maxdepth 2`
+                # 的下一个 token 是选项值而不是路径，不能误判成相对路径。
+                # 采取的判据：选项值集合之外的相对操作数一律视为起始路径 → 拒绝。
+                _fr_skip=0; _fr_oifs="$IFS"; IFS=' '
+                for _a in "$@"; do
+                    if [ $_fr_skip -eq 1 ]; then _fr_skip=0; continue; fi
+                    case "$_a" in
+                        --) ;;
+                        -name|-iname|-path|-wholename|-iwholename|-regex|-iregex|\
+                        -type|-maxdepth|-mindepth|-size|-mtime|-mmin|-atime|-amin|\
+                        -ctime|-cmin|-newer|-newermt|-user|-group|-inum|-links|\
+                        -lname|-ilname|-printf|-fprintf|-fprint|-fstype)
+                            _fr_skip=1 ;;
+                        -*) ;;
+                        /*) ;;
+                        *)  _find_rel_operand="$_a" ;;
+                    esac
+                done
+                IFS="$_fr_oifs"
             fi
             ;;
         SED)
@@ -643,6 +712,17 @@ run_guard() {
             # 特殊：wipe 无操作数 = 擦除默认设备，enforce 下最危险 → 拒绝
             if [ "$_g_cmd" = "wipe" ] && [ -z "$_paths" ]; then
                 _verdict="DENY"; _rule="WIPE_NO_OPERAND"; _hit="(no operand)"
+            elif [ -n "$_find_rel_operand" ]; then
+                # 销毁型 find 带相对起始路径：目标随 cwd 变化、静态不可知。
+                # 与 UNRESOLVED_TARGET 同方向：判不了就拒（见 FIND 分支内注释）。
+                _verdict="DENY"; _rule="FIND_RELATIVE_OPERAND"; _hit="$_find_rel_operand"
+            elif [ "$_g_cmd" = "find" ] && [ $_find_destruct -eq 1 ] && [ -z "$_paths" ] \
+                 && [ -z "$_find_rel_operand" ]; then
+                # 销毁型 find 完全没有起始路径：POSIX find 此时默认从 `.` 开始，
+                # 即「删掉当前工作目录整棵树」。上面的相对操作数循环一个都没收到
+                # （`-delete` 自身以 `-` 开头被跳过），故必须单独判一次 ——
+                # 否则 `find -delete` 仍走 ALLOW。
+                _verdict="DENY"; _rule="FIND_NO_OPERAND"; _hit="(find 默认起始路径为当前目录)"
             else
                 _verdict="ALLOW"; _rule="NONE"; _hit=""
                 for _p in $_paths; do
