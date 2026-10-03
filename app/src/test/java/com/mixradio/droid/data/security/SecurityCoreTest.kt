@@ -620,4 +620,42 @@ class SecurityCoreTest {
         val v = PolicyEngine.evaluate("dd if=/sdcard/a of=/dev/null", CommandSource.USER_TERMINAL)
         assertEquals(Verdict.Allow, v)
     }
+
+    // ========================================================================
+    // 审计字段转义与编码
+    // ========================================================================
+
+    @Test fun `审计字段中的中文与换行不得破坏记录结构`() {
+        // 本项目的使用场景大量涉及中文路径与中文档位名，审计字段必须原样可读。
+        assertEquals(
+            "档位=3 的中文不得被改写",
+            "档位=3", SecurityAuditLog.sanitizeField("档位=3")
+        )
+        // 换行注入可伪造出完整假行，必须转义成字面量而不是真的换行
+        assertEquals("a\\nb", SecurityAuditLog.sanitizeField("a\nb"))
+        assertEquals("\\u007C", SecurityAuditLog.sanitizeField("|"))
+        // CR 直接丢弃（不留字面量），但不影响同行其余字符
+        assertEquals("ab", SecurityAuditLog.sanitizeField("a\rb"))
+    }
+
+    @Test fun `审计写入的引号转义不得二次编码非 ASCII`() {
+        // 回归护栏：appendRootLogLine 曾把 UTF-8 字节逐个 `toInt().toChar()` 拼回字符串
+        // （等价于按 ISO-8859-1 重解释每个字节），再由 ProcessBuilder 按 UTF-8 二次编码，
+        // 真机上「档位」落盘成 EF BF A6 EF BE A1…（每字节映射为 U+FF00+byte），中文全毁。
+        // 现在只转义单引号，字符串原样交给 ProcessBuilder。
+        val line = "2026-10-03 12:02:20 | SAFE | INTERNAL_APP | FINISHED | GUARD_POLICY_MODE | 档位=3"
+        val quoted = line.replace("'", "'\\''")
+        assertEquals("中文必须逐字符保留", line, quoted)
+        assertEquals(
+            "字符串按 UTF-8 编码后应还原出原始字节",
+            line, String(quoted.toByteArray(Charsets.UTF_8), Charsets.UTF_8)
+        )
+    }
+
+    @Test fun `审计行含单引号时按 shell 规则转义`() {
+        // `printf '%s\n' '...'` 用单引号包裹，内嵌单引号必须用 '\'' 断开-转义-接回，
+        // 否则脚本语法错误、该条审计直接丢失。
+        val quoted = "it's".replace("'", "'\\''")
+        assertEquals("it'\\''s", quoted)
+    }
 }

@@ -86,7 +86,7 @@ object ArchiveExtractor {
      * 由它给出更准确的报错；这里只负责**提前拦住能提前判断的情况**。
      */
     internal fun probeZipEntryCountOrThrow(path: String) {
-        val count = ZipEntryCountProbe.probe(File(path)) ?: return
+        val count = ZipEntryCountProbe.probe(File(path), MAX_EXTRACT_ENTRIES) ?: return
         if (count >= MAX_EXTRACT_ENTRIES) {
             throw ExtractionLimitException("压缩包条目数超过 $MAX_EXTRACT_ENTRIES")
         }

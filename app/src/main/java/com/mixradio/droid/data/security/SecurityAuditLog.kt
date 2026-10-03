@@ -202,24 +202,6 @@ object SecurityAuditLog {
     }
 
     /**
-     * ROOT 侧写入前置：目标是软链 / 非常规文件时先删除，删不掉就返回 false 让调用方放弃写入。
-     * 删除后再确认一次，避免"删了但目录里仍是链接"（如挂载点 / 竞态）。
-     *
-     * 额外校验**属主与权限位**。`/data/adb/shso` 按产品要求必须是 0777（供第三方文件管理器互访，
-     * 见 [RootFileManager.ensureShsoDir]），因此该目录本身不可信：
-     * 任意应用都能 `unlink(audit.log)` 再放入自己的普通文件，或直接 `chmod 666`。
-     * 原实现只判「是否软链 / 是否常规文件」，攻击者自建的**普通文件**完全通过检查，
-     * 随后的 `cat >> ` 把伪造记录混进唯一的事后追溯依据。
-     *
-     * 判据：存在时必须是 root 属主（`[ -O ]`，以 root 身份执行即判当前属主为 root），
-     * 且组/其它位无写权限（`find -perm /022`）。
-     * 不满足即视为「已被第三方接管」，删除后重建 root 私有文件；删不掉则放弃写入。
-     *
-     * 权限位判定用 `find -perm /022` 而非 `$(( 0$m & 022 ))`：Android 的 mksh **不支持**
-     * 算术展开里的位运算符（真机实测 `sh -c 'echo $(( 0600 & 022 ))'` 返回非 0），
-     * 那种写法会恒判为「不可信」而把正常审计文件反复删掉。
-     */
-    /**
      * 追加一行审计到 root 日志：**校验与写入在同一个 su 进程内**完成。
      *
      * 这是 [appendRootLogLine] 存在的唯一理由：拆成两次 su 会留下 TOCTOU 窗口 ——
@@ -236,16 +218,22 @@ object SecurityAuditLog {
      *
      * 第 5 步是冗余的，但保留它可以把「打开前最后一刻」也纳入判定，代价只有一次 `[ -L ]`。
      *
+     * @param truncate 先截断再写入（清空审计用）。截断比追加更危险：
+     *   软链劫持成功会**抹掉目标文件原有内容**，而不只是追加一行。
      * @return true 表示已写入；false 表示目标不可用（调用方负责记失败）
      */
-    private fun appendRootLogLine(line: String): Boolean {
-        val payload = (line + "\n").toByteArray(Charsets.UTF_8)
-        // 单行审计的字段已由 sanitizeField 转义（| \n 控制字符），不会破坏 shell 单引号；
-        // 仍用单引号包裹并对内嵌单引号做 '\'' 转义，与 writeBytesAsRoot 同款。
-        val quoted = payload.joinToString("") { b ->
-            val ch = b.toInt().toChar()
-            if (ch == '\'') "'\\''" else ch.toString()
-        }
+    private fun appendRootLogLine(line: String, truncate: Boolean = false): Boolean {
+        // 只转义单引号，不做字节级转换。
+        //
+        // 原实现先把 line 编成 UTF-8 字节，再逐字节 `b.toInt().toChar()` 拼回字符串 ——
+        // 那等价于按 ISO-8859-1 重解释每个字节。随后 ProcessBuilder 把这个字符串按 UTF-8
+        // 再编一次，字节被二次编码。真机实测「档位」落盘为 EF BF A6 EF BE A1 …（即每字节
+        // 被映射成 U+FF00+byte），中文全部损坏。审计日志是事后追溯依据，字段损坏等于
+        // 让证据不可用；本项目的使用场景又恰好大量涉及中文路径与中文档位名。
+        //
+        // 字段内的 `|`、换行、控制字符已由 sanitizeField 转义，这里只需处理会破坏 shell
+        // 单引号包裹的 `'`。字符串原样交给 ProcessBuilder 按 UTF-8 编码即可。
+        val quoted = line.replace("'", "'\\''")
         val script = buildString {
             append("mkdir -p $ROOT_LOG_DIR; ")
             append("if [ -L $ROOT_LOG_PATH ] || { [ -e $ROOT_LOG_PATH ] && [ ! -f $ROOT_LOG_PATH ]; }; then exit 9; fi; ")
@@ -258,8 +246,10 @@ object SecurityAuditLog {
             append("chmod 600 $ROOT_LOG_PATH 2>/dev/null; ")
             // 打开前最后一刻的判定，与下面的 exec 之间无窗口
             append("if [ -L $ROOT_LOG_PATH ] || { [ -e $ROOT_LOG_PATH ] && [ ! -f $ROOT_LOG_PATH ]; }; then exit 9; fi; ")
-            append("exec 3>> $ROOT_LOG_PATH || exit 9; ")
-            append("printf '%s' '$quoted' >&3; ")
+            // 清空走 `3>`（截断），追加走 `3>>`。两者都在本进程内打开，跟随软链的后果
+            // 与外部 `sh -c '> …'` 完全一样 —— 区别只在于「打开」与「校验」之间不再有窗口。
+            append(if (truncate) "exec 3> $ROOT_LOG_PATH || exit 9; " else "exec 3>> $ROOT_LOG_PATH || exit 9; ")
+            append("printf '%s\\n' '$quoted' >&3; ")
             append("exec 3>&-")
         }
         return try {
@@ -269,34 +259,26 @@ object SecurityAuditLog {
         }
     }
 
-    private fun prepareRootTarget(): Boolean {
-        val script = buildString {
-            append("mkdir -p $ROOT_LOG_DIR; ")
-            append("if [ -L $ROOT_LOG_PATH ] || { [ -e $ROOT_LOG_PATH ] && [ ! -f $ROOT_LOG_PATH ]; }; then ")
-            append("/system/bin/rm -f -- $ROOT_LOG_PATH || exit 9; fi; ")
-            append("if [ -e $ROOT_LOG_PATH ]; then ")
-            append("if ! [ -O $ROOT_LOG_PATH ]; then /system/bin/rm -f -- $ROOT_LOG_PATH || exit 9; fi; ")
-            append("if [ -n \"\$(find $ROOT_LOG_PATH -maxdepth 0 -type f -perm /022 2>/dev/null)\" ]; then ")
-            append("/system/bin/rm -f -- $ROOT_LOG_PATH || exit 9; fi; ")
-            append("fi; ")
-            append("if [ -L $ROOT_LOG_PATH ] || { [ -e $ROOT_LOG_PATH ] && [ ! -f $ROOT_LOG_PATH ]; }; then exit 9; fi; ")
-            // 新建时收紧为 0600，避免又被第三方改写
-            append("[ -e $ROOT_LOG_PATH ] || { umask 077 && : > $ROOT_LOG_PATH; }; ")
-            append("chmod 600 $ROOT_LOG_PATH 2>/dev/null; true")
-        }
-        return try {
-            RootService.runCommandSync(script, 5_000L).first == 0
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    /** 裁剪 root 侧日志（保留后半）。 */
+    /**
+     * 裁剪 root 侧日志（保留后半）。
+     *
+     * 与追加写入之间存在固有的竞争：并发进来的新行若落在「读完尾部」与「mv 覆盖」之间，
+     * 会被这次轮转抹掉。轮转每 [TRIM_CHECK_EVERY] 条才触发一次，窗口只有一次文件重定向，
+     * 且丢的至多是同一瞬间的相邻几行 —— 相对「日志无上限增长撑爆分区」这个原始动机，
+     * 取舍是划算的。
+     */
     private fun trimRootLog() {
         try {
             val (code, sizeOut) = RootService.runCommandSync("wc -c < $ROOT_LOG_PATH", 5_000L)
-            if (code != 0) return
-            val size = sizeOut.trim().toLongOrNull() ?: return
+            if (code != 0) {
+                recordFailure("审计轮转失败：读取当前大小 exit=$code")
+                return
+            }
+            val size = sizeOut.trim().toLongOrNull()
+            if (size == null) {
+                recordFailure("审计轮转失败：大小不可解析 [$sizeOut]")
+                return
+            }
             if (size <= MAX_BYTES) return
             // 临时文件用 mktemp 在同目录创建（O_EXCL + 不可预测名）。
             //
@@ -316,8 +298,10 @@ object SecurityAuditLog {
                 append("|| { /system/bin/rm -f -- \"\$t\"; exit 1; }; ")
                 append("mv -f -- \"\$t\" $ROOT_LOG_PATH")
             }
-            if (RootService.runCommandSync(script, 10_000L).first != 0) recordFailure("审计轮转失败")
-        } catch (_: Exception) {
+            if (RootService.runCommandSync(script, 10_000L).first != 0) recordFailure("审计轮转失败：mv 覆盖未成功")
+        } catch (e: Exception) {
+            // 轮转失败必须留痕：吞掉异常会让日志在无上限增长的同时对用户「看起来正常」。
+            recordFailure("审计轮转异常: ${e.message}")
         }
     }
 
@@ -325,9 +309,11 @@ object SecurityAuditLog {
         try {
             val bytes = f.readBytes()
             if (bytes.size > MAX_BYTES) {
+                // 与 root 路径同理：截断重写会丢弃并发进来的新行，此处不做额外同步。
                 f.writeBytes(bytes.copyOfRange(bytes.size - KEEP_BYTES, bytes.size))
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            recordFailure("本地审计裁剪异常: ${e.message}")
         }
     }
 
@@ -371,17 +357,22 @@ object SecurityAuditLog {
             val marker = formatLine(
                 now(), CommandSource.INTERNAL_APP, "ALLOW", "AUDIT_CLEARED",
                 RiskLevel.WARNING, "清空审计日志", null, null
-            ) + "\n"
+            )
             if (useRootLog()) {
-                // 清空前同样必须先确认目标是普通文件：`>` 与 `>>` 都会跟随软链，
-                // 否则「清空审计」会退化成以 root 截断任意文件（比追加更危险）。
-                if (!prepareRootTarget()) {
-                    recordFailure("审计目标非常规文件，已放弃清空")
+                // 截断必须与校验在**同一个 su 进程**内完成。
+                //
+                // 原实现是三次独立调用：prepareRootTarget() 校验 → `sh -c '> path'`
+                // 截断 → writeBytesAsRoot(append=true) 写标记。三次之间各有几十毫秒窗口，
+                // 而目标目录 0777 无 sticky，第三方可在任意窗口内把日志换成指向任意 root
+                // 文件的软链。真机复现：受害文件原有内容被完全抹掉并替换为审计标记行，
+                // 三次调用全部返回 0。截断比追加更危险 —— 追加只多一行，截断会毁掉目标内容。
+                //
+                // 现与 log() 共用 appendRootLogLine(truncate = true)：校验、`exec 3>` 打开、
+                // 写入全在同一个 root shell 内，打开紧跟校验，中间没有可插入的窗口。
+                if (!appendRootLogLine(marker, truncate = true)) {
+                    recordFailure("清空审计失败：目标不可用或被替换为软链")
                     return@withContext false
                 }
-                val (code, _) = RootService.runCommandSync("sh -c '> $ROOT_LOG_PATH'", 5_000L)
-                if (code != 0) return@withContext false
-                RootService.writeBytesAsRoot(ROOT_LOG_PATH, marker.toByteArray(Charsets.UTF_8), append = true)
             } else {
                 val auditFile = logFile()
                 // 与 log() 保持一致：私有目录内的软链不可能是正常状态，清空前先移除，
@@ -393,7 +384,8 @@ object SecurityAuditLog {
                 auditFile.writeText(marker)
             }
             true
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            recordFailure("清空审计异常: ${e.message}")
             false
         }
     }

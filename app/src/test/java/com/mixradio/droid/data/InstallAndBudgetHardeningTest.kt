@@ -22,6 +22,9 @@ import java.util.zip.ZipOutputStream
  */
 class InstallAndBudgetHardeningTest {
 
+    /** 条目预算上限，与 [ArchiveExtractor.MAX_EXTRACT_ENTRIES] 同值。 */
+    private val LIMIT = ArchiveExtractor.MAX_EXTRACT_ENTRIES
+
     // ========================================================================
     // pm install-write 草稿名
     // ========================================================================
@@ -72,19 +75,19 @@ class InstallAndBudgetHardeningTest {
 
     @Test fun `真实 zip 的条目数被正确读出`() {
         val zip = buildZip(listOf("a.txt", "b.txt", "c/d.txt", "e.txt"))
-        assertEquals(4, ZipEntryCountProbe.probe(zip))
+        assertEquals(4, ZipEntryCountProbe.probe(zip, LIMIT))
     }
 
     @Test fun `空 zip 读出 0`() {
         val zip = buildZip(emptyList())
-        assertEquals(0, ZipEntryCountProbe.probe(zip))
+        assertEquals(0, ZipEntryCountProbe.probe(zip, LIMIT))
     }
 
     @Test fun `条目数超限时能在解析前被拒绝`() {
         // 2 万条上限；构造一个「声明条目数很大」的真实 zip 成本太高，
         // 改为直接断言探针读出的真实条目数与上限比较的判定逻辑。
         val zip = buildZip(listOf("a.txt", "b.txt"))
-        val count = ZipEntryCountProbe.probe(zip)!!
+        val count = ZipEntryCountProbe.probe(zip, LIMIT)!!
         assertTrue(count <= ArchiveExtractor.MAX_EXTRACT_ENTRIES)
     }
 
@@ -93,28 +96,28 @@ class InstallAndBudgetHardeningTest {
             writeBytes(ByteArray(4096) { (it % 127).toByte() })
             deleteOnExit()
         }
-        assertNull(ZipEntryCountProbe.probe(notZip))
+        assertNull(ZipEntryCountProbe.probe(notZip, LIMIT))
     }
 
     @Test fun `空文件与极小文件返回 null 而不是抛异常`() {
         val empty = File.createTempFile("empty", ".zip").apply { deleteOnExit() }
-        assertNull(ZipEntryCountProbe.probe(empty))
+        assertNull(ZipEntryCountProbe.probe(empty, LIMIT))
         val tiny = File.createTempFile("tiny", ".zip").apply {
             writeBytes(byteArrayOf(1, 2, 3))
             deleteOnExit()
         }
-        assertNull(ZipEntryCountProbe.probe(tiny))
+        assertNull(ZipEntryCountProbe.probe(tiny, LIMIT))
     }
 
     @Test fun `不存在与目录路径返回 null`() {
-        assertNull(ZipEntryCountProbe.probe(File("/definitely/not/here.zip")))
+        assertNull(ZipEntryCountProbe.probe(File("/definitely/not/here.zip"), LIMIT))
     }
 
     @Test fun `注释里伪造的 EOCD 签名不被误认为真 EOCD`() {
         // 注释区可以任意字节，攻击者能放一个 0x06054b50。
         // 判据：真 EOCD 的起点 + 22 + 注释长度 不得超过文件长度，且必须落在尾部窗口内。
         val zip = buildZipWithComment(listOf("a.txt"), commentByteCount = 64, forgeEocdInComment = true)
-        assertEquals(1, ZipEntryCountProbe.probe(zip))
+        assertEquals(1, ZipEntryCountProbe.probe(zip, LIMIT))
     }
 
     @Test fun `真 EOCD 之后挂尾随垃圾字节仍能解析出条目数`() {
@@ -125,7 +128,7 @@ class InstallAndBudgetHardeningTest {
         // 返回 null，预算检查被静默绕过 —— 恰好是这个探针要防的事。
         val zip = buildZip(listOf("a.txt", "b.txt", "c.txt"))
         appendBytes(zip, 1)   // 追加 1 字节
-        assertEquals(3, ZipEntryCountProbe.probe(zip))
+        assertEquals(3, ZipEntryCountProbe.probe(zip, LIMIT))
     }
 
     @Test fun `尾随垃圾字节时 zip4j 同样能解析_证明探针必须与之同口径`() {
@@ -137,7 +140,7 @@ class InstallAndBudgetHardeningTest {
         } finally {
             zf.close()
         }
-        assertEquals(3, ZipEntryCountProbe.probe(zip))
+        assertEquals(3, ZipEntryCountProbe.probe(zip, LIMIT))
     }
 
     @Test fun `尾随垃圾超出 64KB 反查窗口时两个解析器都拒绝`() {
@@ -145,7 +148,7 @@ class InstallAndBudgetHardeningTest {
         // 探针此时同样返回 null（尾部窗口内无自洽 EOCD），两侧口径一致。
         val zip = buildZip(listOf("a.txt", "b.txt", "c.txt"))
         appendBytes(zip, 70000)
-        assertNull(ZipEntryCountProbe.probe(zip))
+        assertNull(ZipEntryCountProbe.probe(zip, LIMIT))
     }
 
     @Test fun `EOCD 结束位置超过文件长度仍判为伪造`() {
@@ -186,34 +189,33 @@ class InstallAndBudgetHardeningTest {
         assertTrue(ZipEntryCountProbe.TAIL_WINDOW < 70 * 1024)
     }
 
-    @Test fun `自报条目数被改小时必须用中央目录体积兜住`() {
-        // 攻击形态：中央目录实际写上百万条 header 记录，而 EOCD 的「总条目数」写 1。
-        // 预检若只信自报字段就得到 1 → 放行；而 zip4j 的 HeaderReader 是
-        // **从中央目录起点逐条扫到 EOCD 签名为止**、不以自报计数为上界
-        // → 百万个 FileHeader 一次性进堆 → OOM。预检对它唯一要防的形态完全失效。
+    @Test fun `中央目录体积不再参与条目数折算`() {
+        // 回归护栏：`cdSize / 46` 曾被当作「条目数下界」与自报值取大者，结果把合法归档误拒。
+        //
+        // 每条中央目录 header 记录至少 46 字节，故 cdSize/46 是条目数的**上界**而非下界。
+        // 条目名几十字节时每条记录远大于 46 字节，折算值成倍放大：实测条目名约 65 字节的
+        // 合法 ZIP，9000 条目被折算成 22228，触发 20000 上限被拒 —— 而它只有 9000 条。
+        // 1~3 万文件的大型 APK 很常见，等效真实上限被压到 8000 条上下。
+        //
+        // 现在条目数由结构遍历精确给出，尾部只读自报字段，cdSize 不再参与折算。
         val eocd = ByteArray(22)
         writeIntLe(eocd, 0, 0x06054b50)
-        writeShortLe(eocd, 8, 1)         // 本盘条目数：攻击者写小
-        writeShortLe(eocd, 10, 1)        // 总条目数：攻击者写小
-        writeIntLe(eocd, 12, 46 * 30_000)  // 但中央目录实际体积 = 30000 条记录
-        val count = ZipEntryCountProbe.entryCountFromTail(eocd, 22L)!!
+        writeShortLe(eocd, 8, 1)
+        writeShortLe(eocd, 10, 1)
+        writeIntLe(eocd, 12, 46 * 30_000)
+        writeIntLe(eocd, 16, 0)
         assertEquals(
-            "中央目录体积折算的条目数必须参与判定，不能只信自报字段",
-            30_000, count
-        )
-        assertTrue(
-            "30000 条必须触发解压预算拦截（上限 20000）",
-            count >= ArchiveExtractor.MAX_EXTRACT_ENTRIES
+            "cdSize 不得再被折算进条目数，否则合法大归档会被误拒",
+            1, ZipEntryCountProbe.entryCountFromTail(eocd, 22L)
         )
     }
 
     @Test fun `自报条目数大于体积折算时以自报值为准`() {
-        // 两个上界取大者：自报字段也可能被**改大**来触发误拒，不能只信体积。
         val eocd = ByteArray(22)
         writeIntLe(eocd, 0, 0x06054b50)
         writeShortLe(eocd, 8, 900)
         writeShortLe(eocd, 10, 900)
-        writeIntLe(eocd, 12, 46 * 3)     // 体积只折算 3 条
+        writeIntLe(eocd, 12, 46 * 3)
         assertEquals(900, ZipEntryCountProbe.entryCountFromTail(eocd, 22L))
     }
 
@@ -225,6 +227,123 @@ class InstallAndBudgetHardeningTest {
         writeShortLe(eocd, 10, 0)
         writeIntLe(eocd, 12, 0)
         assertEquals(0, ZipEntryCountProbe.entryCountFromTail(eocd, 22L))
+    }
+
+    // ========================================================================
+    // 真实归档的精确条目数（结构遍历）
+    // ========================================================================
+
+    /** 造一个条目名较长的真实 ZIP —— 长度接近 Android 资源路径。 */
+    private fun buildRealZip(target: File, entries: Int, nameLen: Int = 40): File {
+        ZipOutputStream(target.outputStream().buffered()).use { zos ->
+            repeat(entries) { i ->
+                zos.putNextEntry(ZipEntry("res/drawable-xxhdpi/img_${i}_" + "n".repeat(nameLen)))
+                zos.closeEntry()
+            }
+        }
+        return target
+    }
+
+    @Test fun `条目数多的合法归档不得被误拒`() {
+        // 这是本轮修掉的功能回归：结构遍历之前的实现把 `cdSize / 46` 当下界参与取大者，
+        // 条目名稍长就成倍放大。实测同一份代码下 9000 条目的合法 ZIP 被折算成 22228，
+        // 触发 20000 上限被拒 —— 报错文案还写着「条目数超过 20000」，与事实相反。
+        val zip = File.createTempFile("legit_many", ".zip")
+        try {
+            for (n in listOf(5_000, 9_000, 12_000, 15_000)) {
+                buildRealZip(zip, n)
+                val probed = ZipEntryCountProbe.probe(zip, LIMIT)
+                assertEquals("结构遍历必须给出精确条目数", n, probed)
+                assertTrue(
+                    "$n 条目的合法归档不得被判定超限（上限 $LIMIT）",
+                    probed == null || probed < LIMIT
+                )
+            }
+        } finally {
+            zip.delete()
+        }
+    }
+
+    @Test fun `自报条目数被改小时结构遍历仍能数出真实条数`() {
+        // 攻击形态：中央目录实际写 N 条 header 记录，EOCD 的「总条目数」改写成 1。
+        // 只信自报字段会得到 1 → 放行；而 zip4j 的 HeaderReader 从中央目录起点逐条扫到
+        // EOCD 签名为止、不以自报计数为上界 → N 个 FileHeader 一次性进堆 → OOM。
+        val zip = File.createTempFile("liar", ".zip")
+        try {
+            buildRealZip(zip, 12_000)
+            // 定位 EOCD 并把总条目数改写为 1
+            val bytes = zip.readBytes()
+            var eocdAt = -1
+            for (i in bytes.size - 22 downTo 0) {
+                if (readIntLe(bytes, i) == 0x06054b50) { eocdAt = i; break }
+            }
+            require(eocdAt >= 0) { "未找到 EOCD" }
+            writeShortLe(bytes, eocdAt + 8, 1)
+            writeShortLe(bytes, eocdAt + 10, 1)
+            zip.writeBytes(bytes)
+
+            val probed = ZipEntryCountProbe.probe(zip, LIMIT)
+            assertEquals("自报字段撒谎时必须靠遍历得出真实条数", 12_000, probed)
+        } finally {
+            zip.delete()
+        }
+    }
+
+    @Test fun `超长归档在遍历到上限时提前返回`() {
+        // 上限用于给遍历设闸门：不该为一个已明显超限的归档把整个中央目录读完。
+        val zip = File.createTempFile("huge", ".zip")
+        try {
+            buildRealZip(zip, 3_000)
+            assertEquals(1_000, ZipEntryCountProbe.probe(zip, 1_000))
+        } finally {
+            zip.delete()
+        }
+    }
+
+    @Test fun `中央目录结构性损坏时按超限处理`() {
+        // 伪造一个 EOCD：自报 1 条、cdOffset 指向文件内、cdSize 覆盖一片非 header 数据。
+        // 遍历遇到非 0x02014b50 签名即视为损坏，返回不小于上限的值（fail-closed）。
+        val body = ByteArray(600) { 0x41 }
+        val zip = File.createTempFile("corrupt_cd", ".zip")
+        try {
+            zip.writeBytes(body)
+            val out = zip.outputStream().buffered()
+            out.write(body)
+            val eocd = ByteArray(22)
+            writeIntLe(eocd, 0, 0x06054b50)
+            writeShortLe(eocd, 8, 1)
+            writeShortLe(eocd, 10, 1)
+            writeIntLe(eocd, 12, 400)   // cdSize
+            writeIntLe(eocd, 16, 100)   // cdOffset，落在 'A' 区域
+            out.write(eocd)
+            out.close()
+            val probed = ZipEntryCountProbe.probe(zip, LIMIT)
+            assertTrue("损坏的中央目录必须 fail-closed，实际=$probed", probed == null || probed >= LIMIT)
+        } finally {
+            zip.delete()
+        }
+    }
+
+    @Test fun `ZIP64 偏移哨兵必须 fail_closed`() {
+        // cdOffset 写成 0xFFFFFFFF（ZIP64 哨兵）时真实偏移在扩展记录里，本实现不解析那套结构。
+        // 此时自报值已不可信，回退它等于把预算检查交给攻击者 → 必须按超限拒绝。
+        val body = ByteArray(600) { 0x41 }
+        val zip = File.createTempFile("zip64", ".zip")
+        try {
+            val out = zip.outputStream().buffered()
+            out.write(body)
+            val eocd = ByteArray(22)
+            writeIntLe(eocd, 0, 0x06054b50)
+            writeShortLe(eocd, 8, 1)
+            writeShortLe(eocd, 10, 1)
+            writeIntLe(eocd, 12, 400)
+            writeIntLe(eocd, 16, -1)   // 0xFFFFFFFF
+            out.write(eocd)
+            out.close()
+            assertEquals(LIMIT, ZipEntryCountProbe.probe(zip, LIMIT))
+        } finally {
+            zip.delete()
+        }
     }
 
     // ========================================================================

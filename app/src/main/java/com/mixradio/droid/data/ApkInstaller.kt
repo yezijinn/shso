@@ -195,7 +195,7 @@ object ApkInstaller {
             try {
                 // 条目数预算前置：zip4j 的 `fileHeaders` 会一次性把整个 central directory
                 // 构造成对象列表，预算检查放在其后等于没有。详见 [ZipEntryCountProbe]。
-                val probed = ZipEntryCountProbe.probe(file)
+                val probed = ZipEntryCountProbe.probe(file, MAX_XAPK_ENTRIES)
                 if (probed != null && probed >= MAX_XAPK_ENTRIES) {
                     return@withContext InstallResult.Failure("XAPK 条目数超过 $MAX_XAPK_ENTRIES")
                 }

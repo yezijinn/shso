@@ -10,19 +10,20 @@
 
 `versionCode` = 构建当日日期（`YYYYMMDD`），`versionName` = `Jinn`，Release Tag 与 `versionCode` 对齐；升级判定只认 `versionCode`。完整规则见 `README.md` § 版本规则。
 
-守卫模块独立版本：当前 v1.3.1（`module.prop` 的 `version=`）。新增或修改包装器、`common.sh` 后必须按序执行：重新生成包装器 → 重打包 `assets/shso_guard.zip` → 同步 `GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES` → 升 `module.prop` 版本，否则已装用户不会升级。
+守卫模块独立版本：当前 v1.4.3（`module.prop` 的 `version=`）。新增或修改包装器、`common.sh` 后必须按序执行：重新生成包装器 → 重打包 `assets/shso_guard.zip` → 同步 `GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES` → 升 `module.prop` 版本，否则已装用户不会升级。
 
 ---
 
-## 当前状态速览（2026-10-02）
+## 当前状态速览（2026-10-03）
 
 | 项 | 值 |
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 484 tests / 0 failures / 1 skipped |
+| 单元测试 | 492 tests / 0 failures / 1 skipped |
 | lint | 0 errors / 31 warnings |
-| release 体积 | 2.18 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
+| release 体积 | 2.20 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
+| 条目预算 | 中央目录**零分配结构遍历**取精确条目数（不信自报字段、不按体积折算） |
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
 | 编辑器内核 | Sora Editor 0.23.6（打开即可编辑；语法由外置语法包提供） |
 | 语法包 | 62 语言 / 187 扩展名，`syntax-packs.zip`(37KB)，永固直链 tag `syntaxpacks-v2` |
@@ -35,11 +36,116 @@
 | 已知环境坑 | 守卫实际读 `/data/adb/shso_guard/policy.conf`（**优先于**模块自带 `policy.conf`）；改策略只改模块那份会不生效，且调试脚本覆写后必须还原，否则 `protect=/data` 会静默消失、所有用例变放行 |
 | 已知环境坑 | Android 的 mksh **不支持**算术展开里的位运算符（`$(( 0600 & 022 ))` 真机实测返回非 0）。判权限位只能用 `find -perm /022` 或 `stat -c %A` 逐位取，别写位与 |
 | 已知环境坑 | 设备的 `shared_prefs` 读不到（SELinux 拦 su 直读），且 pager 把四个 Tab 装在同一个 Activity 里 → **无法从设备侧观测外部唤起被接受还是被拒**。这类判定只能靠 JVM 单测覆盖谓词本身；设备侧只能验证「不崩、前台稳定」 |
+| `/data/adb/shso` 是 0777 但 **SELinux 拦住第三方**（目录标签 `adb_data_file`）。实测：`shell` 域与 app 域（`run-as` → `u:r:runas_app`，派生自 `untrusted_app`）对该目录的 list / unlink / symlink / write **全部 Permission denied**，dmesg 有对应 `avc: denied { getattr }`；只有 `su`(magisk 域) 能写。→ 判定「审计目录软链劫持」类缺陷的可利用性时，**本机前提是不成立的**，别按「任意应用可利用」定级；但代码里也不该留这个窗口，真正的边界是 SELinux 而非代码 |
 | 发版 | tag `20261002`（纯数字，与 `versionCode` 对齐）；双端同名 Release 覆盖旧 APK |
 
 ---
 
 ## 待办
+
+### A62. 第十二轮全面 BUG 深挖（2026-10-03）
+
+A61 修掉审计写入的软链 TOCTOU 后，这里回头复核它改过的每一处，外加上一次遗留的三条。
+结论先说：**A61 自己引入了一个功能回归**，比它修掉的那个洞更影响日常使用 —— 已定位、
+已修复、已用真实归档复现与验证。共修 4 项，其中 2 项在真机复现过。
+
+- [x] **产品范围**：`ZipEntryCountProbe`（148 行）/ `SecurityAuditLog`（392 行）/
+      `ArchiveExtractor` 预算闸门 / `ApkInstaller` XAPK 闸门 + 两处调用点 + 既有测试 480 行
+
+- [x] **P0 · 功能回归：条目数预检把合法大归档误判为超限（A61 引入）**
+  - [x] **根因是把上界当下界用**。中央目录每条 header 记录**至少** 46 字节，故
+        `cdSize / 46` 满足 `N ≤ cdSize / 46` —— 它是条目数的**上界**。A61 为堵
+        「自报字段被改小」的漏判，把 `max(自报值, cdSize / 46)` 当判定值，注释两处
+        都写成「下界」（`ZipEntryCountProbe` 类注释与 `cdSize` 折算处各一处）。
+  - [x] **误拒是必然的，不是边缘情况**。条目名几十字节时每条记录远大于 46 字节，
+        折算值成倍放大。真机 JVM 实测（条目名 65 字节）：
+
+        | 真实条目数 | 探针返回 | 上限 20000 |
+        |---|---|---|
+        | 5000 | 12367 | 放行 |
+        | 9000 | 22280 | **误拒** |
+        | 11000 | 27258 | **误拒** |
+        | 15000 | 37258 | **误拒** |
+
+        报错文案还写着「压缩包条目数超过 20000」，与事实相反 —— 用户看到的是一个
+        只有 9000 个文件的合法包被告知条目数超限。1~3 万文件的大型 APK 很常见，
+        等效真实上限被压到 8000 条上下。
+  - [x] **改为零分配的结构遍历，精确计数**：逐条走中央目录，每条记录的下一条位置由
+        其定长头里的三个长度字段（名长/extra 长/注释长）唯一确定，可从 `cdOffset`
+        顺序跳到 `cdOffset + cdSize` 数出真实条数。**只读字节、不构造任何对象**，
+        「预算前置」依然成立。既不漏判（完全不信自报字段），也不误判（给精确值）。
+  - [x] **配套边界**：`cdOffset + cdSize` 越界、`cdSize > 32MB`、遍历中遇到非
+        `0x02014b50` 签名、长度字段溢出 `cdEnd` —— 一律 fail-closed 按超限返回。
+        ZIP64 的 `0xFFFFFFFF` 哨兵（偏移/体积）同样 fail-closed：真实值在扩展记录里，
+        而自报值已被攻击者控制，此时回退它等于把预算交给对方。
+  - [x] **解压侧二次闸门仍在**（`ArchiveExtractor` 的 `headers.size > 上限`），
+        探针返回 null 时仍由它兜底，防线没有被削弱成单点
+  - [x] **新增 5 条用例**：真实 ZIP 5000/9000/12000/15000 条目必须给出精确值且不超限；
+        自报字段改写成 1 时仍数出真实 12000；上限提前返回；结构性损坏 fail-closed；
+        ZIP64 哨兵 fail-closed
+
+- [x] **P0 · 安全：清空审计可被软链劫持成 root 截断任意文件（A61 漏改的同一条链路）**
+  - [x] **A61 只改了追加路径，截断路径原样保留**。`clear()` 仍是三次**独立** su：
+        `prepareRootTarget()` 校验 → `sh -c '> path'` 截断 → `writeBytesAsRoot(append=true)`
+        写标记。校验与「跟随软链的截断」分属两个进程，中间是几十毫秒窗口，而目标目录
+        `/data/adb/shso` 是 0777 且**无 sticky 位**。
+  - [x] **真机复现（步骤与 app 代码逐条对应）**：三次调用**全部返回 0**，受害文件
+        `/data/local/tmp/victim.txt` 的 `ORIGINAL-CONTENT-LONG-ENOUGH` 被**完全抹掉**，
+        换成审计标记行。截断比追加更危险 —— 追加只多一行，截断毁掉目标全部内容；
+        落点若是 Magisk 模块的 `post-fs-data.sh` / `service.sh` 即等于下次开机的 root 代码执行。
+  - [x] **利用前提如实记录**：本机 SELinux 拒绝第三方应用访问该目录（实测见下），
+        因此**这不是「任意应用可利用」**。但代码注释本身写着 0777 是为了「供第三方文件
+        文件管理器互访」—— 一旦某个 ROM / Magisk 策略真的放开了这条路径，攻击即成立。
+        真正的边界是 SELinux 而不是代码，这本身就说明代码不该留这个窗口。
+  - [x] **修法**：`clear()` 改用与 `log()` 同一个 `appendRootLogLine(truncate = true)` ——
+        校验、`exec 3>` 打开、写入全在同一个 root shell 内，打开紧跟校验，中间无可插入窗口。
+        `prepareRootTarget()` 随之失去唯一调用者，已删除（它正是这个 TOCTOU 的来源）
+  - [x] **真机复验**：同一攻击序列下受害文件内容保持不变；正常路径 5 行 → 1 行标记，
+        权限保持 `-rw-------`
+
+- [x] **P1 · 数据一致性：审计日志里的中文全部损坏**
+  - [x] **现象**：真机打开审计弹窗，`(档位=3)` 显示为 `(╗╗µı╱ⅡΛ=3)`。字节级确认
+        落盘为 `EF BF A6 EF BE A1 EF BE A3 EF BF A4 EF BE BD EF BE 8D` —— 每个字节
+        被映射成 `U+FF00 + byte`。
+  - [x] **根因**：`appendRootLogLine` 先把行编成 UTF-8 字节，再逐字节
+        `b.toInt().toChar()` 拼回字符串（等价于按 ISO-8859-1 重解释每个字节），
+        随后 `ProcessBuilder` 把这个字符串按 UTF-8 **二次编码**。本地路径用
+        `appendText(line, UTF_8)` 不受影响，所以只有 root 路径的中文会坏。
+  - [x] **危害不止观感**：审计日志是事后追溯依据，字段损坏等于让证据不可用；本项目
+        又恰好大量涉及中文路径与中文档位名（`GUARD_POLICY_MODE` 的摘要里就带「档位」）
+  - [x] **修法**：只转义单引号，字符串原样交给 `ProcessBuilder` 按 UTF-8 编码
+  - [x] **真机复验**：同一事件重跑，落盘字节为 `E6 A1 A3 E4 BD 8D`（= 「档位」的
+        正确 UTF-8），弹窗显示「档位=3」
+  - [x] **顺带补回换行**：改为字符串拼接后原先 payload 里的 `\n` 没了，
+        `printf '%s'` 改成 `printf '%s\n'`，否则整份日志会挤成一行
+
+- [x] **P2 · 异常处理：轮转失败对用户完全不可见**
+  - [x] `trimRootLog()` 与 `trimLocalLog()` 的 `catch (_: Exception) {}` 是空吞。
+        这与 A61 P0-3 建立的「审计降级必须可见」不变式直接冲突：日志在无上限增长的
+        同时对用户看起来一切正常。补 `recordFailure`，并把 `wc -c` 的 exit 与
+        「大小不可解析」也各自记一次
+
+- [x] **一处代码卫生问题**：`SecurityAuditLog` 里有两段相邻的 KDoc，第一段
+      （原 `prepareRootTarget` 的说明）被第二段顶掉成了**悬空注释**，谁也不解释；
+      `prepareRootTarget` 自己反而没有文档。删除该函数后一并消失
+
+- [x] **真机验证**：APK 安装启动正常，`FATAL=0`；审计弹窗显示真实日志且中文正常；
+      守卫 v1.4.3 仍安装；档位 3。共修 4 项，其中 2 项在真机复现过
+- [x] **回归**：单元测试与 lint 全绿，Release 2.20 MB 且 `verifyReleasePayload` 红线通过
+
+- [!] **未修，如实登记**
+  - `PathClassifier` 对 `$'/system'` 这类 ANSI-C 引用只判 WARNING（`startsWith("$")`
+    兜住了，但没按未解析目标升级）。脚本来源下需守卫兜底才能拦，而守卫目录实测
+    **没有 `sh` 包装器** → 这条路径实际是敞开的
+  - `AuditVerdict.CONFIRMED` 在终端链路仍未被消费；`PARSER_OVERFLOW` 交互态仍可确认
+  - `ExecutionForegroundService.startAsForeground()` 无 try/catch，
+    `ForegroundServiceStartNotAllowedException` 会在 `onStartCommand` 里抛（调用点
+    的 try 只包住 `startForegroundService()` 本身），后台启动受限场景仍是崩溃路径
+  - 审计并发：多条 `log()` 的 `printf` 各自一次 write，O_APPEND 下大概率不交错，
+    但超过 PIPE_BUF 的行理论上可被拆成多次 write；轮转与追加之间会丢在途记录，
+    已在 `trimRootLog` 的注释里写明取舍（每 24 条才轮转一次，窗口仅一次重定向）
+  - `readTail` 本地路径 `readLines()` 全量载入（root 路径走 `tail -n`）；
+    文件被本地裁剪限制在 512KB，暂可接受
 
 ### A61. 第十一轮全面 BUG 深挖（2026-10-03）
 
