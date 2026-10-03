@@ -109,12 +109,10 @@ Aurora 令牌（`AuroraTokens` / `AuroraGlass` / `AuroraComponents`），
 |---|---|
 | 查看 / 更新开发计划与状态 | `TASKS.md`（按自治协议推进与写回） |
 | 功能用法 / 对外说明 | `README.md`（不写更新日志，变更进 `更新日志.md`） |
-| 记录变更 | `更新日志.md`（一行一条：新增 / 修复 / 优化 / 安全） |
+| 记录变更 | `更新日志.md`（一行一条：新增 / 修复 / 优化） |
 | 技术栈、目录结构、架构 | `docs/PROJECT.md` |
 | 改执行引擎 / ROOT 逻辑 | `docs/PROJECT.md` § RootService（执行引擎） |
 | 改 UI 页面 / 组件 | `docs/PROJECT.md` § UI 形态（改动必守） |
-| 改安全相关逻辑 | `docs/PROJECT.md` § 安全子系统 |
-| 改守卫模块 / 新增包装器 | `module/shso_guard/README.md` |
 | 文档该改哪一份 | `docs/PROJECT.md` § 文档维护约定 |
 | 文档写作规范与格式 | `docs/文档规范.md` |
 | 命名与代码风格 | `docs/命名规范.md` |
@@ -139,8 +137,7 @@ python build_apk.py              # 一条命令完成构建：签名 + 版本规
 - 代码文件头统一：`// Copyright 2026, shso contributors` +
   `// SPDX-License-Identifier: GPL-3.0-or-later`；提交信息按既有惯例书写。
 - 许可为 **GPL-3.0-or-later**（强 Copyleft，衍生作品须同协议开源）。
-  新增文件一律带上述 SPDX 头；改守卫模块后必须 `python module/shso_guard/gen_wrappers.py`
-  → `python tools/pack_guard_module.py` → 升 `module.prop` 的 `version=`。
+  新增文件一律带上述 SPDX 头。
 - 签名配置在 `app/build.gradle.kts`（V2+V3，debug 复用 release 签名）；
   `release.jks` 不在仓库内。
 - 所有 `su -c` 路径必须单引号转义（`replace("'", "'\\''")`）；

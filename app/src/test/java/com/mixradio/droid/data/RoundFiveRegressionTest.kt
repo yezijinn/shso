@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package com.mixradio.droid.data
 
-import com.mixradio.droid.data.security.GuardModuleInstaller
-import com.mixradio.droid.data.security.SecurityLevels
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -86,29 +84,7 @@ class RoundFiveRegressionTest {
         assertFalse("根目录必须拒绝", ExternalOpen.isExternalPathAllowed("/"))
     }
 
-    // ---------- ② 守卫档位 → policy.conf mode 的一致性 ----------
-
-    @Test fun `档位到守卫 mode 的映射不得因脏数据 fail-open`() {
-        // mode=off 是完全不拦截。越界/未知取值必须落到最严格档，
-        // 否则一个被写坏的偏好值就能把守卫降级成完全放行。
-        assertEquals("off", GuardModuleInstaller.policyModeFor(SecurityLevels.OFF))
-        assertEquals("log", GuardModuleInstaller.policyModeFor(SecurityLevels.AUDIT_ONLY))
-        assertEquals("enforce", GuardModuleInstaller.policyModeFor(SecurityLevels.STANDARD))
-        assertEquals("enforce", GuardModuleInstaller.policyModeFor(SecurityLevels.MAXIMUM))
-        assertEquals("脏档位必须落最严格档", "enforce", GuardModuleInstaller.policyModeFor(99))
-        assertEquals("负档位必须落最严格档", "enforce", GuardModuleInstaller.policyModeFor(-1))
-    }
-
-    @Test fun `受保护档位必须要求运行时守卫存在`() {
-        // ≥2 档声称「黑名单拦截 + 守卫 PATH」。若 requiresRuntimeGuard 对这些档位返回
-        // false，安装失败就不会触发回滚，UI 会亮着已开启防护而实际无守卫。
-        assertFalse("0 档不需要守卫", GuardModuleInstaller.requiresRuntimeGuard(SecurityLevels.OFF))
-        assertFalse("1 档不需要守卫", GuardModuleInstaller.requiresRuntimeGuard(SecurityLevels.AUDIT_ONLY))
-        assertTrue("2 档必须要求守卫", GuardModuleInstaller.requiresRuntimeGuard(SecurityLevels.STANDARD))
-        assertTrue("3 档必须要求守卫", GuardModuleInstaller.requiresRuntimeGuard(SecurityLevels.MAXIMUM))
-    }
-
-    // ---------- ③ 改权限的部分成功语义 ----------
+    // ---------- 改权限的部分成功语义 ----------
 
     @Test fun `权限位输入校验须拒绝越界与非法写法`() {
         // 弹窗保存时用它做前置校验；放宽会让非法 mode 直达 chmod。

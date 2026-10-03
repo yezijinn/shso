@@ -15,7 +15,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.content.edit
-import com.mixradio.droid.data.security.SecurityLevels
 
 /**
  * 全部 var 都是 mutableStateOf（Compose 读取会自动订阅其变化），
@@ -87,21 +86,6 @@ class AppSettings private constructor(context: Context) {
 
     /** 编辑器自动换行：超宽长行折行延续显示。0=关（默认）。 */
     var editorWordWrap by mutableStateOf(prefs.getBoolean(KEY_EDITOR_WORD_WRAP, false))
-        private set
-
-    /**
-     * 安全防护档位：0 无防护（默认）/ 1 仅审计 / 2 标准防护 / 3 最强防护。
-     * 见 data/security/SecurityLevels.kt 与 docs/指令审查与拦截方案.md。
-     *
-     * 读取侧必须钳制：越界值（被篡改或降级残留）会让档位门控 fail-open
-     * （负值使 `level <= AUDIT_ONLY` 恒成立 → 全部放行且不前置守卫）；
-     * 类型不符（写入方变更）会抛 ClassCastException，一并兜住。
-     */
-    var securityLevel by mutableIntStateOf(
-        runCatching { prefs.getInt(KEY_SECURITY_LEVEL, SECURITY_OFF) }
-            .getOrDefault(SECURITY_OFF)
-            .let { if (SecurityLevels.isValid(it)) it else SECURITY_OFF }
-    )
         private set
 
     // 书签（永久存储，按添加顺序）
@@ -269,12 +253,6 @@ class AppSettings private constructor(context: Context) {
         prefs.edit { putInt(KEY_FILE_SORT_MODE, mode) }
     }
 
-    fun updateSecurityLevel(level: Int) {
-        val clamped = level.coerceIn(SECURITY_OFF, SECURITY_MAXIMUM)
-        securityLevel = clamped
-        prefs.edit { putInt(KEY_SECURITY_LEVEL, clamped) }
-    }
-
     fun addBookmark(path: String) {
         val normalized = path.trim().trimEnd('/').ifEmpty { "/" }
         bookmarkPaths.add(normalized)
@@ -300,12 +278,6 @@ class AppSettings private constructor(context: Context) {
         const val FILE_SORT_NAME_DESC = 1
         const val FILE_SORT_TIME_ASC = 2
         const val FILE_SORT_TIME_DESC = 3
-
-        /** 安全档位常量（与 data/security/SecurityLevels 对齐） */
-        const val SECURITY_AUDIT_ONLY = 1
-        const val SECURITY_OFF = SecurityLevels.OFF
-        const val SECURITY_STANDARD = 2
-        const val SECURITY_MAXIMUM = 3
 
         private const val MIN_FILE_LIST_FONT_SIZE = 5f
         private const val MAX_FILE_LIST_FONT_SIZE = 30f
@@ -350,8 +322,7 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_EDITOR_SHOW_LINE_NUMBER = "editor_show_line_number"
         private const val KEY_EDITOR_WORD_WRAP = "editor_word_wrap"
         private const val KEY_EDITOR_FONT_SIZE = "editor_font_size"
-        private const val KEY_SECURITY_LEVEL = "security_level"
-
+    
         private const val DEFAULT_TERMINAL_COLOR = 0xFF00E676L
 
         @Volatile

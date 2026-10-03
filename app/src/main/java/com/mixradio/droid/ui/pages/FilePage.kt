@@ -87,15 +87,10 @@ import com.mixradio.droid.data.computeSha256Strict
 import com.mixradio.droid.data.syntax.SyntaxPackTags
 import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootService
-import com.mixradio.droid.data.security.CommandSource
-import com.mixradio.droid.data.security.RiskLevel
-import com.mixradio.droid.data.security.AuditVerdict
-import com.mixradio.droid.data.security.SecurityAuditLog
 import com.mixradio.droid.data.displayPath
 import com.mixradio.droid.ui.components.ApkExtractDialog
 import com.mixradio.droid.ui.components.BookmarksDialog
 import com.mixradio.droid.ui.components.BuiltInFilePicker
-import com.mixradio.droid.ui.components.ExecuteConfirmDialog
 import com.mixradio.droid.ui.components.FileListSettingsDialog
 import com.mixradio.droid.ui.components.FilePermissionDialog
 import com.mixradio.droid.ui.components.FileShortcutButton
@@ -138,7 +133,7 @@ private val batchJobScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 @Composable
 fun FilePage(
     appSettings: AppSettings,
-    onExecuteFileAndNavigate: (path: String, runAsRoot: Boolean?, riskApproved: Boolean) -> Unit
+    onExecuteFileAndNavigate: (path: String, runAsRoot: Boolean?) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -441,8 +436,6 @@ fun FilePage(
             installAlertMessage = null
             installStatusMessage = "正在安装 ${item.name}，请勿重复操作"
             val installMode = if (installAsRootOverride == true) "root" else "system"
-            SecurityAuditLog.log(CommandSource.INTERNAL_APP, AuditVerdict.START, "APK_INSTALL", RiskLevel.WARNING,
-                "path=${item.path} | sha256=${confirmedSha256 ?: "unconfirmed"} | mode=$installMode")
             val result = try {
                 val installAsRoot = installAsRootOverride ?: (RootService.isRootGranted == true)
                 val installPath = stagedPath ?: item.path
@@ -485,13 +478,6 @@ fun FilePage(
                 is ApkInstaller.InstallResult.Failure -> "安装失败：$resultMessage"
             }
             feedbackMessage = resultMessage
-            SecurityAuditLog.log(
-                CommandSource.INTERNAL_APP,
-                if (result is ApkInstaller.InstallResult.Success) AuditVerdict.FINISHED else AuditVerdict.FAILED,
-                "APK_INSTALL",
-                RiskLevel.WARNING,
-                "path=${item.path} | sha256=${confirmedSha256 ?: "unconfirmed"} | mode=$installMode | result=$resultMessage"
-            )
             stagedPath?.let { File(it).delete() }
         }
     }
@@ -531,7 +517,7 @@ fun FilePage(
             mimeType = mimeType
         )) {
             ExternalAction.INSTALL -> pendingInstallItem = item
-            ExternalAction.EXECUTE -> pendingExecuteItem = item
+            ExternalAction.EXECUTE -> onExecuteFileAndNavigate(item.path, null)
             ExternalAction.VIEW_IMAGE -> openImageViewer(item)
             ExternalAction.EDIT_TEXT -> openTextEditor(item)
             // 外部 OPEN 只定位并弹动作菜单；解压会写入多个文件，必须由用户明确点击。
@@ -1128,7 +1114,7 @@ fun FilePage(
                                         fontWeight = FontWeight.Bold,
                                         color = AuroraTokens.Error,
                                         modifier = Modifier
-                                            .clickable { pendingExecuteItem = item }
+                                            .clickable { onExecuteFileAndNavigate(item.path, null) }
                                             .padding(horizontal = 6.dp, vertical = 8.dp)
                                     )
                                 } else if (isFontFile) {
@@ -1332,11 +1318,10 @@ fun FilePage(
                         if (success) {
                             feedbackMessage = "已添加到 shso: $resultPath"
                             refresh()
-                            if (appSettings.autoExecuteAfterAdding && (item.isExecutableScript || item.isExecutableBinary)) {
-                                // 自动执行链路：未经确认框，故 riskApproved=false（executeFile 仍会扫描脚本内容），
-                                // runAsRoot=null 表示按档位自动（档位 3 默认非 Root）。
-                                onExecuteFileAndNavigate(resultPath, null, false)
-                            }
+                                if (appSettings.autoExecuteAfterAdding && (item.isExecutableScript || item.isExecutableBinary)) {
+                                    // 自动执行：runAsRoot=null 表示交给 executeFile 自行决定执行身份
+                                    onExecuteFileAndNavigate(resultPath, null)
+                                }
                         } else {
                             feedbackMessage = resultPath
                         }
@@ -2290,21 +2275,7 @@ fun FilePage(
         }
     }
 
-    // ===== 执行确认弹窗：任何「执行」点击都必须先经风险确认 =====
-    ExecuteConfirmDialog(
-        show = pendingExecuteItem != null,
-        fileItem = pendingExecuteItem,
-        // 批次6 修复：实参传当前档位，之前默认 STANDARD=2 导致档位 0/1 仍扫描 + 档位 3 不显示默认非 Root
-        securityLevel = RootService.currentSecurityLevel(),
-        onDismiss = { pendingExecuteItem = null },
-        onConfirm = { runAsRoot ->
-            // 关键：把确认框里用户的实际选择（是否以 Root 执行）与「已获风险确认」一并透传，
-            // 否则档位 3 的「脚本默认非 Root + 用户可勾选以 Root」永远不会生效（死代码）。
-            val target = pendingExecuteItem?.path
-            pendingExecuteItem = null
-            if (target != null) onExecuteFileAndNavigate(target, runAsRoot, true)
-        }
-    )
+    // 守卫功能已移除：执行文件不再有风险确认弹窗，「执行」点击直接执行。
 
     // ===== 安装确认弹窗：ROOT 下 pm install 静默完成，必须显式确认后安装 =====
     //

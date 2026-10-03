@@ -16,7 +16,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import com.mixradio.droid.data.AppSettings
-import com.mixradio.droid.data.security.SecurityLevels
 import com.mixradio.droid.ui.theme.AuroraArrowPreference
 import com.mixradio.droid.ui.theme.AuroraSwitchPreference
 import com.mixradio.droid.ui.theme.AuroraTextStyles
@@ -222,92 +221,5 @@ internal object SettingsPermissionIntents {
                 Toast.makeText(context, "无法打开安装未知应用设置", Toast.LENGTH_LONG).show()
             }
         }
-    }
-}
-
-/**
- * 设置页安全相关三项：档位 / 审计日志 / 守卫模块安装。
- *
- * 抽出后档位变化（点击循环 0→1→2→3→0）只重组本节点，不波及权限组 / 文件行为组 / 更新组。
- * 副作用（写入 AppSettings + 触发守卫安装/策略同步 + Toast）由父 Composable 处理，
- * 本节点仅暴露回调。
- */
-@Composable
-fun SettingsSecurityGroup(
-    currentLevel: Int,
-    guardInstalled: Boolean,
-    guardInstalling: Boolean = false,
-    auditFailure: String? = null,
-    onLevelClicked: () -> Unit,
-    onShowAuditLogClicked: () -> Unit,
-    onInstallGuardClicked: () -> Unit,
-) {
-    val summary = androidx.compose.runtime.remember(currentLevel) {
-        "当前：${SecurityLevels.nameOf(currentLevel)}（0 关 1 审计 2 标准 3 最高）"
-    }
-
-    AuroraArrowPreference(
-        title = "安全档位",
-        summary = summary,
-        statusSwitch = currentLevel > AppSettings.SECURITY_OFF,
-        statusSwitchEnabled = false,
-        onClick = onLevelClicked
-    )
-
-    // 档位 ≤1 时显式点明防护缺口。
-    // 这两个档位不拦截任何高危命令（0 档还不写审计），属排障用的临时状态；
-    // 若不提示，用户误切后会在毫无感知的情况下长期运行在无防护状态。
-    if (currentLevel <= SecurityLevels.AUDIT_ONLY) {
-        Text(
-            text = if (currentLevel <= SecurityLevels.OFF) {
-                "无防护：不拦截、不记录高危操作，仅建议排障时临时使用"
-            } else {
-                "仅审计：高危操作仍会执行，只是会写入审计日志"
-            },
-            style = AuroraTextStyles.footnote2,
-            color = AuroraTokens.Error,
-            modifier = Modifier.padding(start = 4.dp, bottom = 6.dp)
-        )
-    }
-    AuroraArrowPreference(
-        title = "查看审计日志",
-        summary = "最近50条拦截/放行/脚本扫描记录",
-        statusSwitch = false,
-        statusSwitchEnabled = false,
-        onClick = onShowAuditLogClicked
-    )
-    AuroraArrowPreference(
-        title = when {
-            guardInstalling -> "守卫模块：正在部署…"
-            guardInstalled -> "守卫模块：已安装"
-            else -> "安装 shso_guard 守卫模块"
-        },
-        // 部署期间改为进度文案并吞掉点击：安装是解压 + cp -R + mv 的多步特权写入，
-        // 连点会排进 installMutex 串行执行（每次都对 /data/adb/modules 做一轮
-        // rm -rf → mv），用户看到的仍是同一行文案，只能反复点。
-        summary = when {
-            guardInstalling -> "请稍候，不要重复点击"
-            guardInstalled -> "拦截 rm/dd/mkfs 等命令运行"
-            else -> "复制本 APP 内置模块到 /data/adb/modules/"
-        },
-        statusSwitch = guardInstalled,
-        statusSwitchEnabled = false,
-        onClick = { if (!guardInstalling) onInstallGuardClicked() }
-    )
-    if (auditFailure != null) {
-        // 审计链已降级：越权放行事件可能没有被记下来，必须在安全组里常驻可见，
-        // 而不只是点进审计弹窗才看得到。
-        Text(
-            text = "⚠ 审计写入失败：$auditFailure",
-            style = AuroraTextStyles.footnote2,
-            color = AuroraTokens.Error,
-            modifier = Modifier.padding(start = 4.dp, top = 6.dp)
-        )
-        Text(
-            text = "越权放行事件可能未被记录，请检查 shso 目录可写与剩余空间",
-            style = AuroraTextStyles.footnote2,
-            color = AuroraTokens.TextSecondary,
-            modifier = Modifier.padding(start = 4.dp, bottom = 6.dp)
-        )
     }
 }

@@ -23,16 +23,6 @@ import java.io.OutputStreamWriter
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.regex.Pattern
-import com.mixradio.droid.data.security.CommandSource
-import com.mixradio.droid.data.security.GuardModuleInstaller
-import com.mixradio.droid.data.security.GuardPathPolicy
-import com.mixradio.droid.data.security.RiskLevel
-import com.mixradio.droid.data.security.RootCommandGateway
-import com.mixradio.droid.data.security.ScriptAuditor
-import com.mixradio.droid.data.security.AuditVerdict
-import com.mixradio.droid.data.security.SecurityAuditLog
-import com.mixradio.droid.data.security.SecurityLevels
-import com.mixradio.droid.data.security.Verdict
 
 object RootService {
 
@@ -141,8 +131,7 @@ object RootService {
      * 「当前活动进程」槽位的**同步占用标记**。
      *
      * 原实现只有 `isTaskRunning` 一个判据，而它要到 [runTerminalCommand] 内部才置 true，
-     * 其间要跨过：派发到 IO → 策略判定 → `withContext(Main)` 往返 → `guardPrefixOrDegrade`
-     * （守卫缓存为空时同步探测，最长 5s）→ `ProcessBuilder("su")`。
+     * 其间要跨过：派发到 IO → `withContext(Main)` 往返 → `ProcessBuilder("su")`。
      * 这段窗口里 [isTerminalBusy] 恒为 false，于是：
      *  - 连点两次「发送」→ 两条命令同时起来；
      *  - 终端命令与文件页「执行」并发 → 两条执行线各自写 `activeProcess` / `currentTaskName`，
@@ -178,7 +167,7 @@ object RootService {
      * 「中断 / 结束进程」被禁用，用户失去唯一出口。
      *
      * 判据 = 「脚本任务看 executionJob」或「终端命令看槽位令牌」任一成立。
-     * 槽位令牌在命令结束/被拦截时于 finally 归还，startExecution 起新任务时置 0，
+     * 槽位令牌在命令结束的 finally 里归还，startExecution 起新任务时置 0，
      * 因此「新任务已接管」时两者皆不成立。
      */
     private fun stillOwnsExecution(targetJob: Job?): Boolean =
@@ -346,12 +335,12 @@ object RootService {
      * **刻意不写 `currentTaskPath`**：该字段是「结束进程」在进程组不可用时的 pkill 匹配路径，
      * 填命令文本会匹配到无关进程。
      *
-     * @param guardedCmd 已拼好守卫 PATH 前缀的完整 shell 命令
+     * @param command 完整的 shell 命令
      * @param displayName 展示名（「运行中」状态与通知标题）
      * @param slotToken 本次占用的槽位令牌；非 0 时在起进程后自检归属，被抢走就直接杀掉自己
      * @return 退出码；超时返回 -1
      */
-    private suspend fun runTerminalCommand(guardedCmd: String, displayName: String, slotToken: Long = 0L): Int {
+    private suspend fun runTerminalCommand(command: String, displayName: String, slotToken: Long = 0L): Int {
         val generation = terminalCommandGeneration.incrementAndGet()
         // 先作废上一轮的 pgid 记录再启动，确保随后读到的一定来自本次命令（与 executeFile 同法）。
         runCatching { runPgidFile?.delete() }
@@ -361,7 +350,7 @@ object RootService {
         HyperCore.clearBatchQueue()
         val pgidRecorder = runPgidFile?.let { "echo " + "\$\$" + " > " + escapeShellArg(it.absolutePath) + "; " } ?: ""
         val process = try {
-            ProcessBuilder("su", "-c", pgidRecorder + guardedCmd).redirectErrorStream(true).start()
+            ProcessBuilder("su", "-c", pgidRecorder + command).redirectErrorStream(true).start()
         } catch (e: Exception) {
             withContext(Dispatchers.Main) { appendOutputDirect("[执行失败: ${e.message}]\n") }
             return -1
@@ -483,84 +472,10 @@ object RootService {
     }
 
     /**
-     * 当前安全档位。
-     *
-     * `AppSettings` 未初始化时取 [SecurityLevels.OFF]，与 `AppSettings` 的默认值和
-     * `PolicyEngine.currentLevel()` 一致（此前注释写「保守取标准防护」而实现返回 OFF）。
-     */
-    fun currentSecurityLevel(): Int = appSettings?.securityLevel ?: SecurityLevels.OFF
-
-    /** 返回 Root 执行的守卫 PATH；受保护档位下守卫不可用时返回 null。 */
-    fun guardPathPrefix(): String? {
-        val level = currentSecurityLevel()
-        val prefix = GuardPathPolicy.prefixOrNull(
-            securityLevel = level,
-            guardReady = level < SecurityLevels.STANDARD || GuardModuleInstaller.guardBinDirReady()
-        )
-        // 守卫恢复可用后重置降级告警，使其在「再次失效」时仍能提醒
-        if (prefix != null) guardDegradeWarned = false
-        return prefix
-    }
-
-    /** 守卫不可用告警是否已输出（只提醒一次，避免刷屏）。 */
-    @Volatile
-    private var guardDegradeWarned = false
-
-    /**
-     * 档位要求运行时守卫、但守卫不可用时的降级处理。
-     *
-     * 策略（用户已确认「自动安装 + 不再阻断」）：**不阻断，只告警**。
-     * 原因：档位 2 是默认档位；若守卫缺失就拒绝一切 root 执行（连 `ls` 都跑不了），
-     * 默认档位将完全不可用，故此处只告警不阻断。配合 `GuardModuleInstaller.ensureInstalled()`
-     * 的启动期自动安装，正常情况下守卫就是就绪的；此处只处理安装失败的兜底。
-     *
-     * 每次都会落审计（ruleId=GUARD_UNAVAILABLE_DEGRADED），便于事后追溯到
-     * 「这次执行发生时没有运行时守卫」。
-     */
-    private fun reportGuardDegraded(source: CommandSource, detail: String) {
-        SecurityAuditLog.log(source, AuditVerdict.DEGRADED, "GUARD_UNAVAILABLE_DEGRADED", RiskLevel.DANGEROUS, detail)
-        if (guardDegradeWarned) return
-        guardDegradeWarned = true
-        scope.launch(Dispatchers.Main) {
-            appendOutputDirect(
-                "\n[shso 安全提示] 当前档位要求运行时守卫，但守卫模块不可用。\n" +
-                    "  本次执行仅有静态审查保护（无运行时拦截 rm/dd/mkfs 等）。\n" +
-                    "  可在「设置 → 安全档位」中安装守卫模块以恢复完整防护。\n"
-            )
-        }
-    }
-
-    /** 取守卫 PATH 前缀；守卫不可用时落审计 + 首次告警并返回空串（不阻断执行）。 */
-    private fun guardPrefixOrDegrade(source: CommandSource, detail: String): String {
-        val prefix = guardPathPrefix()
-        if (prefix != null) return prefix
-        reportGuardDegraded(source, detail)
-        return ""
-    }
-
-    /**
-     * 把拦截结果落审计并在终端输出拒绝原因（终端输入被 Block 时调用）。
-     */
-    fun reportBlockedInput(block: Verdict.Block) {
-        val reasons = block.findings.joinToString("\n") { "  · [${it.ruleId}] ${it.message}" }
-        SecurityAuditLog.log(
-            CommandSource.USER_TERMINAL, AuditVerdict.DENIED,
-            block.findings.firstOrNull()?.ruleId, RiskLevel.CRITICAL, block.findings.firstOrNull()?.snippet ?: ""
-        )
-        appendOutputDirect("\n[shso 安全拦截] 已拒绝执行以下高危操作：\n$reasons\n")
-    }
-
-    /**
      * 执行脚本/二进制文件。
      *
-     * 本函数由点击直接调用（`MainActivity` / `HomePage` / `FilePage`），**运行在 UI 线程**。
-     * 而前置段里有两处最长数秒的阻塞：
-     *  - [guardPrefixOrDegrade] → `guardBinDirReady()` → `runCommandSync("test -x …", 5_000)`；
-     *  - [ScriptAuditor.readScriptContent] → 两次 `su`（`stat -c %s` 10s、`cat|head -c` 15s）
-     *    再加最多 2MB 文本的逐行解析。
-     * 二者都命中时是确定性的 ANR（系统弹「应用无响应」，用户强制停止后任务丢失）。
-     * 故前置段整体搬进 IO 协程，通过 [executeFilePreflight] 的返回值传回判定结果，
-     * 状态写入仍留在主线程。
+     * 本函数由点击直接调用（`MainActivity` / `HomePage` / `FilePage`）。
+     * 命中格式校验后直接进入启动流程。
      */
     fun executeFile(filePath: String, runAsRoot: Boolean? = null, riskApproved: Boolean = false) {
         val file = File(filePath)
@@ -573,90 +488,18 @@ object RootService {
             return
         }
 
-        scope.launch(Dispatchers.IO) {
-            when (val pre = executeFilePreflight(filePath, isSh, runAsRoot, riskApproved)) {
-                is Preflight.Denied -> Unit                       // 已在 IO 侧落审计并输出原因
-                is Preflight.Allowed -> withContext(Dispatchers.Main) {
-                    startExecution(filePath, fileName, isSh, isSo, pre.level, pre.useRoot, pre.guardPrefix)
-                }
-            }
-        }
+        // 未显式指定时以 root 执行。
+        val useRoot = runAsRoot ?: true
+        startExecution(filePath, fileName, isSh, isSo, useRoot)
     }
 
-    /** [executeFile] 前置段的判定结果。 */
-    private sealed interface Preflight {
-        /** 允许执行，携带后续拼命令所需的信息。 */
-        data class Allowed(
-            val level: Int,
-            val useRoot: Boolean,
-            val guardPrefix: String
-        ) : Preflight
-
-        /** 已拒绝（不可读 / 命中高危 / 扫描不完整），原因已落审计并输出到终端。 */
-        data object Denied : Preflight
-    }
-
-    /**
-     * [executeFile] 的前置段：守卫前缀 + 脚本内容扫描。**必须在 IO 线程调用。**
-     */
-    private fun executeFilePreflight(
-        filePath: String,
-        isSh: Boolean,
-        runAsRoot: Boolean?,
-        riskApproved: Boolean
-    ): Preflight {
-        val level = currentSecurityLevel()
-        val useRoot = runAsRoot ?: (level < SecurityLevels.MAXIMUM)
-        // 守卫不可用时不再阻断（档位 2 是默认档位，阻断会让默认档位完全不可用）；
-        // 改为落审计 + 首次醒目告警后放行。守卫的自动安装由 GuardModuleInstaller.ensureInstalled 负责。
-        val guardPrefix = if (useRoot) guardPrefixOrDegrade(CommandSource.SCRIPT_FILE, filePath) else ""
-
-        // 安全门控：脚本内容扫描（自动执行等未经确认框的链路）
-        if (level >= SecurityLevels.STANDARD && !riskApproved && isSh) {
-            val (content, note) = ScriptAuditor.readScriptContent(filePath)
-            if (content != null) {
-                val report = ScriptAuditor.audit(content)
-                // 判定收敛到纯函数：CRITICAL 命中 **或** 扫描不完整（truncated）都必须拒绝。
-                // 此时 critical 可能为空（truncated 单独成立时），故 reason/ruleId 一并按
-                // 「可能为空」处理，不可直接调用 `critical.first()`，否则会抛
-                // NoSuchElementException。
-                if (ScriptAuditor.blocksUnattendedExecution(report)) {
-                    val shown = ScriptAuditor.blockingFindingsFor(report)
-                    val reasons = shown
-                        .joinToString("\n") { "  · 第 ${it.line ?: "-"} 行 [${it.ruleId}] ${it.message}" }
-                        .ifEmpty { "  · 扫描未能完成（内容过长或结构过于复杂），无法确认安全性" }
-                    SecurityAuditLog.log(
-                        CommandSource.SCRIPT_FILE, AuditVerdict.DENIED,
-                        shown.firstOrNull()?.ruleId ?: "SCRIPT_TRUNCATED",
-                        RiskLevel.CRITICAL, filePath
-                    )
-                    appendOutputDirect(
-                        "\n[shso 安全拦截] 脚本内容含高危操作，已拒绝自动执行：\n$reasons\n" +
-                            "（可在文件页手动点击「执行」并逐项确认风险后继续）\n"
-                    )
-                    return Preflight.Denied
-                }
-            } else if (note != "ok") {
-                appendOutputDirect("\n[shso 安全提示] $note，已按保守策略拒绝自动执行\n")
-                SecurityAuditLog.log(
-                    CommandSource.SCRIPT_FILE, AuditVerdict.DENIED, "SCRIPT_UNREADABLE",
-                    RiskLevel.DANGEROUS, filePath
-                )
-                return Preflight.Denied
-            }
-        }
-        return Preflight.Allowed(level, useRoot, guardPrefix)
-    }
-
-    /** [executeFile] 的启动段（主线程）：置状态、起前台服务、派发执行协程。 */
+    /** [executeFile] 的启动段：置状态、起前台服务、派发执行协程。 */
     private fun startExecution(
         filePath: String,
         fileName: String,
         isSh: Boolean,
         isSo: Boolean,
-        level: Int,
-        useRoot: Boolean,
-        guardPrefix: String
+        useRoot: Boolean
     ) {
         val parentDir = File(filePath).parent ?: "/data/adb/shso"
 
@@ -689,18 +532,7 @@ object RootService {
         if (showShsoBanner) {
             appendOutputDirect(HyperCore.generateTaskHeader(fileName, filePath, parentDir, showHyperCoreBanner))
         }
-        appendOutputDirect("[shso Engine] 执行身份: ${if (useRoot) "Root" else "非 Root（档位 ${SecurityLevels.nameOf(level)}）"}\n")
-
-        // verdict 区分「有守卫放行」与「无守卫降级放行」：后者是事后判断
-        // 「这台设备当时有没有完整防护」的唯一依据，不能和正常放行混在一起。
-        val guardDegraded = useRoot && guardPathPrefix() == null
-        SecurityAuditLog.log(
-            CommandSource.SCRIPT_FILE,
-            if (guardDegraded) AuditVerdict.DEGRADED else AuditVerdict.ALLOW,
-            null,
-            if (guardDegraded) RiskLevel.DANGEROUS else RiskLevel.SAFE,
-            "$filePath (身份=${if (useRoot) "root" else "non-root"}, 档位=$level)"
-        )
+        appendOutputDirect("[shso Engine] 执行身份: ${if (useRoot) "Root" else "非 Root"}\n")
 
         val fileFlushLoop = HyperCore.startBatchFlushLoop(scope, { isTaskRunning }) { flushedText ->
             appendOutputDirect(flushedText)
@@ -731,13 +563,13 @@ object RootService {
                 val execCmd = if (useRoot) {
                     if (isSh) {
                         // .sh：一律经 sh 运行，不给用户文件加执行位
-                        "${pgidRecorder}${guardPrefix}export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent && sh $escapedFile"
+                        "${pgidRecorder}export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent && sh $escapedFile"
                     } else {
                         // .so：直接执行需要 +x，755 即可（不再 777）
-                        "${pgidRecorder}${guardPrefix}export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent && chmod 755 $escapedFile && ( $escapedFile || sh $escapedFile )"
+                        "${pgidRecorder}export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent && chmod 755 $escapedFile && ( $escapedFile || sh $escapedFile )"
                     }
                 } else {
-                    // 非 Root：普通 sh 执行（无 su 包装），改不动系统分区——档位 3 的主防线
+                    // 非 Root：普通 sh 执行（无 su 包装），改不动系统分区
                     "export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent 2>/dev/null; sh $escapedFile"
                 }
 
@@ -840,19 +672,6 @@ object RootService {
     }
 
     /**
-     * 发送终端输入。
-     *
-     * 安全改造（方案 §8-P1/P3）：
-     * - 一次性命令分支（无任务运行）：[confirmed]=false 时先经 RootCommandGateway 判定，
-     *   Block 拒绝并落审计；档位 ≥2 且守卫就绪时 PATH 前置守卫目录；
-     * - 交互分支（任务运行中，输入直写常驻 shell）：无法整体拦截，档位 ≥2 时仅拦
-     *   CRITICAL 硬规则（rm 系统 / dd 块设备 / mkfs / wipe 等），其余放行但落审计。
-     *
-     * @param confirmed 调用方已通过风险确认框获用户同意（CommandRiskDialog → 确认执行）
-     * @return 本次输入是否被接受。`false` = 已有一条命令/任务在运行且不是可写入的交互进程，
-     *   输入未被发送（调用方应保留输入框内容，便于中断后重发）。
-     */
-    /**
      * 终端是否已被占用：已有命令/任务在跑，且不是可写入的交互进程（交互态下输入直写常驻 shell，
      * 不占用新槽位）。
      */
@@ -867,7 +686,15 @@ object RootService {
         }
     }
 
-    fun sendInput(text: String, confirmed: Boolean = false): Boolean {
+    /**
+     * 发送终端输入。
+     *
+     * 命令不再经策略判定，也不落审计，直接按当前终端状态投递。
+     *
+     * @return 本次输入是否被接受。`false` = 已有一条命令/任务在运行且不是可写入的交互进程，
+     *   输入未被发送（调用方应保留输入框内容，便于中断后重发）。
+     */
+    fun sendInput(text: String): Boolean {
         // 与协程内的分支判断保持一致：终端只有一个「当前活动进程」槽位，不接受并发命令
         //（并发时中断 / 结束进程只能作用到最新一条，先启动的那条会变成无法回收的孤儿）。
         // 这里同步返回受理结果，调用方据此决定要不要清空输入框。
@@ -892,23 +719,10 @@ object RootService {
                 // write 与 flush 之间时丢掉 flush，数据留在 StreamEncoder 的 8KB 缓冲里
                 // 随 close 丢弃 —— 而输入早已回显到终端，脚本与用户都以为发出去了。
                 val w = processWriter
-                if (isTaskRunning && w != null) {                    // 交互态：硬规则拦截（fail on critical），其余放行 + 审计
-                    if (!confirmed) {
-                        val hard = RootCommandGateway.checkInteractiveHardRules(text)
-                        if (hard != null) {
-                            withContext(Dispatchers.Main) {
-                                reportBlockedInput(hard)
-                            }
-                            return@launch
-                        }
-                    }
+                if (isTaskRunning && w != null) {                    // 交互态：直接写入
                     withContext(Dispatchers.Main) {
                         appendOutputDirect(if (text.isEmpty()) "\n" else "$text\n")
                     }
-                    SecurityAuditLog.log(
-                        CommandSource.USER_TERMINAL, AuditVerdict.ALLOW, null, RiskLevel.SAFE,
-                        "[交互态] $text"
-                    )
                     // 交互写入也走互斥：StreamEncoder 非线程安全，连点两次「发送」会并发写同一流。
                     synchronized(interactiveWriteLock) {
                         w.write(text + "\n")
@@ -920,40 +734,12 @@ object RootService {
                         reportTerminalBusy()
                         return@launch
                     }
-                    // 一次性命令：完整策略判定
-                    if (!confirmed) {
-                        when (val v = RootCommandGateway.check(text, CommandSource.USER_TERMINAL)) {
-                            is Verdict.Block -> {
-                                withContext(Dispatchers.Main) {
-                                    reportBlockedInput(v)
-                                }
-                                return@launch
-                            }
-                            is Verdict.Confirm -> {
-                                // 未经确认框的高危命令：拒绝（正常链路应由 TerminalPage 先弹框）
-                                withContext(Dispatchers.Main) {
-                                    SecurityAuditLog.log(
-                                        CommandSource.USER_TERMINAL, AuditVerdict.DENIED,
-                                        v.findings.firstOrNull()?.ruleId, v.level, text
-                                    )
-                                    appendOutputDirect("\n[shso 安全拦截] 高危命令需经风险确认（${v.findings.firstOrNull()?.message ?: ""}）\n")
-                                }
-                                return@launch
-                            }
-                            Verdict.Allow -> {}
-                        }
-                    }
                     withContext(Dispatchers.Main) {
                         appendOutputDirect("> $text\n")
                     }
-                    // 守卫不可用时不再拒绝命令，改为告警后放行（见 reportGuardDegraded 说明）
-                    val guardPrefix = guardPrefixOrDegrade(CommandSource.USER_TERMINAL, text)
                     // 走可中断 + 流式回吐的通道：长命令期间顶栏「运行中」、
                     // 「中断 / 结束进程」可用，输出边跑边显示（见 runTerminalCommand）。
-                    val exitCode = runTerminalCommand(guardPrefix + text, commandDisplayName(text), slotToken)
-                    SecurityAuditLog.log(
-                        CommandSource.USER_TERMINAL, AuditVerdict.FINISHED, null, RiskLevel.SAFE, text, exitCode = exitCode
-                    )
+                    val exitCode = runTerminalCommand(text, commandDisplayName(text), slotToken)
                     withContext(Dispatchers.Main) {
                         if (exitCode != 0) {
                             appendOutputDirect("[退出码: $exitCode]\n")
@@ -965,7 +751,7 @@ object RootService {
                     appendOutputDirect("[发送失败: ${e.message}]\n")
                 }
             } finally {
-                // 任何提前退出（拦截 / 异常 / 取消）都必须归还槽位，否则终端永久占死
+                // 任何提前退出（异常 / 取消 / 槽位被抢）都必须归还槽位，否则终端永久占死
                 if (slotToken != 0L) releaseTerminalSlot(slotToken)
             }
         }

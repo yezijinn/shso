@@ -10,8 +10,6 @@
 
 `versionCode` = 构建当日日期（`YYYYMMDD`），`versionName` = `Jinn`，Release Tag 与 `versionCode` 对齐；升级判定只认 `versionCode`。完整规则见 `README.md` § 版本规则。
 
-守卫模块独立版本：当前 v1.4.3（`module.prop` 的 `version=`）。新增或修改包装器、`common.sh` 后必须按序执行：重新生成包装器 → 重打包 `assets/shso_guard.zip` → 同步 `GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES` → 升 `module.prop` 版本，否则已装用户不会升级。
-
 ---
 
 ## 当前状态速览（2026-10-03）
@@ -20,23 +18,21 @@
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 525 tests / 0 failures / 1 skipped |
+| 单元测试 | 336 tests / 0 failures / 1 skipped |
 | lint | 0 errors / 31 warnings |
-| release 体积 | 2.20 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
+| release 体积 | 2.08 MB，`verifyReleasePayload` 红线通过 |
 | 条目预算 | 中央目录**零分配结构遍历**取精确条目数（不信自报字段、不按体积折算） |
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
 | 编辑器内核 | Sora Editor 0.23.6（打开即可编辑；语法由外置语法包提供） |
 | 语法包 | 62 语言 / 187 扩展名，`syntax-packs.zip`(37KB)，永固直链 tag `syntaxpacks-v2` |
-| 守卫模块 | **v1.4.3**（真机已装并验证拦截）；重打包走 `tools/pack_guard_module.py` |
+| 执行模型 | 命令与脚本直通执行，无策略判定、无执行记录（守卫/档位/审计已移除） |
 | OBB 事务锁 | 单文件 `set -C`(O_EXCL) 原子 CAS；真机 8 进程并发恰好 1 成功；**建目录早于取锁** |
-| 审计判定 | `AuditVerdict` 枚举（`DENIED` 与 `DEGRADED` 分离）；来源含 `FILE_MANAGER` |
 | 真机 | `$DEVICE`（OnePlus PACM00 / Android 10 / 1080×2280 / Magisk root） |
-| 当前安全档位 | 设备上为 **3**（验证后如需还原请手动切回 0） |
 | 已知环境坑 | `adb shell su -c "a; b"` 的 `;` 会让后半段以 shell 用户执行 → 必须 `su -c 'sh script.sh'` |
-| 已知环境坑 | 守卫实际读 `/data/adb/shso_guard/policy.conf`（**优先于**模块自带 `policy.conf`）；改策略只改模块那份会不生效，且调试脚本覆写后必须还原，否则 `protect=/data` 会静默消失、所有用例变放行 |
 | 已知环境坑 | Android 的 mksh **不支持**算术展开里的位运算符（`$(( 0600 & 022 ))` 真机实测返回非 0）。判权限位只能用 `find -perm /022` 或 `stat -c %A` 逐位取，别写位与 |
 | 已知环境坑 | 设备的 `shared_prefs` 读不到（SELinux 拦 su 直读），且 pager 把四个 Tab 装在同一个 Activity 里 → **无法从设备侧观测外部唤起被接受还是被拒**。这类判定只能靠 JVM 单测覆盖谓词本身；设备侧只能验证「不崩、前台稳定」 |
-| `/data/adb/shso` 是 0777 但 **SELinux 拦住第三方**（目录标签 `adb_data_file`）。实测：`shell` 域与 app 域（`run-as` → `u:r:runas_app`，派生自 `untrusted_app`）对该目录的 list / unlink / symlink / write **全部 Permission denied**，dmesg 有对应 `avc: denied { getattr }`；只有 `su`(magisk 域) 能写。→ 判定「审计目录软链劫持」类缺陷的可利用性时，**本机前提是不成立的**，别按「任意应用可利用」定级；但代码里也不该留这个窗口，真正的边界是 SELinux 而非代码 |
+| `/data/adb/shso` 是 0777 但 **SELinux 拦住第三方**（目录标签 `adb_data_file`）。实测：`shell` 域与 app 域（`run-as` → `u:r:runas_app`，派生自 `untrusted_app`）对该目录的 list / unlink / symlink / write **全部 Permission denied**，dmesg 有对应 `avc: denied { getattr }`；只有 `su`(magisk 域) 能写 |
+| 备份 | 守卫相关全部内容备份在 `C:\AI_WORKSPACE\PROJECTS\com.mixradio.droid\守卫模块备份`（基线 `d6c3b0f`） |
 | 发版 | tag `20261002`（纯数字，与 `versionCode` 对齐）；双端同名 Release 覆盖旧 APK |
 
 ---
@@ -2152,9 +2148,40 @@ adb -s $DEVICE shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.
 
 | 文件 | 用途 |
 |---|---|
-| `README.md` | 功能总览、安全模型、版本规则、在线编译入口 |
+| `README.md` | 功能总览、执行模型、版本规则、在线编译入口 |
 | `更新日志.md` | 变更清单，一行一条 |
-| `docs/PROJECT.md` | 技术栈、目录结构、架构、安全子系统与已知注意点 |
-| `module/shso_guard/README.md` | 守卫模块：策略语法、包装器生成、测试脚本 |
+| `docs/PROJECT.md` | 技术栈、目录结构、架构、执行模型与已知注意点 |
 | `.github/workflows/publish-release.yml` | 纯日期标签发布 |
 | `.github/workflows/build-apk.yml` | 在线编译（自定义包名） |
+
+---
+
+### A67. 移除守卫与执行门禁（2026-10-03）
+
+- [x] **备份**：守卫模块、随 APK 分发的 zip、策略与审计源码、相关测试、含守卫描述的文档、
+      10 个调用方改动前快照，全部复制到 `守卫模块备份/`（基线 `d6c3b0f`），清单见该目录 `README.md`
+- [x] **删除 Magisk 模块与打包资产**：`module/shso_guard/`、`assets/shso_guard.zip`、
+      `tools/pack_guard_module.py`，以及 `app/build.gradle.kts` 里为该 zip 打开的 mergeAssets 任务
+- [x] **删除策略与审计子系统**：`CommandParser`、`PolicyEngine`、`PathClassifier`、
+      `RootCommandGateway`、`ScriptAuditor`、`SecurityModels`、`GuardModuleInstaller`、
+      `GuardPathPolicy`、`SecurityAuditLog`；`ShellEscapes` 属纯转义工具，保留
+- [x] **执行链路直通**：`RootService` 删除 `currentSecurityLevel` / `guardPathPrefix` /
+      `reportBlockedInput` / `reportGuardDegraded` / `guardPrefixOrDegrade` 与整个
+      `Preflight` 机制（含脚本内容审查）；`executeFile` 只校验扩展名，未指定时以 root 执行；
+      命令拼接去掉守卫 PATH 前缀；`sendInput` 去掉 `confirmed` 参数与两处策略判定
+- [x] **文件管理层去门禁**：`RootFileManager.guardDestructiveOp` 及其 6 处调用点删除，
+      自动删除源文件仍检查退出码
+- [x] **设置项与弹窗**：`AppSettings.securityLevel` / `updateSecurityLevel` /
+      `KEY_SECURITY_LEVEL` 与 4 个 `SECURITY_*` 常量删除；`SettingsSecurityGroup` 与审计日志弹窗删除；
+      `CommandRiskDialog`、`ExecuteConfirmDialog` 删除；`MainActivity` 的守卫自动安装删除
+- [x] **测试**：`data/security/` 整目录删除；`RoundFiveRegressionTest` 剥离档位用例、
+      `EncodingAndShellExecRegressionTest` 剥离策略与脚本审查用例（编码探测部分保留）；
+      `RootFileManagerEscapingTest` 移除依赖 `guardDestructiveOp` 源码文本的护栏用例。
+      `ExternalTrustAndTempFileTest` 无守卫引用，原样保留。**336 tests / 0 failures / 1 skipped**
+- [x] **文档同步**：`README.md`（安全模型 → 执行模型）、`docs/PROJECT.md`（删除「安全子系统」章节）、
+      `docs/命名规范.md`、`docs/文档规范.md`、`CONTRIBUTING.md` / `.en.md`、
+      `B站专栏-shso分享.md`、`app/build.gradle.kts` 注释；`更新日志.md` 与 `docs/archive/` 属历史记录，不改
+- [x] **验证**：`:app:compileDebugKotlin` 通过；`:app:testDebugUnitTest --rerun-tasks` 全绿；
+      `:app:lintRelease` 0 errors / 31 warnings；`:app:assembleRelease` 成功，APK 2.08 MB
+- [ ] **设备侧清理**：`/data/adb/modules/shso_guard` 与 `/data/adb/shso_guard/` 仍需卸载 / 清除
+

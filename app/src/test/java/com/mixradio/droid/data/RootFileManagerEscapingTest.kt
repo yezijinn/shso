@@ -195,20 +195,6 @@ class RootFileManagerEscapingTest {
         assertEquals("a_0.apk", RootFileManager.copyCandidatePath("/d", "a", ".apk", 0).substringAfterLast('/'))
     }
 
-    @Test fun `moveFile 的门禁必须早于任何实际移动`() {
-        // 回归护栏：Java 兜底分支的 renameTo 曾排在 guardDestructiveOp 之前，
-        // 同一文件系统内的移动因此完全绕过策略判定与审计。
-        val s = java.io.File("src/main/java/com/mixradio/droid/data/RootFileManager.kt").readText()
-        val fn = s.indexOf("suspend fun moveFile")
-        assertTrue("应能找到 moveFile", fn > 0)
-        val body = s.substring(fn, fn + 6000)
-        val guardAt = body.indexOf("guardDestructiveOp(\"mv ")
-        val renameAt = body.indexOf("source.renameTo(dest)")
-        assertTrue("应存在门禁调用", guardAt > 0)
-        assertTrue("应存在 renameTo 调用", renameAt > 0)
-        assertTrue("门禁必须排在 renameTo 之前，否则移动绕过策略与审计", guardAt < renameAt)
-    }
-
     @Test fun `resolveWritableTarget 的越界检查不得是空实现`() {
         // 该检查此前只有 if 条件与注释、函数体是空的，等于从未存在。
         val s = java.io.File("src/main/java/com/mixradio/droid/data/RootFileManager.kt").readText()

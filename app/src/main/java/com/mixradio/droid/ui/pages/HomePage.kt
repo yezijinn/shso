@@ -55,7 +55,6 @@ import com.mixradio.droid.data.FileItem
 import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.ui.components.BuiltInFilePicker
-import com.mixradio.droid.ui.components.ExecuteConfirmDialog
 import com.mixradio.droid.ui.theme.AuroraAccentBar
 import com.mixradio.droid.ui.theme.AuroraSectionTitle
 import com.mixradio.droid.ui.theme.AuroraTextStyles
@@ -149,7 +148,7 @@ fun HomePage(
         refreshShsoFiles(if (rootGranted == true) RootFileManager.DEFAULT_SHSO_DIR else currentShsoDir)
     }
 
-    fun execute(path: String, runAsRoot: Boolean? = null, riskApproved: Boolean = false) {
+    fun execute(path: String, runAsRoot: Boolean? = null) {
         val trimmed = path.trim()
         if (trimmed.isEmpty()) {
             validationError = "请输入或选择要执行的文件路径"
@@ -165,7 +164,7 @@ fun HomePage(
         }
 
         validationError = null
-        RootService.executeFile(trimmed, runAsRoot, riskApproved)
+        RootService.executeFile(trimmed, runAsRoot)
         onNavigateToTerminal()
     }
 
@@ -303,7 +302,7 @@ fun HomePage(
 
             Button(
                 enabled = filePathInput.isNotBlank(),
-                onClick = { pendingExecutePath = filePathInput },
+                onClick = { execute(filePathInput) },
                 modifier = Modifier
                     .align(Alignment.CenterHorizontally)
                     .auroraFilledButton(),
@@ -479,34 +478,7 @@ fun HomePage(
     // 执行确认弹窗：点击「立即执行」必须先经风险确认
     // 优先复用 shso 列表中的真实 FileItem（含正确大小/时间）。
     //
-    // 不在列表里的目标（从「文件」页选择器进来的 /storage/... 路径）此前直接构造一个
-    // size=0/lastModified=0 的 FileItem，而确认弹窗的大小与最后修改时间正是取自
-    // FileItem —— 于是「高风险确认」里对真实文件显示「0 B」「—」，档位 3 的风险判断
-    // 依据失真。改为对不在列表里的目标做一次真实 stat。
-    val listedItem = pendingExecutePath?.let { p -> shsoFiles.firstOrNull { it.path == p } }
-    var statItem by remember(pendingExecutePath) { mutableStateOf<FileItem?>(null) }
-    LaunchedEffect(pendingExecutePath) {
-        statItem = null
-        val path = pendingExecutePath ?: return@LaunchedEffect
-        if (listedItem == null) statItem = RootFileManager.statFilePath(path)
-    }
-    val execItem = listedItem
-        ?: statItem
-        ?: pendingExecutePath?.let { FileItem(name = File(it).name, path = it, isDirectory = false) }
-    ExecuteConfirmDialog(
-        show = pendingExecutePath != null,
-        fileItem = execItem,
-        // 实参传当前档位，与 FilePage 一致——否则默认值 STANDARD=2 会覆盖用户实际档位
-        securityLevel = RootService.currentSecurityLevel(),
-        onDismiss = { pendingExecutePath = null },
-        onConfirm = { runAsRoot ->
-            // 关键：透传确认框里用户的实际选择与「已获风险确认」，
-            // 否则档位 3 的「脚本默认非 Root + 用户可勾选以 Root」是死代码。
-            val targetPath = pendingExecutePath
-            pendingExecutePath = null
-            if (targetPath != null) execute(targetPath, runAsRoot = runAsRoot, riskApproved = true)
-        }
-    )
+    // 守卫功能已移除：执行前不再有风险确认弹窗，此处无待确认目标。
 }
 
 /**

@@ -1,12 +1,11 @@
 # PROJECT.md — shso
 
-面向开发者：技术栈、目录结构、架构与安全约束、安全子系统、已知注意点。
+面向开发者：技术栈、目录结构、架构与构建约束、执行模型、已知注意点。
 
 - 功能与用法：[`README.md`](../README.md)
 - 变更记录：[`更新日志.md`](../更新日志.md)
 - 编写规范：[`docs/文档规范.md`](文档规范.md)
 - 命名规范：[`docs/命名规范.md`](命名规范.md)
-- 守卫模块：[`module/shso_guard/README.md`](../module/shso_guard/README.md)
 - 在线编译：`docs/在线编译.md`
 
 任务看板 `TASKS*.md` 属过程记录，不在本文档维护范围。
@@ -37,12 +36,6 @@ shso-main/
 ├── 更新日志.md                   # 变更清单（README 不内嵌）
 ├── docs/PROJECT.md               # 本文档
 ├── docs/在线编译.md               # GitHub Actions 自定义包名编译
-├── module/shso_guard/            # 运行时守卫模块源码（与 assets/shso_guard.zip 一致）
-│   ├── guard/common.sh           # 策略加载 / 路径归一化 / 判定 / 审计（所有守卫共用）
-│   ├── guard/<cmd>               # 命令包装器（由 gen_wrappers.py 从 guard-template.sh 生成）
-│   ├── policy.conf               # 默认策略（protect= / allow= / mode=）
-│   └── gen_wrappers.py           # 包装器生成器：改守卫需重新生成并重打包 zip
-├── tools/pack_guard_module.py    # 确定性打包 module/shso_guard → assets/shso_guard.zip（含一致性与 CRLF 校验）
 ├── settings.gradle.kts           # 自包含工程：仅 include(":app")
 ├── gradle/libs.versions.toml     # 唯一版本管理入口
 ├── gradle.properties             # 8G JVM、R8 gradual、Dokka V2 实验开关
@@ -62,7 +55,7 @@ shso-main/
         │   ├── HyperCore.kt          # banner / 日志批处理（发布节流）/ 滑动窗口 / 环境信息
         │   ├── AppSettings.kt        # 设置状态（shso_settings）
         │   ├── FileItem.kt           # 文件条目模型
-        │   └── security/             # 安全子系统，见「安全子系统」
+        │   └── security/             # shell 转义工具（ShellEscapes）
         └── ui/
             ├── theme/        # AuroraTokens / AuroraGlass / AuroraComponents / AuroraBackground
             ├── components/   # DockBar、BuiltInFilePicker、ApkExtractDialog、TextEditorDialog 等
@@ -99,7 +92,7 @@ URI 解析分三层：`file://` 直取；`com.android.externalstorage.documents`
 `isViewableImage` / `isEditableText` / `isArchive`），不引入第二套类型分类；
 已知后缀（包括 `.数字` 下载器尾缀和点文件）按文件名判定，真正无扩展名文件才以发送方 MIME 兜底
 （相册分享的临时图片常无扩展名，否则会被「无扩展名 = 文本」接管而显示乱码）。
-执行类弹 `ExecuteConfirmDialog`、安装类弹 `InstallConfirmDialog`，均受安全档位门控。
+执行类直接执行，安装类弹 `InstallConfirmDialog` 确认后安装。
 
 外部唤起压缩包不自动写盘，只定位并弹动作菜单；用户明确点击解压后才执行。解压有资源预算：
 总输出 ≤1GB、单条目 ≤512MB、条目数 ≤20000；超限或失败时清理本次目标目录。
@@ -160,7 +153,7 @@ stat 失败或路径非法时禁止动作分派。
   行间用细分割线或零间距分隔；设置页单列无分组，间距归零、行高 `heightIn(min = 48.dp)`。
 - 状态点与强调条一律矩形。
 
-### 安全约束（改动必守）
+### 工程约束（改动必守）
 
 - `su -c` 参数路径一律单引号转义。**拼进命令的每个可变片段**（含从文件名派生的
   目录名/基础名/后缀）都要各自过一次 `escapeShellArg`，不能只转义整条路径。
@@ -191,7 +184,7 @@ OBB 落位要跨「拷贝 → 原子改名 → APK 安装 → 失败回滚」多
 | 释放 | 只在内容首字段仍是自己 token 时删 |
 | 目标落位 | 同目录临时文件 `cp` → 原子 `mv`；目标已存在或为软链一律拒绝，不覆盖用户原有 OBB |
 | 回滚身份 | `stat -c '%i:%s:%y'`（**纳秒 mtime**）；身份取不到时该条目不进回滚表，宁可残留也不误删 |
-| 脚本可测性 | `buildObbLockAcquireScript` 为 internal 纯函数，单测对**生成的脚本文本**断言 fail-closed 分支与 CAS 收尾，避免删掉守卫分支却无人察觉 |
+| 脚本可测性 | `buildObbLockAcquireScript` 为 internal 纯函数，单测对**生成的脚本文本**断言 fail-closed 分支与 CAS 收尾，避免删掉失败分支却无人察觉 |
 
 真机验证（PACM00 / Android 10 / Magisk）：8 进程并发抢锁恰好 1 个成功、
 垃圾元数据返回 21、活锁返回 17、陈旧锁被回收、外部替换目标后回滚正确放弃删除。
@@ -295,8 +288,6 @@ LGPL-2.1 允许以 GPL-3.0 组合）：
 | zip4j / commons-compress / tukaani xz | Apache-2.0 / Apache-2.0 / 公有领域 |
 | AndroidX / Compose / Material Color Utilities | Apache-2.0 |
 
-`module/shso_guard`（含 `assets/shso_guard.zip`）同为本仓源码，一并适用 GPL-3.0-or-later。
-
 ## 页面与模块映射
 
 功能清单见 `README.md`，此处只列页面与实现的对应关系。
@@ -306,54 +297,18 @@ LGPL-2.1 允许以 GPL-3.0 组合）：
 | 主页 | `ui/pages/HomePage.kt` | `RootService`、`RootFileManager` |
 | 终端 | `ui/pages/TerminalPage.kt` | `RootService`、`AnsiParser`、`HyperCore` |
 | 文件 | `ui/pages/FilePage.kt` | `RootFileManager`、`ApkInstaller`、`ApkExtractor`、`ArchiveExtractor`、`ExternalOpenHub` |
-| 设置 | `ui/pages/SettingsPage.kt`（+ `SettingsPagePartials.kt`） | `AppSettings`、安全子系统 |
+| 设置 | `ui/pages/SettingsPage.kt`（+ `SettingsPagePartials.kt`） | `AppSettings` |
 | 外部唤起 | `MainActivity`（两个 alias）+ `data/ExternalOpen.kt` | `ContentResolver`、`ExternalOpenHub` |
 
-## 安全子系统
+## 执行模型
 
-分层模型：App 侧静态审查（提示层 / 自动执行第一道门）+ `shso_guard` 运行时守卫
-（执行层）+ 审计日志。设计要点与能力边界见 `module/shso_guard/README.md`。
+命令与脚本一律直通执行：终端输入直接派发，文件执行仅校验扩展名。
+原有的静态策略审查、运行时守卫、安全档位与审计日志均已移除，设置页不再有对应入口。
 
-- **安全档位**：`0 无防护 / 1 仅审计 / 2 标准防护 / 3 最强防护`，由 `AppSettings.securityLevel`
-  持久化，默认 0。档位 0/1 时 `RootCommandGateway` 一律放行，
-  验证拦截效果必须用档位 ≥2。切换档位会失效「守卫就绪」缓存、按需安装守卫并同步
-  `policy.conf` 的 `mode`；冷启动也会同步一次（`policy.conf` 跨重装保留，
-  残留 `off` / `log` 会让守卫静默不拦截）。
-- **命令解析**（`CommandParser`）：词法切分 → 拆原子 → 展开 `$(...)` / 反引号 /
-  `sh -c` / `eval`；剥离 `busybox` / `toybox` / `magisk` / `nohup` / `timeout` /
-  `stdbuf` / `sudo` / `env` / `xargs` 前缀（含带值选项）；提取重定向目标；
-  标记 `programUnresolved`（程序名含变量）与 `programAmbiguous`。
-  超限（>32KB / >400 token / >128 原子 / 深度 >6）→ `truncated`。
-- **策略**（`PolicyEngine`）：删除类、写入类、权限类、格机类、混淆类五类规则。
-  风险等级按来源区分：`SCRIPT_FILE` 的混淆类为 `CRITICAL`（自动执行直接拒绝），
-  `USER_TERMINAL` 为 `DANGEROUS`（可确认）。`CRITICAL` → `Verdict.Block`，
-  `DANGEROUS` / `WARNING` → `Verdict.Confirm`。
-- **路径分级**（`PathClassifier`）：词法归一化后分四级；`/data/adb/shso`、
-  `/data/local/tmp`、`/sdcard` 为 SAFE，系统与设备为 CRITICAL，
-  `/data/*` 与 `/data/adb/modules|magisk|ksu|ap` 为 DANGEROUS。
-- **脚本审查**（`ScriptAuditor`）：合并续行后逐逻辑行解析，产出带行号的风险项；
-  `looksEncrypted` 识别超长 base64 单行与 NUL / 二进制内容。
-  门控为纯函数 `blocksUnattendedExecution(report) = report.truncated || 存在 CRITICAL`，
-  超过 2MB 返回 `SCRIPT_UNREADABLE`。展示用风险项取 `blockingFindingsFor(report)`
-  （可能为空，调用方不得 `first()`）。
-- **守卫安装**（`GuardModuleInstaller`）：解压 APK 内 zip 并校验必需条目后，
-  root 原子替换（构建 `.new` → 校验 → 旧目录挪 `.old` → `mv` → 清理），
-  失败保留或回滚旧版。升级判定比对 `module.prop` 的 `version`。
-- **审计**（`SecurityAuditLog`）：`/data/adb/shso/audit.log`（无 ROOT 回退应用私有目录），
-  512KB 环形滚动；写入前清除软链与非普通文件（目录 0777，防止软链导致任意 root 写入），
-  清除失败即放弃本次写入；字段经 `sanitizeField` 转义（`|` → `\u007C`、换行 → `\n`、
-  剥离控制字符）以维持「一行一条记录」；轮转使用带 PID 的唯一临时名。
-  - 记录格式：`ts | 风险等级 | 来源 | 判定 | [规则ID] | [sha256:12] | [exit:N] | 内容`。
-  - `判定`（`AuditVerdict`）是**枚举**而非裸字符串，取值与含义：
-    `ALLOW` 策略放行 / `CONFIRMED` 用户已确认后放行 / `DENIED` 被拒绝未执行 /
-    `DEGRADED` 放行但运行时守卫不可用 / `START`·`FINISHED`·`FAILED` 长任务生命周期。
-    `DENIED` 与 `DEGRADED` 必须严格区分：后者是「这台设备当时没有完整防护」的唯一证据，
-    混用会让事后追溯失效。
-  - `来源`（`CommandSource`）：`INTERNAL_APP` / `USER_TERMINAL` / `SCRIPT_FILE` /
-    `FILE_MANAGER`（文件页的破坏性操作，此前被误记为 `USER_TERMINAL`）。
-  - 档位 0 下不记录普通事件，但**配置类事件与 `DEGRADED` 始终留痕**。
-- **执行前确认**：弹风险确认框，展示文件名、路径、类型、大小、修改时间、
-  SHA-256、是否以 Root 执行与脚本风险扫描结果。
+- **命令派发**：交互态写入常驻 shell；一次性命令走 `ProcessBuilder("su", "-c", ...)`，
+  带流式回吐与可中断能力。
+- **扩展名校验**：`executeFile` 只接受 `.sh` 与 `.so`，其余直接提示。
+- **执行身份**：未显式指定时以 Root 执行。
 - **检查更新**（`SettingsPage`）：Gitee 优先、GitHub 备选，国内网络访问 GitHub 常不可达。
   Gitee 走 `/api/v5/repos/{owner}/{repo}/tags`（JSON；网页版 `/tags` 是 405），
   GitHub 走 `/tags`（HTML）。两源归一化规则一致：只保留 6..8 位纯数字标签，
@@ -371,10 +326,8 @@ LGPL-2.1 允许以 GPL-3.0 组合）：
   故阈值取 0.18 而非 0.3）② 按该编码解码后不含异常 C0 控制字符与孤立代理项。
   只用信号 ① 会被「大量 NUL 的二进制」骗过，只用 ② 会在巧合分布下误判 GB18030/UTF-8 中文。
 - **外部 intent 面**：只有两个 `activity-alias`、只接受 `ACTION_VIEW` / `ACTION_SEND`。
-  外部传入的文件**不改变任何防护语义** —— 执行类仍弹风险确认框、仍走 `ScriptAuditor` 与档位门控；
   拷贝收件箱时文件名经净化（滤 `..`、`\`、NUL 与控制字符）、体积上限 `COPY_LIMIT_BYTES`（512MB），
-  超限拒绝而非读入内存。`content://` 的读权限只在接收 intent 后的短窗口有效，故拷贝必须在解析时立即完成，
-  不能延后到用户点确认。
+  超限拒绝而非读入内存。`content://` 的读权限只在接收 intent 后的短窗口有效，故拷贝必须在解析时立即完成。
 
 ## 已知注意点
 
@@ -387,8 +340,6 @@ LGPL-2.1 允许以 GPL-3.0 组合）：
 - 不要在 `LaunchedEffect` 中调用可挂起的滚动（如 `listState.scrollToItem(0)`）：
   列表未组合时会一直挂起，导致其后逻辑永不执行。需要归顶请
   `remember(key) { LazyListState() }` 重建状态。
-- 守卫是 PATH 前置型：脚本内绝对路径调用（`/system/bin/rm`）或自行重置 `PATH`
-  可绕过，彻底封堵需 seccomp / LSM 级 hook，属独立议题。
 - 编辑历史按文件分 key 存储（`history:<绝对路径>`），旧的 `edit_history` 首次访问时
   自动迁移。
 - 编辑器载入时把 CRLF / CR 归一为 LF（Compose 只按 `\n` 断行），
@@ -438,8 +389,6 @@ LGPL-2.1 允许以 GPL-3.0 组合）：
 | 桌面图标边缘被裁 | 前景图未缩进中心安全区（直径 ≤72dp / 108dp 画布） |
 | 文件列表属性异常（链接误判为文件） | `stat` 漏 `-L`，未跟随符号链接 |
 | 文件列表加载慢 | 在 shell 循环里逐条 `stat`，改为 `find ... -exec stat -L -c ... {} +` |
-| 安全策略未拦截 | 检查档位是否 ≥2；`wipe` 必须走 `PolicyEngine` 独立分支，不能并入 `RM_LIKE` |
-| 改了守卫源码但行为没变 | 未重新生成包装器并重打 `assets/shso_guard.zip`，或未升 `module.prop` 版本号 |
 | Gradle 测试报 `CreateProcess error=740` | 陈旧 daemon 的安全上下文问题，`./gradlew --stop` 后重跑 |
 
 ## 术语
@@ -448,11 +397,6 @@ LGPL-2.1 允许以 GPL-3.0 组合）：
 |---|---|
 | shso | 本项目；设备端工作目录 `/data/adb/shso` |
 | Aurora | 自研极光玻璃暗色主题（`ui/theme/Aurora*`） |
-| 档位 / SecurityLevel | 安全防护强度 0–3，设置页切换，即时生效 |
-| 守卫 / shso_guard | 配套 ROOT 模块，PATH 前置，运行时拦截高危命令 |
-| Verdict | 安全判定结果：`Allow` / `Confirm` / `Block` |
-| CommandSource | 调用者身份：`INTERNAL_APP` / `USER_TERMINAL` / `SCRIPT_FILE` |
-| fail-closed | 策略异常时按最高风险处理，绝不静默放行 |
 | HyperCore | 执行引擎的横幅与日志批处理模块 |
 
 ## 文档维护约定
@@ -462,15 +406,6 @@ LGPL-2.1 允许以 GPL-3.0 组合）：
 - 改动功能后的同步顺序：代码 → 单测 → `更新日志.md` → `README.md` / 本文件
   （仅当影响用法或约束时）→ 提交。
 - 任务看板 `TASKS*.md` 属过程记录，不参与对外文档同步。
-- 新增守卫包装器要同步四处：`gen_wrappers.py` 的 specs、`common.sh` 的 `guard_operand_mode()`
-  派发表、`assets/shso_guard.zip`、`GuardModuleInstaller.REQUIRED_ARCHIVE_ENTRIES`，
-  同时升 `module.prop` 的 `version=`（版本不变，已装设备不会自动升级）。单测
-  `required entries stay in sync with sources and bundled zip` 会逐条比对
-  「源码目录 / zip / 必需清单」的内容，漏登记或忘记重新打包都会失败。
-- 重打包一律走 `python tools/pack_guard_module.py`（不要手工压 zip）：它固定时间戳与
-  条目顺序保证产物可复现，并在打包前后校验「zip 与源码逐字节一致」+ 拦下 CRLF
-  （守卫脚本带 CRLF 会被 Android mksh 直接拒绝执行）。
-- 守卫脚本改动后先做两步验证：设备上 `sh -n common.sh`，再跑一次含 `|` 与换行的审计用例。
   bash 的 `-n` 查不出 mksh 的两类陷阱：跨行模式会报 `no closing quote`，让整个文件解析失败、
   脚本转去读 stdin 而挂住；参数展开里未加引号的 `|` 会被当成模式交替符，替换不收敛直接死循环。
 - 发布标签必须为纯数字 `YYYYMMDD`（禁止 `v` 前缀）；非发布包用语义前缀 + 序号。

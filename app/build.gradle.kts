@@ -196,16 +196,8 @@ dependencies {
     // 不使用 zstd：zstd-jni 的 AAR 为 4 个 ABI 各带一份原生库，合计约 1.9MB。
     // 受影响的格式只有 .zst / .tar.zst，其余 12 种不受影响。
 
-    // JVM 单元测试（JUnit 4，验证 CommandParser / PathClassifier / PolicyEngine / SecurityModels 纯逻辑拦截路径,
-    // 不依赖设备,可在无 ROOT 真机环境下覆盖 ROOT 链路清单 #7-10 项拦截规则）
+    // JVM 单元测试（JUnit 4，不依赖设备，可在无 ROOT 真机环境下验证纯逻辑路径）
     testImplementation(libs.junit4)
-}
-
-// 启动守卫模块 zip 需要打包进 APK
-tasks.matching {
-    it.name.startsWith("merge") && it.name.endsWith("Assets")
-}.configureEach {
-    enabled = true
 }
 
 /**

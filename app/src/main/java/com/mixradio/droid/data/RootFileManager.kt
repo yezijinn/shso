@@ -3,14 +3,6 @@
 
 package com.mixradio.droid.data
 
-import com.mixradio.droid.data.security.CommandSource
-import com.mixradio.droid.data.security.PolicyEngine
-import com.mixradio.droid.data.security.RiskLevel
-import com.mixradio.droid.data.security.RootCommandGateway
-import com.mixradio.droid.data.security.AuditVerdict
-import com.mixradio.droid.data.security.SecurityAuditLog
-import com.mixradio.droid.data.security.SecurityLevels
-import com.mixradio.droid.data.security.Verdict
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -69,62 +61,8 @@ object RootFileManager {
     private fun preferRoot(): Boolean = RootService.isRootGranted == true
 
     /**
-     * 文件管理危险操作（删除 / 改名 / 移动 / 改权 / 改属）的统一安全门禁。
-     *
-     * 这些操作统一走安全门禁，否则会绕过 L1 静态审查与审计，使安全档位对文件页失效。
-     *
-     * 档位语义与终端路径保持一致：
-     * - 0 无防护：不拦截、不审计；
-     * - 1 仅审计：判定为 Allow，但落一条 ALLOW 审计；
-     * - 2/3：完整策略判定 —— Block 直接拒绝；Confirm 视为已放行（UI 侧已由用户弹窗确认），
-     *   落 CONFIRM 审计；Allow 落 ALLOW 审计。
-     *
-     * @return null=放行；非 null=拒绝理由（调用方原样返回给 UI）
-     */
-    private fun guardDestructiveOp(command: String, label: String): String? {
-        if (!shouldGuardFileOp(PolicyEngine.currentLevel())) return null
-
-        // 来源必须是 FILE_MANAGER：这些命令由用户在文件页触发，不是终端输入。
-        // 记成 USER_TERMINAL 会让「破坏来源追溯」缺少最关键的一维。
-        return when (val verdict = RootCommandGateway.check(command, CommandSource.FILE_MANAGER)) {
-            is Verdict.Block -> {
-                val finding = verdict.findings.firstOrNull()
-                SecurityAuditLog.log(
-                    CommandSource.FILE_MANAGER, AuditVerdict.DENIED, finding?.ruleId, RiskLevel.CRITICAL, command
-                )
-                "$label 被安全策略拦截：${finding?.message ?: "高危操作"}"
-            }
-            is Verdict.Confirm -> {
-                val finding = verdict.findings.firstOrNull()
-                SecurityAuditLog.log(
-                    CommandSource.FILE_MANAGER, AuditVerdict.CONFIRMED, finding?.ruleId, verdict.level, command
-                )
-                null
-            }
-            Verdict.Allow -> {
-                SecurityAuditLog.log(CommandSource.FILE_MANAGER, AuditVerdict.ALLOW, null, RiskLevel.SAFE, command)
-                null
-            }
-        }
-    }
-
-    /**
-     * 文件管理危险操作是否进入安全门禁（纯函数，便于单测）。
-     *
-     * 档位 0（无防护）不拦截、不审计；档位 1 及以上才走判定
-     * （档位 1 的判定恒为 Allow，但**要落审计**，故返回值必须包含 1）。
-     */
-    internal fun shouldGuardFileOp(securityLevel: Int): Boolean = securityLevel > SecurityLevels.OFF
-
-    /**
-     * Root 执行的守卫 PATH 前缀（档位 <2 时为空串；档位 ≥2 但守卫不可用时同样返回空串，
-     * 由 RootService 侧统一落降级审计 + 首次告警，此处不重复告警、不阻断）。
-     */
-    private fun guardPrefix(): String = RootService.guardPathPrefix().orEmpty()
-
-    /**
      * 路径级非法校验：拒绝空路径、反斜杠、NUL、换行、回车，以及含 `..` 的路径段（防路径穿越）。
-     * 用于所有把路径拼进 shell 命令或 java.io.File 前的统一拦截。
+     * 用于所有把路径拼进 shell 命令或 java.io.File 前的统一校验。
      */
     internal fun isUnsafePath(path: String): Boolean =
         path.isEmpty() ||
@@ -249,8 +187,7 @@ object RootFileManager {
         val (target, problem) = resolveWritableTarget(path)
         if (target == null) return@withContext Pair(false, problem)
         val escapedPath = RootService.escapeShellArg(target)
-        guardDestructiveOp("chmod $mode $path", "修改权限")?.let { return@withContext Pair(false, it) }
-        val (code, output) = RootService.runCommandSync("${guardPrefix()}chmod $mode $escapedPath")
+        val (code, output) = RootService.runCommandSync("chmod $mode $escapedPath")
         if (code == 0) Pair(true, "权限修改成功") else Pair(false, "权限修改失败: $output")
     }
 
@@ -267,8 +204,7 @@ object RootFileManager {
         if (target == null) return@withContext Pair(false, problem)
         val escapedOwner = RootService.escapeShellArg(owner)
         val escapedPath = RootService.escapeShellArg(target)
-        guardDestructiveOp("chown $owner $path", "修改所有者")?.let { return@withContext Pair(false, it) }
-        val (code, output) = RootService.runCommandSync("${guardPrefix()}chown $escapedOwner $escapedPath")
+        val (code, output) = RootService.runCommandSync("chown $escapedOwner $escapedPath")
         if (code == 0) Pair(true, "所有者修改成功") else Pair(false, "所有者修改失败: $output")
     }
 
@@ -285,8 +221,7 @@ object RootFileManager {
         if (target == null) return@withContext Pair(false, problem)
         val escapedGroup = RootService.escapeShellArg(group)
         val escapedPath = RootService.escapeShellArg(target)
-        guardDestructiveOp("chown :$group $path", "修改用户组")?.let { return@withContext Pair(false, it) }
-        val (code, output) = RootService.runCommandSync("${guardPrefix()}chown :$escapedGroup $escapedPath")
+        val (code, output) = RootService.runCommandSync("chown :$escapedGroup $escapedPath")
         if (code == 0) Pair(true, "用户组修改成功") else Pair(false, "用户组修改失败: $output")
     }
 
@@ -522,14 +457,9 @@ object RootFileManager {
         }
 
         if (autoDeleteSource) {
-            // 「自动删除」是一次递归删除，必须走 [guardDestructiveOp] 门禁并检查退出码：
-            // 1. 该命令此前完全在门禁外 —— 与 [delete] 口径不一致，等于给文件页开了一条
-            //    「无策略、无审计的 root 递归删」通道，且由 UI 开关驱动、一次误点即生效；
-            // 2. 退出码此前被忽略，删除失败也会返回成功，用户以为已删（实际源还在）。
+            // 「自动删除」是一次递归删除：必须检查退出码 —— 忽略它会让删除失败也返回成功，
+            // 用户以为已删（实际源还在）。
             val deleteCmd = "rm -rf $escapedSource"
-            guardDestructiveOp(deleteCmd, "自动删除源文件")?.let { reason ->
-                return@withContext Pair(false, reason)
-            }
             val (deleteCode, deleteOut) = RootService.runCommandSync(deleteCmd)
             if (deleteCode != 0) {
                 return@withContext Pair(false, "已复制到 shso，但删除源文件失败: ${deleteOut.trim()}")
@@ -573,8 +503,7 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         if (preferRoot()) {
             val escapedOld = RootService.escapeShellArg(oldPath)
             val escapedNew = RootService.escapeShellArg(newPath)
-            guardDestructiveOp("mv $oldPath $newPath", "重命名")?.let { return@withContext Pair(false, it) }
-            val (code, _) = RootService.runCommandSync("${guardPrefix()}mv $escapedOld $escapedNew")
+            val (code, _) = RootService.runCommandSync("mv $escapedOld $escapedNew")
             if (code == 0) return@withContext Pair(true, "重命名成功")
         }
         try {
@@ -678,7 +607,7 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
                 MoveDestinationConflict.OVERWRITE -> {
                     // 仅当目标是**目录**时才需要先删：`rename(2)` 与 `mv` 本身就会原子覆盖
                     // 同类型文件目标，先删等于凭空造出一个「移动失败则目标已丢」的窗口
-                    // （源在别的挂载点 / 无权限 / 被守卫拦时，mv 必然失败，
+                    // （源在别的挂载点 / 无权限时，mv 必然失败，
                     //   而目标已被删掉，用户数据不可恢复）。
                     // 目录目标无法被 rename 覆盖（非空目录会 ENOTEMPTY），只能先删。
                     val destType = localType(destinationPath).let {
@@ -708,13 +637,6 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         // 实际目标路径：OVERWRITE 用原名；RENAME 冲突时用 _new 名
         val finalPath = if (destExists() && onConflict == MoveDestinationConflict.RENAME) renamedDestPath() else destinationPath
 
-        // 门禁必须先于任何实际动作。此前 Java 兜底分支的 `renameTo` 在 L702 就把文件移走，
-        // 判定与审计却排在它后面的 root 分支里 —— 同一文件系统内的移动因此完全绕过策略与
-        // 审计（对照 [addFileToShso] 里 autoDeleteSource 的同类修复）。
-        if (RootService.isRootGranted == true) {
-            guardDestructiveOp("mv $sourcePath $finalPath", "移动")?.let { return@withContext Pair(false, it) }
-        }
-
         try {
             val dest = File(finalPath)
             // renameTo 返回 true 即视为成功。原先还要求 `localType(finalPath) == sourceType`，
@@ -731,7 +653,7 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
             val escapedSource = RootService.escapeShellArg(sourcePath)
             val escapedDestination = RootService.escapeShellArg(finalPath)
             val (code, output) = RootService.runCommandSync(
-                "${guardPrefix()}mv $escapedSource $escapedDestination && test ! -e $escapedSource && " +
+                "mv $escapedSource $escapedDestination && test ! -e $escapedSource && " +
                     if (sourceType == 2) "test -d $escapedDestination" else "test -f $escapedDestination"
             )
             if (code == 0) return@withContext Pair(true, "移动成功")
@@ -769,9 +691,8 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
         // ROOT 已授权时优先用 su 删除（可操作受保护/系统路径）；
         // 未授权或 su 失败时回退标准 File API（授予「所有文件访问」后可操作 /sdcard）。
         if (preferRoot()) {
-            guardDestructiveOp("rm -rf $path", "删除")?.let { return@withContext Pair(false, it) }
             val escaped = RootService.escapeShellArg(path)
-            val (code, _) = RootService.runCommandSync("${guardPrefix()}rm -rf $escaped")
+            val (code, _) = RootService.runCommandSync("rm -rf $escaped")
             if (code == 0) return@withContext Pair(true, "删除成功")
         }
         try {

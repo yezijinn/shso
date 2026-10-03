@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
@@ -22,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -179,5 +181,26 @@ fun InstallConfirmDialog(
                 Text(text = "确认安装", fontWeight = FontWeight.Bold)
             }
         }
+    }
+}
+/** 单行信息：标签（次要色）+ 等宽值（便于路径 / 哈希断行对齐）。供确认类弹窗共用。 */
+@Composable
+internal fun InfoRow(label: String, value: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+    ) {
+        Text(
+            text = label,
+            style = AuroraTextStyles.footnote2,
+            color = AuroraTokens.TextSecondary
+        )
+        Text(
+            text = value,
+            style = AuroraTextStyles.body2,
+            color = AuroraTokens.Text,
+            fontFamily = FontFamily.Monospace
+        )
     }
 }

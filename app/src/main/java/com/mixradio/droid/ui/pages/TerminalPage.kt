@@ -73,13 +73,7 @@ import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.IncrementalAnsiParser
 import com.mixradio.droid.data.ParsedAnsiResult
 import com.mixradio.droid.data.RootService
-import com.mixradio.droid.data.security.CommandSource
-import com.mixradio.droid.data.security.Finding
-import com.mixradio.droid.data.security.RiskLevel
-import com.mixradio.droid.data.security.RootCommandGateway
-import com.mixradio.droid.data.security.Verdict
 import com.mixradio.droid.ui.components.ColorWheelDialog
-import com.mixradio.droid.ui.components.CommandRiskDialog
 import com.mixradio.droid.ui.theme.AuroraSwitchPreference
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraThinSlider
@@ -158,14 +152,6 @@ fun TerminalPage(
     // 写入 SharedPreferences 会以明文长期留在设备上。
     var cmdHistory by rememberSaveable(stateSaver = historySaver) { mutableStateOf(emptyList<String>()) }
     var showCmdHistory by remember { mutableStateOf(false) }
-    var pendingCommand by rememberSaveable { mutableStateOf<String?>(null) }
-    // 风险项由命令**重新判定**得出（判定链是纯函数，结果确定），不再单独存一份状态，
-    // 避免「命令」与「风险项」两个变量不同步。
-    val pendingFindings: List<Finding> = remember(pendingCommand) {
-        pendingCommand?.let { cmd ->
-            (RootCommandGateway.check(cmd, CommandSource.USER_TERMINAL) as? Verdict.Confirm)?.findings.orEmpty()
-        }.orEmpty()
-    }
     // 「跟随尾部」意图：只在用户手动滚动（拖动/惯性）时更新，不受新日志追加影响。
     // 注意不可直接用 `!canScrollForward` 判定「是否在底部」——新内容一追加 canScrollForward 立刻变 true，
     // 会被误判成「用户已向上回看」而永久停止自动滚动。此处只在滚动进行中采样用户真实落点。
@@ -295,43 +281,13 @@ fun TerminalPage(
             if (RootService.isTaskRunning) RootService.sendInput("")
             return
         }
-        // 安全门控：先经 RootCommandGateway 判定，Block 直接拒绝；Confirm 弹风险确认框
-        when (val v = RootCommandGateway.check(text, CommandSource.USER_TERMINAL)) {
-            is Verdict.Block -> {
-                // 拒绝必须落审计并在终端输出区写明原因：只弹 Toast 的话，
-                // Toast 两秒后消失、审计里也无记录，事后完全查不到这次拦截。
-                RootService.reportBlockedInput(v)
-                Toast.makeText(context, "命令已被安全策略拦截：${v.findings.firstOrNull()?.message ?: "见审计日志"}", Toast.LENGTH_LONG).show()
-                return
-            }
-            is Verdict.Confirm -> {
-                pendingCommand = text
-            }
-            Verdict.Allow -> {
-                // 被拒绝（已有命令/任务在跑）时保留输入框内容，用户中断后可直接重发
-                if (RootService.sendInput(text, confirmed = true)) {
-                    rememberCommand(text)
-                    inputText = ""
-                    followTail = true
-                }
-            }
-        }
-    }
-
-    fun onConfirmRiskSend() {
-        val cmd = pendingCommand ?: return
-        val accepted = RootService.sendInput(cmd, confirmed = true)
-        pendingCommand = null
-        // 未被接受（已有命令/任务在跑）时保留输入框内容，避免用户刚确认过的命令凭空消失
-        if (accepted) {
-            rememberCommand(cmd)
+        // 命令直接发送：守卫功能已移除，不再做策略判定与风险确认。
+        // 被拒绝（已有命令/任务在跑）时保留输入框内容，用户中断后可直接重发
+        if (RootService.sendInput(text)) {
+            rememberCommand(text)
             inputText = ""
             followTail = true
         }
-    }
-
-    fun onCancelRiskSend() {
-        pendingCommand = null
     }
 
     fun copyOutput() {
@@ -735,17 +691,6 @@ fun TerminalPage(
             onColorSelected = { color ->
                 appSettings.setTerminalColor(color)
             }
-        )
-    }
-
-    // 安全：终端高危命令风险确认弹窗
-    if (pendingCommand != null) {
-        CommandRiskDialog(
-            show = true,
-            findings = pendingFindings,
-            level = pendingFindings.maxByOrNull { it.level.ordinal }?.level ?: RiskLevel.SAFE,
-            onDismiss = { onCancelRiskSend() },
-            onConfirm = { onConfirmRiskSend() }
         )
     }
 }
