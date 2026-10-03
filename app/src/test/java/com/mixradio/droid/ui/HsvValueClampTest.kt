@@ -80,4 +80,48 @@ class HsvValueClampTest {
             (lowSatWhite shr 16) and 0xFF
         )
     }
+
+    // ========================================================================
+    // 预览补偿与提交取值必须分离
+    // ========================================================================
+
+    /** 预览路径：低饱和/低明度时抬升，保证拖色相时看得见变化。 */
+    private fun preview(h: Float, s: Float, v: Float): Int =
+        Color.hsv(
+            h,
+            s.coerceIn(0f, 1f).coerceAtLeast(0.7f),
+            v.coerceIn(0f, 1f).coerceAtLeast(0.6f)
+        ).toArgb()
+
+    @Test fun `预览补偿不得写回提交取值`() {
+        // 回归护栏：拖色相条时，两个 pointerInput 协程里曾直接
+        // `saturation = 1f; value = 1f`。而提交读取的是 currentColor（由 saturation/value 派生），
+        // 于是终端色 #1A1A1A（s≈0.10, v≈0.10）只要手指碰一下色相条就被强抬成满饱和满明度：
+        // 预览跳变，且**落盘的是用户没选过的颜色**。
+        // 该文件自身的注释早已写明「提交取值保持未抬高的原值，预览补偿只放在 previewColor」。
+        val s = 0.10f
+        val v = 0.10f
+        val hue = 240f
+        assertEquals(
+            "低饱和低明度的提交值必须保持原样（s/v 不得被抬升）",
+            Color.hsv(hue, s, v).toArgb(),
+            submitted(hue, s, v)
+        )
+        assertNotEquals(
+            "预览应被抬升，否则拖色相时看不出变化",
+            submitted(hue, s, v),
+            preview(hue, s, v)
+        )
+    }
+
+    @Test fun `窄容器下 thumb 位置不得抛异常`() {
+        // Float.coerceIn 在 min > max 时抛 IllegalArgumentException。容器宽度小于 thumb 直径
+        // （分屏小窗 / 折叠屏外屏 / 极端显示缩放）即触发。色相条那处早有 coerceAtLeast 保护，
+        // 明暗条这处此前没有。
+        val thumbUsable = (10f - 84f).coerceAtLeast(0f)   // widthPx=10 < thumb 84
+        val progress = 0.5f
+        // 修复前：coerceIn(0f, -74f) 直接抛异常
+        val thumbX = (progress * thumbUsable).coerceIn(0f, thumbUsable)
+        assertEquals("可用宽度被钳到 0 后 thumb 必须落在 0", 0f, thumbX, 0.0001f)
+    }
 }

@@ -131,30 +131,34 @@ fun BuiltInFilePicker(
             try {
                 // 先探测目录是否真实存在（不可用 isEmpty 判断——合法空目录也返回空列表）
                 val exists = RootFileManager.pathExists(path)
-                val loaded = if (exists) RootFileManager.listFiles(path) else emptyList()
+                // 目录不存在时回退到初始目录，并且**必须真的去列回退目录**。
+                // 此前这里只在 !exists 分支改了 currentDir，`loaded` 仍是 emptyList()，
+                // 于是路径行显示「内部存储」而列表空白 —— 用户会得出「内部存储是空的」
+                // 的错误结论（拔过 SD 卡 / 删过记忆目录后必现）。
                 val resolved = if (exists) {
-                    // 加载成功：开启记忆时记录为「上次浏览目录」
-                    if (appSettings.rememberDirectory) {
-                        RootFileManager.rememberedDirectory = path
-                    }
                     path
                 } else {
-                    // 记忆目录已失效：回退初始目录
-                    val fallback = if (appSettings.rememberDirectory) {
+                    if (appSettings.rememberDirectory) {
                         RootFileManager.rememberedDirectory?.takeIf { it != path && RootFileManager.pathExists(it) }
                             ?: INTERNAL_STORAGE_PATH
                     } else {
                         INTERNAL_STORAGE_PATH
                     }
-                    if (appSettings.rememberDirectory) {
-                        RootFileManager.rememberedDirectory = fallback
-                    }
-                    fallback
                 }
-                // 已被更新的请求取代：丢弃本次结果（含副作用），否则列表与路径行会错位
+                val loaded = if (resolved == path) {
+                    RootFileManager.listFiles(path)
+                } else {
+                    RootFileManager.listFiles(resolved)
+                }
+                // 已被更新的请求取代：丢弃本次结果。**记忆目录的写入也必须放在这道守卫之后** ——
+                // 它是本次加载的副作用，放在前面会让一个更慢的陈旧请求把「上次浏览目录」
+                // 覆盖回去，而用户最后实际浏览的是另一个目录。
                 if (gen != loadGen[0]) return@launch
                 fileList = loaded
                 currentDir = resolved
+                if (appSettings.rememberDirectory) {
+                    RootFileManager.rememberedDirectory = resolved
+                }
             } catch (_: Exception) {
                 if (gen != loadGen[0]) return@launch
                 fileList = emptyList()
@@ -164,7 +168,11 @@ fun BuiltInFilePicker(
         }
     }
 
-    LaunchedEffect(show, initialDirectory) {
+    // key 只能是 Unit：`initialDirectory` 来自 appSettings.rememberDirectory 这个**可观察状态**，
+    // 在选择器内关掉「记忆操作路径」开关会让它变化 —— 把首帧初值放进协程 key 会让协程重启，
+    // 把 currentDir 重置回内部存储根并重新 fork su 列目录，用户刚浏览到的目录与滚动位置全部丢失。
+    // initialDirectory 只应作为**首帧初值**使用一次。
+    LaunchedEffect(Unit) {
         if (!show) return@LaunchedEffect
         // 建目录与列目录无关，改为后台并行，不再串行阻塞列表首屏加载
         launch { RootFileManager.ensureShsoDir() }

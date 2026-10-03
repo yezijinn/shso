@@ -121,7 +121,13 @@ fun ColorWheelDialog(
     // 且点确定后落盘的是 #FCFCFC —— 用户要的纯白被静默改写。
     // 故预览与取值拆开：previewColor 只用于绘制与 hex 显示。
     val previewColor = remember(hue, saturation, value) {
-        Color.hsv(hue, saturation.coerceIn(0.01f, 1f), value.coerceIn(0.01f, 1f))
+        // 低饱和 / 低明度下预览做抬升，纯粹为了「拖色相时看得见变化」；
+        // 提交取值 currentColor 保持原值不变（见 updateHue 注释）。
+        Color.hsv(
+            hue,
+            saturation.coerceIn(0f, 1f).coerceAtLeast(0.7f),
+            value.coerceIn(0f, 1f).coerceAtLeast(0.6f)
+        )
     }
     // 实际取值：s/v 为 0 时 Color.hsv 能正确给出灰/黑，无需下限
     val currentColor = remember(hue, saturation, value) {
@@ -227,9 +233,12 @@ fun ColorWheelDialog(
                                 val usable = (maxWidthPx - hueThumbDiameterPx).coerceAtLeast(1f)
                                 val clampedX = x.coerceIn(0f, usable)
                                 hue = (clampedX / usable) * 360f
-                                // 接近灰或黑时抬到满饱和满明度，否则拖动色相在预览上看不出变化
-                                if (saturation < 0.2f) saturation = 1.0f
-                                if (value < 0.3f) value = 1.0f
+                                // 接近灰或黑时拖动色相在预览上看不出变化 —— 但这是**显示层**的补偿，
+                                // 绝不能写回 saturation/value：它们是提交取值（onColorSelected 读
+                                // currentColor ← saturation/value）。此前两处协程里直接
+                                // `saturation = 1f; value = 1f`，于是终端色 #1A1A1A（s=0.10 v=0.10）
+                                // 只要手指碰一下色相条就被强抬成满饱和满明度：预览跳变，且落盘的
+                                // 是用户没选过的颜色。补偿已移到 [previewColor]。
                             }
 
                             detectTapGestures { offset ->
@@ -242,9 +251,7 @@ fun ColorWheelDialog(
                                 val usable = (size.width - hueThumbDiameterPx).coerceAtLeast(1f)
                                 val clampedX = change.position.x.coerceIn(0f, usable)
                                 hue = (clampedX / usable) * 360f
-                                // 同 updateHue：避免低饱和 / 低明度下拖动色相无可见变化
-                                if (saturation < 0.2f) saturation = 1.0f
-                                if (value < 0.3f) value = 1.0f
+                                // 同 updateHue：预览补偿只在显示层，不回写提交取值
                             }
                         }
                 ) {
@@ -318,7 +325,11 @@ fun ColorWheelDialog(
     val thumbDiameter = 28.dp
     val thumbDiameterPx = with(density) { thumbDiameter.toPx() }
                     val progress = ((value - 0.2f) / 0.8f).coerceIn(0f, 1f)
-                    val thumbX = (progress * (widthPx - thumbDiameterPx)).coerceIn(0f, widthPx - thumbDiameterPx)
+                    // min > max 时 Float.coerceIn 抛 IllegalArgumentException：窄容器
+                    // （分屏小窗 / 折叠屏外屏 / 极端显示缩放）下 widthPx 可能小于 thumb 直径。
+                    // 色相条那处已有 coerceAtLeast 保护，这里补齐。
+                    val thumbUsable = (widthPx - thumbDiameterPx).coerceAtLeast(0f)
+                    val thumbX = (progress * thumbUsable).coerceIn(0f, thumbUsable)
 
                     Box(
                         modifier = Modifier

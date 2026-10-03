@@ -20,7 +20,7 @@
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 514 tests / 0 failures / 1 skipped |
+| 单元测试 | 525 tests / 0 failures / 1 skipped |
 | lint | 0 errors / 31 warnings |
 | release 体积 | 2.20 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
 | 条目预算 | 中央目录**零分配结构遍历**取精确条目数（不信自报字段、不按体积折算） |
@@ -42,6 +42,110 @@
 ---
 
 ## 待办
+
+### A66. 第十六轮全面 BUG 深挖（2026-10-03）
+
+前十五轮覆盖了策略引擎、执行链路、文件管理层、守卫安装、文本处理链路，这轮转向
+**UI 弹窗层**（`ColorWheelDialog` 439 / `FilePermissionDialog` 405 / `BuiltInFilePicker` 634）。
+三个文件报出 26 条候选，核对后**确认成立并已修 6 条**；其中**一条被证伪**，
+一条因**真机环境与报告前提不符**而重新判定。
+
+- [x] **产品范围**：三份文件全量重读，交叉核对 `RootFileManager.statFilePath`、
+      `OwnerCandidates`、`AuroraComponents`、`HomePage` 与 5 处调用方
+
+- [x] **P0 · 取色器：拖色相条会篡改用户没选过的颜色并落盘**
+  - [x] 两个 `pointerInput` 协程里直接 `saturation = 1f; value = 1f`。注释写的是
+        「低饱和/低明度下拖色相看不出变化」——那是**显示层**补偿需求，
+        但实现写回了 `saturation`/`value` **状态本体**，而提交读的
+        `currentColor`（127-129 行）正是由它们派生、426 行 `onColorSelected(currentColor)`。
+  - [x] 触发：终端色为暗色或低饱和（如 `#1A1A1A`，s≈0.10 v≈0.10）时打开取色器，
+        只想微调色相，手指一碰色相条 → s/v 被强抬到 1.0 → 预览从深灰跳成亮色，
+        且**落盘的是用户没选过的颜色**。这是本文件唯一一处「所见即非所得」的写数据路径。
+  - [x] 该文件 116-122 行的注释早已写明「提交取值保持**未抬高的原值**……预览补偿只放在
+        previewColor」—— 实现与自身声明的设计意图正好相反。
+  - [x] 修法：两处赋值删除；补偿移入 `previewColor`（`coerceAtLeast(0.7f/0.6f)`）
+
+- [x] **P0 · 文件选择器：记忆目录失效后「路径行显示 A、列表却是空的」**
+  - [x] `loadDirectory` 的 `loaded` 在 `!exists` 分支恒为 `emptyList()`，而回退分支只改了
+        `currentDir`，**从未对回退目录调 `listFiles`**。于是拔过 SD 卡 / 删过记忆目录后，
+        路径行显示「内部存储」、列表空白并提示「当前目录为空」——
+        用户会得出「内部存储是空的」这一完全错误的结论。
+  - [x] 修法：先定 `resolved`，再对 `resolved` 列目录
+
+- [x] **P1 · 数据一致性：记忆目录被陈旧请求覆盖**
+  - [x] 两处 `rememberedDirectory = …` 都排在代次守卫**之前**，而那行注释原文写着
+        「丢弃本次结果（**含副作用**）」—— 副作用已经发生，守卫只挡得住返回值。
+  - [x] 触发：快速连点目录 A 再点 B，A 的 root 调用更慢（100~500ms 抖动常见）
+        → 记忆目录被覆盖回 A，而用户最后实际浏览的是 B，下次打开落在 A。
+  - [x] 修法：写入移到守卫之后
+
+- [x] **P1 · 功能：选择器内改设置会把已浏览目录重置**
+  - [x] `LaunchedEffect(show, initialDirectory)` —— `initialDirectory` 依赖
+        `appSettings.rememberDirectory` 这个**可观察状态**。在选择器内关掉「记忆操作路径」
+        开关 → key 变化 → 协程重启 → `currentDir` 重置回内部存储根并重新 fork su 列目录，
+        刚浏览到的目录与滚动位置全部丢失。
+  - [x] 修法：key 只用 `Unit`，`initialDirectory` 仅作首帧初值
+
+- [x] **P1 · 崩溃：窄容器下明暗条 thumb 计算抛异常**
+  - [x] `thumbX = (…).coerceIn(0f, widthPx - thumbDiameterPx)`：`Float.coerceIn` 在
+        `min > max` 时抛 `IllegalArgumentException`。容器宽度小于 thumb 直径（分屏小窗 /
+        折叠屏外屏 / 极端显示缩放）即触发。同文件色相条那处早有 `coerceAtLeast` 保护，
+        明暗条这处没有。
+  - [x] 修法：先 `coerceAtLeast(0f)` 得出可用宽度再钳位
+
+- [x] **P1 · 可用性：权限开关触摸目标低于工程硬约束**
+  - [x] 9 个权限开关固定 `size(40.dp)`，而工程约定（`CONTRIBUTING`「UI 形态」）要求行高
+        统一 `heightIn(min = 48.dp)`，同工程 `AuroraArrowPreference` 正为此。
+        3×3 密集排布下 40dp 误触代价偏高 —— 把文件从 644 误点成 777 是不可逆的越权。
+  - [x] 修法：视觉方块保持 40dp，外层 `heightIn/widthIn(min = 48.dp)` 撑开命中区
+
+- [x] **P1 · 数据一致性：保存中预设按钮仍可点**
+  - [x] 保存要 fork 多次 su、耗时数秒，期间三个输入框都传了 `enabled = !submitting`，
+        唯独「root:root」「system:system」两个预设没传。用户看到输入框是旧值（禁用态），
+        owner/group 却已被改成 root —— **落盘的和屏幕上显示的不是同一组值**。
+  - [x] 修法：两个预设跟随 `submitting`
+
+- [x] **被证伪的一条（如实记录，避免以后重犯）**
+  - [x] 报告称「点『选择所有者/用户组』必崩」，因果链起点是
+        `RootFileManager` 用 `stat -c '%A|%U|%G'` 取属主、而「GNU stat 的 `%U` 是数字 uid」。
+  - [x] **真机实测推翻该前提**：Android toybox `stat 0.8.0` 的 `%U|%G` 返回**名字**
+        （`root`、`u0_a216`），数字才是 `%u|%g`。于是 `current` 形如 `u0_a216`，
+        `OwnerCandidates.withCurrent` 的 `value.toIntOrNull()` 为 null → **直接返回原列表、
+        不追加合成项**，不产生重复 key。
+  - [x] 补查：即便 `current` 是数字，合成项也只在「该 uid 不在列表里」时追加，
+        而已安装应用条目的 `name` 本身就是 `uid.toString()`（标签另存字段），
+        因此仍不会与合成项重 key。**结论：该崩溃在本机与常规环境下均不成立，不修。**
+  - [x] 附带确认的真问题（影响小，未修）：`current` 是 `u0_a216` 这类名字而候选列表里
+        应用条目的 `name` 是数字串，导致「当前项」高亮判定恒不成立 —— 用户看不出当前值对应哪一条。
+
+- [x] **回归**：单元测试与 lint 全绿，Release 红线通过，APK 安装启动正常、`FATAL=0` / `ANR=0`；
+      真机打开选择器确认路径行与列表内容一致（内部存储 + 实际目录项）
+- [x] **回退验证**：把文件选择器的两条修复逐条回退，确认对应用例**确实变红**
+      （回退必须列回退目录 / 记忆目录写入必须在守卫之后），随后恢复复跑全绿
+- [x] **新增用例 12 条**：预览补偿不得写回提交取值 / 窄容器 thumb 不抛异常 /
+      回退目录必须真的列内容 / 回退目录亦失效时的兜底 / 关闭记忆时不改写记忆目录 /
+      回退分支必须列 resolved / 记忆写入在守卫之后 / 不得以可变初值为 key /
+      预设按钮跟随提交中禁用 / 权限开关 ≥48dp
+
+- [!] **核对后判定为误报、不可达或需改契约，未动**
+  - 「特殊位前缀保留条件依赖 `mode.length == 4`」：确认成立（把八进制框改成单个数字
+    「4」时点矩阵开关会丢掉前缀），但需要用户先输入一个非法中间态，且后果是权限位少设
+    而非越权，留待与输入校验一起改
+  - 「八进制与 owner 输入零即时校验」：确认成立 —— 粘贴带尾随空格或全角数字时整串被跳过、
+    无 `isError` 提示，用户只觉「输入框卡住」；owner 无长度上限会把格式错误推迟成一次
+    数秒的 root 往返。属可用性问题，安全侧仍由 `isValidPermissionMode` /
+    `isValidOwnerOrGroup` + `escapeShellArg` 兜住
+  - 「保存协程无 try/catch，异常时 `submitting` 永久为 true」：确认成立。
+    但当前宿主 `FilePage` 用 `remember` 承载弹窗，旋转后整体重建会把该状态一起清掉，
+    用户看到的是「弹窗消失、权限已落盘」而非「卡死」；补 `runCatching` 需同时决定
+    取消语义如何回报，留待后续
+  - 「`pointerInput(Unit)` 捕获组合期的 thumb 直径」「`remember {}` 未以 initialColor 为 key」：
+    均确认成立但当前调用方不可达（宿主用 `remember`，配置变更直接关窗）
+  - 「列表行高约 36dp 低于 48dp」「加载中无指示」「新建文件弹窗无 submitting 守卫」
+    「返回键未禁用」「`fileFilter` 作为 remember key 不稳定」：均确认为真但影响有限，
+    留待后续
+  - 「符号链接在选择器中指向目标内容却显示链接路径、断链软链不可见」：确认成立，
+    但属产品需求（是否要在选择器暴露软链），需先定 `FileItem` 是否加字段
 
 ### A65. 第十五轮全面 BUG 深挖（2026-10-03）
 

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -182,8 +183,11 @@ fun FilePermissionDialog(
         )
         Spacer(modifier = Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            PresetButton("root:root") { owner = "root"; group = "root"; message = null }
-            PresetButton("system:system") { owner = "system"; group = "system"; message = null }
+            // 必须跟随 submitting 禁用：保存要 fork 多次 su、耗时数秒，期间三个输入框都是禁用态，
+            // 若预设按钮仍可点，用户会看到「输入框显示旧值、owner/group 实际已被改成 root」。
+            // 落盘的是 root:root，界面显示的却不是 —— 改权限是本项目唯一带越权后果的操作。
+            PresetButton("root:root", enabled = !submitting) { owner = "root"; group = "root"; message = null }
+            PresetButton("system:system", enabled = !submitting) { owner = "system"; group = "system"; message = null }
         }
         if (message != null) {
             Spacer(modifier = Modifier.height(8.dp))
@@ -260,16 +264,26 @@ private fun PermissionMatrix(bits: List<Boolean>, onToggle: (Int, Boolean) -> Un
 
 @Composable
 private fun PermissionToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    // 触摸目标必须 ≥48dp（工程约定，见 CONTRIBUTING「UI 形态」）。视觉方块保持 40dp，
+    // 命中区由外层 heightIn 撑到 48dp —— 3×3 密集排布下 40dp 的误触代价偏高，
+    // 而改 777/666 是本项目唯一带越权后果的操作。
     Box(
         modifier = Modifier
-            .size(40.dp)
-            .semantics { role = Role.Checkbox }
-            .clip(RoundedCornerShape(0.dp))
-            .border(1.dp, if (checked) AuroraTokens.Accent else AuroraTokens.Stroke, RoundedCornerShape(0.dp))
-            .clickable(onClick = { onCheckedChange(!checked) }),
+            .heightIn(min = 48.dp)
+            .widthIn(min = 48.dp),
         contentAlignment = Alignment.Center
     ) {
-        if (checked) Text("✓", color = AuroraTokens.Accent, fontWeight = FontWeight.Bold)
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .semantics { role = Role.Checkbox }
+                .clip(RoundedCornerShape(0.dp))
+                .border(1.dp, if (checked) AuroraTokens.Accent else AuroraTokens.Stroke, RoundedCornerShape(0.dp))
+                .clickable(onClick = { onCheckedChange(!checked) }),
+            contentAlignment = Alignment.Center
+        ) {
+            if (checked) Text("✓", color = AuroraTokens.Accent, fontWeight = FontWeight.Bold)
+        }
     }
 }
 
