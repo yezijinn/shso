@@ -1,6 +1,6 @@
 # PROJECT.md — shso
 
-面向开发者与 AI 协作者：技术栈、目录结构、架构与安全约束、安全子系统、已知注意点。
+面向开发者：技术栈、目录结构、架构与安全约束、安全子系统、已知注意点。
 
 - 功能与用法：[`README.md`](../README.md)
 - 变更记录：[`更新日志.md`](../更新日志.md)
@@ -32,7 +32,7 @@ Android ROOT 环境下的图形化执行工具：运行 `.sh` 脚本与 `.so` / 
 
 ```
 shso-main/
-├── AGENTS.md                     # AI 协作准则与场景导航
+├── CONTRIBUTING.md                     # 开发约定与场景导航
 ├── README.md                     # 用户向文档
 ├── 更新日志.md                   # 变更清单（README 不内嵌）
 ├── docs/PROJECT.md               # 本文档

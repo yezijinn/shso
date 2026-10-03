@@ -31,7 +31,7 @@ object ScriptAuditor {
     private const val MAX_SCAN_BYTES = 2 * 1024 * 1024
 
     /**
-     * 未经用户确认的自动执行（「添加到 shso 后自动执行」等链路）是否**必须**拒绝（fail-closed）。
+     * 未经手动确认的自动执行（「添加到 shso 后自动执行」等链路）是否**必须**拒绝（fail-closed）。
      *
      * 两个条件任一成立即拒绝：
      *  1. 存在 CRITICAL 风险项；

@@ -122,7 +122,7 @@ object TextStatistics {
      *  - U+2B820..U+2CEAF 扩展 E
      *  - U+2CEB0..U+2EBEF 扩展 F
      *  - U+F900..U+FAFF CJK 兼容象形文字
-     * 不含部首、笔画、符号等（按用户要求"必须是纯汉字"）。
+     * 不含部首、笔画、符号等（判定口径为「必须是纯汉字」）。
      */
     fun countChinese(text: String): Int {
         if (text.isEmpty()) return 0

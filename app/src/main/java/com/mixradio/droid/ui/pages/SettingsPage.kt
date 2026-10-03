@@ -535,7 +535,7 @@ fun SettingsPage(
         // `SecurityAuditLog.failureSummary()` 此前**定义了但全仓零消费方** ——
         // 日志不可写 / 目标被换成目录 / 磁盘满 / 轮转失败这四种状态下，
         // 审计链会无声降级为「无审计运行」：越权放行事件照常发生，
-        // 终端无提示、设置页无红字、日志里也没有任何痕迹。
+        // 终端无提示、设置页无红字、日志里也没有任何记录。
         // 事后完全无法回答「这台设备当时有没有记过」。
         val auditFailure = SecurityAuditLog.failureSummary()
         AuroraWindowDialog(

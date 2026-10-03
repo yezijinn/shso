@@ -213,7 +213,7 @@ tasks.matching {
  *
  * 约定：**APK 不携带任何语法高亮包**——语法由用户在线下载后导入（见 ui/components/SyntaxPackDialog.kt），
  * 编译产物中只允许存在配色主题。同时禁止把无关的数据表打进包（jcodings 的 648 个编码转换表曾贡献 1.24MB）。
- * 体积不做上限限制（按用户要求：编译 APK 不限制体积）。
+ * 体积不做上限限制（约定：编译 APK 不限制体积）。
  */
 val releaseApkFile = layout.buildDirectory.file("outputs/apk/release/app-release.apk")
 

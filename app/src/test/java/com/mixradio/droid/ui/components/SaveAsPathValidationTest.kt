@@ -13,7 +13,7 @@ import org.junit.Test
  * 真实缺陷：`performSaveAs` 此前把用户输入/覆盖确认弹窗里的路径原样交给 `writeTextFile`，
  * 而后者在 ROOT 通道下等价于 `cat > <path>`，是**无条件覆盖**。于是另存为可以：
  *  - 指向目录（写入必失败，只是报错难看）；
- *  - 用 `a/../../..` 穿越出预期根，违反 AGENTS.md「路径必须过滤 `..`」；
+ *  - 用 `a/../../..` 穿越出预期根，违反 CONTRIBUTING.md「路径必须过滤 `..`」；
  *  - 覆盖应用自身私有文件（`/data/data/com.mixradio.droid/…`），毁掉数据库/偏好设置。
  */
 class SaveAsPathValidationTest {

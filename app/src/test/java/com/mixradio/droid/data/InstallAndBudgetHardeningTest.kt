@@ -13,7 +13,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * 本轮修复的回归护栏。
+ * 回归护栏。
  *
  * 每条用例都对应一个**已实证的真实缺陷**，不是「为了覆盖率而测」：
  * - 契约类结论（`pm install-write` 的 SPLIT_NAME 语义、FUSE 上的 CAS 原语、

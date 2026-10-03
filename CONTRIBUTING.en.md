@@ -1,6 +1,6 @@
-> 语言 / Language: [中文](AGENTS.md)
+> 语言 / Language: [中文](CONTRIBUTING.md)
 
-# shso — AI Collaboration Guide
+# shso — Development Guide
 
 Graphical execution tool for scripts and native binaries in the Android ROOT environment.
 Kotlin + AndroidX Compose Material 3, aurora-glass dark theme, no external UI component libraries.

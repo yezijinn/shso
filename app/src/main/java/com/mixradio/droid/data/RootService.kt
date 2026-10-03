@@ -169,7 +169,7 @@ object RootService {
     }
 
     /**
-     * 本轮是否仍持有「执行权」。
+     * 是否仍持有「执行权」。
      *
      * 不能只比 `executionJob`：终端一次性命令**从不写** executionJob，
      * 该判据对它是恒真的（两端同为 null，或同为上一次脚本的已完成 Job）。
@@ -712,7 +712,7 @@ object RootService {
         terminalCommandGeneration.incrementAndGet()
         executionJob?.cancel()
         executionJob = scope.launch(Dispatchers.IO) {
-            // 本轮的身份：pgid 回填与状态清理都必须按它自检，否则会写到别人的槽位。
+            // 本次执行的身份：pgid 回填与状态清理都必须按它自检，否则会写到别人的槽位。
             val myJob = coroutineContext[Job]
             var process: Process? = null
             var writer: OutputStreamWriter? = null
@@ -760,7 +760,7 @@ object RootService {
                 // 异步取回本次执行的进程组 id（不阻塞输出读取）。任务结束后刻意保留，
                 // 供「结束进程」兜底回收被中断后逃逸到 init 下的子孙进程。
                 //
-                // 必须按本轮 Job 自检：这个协程挂在页面级 scope 上，**不是** executionJob 的子任务，
+                // 必须按本次 Job 自检：这个协程挂在页面级 scope 上，**不是** executionJob 的子任务，
                 // 下一轮 `executionJob?.cancel()` 收不到它。轮询最长 1.5s，期间若新任务已起并
                 // 写入了自己的 pgid，此处的迟到结果（尤其是超时归零）会把新任务的进程组冲掉，
                 // 它的「中断/结束进程」退化成只杀 su，真正的 `sh -c …` 以 root 继续跑。
@@ -782,7 +782,7 @@ object RootService {
 
                 val exitCode = process.waitFor()
                 HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
-                // 本轮执行仍是当前任务（代际判断）才写「退出」文案；被新任务/重启取代后由对方写
+                // 本次执行仍是当前任务（代际判断）才写「退出」文案；被新任务/重启取代后由对方写
                 withContext(Dispatchers.Main) {
                     if (executionJob === coroutineContext[Job]) {
                         // 先停发布循环并等它把积压刷完，再写「退出」文案：
@@ -811,9 +811,9 @@ object RootService {
                 }
             } finally {
                 // 任何取消路径（kill/restart/覆盖启动）必然走到这里；
-                // 但只有本轮仍是当前执行协程（执行 Job 未被替换）时才清理 Compose 状态。
+                // 但只有本次仍是当前执行协程（执行 Job 未被替换）时才清理 Compose 状态。
                 // 关键：executionJob 在协程外已切换到新值（覆盖启动先 cancel 再赋新 job），
-                // 因此 finally 里比较「执行 Job 是否仍是本轮协程」可判定代际。
+                // 因此 finally 里比较「执行 Job 是否仍是本协程」可判定代际。
                 val isCurrentJob = executionJob === coroutineContext[Job]
                 // 清理必须用局部引用：覆盖启动后全局 processWriter 已属于新任务，旧任务不得动它。
                 // withContext(Dispatchers.Main)+NonCancellable：被取消协程的 finally 里不允许挂起切换，
@@ -973,7 +973,7 @@ object RootService {
     }
 
     fun killCurrentProcess() {
-        // 同步捕获本轮任务实体（Job/pid/进程组/进程句柄/任务名/发布循环）：
+        // 同步捕获当前任务实体（Job/pid/进程组/进程句柄/任务名/发布循环）：
         // 之后主线程若启动新任务（覆盖启动），这些仍是旧实体，kill 只作用于它们，绝不误杀新任务。
         val targetJob = executionJob
         val targetPid = processPid
@@ -1009,7 +1009,7 @@ object RootService {
                 }
                 targetProcess?.destroyForcibly()
                 forceCloseProcess(targetProcess)
-                // 本轮仍由本 kill 接管时才撤销全局句柄；
+                // 当前仍由本 kill 接管时才撤销全局句柄；
                 // 若期间新任务已启动，句柄属于新任务，由新任务线条负责。
                 if (stillOwnsExecution(targetJob)) {
                     activeProcess = null
@@ -1033,7 +1033,7 @@ object RootService {
                 }
             } finally {
                 withContext(Dispatchers.Main) {
-                    // 仅当本轮仍是当前执行协程时才 flush/清理/写文案：
+                    // 仅当本次仍是当前执行协程时才 flush/清理/写文案：
                     // 若期间新任务已启动（executionJob 已替换），旧任务的残留日志不应混入新任务输出，
                     // 交由 executeFile 的 clearBatchQueue 与新的 flush loop 自行处理。
                     //
@@ -1074,11 +1074,11 @@ object RootService {
         try { targetProcess.outputStream.close() } catch (_: Exception) {}
     }
 
-    /** 读取本轮执行记录的进程组 id（root 侧执行 `echo $$ > file` 写入）。 */
+    /** 读取本次执行记录的进程组 id（root 侧执行 `echo $$ > file` 写入）。 */
     private fun readRunPgidFile(): Int =
         runCatching { runPgidFile?.readText()?.trim()?.toIntOrNull() ?: 0 }.getOrDefault(0)
 
-    /** 有界轮询等待本轮 pgid 落盘（脚本刚启动时文件可能尚未写出）。 */
+    /** 有界轮询等待本次 pgid 落盘（脚本刚启动时文件可能尚未写出）。 */
     private suspend fun awaitRunPgid(): Int {
         repeat(15) {
             val value = readRunPgidFile()
@@ -1099,7 +1099,7 @@ object RootService {
     }
 
     fun sendInterrupt() {
-        // 同步捕获本轮任务实体（Job/进程 writer/pid）：
+        // 同步捕获当前任务实体（Job/进程 writer/pid）：
         // 之后主线程若启动新任务（覆盖启动），这些仍是旧实体，中断只作用于它们，绝不误伤新任务。
         val targetJob = executionJob
         val targetWriter = processWriter
@@ -1201,7 +1201,7 @@ object RootService {
             } catch (_: Exception) {
             } finally {
                 withContext(Dispatchers.Main) {
-                    // 仅当本轮仍是当前执行协程时才清理状态并恢复横幅。
+                    // 仅当本次仍是当前执行协程时才清理状态并恢复横幅。
                     // 走 stillOwnsExecution 而非 `executionJob === targetJob`：后者对终端命令恒真，
                     // 会在「重启一条命令」时把期间新启动的命令状态误清成「待命中」并覆盖其横幅。
                     if (stillOwnsExecution(targetJob)) {

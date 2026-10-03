@@ -1928,7 +1928,7 @@ private fun EditorSettingsDialog(
     val transformScope = rememberCoroutineScope()
 
     /**
-     * 文本处理入口：先算出结果再弹确认，用户确认后才写回编辑器。
+     * 文本处理入口：先算出结果再弹确认，确认后才写回编辑器。
      *
      * 三个操作（删空行 / 整体缩进 / 删换行）都是**破坏性整篇改写**且没有撤销栈，
      * 误点一次就要靠关闭不保存来挽回，因此必须先让用户看到影响面。
@@ -2283,7 +2283,7 @@ private fun CompactSettingRow(
  * 背景：`performSaveAs` 此前把用户输入直接交给 `writeTextFile`，而后者在 ROOT 通道下
  * 等价于 `cat > <path>` —— 无条件覆盖。于是另存为可以：
  *  - 指向目录（写入必然失败，只是报错难看）；
- *  - 用 `a/../../..` 穿越出预期根（AGENTS.md 明确要求路径必须过滤 `..`）；
+ *  - 用 `a/../../..` 穿越出预期根（CONTRIBUTING.md 明确要求路径必须过滤 `..`）；
  *  - 覆盖应用自身私有文件（`/data/data/com.mixradio.droid/…`），毁掉数据库/偏好设置且不可撤销。
  *
  * @return null 表示通过；否则为可直接展示给用户的原因。

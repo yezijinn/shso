@@ -37,7 +37,7 @@ measure() {
     fi
 }
 
-echo "=== 守卫包装器（本轮优化后）==="
+echo "=== 守卫包装器 ==="
 measure "cp a b"                 cp       a b
 measure "rm -rf /sdcard/ok"      rm       -rf /sdcard/ok
 measure "find /sdcard -name x"   find     /sdcard -name x

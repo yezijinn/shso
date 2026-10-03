@@ -188,7 +188,7 @@ fun FilePage(
     // 用 rememberSaveable：确认框属用户显式意图，旋转/分屏后不应被静默丢弃
     // （终端页的待确认命令同样用 rememberSaveable，此处对齐）。
     var pendingExecuteItem by rememberSaveable(stateSaver = FileItemSaver) { mutableStateOf<FileItem?>(null) }
-    // 安装确认：安装走 pm install 静默完成，必须经用户确认；同样跨重建保留
+    // 安装确认：安装走 pm install 静默完成，必须经确认弹窗；同样跨重建保留
     var pendingInstallItem by rememberSaveable(stateSaver = FileItemSaver) { mutableStateOf<FileItem?>(null) }
 
     var selectedItem by remember { mutableStateOf<FileItem?>(null) }
@@ -1370,7 +1370,7 @@ fun FilePage(
 
                 // 安装 APK/XAPK：普通用户即可安装（无 ROOT 走系统安装器），
                 // 仅当授权 ROOT 时优先走静默安装；用 realExtension 兼容 .1 尾缀。
-                // 统一经安装确认框：ROOT 下 pm install 静默完成，应先让用户确认来源。
+                // 统一经安装确认框：ROOT 下 pm install 静默完成，应先确认来源。
                 if (item.isInstallable) {
                     ActionTextRow(
                         label = if (isInstalling) "正在安装…" else "安装 APK/XAPK",

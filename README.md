@@ -31,7 +31,7 @@ Android ROOT 环境下的图形化执行工具：运行 `.sh` 脚本与 `.so` / 
 | [`更新日志.md`](更新日志.md) | 变更清单（新增 / 修复 / 优化 / 安全，一行一条） |
 | `docs/在线编译.md` | 用 GitHub Actions 自定义包名编译 APK |
 | `module/shso_guard/README.md` | 运行时守卫模块：原理、策略、覆盖范围、能力边界 |
-| `AGENTS.md` | 仓库的 AI 协作准则与场景导航 |
+| `CONTRIBUTING.md` | 仓库开发约定与场景导航 |
 | `docs/文档规范.md` | Markdown 写作准则与文档职责边界 |
 
 本文件不内嵌更新日志，变更一律写入 `更新日志.md`。

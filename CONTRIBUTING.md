@@ -1,6 +1,6 @@
-> 语言 / Language: [English](AGENTS.en.md)
+> 语言 / Language: [English](CONTRIBUTING.en.md)
 
-# shso — AI 协作准则
+# shso — 开发约定
 
 Android ROOT 环境下的图形化脚本与原生程序执行工具。Kotlin + AndroidX Compose
 Material 3 原生控件，极光玻璃暗色主题，无外部 UI 组件库。

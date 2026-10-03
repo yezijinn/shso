@@ -113,7 +113,7 @@ class PolicyCoverageGapTest {
         assertEquals("只读命令不应产生风险项", Verdict.Allow, v)
     }
 
-    @Test fun `find -exec rm 等级不因本轮改动而下降`() {
+    @Test fun `find -exec rm 等级不得低于 find -delete`() {
         // 防回退：`find -delete` 与 `find -exec rm` 语义等价，都必须 Block（CRITICAL）
         listOf("find /system -delete", "find /system -exec rm {} +").forEach { cmd ->
             val v = PolicyEngine.evaluate(cmd, CommandSource.USER_TERMINAL)

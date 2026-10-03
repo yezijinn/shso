@@ -82,7 +82,7 @@ sealed interface Verdict {
     /** 放行（仅审计） */
     data object Allow : Verdict
 
-    /** 需用户确认：展示风险项列表；CRITICAL 档需输入 EXECUTE */
+    /** 需手动确认：展示风险项列表；CRITICAL 档需输入 EXECUTE */
     data class Confirm(val findings: List<Finding>, val level: RiskLevel) : Verdict
 
     /** 拒绝执行：给出原因并落审计 */

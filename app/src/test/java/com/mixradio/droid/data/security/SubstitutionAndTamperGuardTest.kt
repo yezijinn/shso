@@ -30,7 +30,7 @@ class SubstitutionAndTamperGuardTest {
     // ---------- ① 命令替换必须参与外层操作数分级 ----------
 
     @Test fun `rsync 目标里的命令替换不能绕过系统分区判定`() {
-        // 真实缺陷：$(...) 的产物被单独解析成独立原子，外层不留任何痕迹，
+        // 真实缺陷：$(...) 的产物被单独解析成独立原子，外层不留任何标记，
         // 于是 rsync 的操作数只剩 [/data/local/tmp/x, /bin/]，末位不受保护 → 放行，
         // 而内层 echo 的 /system 从不作为 rsync 的目标参与分级 → 静默写入系统分区。
         val plain = ruleIds("rsync -a /data/local/tmp/x /system/bin/")
