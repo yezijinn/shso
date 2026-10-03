@@ -165,16 +165,21 @@ object SecurityAuditLog {
             scope.launch {
                 try {
                     if (useRootLog()) {
-                        // 目标必须是普通文件：目录 0777，第三方可放置软链让 `>>` 跟随写入任意文件。
-                        // 清理失败即放弃本次写入（fail-closed），不得继续追加。
-                        if (!prepareRootTarget()) {
-                            recordFailure("审计目标非常规文件（疑似软链），已放弃写入")
-                        } else {
-                            val ok = RootService.writeBytesAsRoot(
-                                ROOT_LOG_PATH, (line + "\n").toByteArray(Charsets.UTF_8), append = true
-                            )
-                            if (!ok) recordFailure("root 写入审计失败") else if (shouldTrim) trimRootLog()
-                        }
+                        // 校验与写入必须在**同一个 su 进程**内完成。
+                        //
+                        // 此前是两次独立 su：第 1 次 prepareRootTarget() 判软链/属主/权限，
+                        // 第 2 次由 writeBytesAsRoot 执行 `cat >> <path>`。而目标目录
+                        // `/data/adb/shso` 是 0777 且**无 sticky 位**（可写性是硬性要求），
+                        // 两次 su 之间有几十毫秒窗口：任意第三方应用在此期间
+                        // `unlink(audit.log)` + `symlink(audit.log, <某模块>/post-fs-data.sh)`，
+                        // 第 2 个 su 的 `>>` 跟随软链 → **以 root 把审计行追加进引导期脚本**，
+                        // 即下次开机的 root 代码执行。clear() 的 `sh -c '> …'` 同理且是截断。
+                        //
+                        // 现合并为一个脚本：先判软链/非常规（失败 exit 9），
+                        // 再在同一进程内 `exec 3>>file` 打开并写入 ——
+                        // 打开紧跟校验，中间没有可插入的窗口。
+                        val ok = appendRootLogLine(line)
+                        if (!ok) recordFailure("root 写入审计失败") else if (shouldTrim) trimRootLog()
                     } else {
                         val auditFile = logFile()
                         if (Files.isSymbolicLink(auditFile.toPath())) {
@@ -214,6 +219,56 @@ object SecurityAuditLog {
      * 算术展开里的位运算符（真机实测 `sh -c 'echo $(( 0600 & 022 ))'` 返回非 0），
      * 那种写法会恒判为「不可信」而把正常审计文件反复删掉。
      */
+    /**
+     * 追加一行审计到 root 日志：**校验与写入在同一个 su 进程内**完成。
+     *
+     * 这是 [appendRootLogLine] 存在的唯一理由：拆成两次 su 会留下 TOCTOU 窗口 ——
+     * 目标目录 0777 无 sticky，第三方可在两次 su 之间把日志文件换成指向任意 root 文件的
+     * 软链，第二个 su 的 `>>` 就会跟随它写入。
+     *
+     * 流程（单进程）：
+     * 1. `mkdir -p` 目标目录
+     * 2. 目标是软链 / 存在但不是普通文件 → `exit 9`（fail-closed，放弃本次写入）
+     * 3. 存在但属主不是 root、或可被组/其他用户写 → 先删除重建（沿用原有语义）
+     * 4. `umask 077` + 创建（若不存在）
+     * 5. **再次**判软链 —— 这一步与第 6 步之间没有任何可插入点
+     * 6. `exec 3>> <path>` 在本进程内打开，随后 `printf '%s\n' "$payload" >&3`
+     *
+     * 第 5 步是冗余的，但保留它可以把「打开前最后一刻」也纳入判定，代价只有一次 `[ -L ]`。
+     *
+     * @return true 表示已写入；false 表示目标不可用（调用方负责记失败）
+     */
+    private fun appendRootLogLine(line: String): Boolean {
+        val payload = (line + "\n").toByteArray(Charsets.UTF_8)
+        // 单行审计的字段已由 sanitizeField 转义（| \n 控制字符），不会破坏 shell 单引号；
+        // 仍用单引号包裹并对内嵌单引号做 '\'' 转义，与 writeBytesAsRoot 同款。
+        val quoted = payload.joinToString("") { b ->
+            val ch = b.toInt().toChar()
+            if (ch == '\'') "'\\''" else ch.toString()
+        }
+        val script = buildString {
+            append("mkdir -p $ROOT_LOG_DIR; ")
+            append("if [ -L $ROOT_LOG_PATH ] || { [ -e $ROOT_LOG_PATH ] && [ ! -f $ROOT_LOG_PATH ]; }; then exit 9; fi; ")
+            append("if [ -e $ROOT_LOG_PATH ]; then ")
+            append("if ! [ -O $ROOT_LOG_PATH ]; then /system/bin/rm -f -- $ROOT_LOG_PATH || exit 9; fi; ")
+            append("if [ -n \"\$(find $ROOT_LOG_PATH -maxdepth 0 -type f -perm /022 2>/dev/null)\" ]; then ")
+            append("/system/bin/rm -f -- $ROOT_LOG_PATH || exit 9; fi; ")
+            append("fi; ")
+            append("[ -e $ROOT_LOG_PATH ] || { umask 077 && : > $ROOT_LOG_PATH; }; ")
+            append("chmod 600 $ROOT_LOG_PATH 2>/dev/null; ")
+            // 打开前最后一刻的判定，与下面的 exec 之间无窗口
+            append("if [ -L $ROOT_LOG_PATH ] || { [ -e $ROOT_LOG_PATH ] && [ ! -f $ROOT_LOG_PATH ]; }; then exit 9; fi; ")
+            append("exec 3>> $ROOT_LOG_PATH || exit 9; ")
+            append("printf '%s' '$quoted' >&3; ")
+            append("exec 3>&-")
+        }
+        return try {
+            RootService.runCommandSync(script, 5_000L).first == 0
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun prepareRootTarget(): Boolean {
         val script = buildString {
             append("mkdir -p $ROOT_LOG_DIR; ")

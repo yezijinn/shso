@@ -424,6 +424,10 @@ fun SettingsPage(
                 currentLevel = appSettings.securityLevel,
                 guardInstalled = guardInstalled,
                 guardInstalling = installingGuard,
+                // 审计链是否已降级：日志不可写 / 目标被换成目录 / 磁盘满 / 轮转失败。
+                // 不常驻显示的话，用户只有主动点进审计弹窗才可能看到 —— 而越权放行事件
+                // 恰恰是在这种状态下「没有被记下来」。故在安全组里直接挂一行警示。
+                auditFailure = SecurityAuditLog.failureSummary(),
                 onLevelClicked = remember(appSettings.securityLevel, levelSyncInFlight) {
                     {
                         // 切档不是纯写偏好：≥2 档依赖守卫模块真实存在且 policy.conf 的 mode
@@ -526,11 +530,33 @@ fun SettingsPage(
 
     // 审计日志弹窗
     if (showAuditDialog) {
+        // 审计写入失败必须让用户看得见。
+        //
+        // `SecurityAuditLog.failureSummary()` 此前**定义了但全仓零消费方** ——
+        // 日志不可写 / 目标被换成目录 / 磁盘满 / 轮转失败这四种状态下，
+        // 审计链会无声降级为「无审计运行」：越权放行事件照常发生，
+        // 终端无提示、设置页无红字、日志里也没有任何痕迹。
+        // 事后完全无法回答「这台设备当时有没有记过」。
+        val auditFailure = SecurityAuditLog.failureSummary()
         AuroraWindowDialog(
             show = true,
             title = "审计日志（最近 50 条）",
             onDismissRequest = { showAuditDialog = false }
         ) {
+            if (auditFailure != null) {
+                Text(
+                    text = "⚠ 审计写入失败 $auditFailure",
+                    style = AuroraTextStyles.footnote2,
+                    color = AuroraTokens.Error,
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+                Text(
+                    text = "以下记录可能不完整，越权放行事件也可能未被记录",
+                    style = AuroraTextStyles.footnote2,
+                    color = AuroraTokens.TextSecondary,
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+            }
             if (auditDialogLines.isEmpty()) {
                 Text(
                     text = "暂无审计记录",

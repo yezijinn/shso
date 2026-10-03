@@ -52,6 +52,13 @@ internal object ZipEntryCountProbe {
     private const val EOCD_SIGNATURE = 0x06054b50
     private const val ZIP64_SENTINEL = 0xFFFF
 
+    /**
+     * 中央目录单条 header 记录的**最小**字节数（签名4+版本2+标志2+压缩2+时间2+日期2
+     * +CRC4+压缩后4+解压后4+名长2+extra长2+注释长2+磁盘号2+内部属性2+外部属性4
+     * +本地头偏移4 = 46）。文件名/extra/注释是变长部分，故 `cdSize / 46` 是条目数下界。
+     */
+    private const val CENTRAL_DIR_HEADER_MIN_SIZE = 46
+
     /** 读尾部所需的最大字节数：EOCD 固定部分 + 最长注释。 */
     const val TAIL_WINDOW = EOCD_MIN_SIZE + MAX_COMMENT_LENGTH
 
@@ -81,14 +88,32 @@ internal object ZipEntryCountProbe {
         var best: Int? = null
         var i = 0
         while (i + EOCD_MIN_SIZE <= tail.size) {
-            if (readIntLE(tail, i) == EOCD_SIGNATURE) {
+if (readIntLE(tail, i) == EOCD_SIGNATURE) {
                 val commentLength = readShortLE(tail, i + 20)
                 val endExclusive = i.toLong() + EOCD_MIN_SIZE + commentLength.toLong()
                 if (endExclusive <= fileSize) {
                     val raw = readShortLE(tail, i + 10)
-                    // 0xFFFF == ZIP64，实际条目数只会更大；按「已达上限量级」处理
+                    // 0xFFFF == ZIP64，实际条目数在别处；见常量
                     val count = if (raw == ZIP64_SENTINEL) ZIP64_SENTINEL else raw
                     if (best == null || count > best) best = count
+                    // **中央目录实际体积**是第二个独立上界，不能只看自报条目数。
+                    //
+                    // 自报字段（EOCD 的「本盘/总条目数」）是**攻击者可控**的：把中央目录
+                    // 实际写上百万条 header 记录、而该字段写 1，预检就得到 1 → 放行；
+                    // 而 zip4j 的 HeaderReader 是**从中央目录起点逐条扫到 EOCD 签名为止**，
+                    // 不以自报计数为上界 → 百万个 FileHeader 一次性进堆 → OOM。
+                    // 也就是说预检对它唯一要防的攻击形态完全失效。
+                    //
+                    // 每条中央目录 header 记录固定 46 字节（文件名/extra/comment 变长），
+                    // 故 cdSize/46 是条目数的**下界**，用它兜住自报字段被改小的情况。
+                    val cdSize = readIntLE(tail, i + 12)
+                    // readIntLE 是有符号的：cdSize ≥ 0x80000000 时会返回负数（ZIP64 场景），
+                    // 那种情况真实体积在 ZIP64 扩展字段里，自报条目数已是 0xFFFF 哨兵、
+                    // 预检会走保守分支，故负值直接跳过。
+                    if (cdSize >= 0) {
+                        val bySize = cdSize / CENTRAL_DIR_HEADER_MIN_SIZE
+                        if (bySize > (best ?: 0)) best = bySize
+                    }
                 }
             }
             i++

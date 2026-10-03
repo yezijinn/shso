@@ -237,6 +237,7 @@ fun SettingsSecurityGroup(
     currentLevel: Int,
     guardInstalled: Boolean,
     guardInstalling: Boolean = false,
+    auditFailure: String? = null,
     onLevelClicked: () -> Unit,
     onShowAuditLogClicked: () -> Unit,
     onInstallGuardClicked: () -> Unit,
@@ -293,4 +294,20 @@ fun SettingsSecurityGroup(
         statusSwitchEnabled = false,
         onClick = { if (!guardInstalling) onInstallGuardClicked() }
     )
+    if (auditFailure != null) {
+        // 审计链已降级：越权放行事件可能没有被记下来，必须在安全组里常驻可见，
+        // 而不只是点进审计弹窗才看得到。
+        Text(
+            text = "⚠ 审计写入失败：$auditFailure",
+            style = AuroraTextStyles.footnote2,
+            color = AuroraTokens.Error,
+            modifier = Modifier.padding(start = 4.dp, top = 6.dp)
+        )
+        Text(
+            text = "越权放行事件可能未被记录，请检查 shso 目录可写与剩余空间",
+            style = AuroraTextStyles.footnote2,
+            color = AuroraTokens.TextSecondary,
+            modifier = Modifier.padding(start = 4.dp, bottom = 6.dp)
+        )
+    }
 }

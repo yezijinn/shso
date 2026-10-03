@@ -186,6 +186,47 @@ class InstallAndBudgetHardeningTest {
         assertTrue(ZipEntryCountProbe.TAIL_WINDOW < 70 * 1024)
     }
 
+    @Test fun `自报条目数被改小时必须用中央目录体积兜住`() {
+        // 攻击形态：中央目录实际写上百万条 header 记录，而 EOCD 的「总条目数」写 1。
+        // 预检若只信自报字段就得到 1 → 放行；而 zip4j 的 HeaderReader 是
+        // **从中央目录起点逐条扫到 EOCD 签名为止**、不以自报计数为上界
+        // → 百万个 FileHeader 一次性进堆 → OOM。预检对它唯一要防的形态完全失效。
+        val eocd = ByteArray(22)
+        writeIntLe(eocd, 0, 0x06054b50)
+        writeShortLe(eocd, 8, 1)         // 本盘条目数：攻击者写小
+        writeShortLe(eocd, 10, 1)        // 总条目数：攻击者写小
+        writeIntLe(eocd, 12, 46 * 30_000)  // 但中央目录实际体积 = 30000 条记录
+        val count = ZipEntryCountProbe.entryCountFromTail(eocd, 22L)!!
+        assertEquals(
+            "中央目录体积折算的条目数必须参与判定，不能只信自报字段",
+            30_000, count
+        )
+        assertTrue(
+            "30000 条必须触发解压预算拦截（上限 20000）",
+            count >= ArchiveExtractor.MAX_EXTRACT_ENTRIES
+        )
+    }
+
+    @Test fun `自报条目数大于体积折算时以自报值为准`() {
+        // 两个上界取大者：自报字段也可能被**改大**来触发误拒，不能只信体积。
+        val eocd = ByteArray(22)
+        writeIntLe(eocd, 0, 0x06054b50)
+        writeShortLe(eocd, 8, 900)
+        writeShortLe(eocd, 10, 900)
+        writeIntLe(eocd, 12, 46 * 3)     // 体积只折算 3 条
+        assertEquals(900, ZipEntryCountProbe.entryCountFromTail(eocd, 22L))
+    }
+
+    @Test fun `中央目录体积为 0 时不得误判`() {
+        // 空归档：自报 0 条、体积 0 → 仍是 0，不能因除法/默认值产出奇怪数字
+        val eocd = ByteArray(22)
+        writeIntLe(eocd, 0, 0x06054b50)
+        writeShortLe(eocd, 8, 0)
+        writeShortLe(eocd, 10, 0)
+        writeIntLe(eocd, 12, 0)
+        assertEquals(0, ZipEntryCountProbe.entryCountFromTail(eocd, 22L))
+    }
+
     // ========================================================================
     // OBB 锁退出码契约
     // ========================================================================
