@@ -55,7 +55,17 @@ import kotlin.math.roundToInt
 
 private data class PresetColorItem(
     val name: String,
-    val color: Color
+    val color: Color,
+    /**
+     * 预计算的 HEX 串。
+     *
+     * 此前每帧对每个预设格做一次 `String.format("#%06X", …)`：拖色相条时
+     * `hexString` 每帧变化 → 16 个格子全部重组 → 每格 new 一个 `java.util.Formatter`
+     * （60Hz 下约 1000 次/s）。且未指定 Locale，在使用非拉丁数字的 Locale
+     * （`ar-SA`/`fa-IR` 的 `nu-arab`）下会输出本地化数字。
+     * 改在构造期算一次并固定 `Locale.ROOT`，格内只做字符串等值比较。
+     */
+    val hex: String = String.format(java.util.Locale.ROOT, "#%06X", 0xFFFFFF and color.toArgb())
 )
 
 private val PRESET_COLOR_GROUPS = listOf(
@@ -103,14 +113,30 @@ fun ColorWheelDialog(
     var saturation by remember { mutableFloatStateOf(initialHsv[1]) }
     var value by remember { mutableFloatStateOf(initialHsv[2]) }
 
-    val currentColor = remember(hue, saturation, value) {
-        // 饱和与明度下限 0.01：Color.hsv 在 0f 处会退化为黑色，导致预览看不出选择
+    // 预览用颜色：给饱和/明度一个下限，否则 HSV 在 s=0 或 v=0 时退化成纯黑，
+    // 预览区看不出当前选择。
+    //
+    // 但**提交值必须用未钳制的原值**：下限会把 s=0 的纯白算成 0.99 → #FCFCFC，
+    // 于是「极光白」预设永远选不中（拿 #FCFCFC 与 #FFFFFF 比恒为 false），
+    // 且点确定后落盘的是 #FCFCFC —— 用户要的纯白被静默改写。
+    // 故预览与取值拆开：previewColor 只用于绘制与 hex 显示。
+    val previewColor = remember(hue, saturation, value) {
         Color.hsv(hue, saturation.coerceIn(0.01f, 1f), value.coerceIn(0.01f, 1f))
+    }
+    // 实际取值：s/v 为 0 时 Color.hsv 能正确给出灰/黑，无需下限
+    val currentColor = remember(hue, saturation, value) {
+        Color.hsv(hue, saturation.coerceIn(0f, 1f), value.coerceIn(0f, 1f))
     }
 
     val hexString = remember(currentColor) {
         val argb = currentColor.toArgb()
-        String.format("#%06X", 0xFFFFFF and argb)
+        String.format(java.util.Locale.ROOT, "#%06X", 0xFFFFFF and argb)
+    }
+
+    // 色相条 thumb 直径：触摸映射与绘制映射都要用，故提到外层作用域
+    val hueThumbDiameter = 28.dp
+    val hueThumbDiameterPx = with(androidx.compose.ui.platform.LocalDensity.current) {
+        hueThumbDiameter.toPx()
     }
 
     val rainbowBrush = remember {
@@ -155,7 +181,7 @@ fun ColorWheelDialog(
                     )
                     Text(
                         text = hexString,
-                        color = currentColor,
+                        color = previewColor,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace
@@ -166,14 +192,14 @@ fun ColorWheelDialog(
 
                 Text(
                     text = "root@android:~# shso --status",
-                    color = currentColor,
+                    color = previewColor,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Medium
                 )
                 Text(
                     text = "[shso] 任务执行成功 [退出码: 0]",
-                    color = currentColor,
+                    color = previewColor,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace
                 )
@@ -193,9 +219,14 @@ fun ColorWheelDialog(
                         .clip(RoundedCornerShape(0.dp))
                         .background(rainbowBrush)
                         .pointerInput(Unit) {
+                            // 触摸位置 → 色相：与 thumb 的绘制位置必须同一套映射。
+                            // 此前这里是 x/width → [0,360]，而 thumb 画在
+                            // hue/360*(width-28dp)，两套公式差半个 thumb 直径
+                            // （≈300dp 宽条上约 17° 色相）—— 点哪不是哪。
                             fun updateHue(x: Float, maxWidthPx: Float) {
-                                val clampedX = x.coerceIn(0f, maxWidthPx)
-                                hue = (clampedX / maxWidthPx) * 360f
+                                val usable = (maxWidthPx - hueThumbDiameterPx).coerceAtLeast(1f)
+                                val clampedX = x.coerceIn(0f, usable)
+                                hue = (clampedX / usable) * 360f
                                 // 接近灰或黑时抬到满饱和满明度，否则拖动色相在预览上看不出变化
                                 if (saturation < 0.2f) saturation = 1.0f
                                 if (value < 0.3f) value = 1.0f
@@ -208,8 +239,9 @@ fun ColorWheelDialog(
                         .pointerInput(Unit) {
                             detectDragGestures { change, _ ->
                                 change.consume()
-                                val clampedX = change.position.x.coerceIn(0f, size.width.toFloat())
-                                hue = (clampedX / size.width.toFloat()) * 360f
+                                val usable = (size.width - hueThumbDiameterPx).coerceAtLeast(1f)
+                                val clampedX = change.position.x.coerceIn(0f, usable)
+                                hue = (clampedX / usable) * 360f
                                 // 同 updateHue：避免低饱和 / 低明度下拖动色相无可见变化
                                 if (saturation < 0.2f) saturation = 1.0f
                                 if (value < 0.3f) value = 1.0f
@@ -217,14 +249,14 @@ fun ColorWheelDialog(
                         }
                 ) {
                     val widthPx = with(density) { maxWidth.toPx() }
-                    val thumbDiameter = 28.dp
-                    val thumbDiameterPx = with(density) { thumbDiameter.toPx() }
-                    val thumbX = (hue / 360f * (widthPx - thumbDiameterPx)).coerceIn(0f, widthPx - thumbDiameterPx)
+                    
+                    // 与 updateHue 同一套映射：x = hue/360 * (width - thumbDiameter)
+                    val thumbX = (hue / 360f * (widthPx - hueThumbDiameterPx)).coerceIn(0f, (widthPx - hueThumbDiameterPx).coerceAtLeast(0f))
 
                     Box(
                         modifier = Modifier
                             .offset { IntOffset(thumbX.roundToInt(), with(density) { 3.dp.toPx().roundToInt() }) }
-                            .size(thumbDiameter)
+                            .size(hueThumbDiameter)
                             .shadow(4.dp, RoundedCornerShape(0.dp))
                             .clip(RoundedCornerShape(0.dp))
                             .background(Color.White)
@@ -282,8 +314,9 @@ fun ColorWheelDialog(
                         }
                 ) {
                     val widthPx = with(density) { maxWidth.toPx() }
-                    val thumbDiameter = 28.dp
-                    val thumbDiameterPx = with(density) { thumbDiameter.toPx() }
+                    
+    val thumbDiameter = 28.dp
+    val thumbDiameterPx = with(density) { thumbDiameter.toPx() }
                     val progress = ((value - 0.2f) / 0.8f).coerceIn(0f, 1f)
                     val thumbX = (progress * (widthPx - thumbDiameterPx)).coerceIn(0f, widthPx - thumbDiameterPx)
 
@@ -297,7 +330,7 @@ fun ColorWheelDialog(
                             .border(2.dp, AuroraTokens.StrokeLight, RoundedCornerShape(0.dp))
                             .padding(3.dp)
                             .clip(RoundedCornerShape(0.dp))
-                            .background(currentColor)
+                            .background(previewColor)
                     )
                 }
             }
@@ -319,7 +352,7 @@ fun ColorWheelDialog(
                 ) {
                     items(PRESET_COLOR_GROUPS) { item ->
                         // 按 HEX 字符串判定选中：Color 分量为浮点，直接等值比较会因转换误差漏判
-                        val isSelected = hexString == String.format("#%06X", 0xFFFFFF and item.color.toArgb())
+                        val isSelected = hexString == item.hex
 
                         Row(
                             modifier = Modifier

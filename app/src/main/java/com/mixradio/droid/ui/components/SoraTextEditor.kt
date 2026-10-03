@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.viewinterop.AndroidView
 import com.mixradio.droid.ui.theme.AuroraTokens
 import io.github.rosemoe.sora.event.ContentChangeEvent
+import io.github.rosemoe.sora.lang.EmptyLanguage
 import io.github.rosemoe.sora.widget.CodeEditor
 import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
 import io.github.rosemoe.sora.widget.schemes.SchemeDarcula
@@ -164,13 +165,26 @@ fun SoraTextEditor(
         },
         update = { ed ->
             ed.setLineNumberEnabled(showLineNumbers)
-            ed.setTextSize(fontSize.value)
+            // 字号必须幂等：Sora 的 setTextSize → setTextSizePx 是**无条件**
+            // `requestLayoutIfNeeded(); createLayout(); invalidate()`（javap 核实）。
+            // 而本组件所在的重组域会读 `textRevision`（统计行用它），于是每敲一个字
+            // 就重跑一次 update → 全量重建 Layout：
+            //   · 不换行分支：LineBreakLayout 重建时 new SingleCharacterWidths(tabWidth)，
+            //     其构造器分配 `new float[65536]`（256KB）+ SparseArray
+            //   · 换行分支：WordwrapLayout 全量重排所有可见行
+            // 下面 setWordwrap 早已加了同样的门闩，这里补齐 —— 字号是同一类问题。
+            val targetPx = fontSize.value
+            if (ed.textSizePx != targetPx) ed.setTextSize(targetPx)
             // 换行开关幂等：仅在状态变化时下发，避免每帧重复触发布局重建。
             if (ed.isWordwrap != wordWrap) ed.setWordwrap(wordWrap)
-            // 扩展名变化（另存为其它类型）时切换语法；重复设置会重置分析，故仅在实例不同时应用。
-            if (ed.editorLanguage !== editorLanguage && editorLanguage != null) {
-                ed.setEditorLanguage(editorLanguage)
-                monarchScheme?.let { ed.setColorScheme(it) }
+            // 扩展名变化（另存为其它类型）或语法包被删除时切换语法。
+            // 注意不能加 `editorLanguage != null` 守卫：那样「.py 另存为 .txt」与
+            // 「删除语法包」都会因 null 而短路，同一个 CodeEditor 继续用旧语法着色，
+            // 界面却已经是 .txt / 提示已删除（静默错误结果）。
+            if (ed.editorLanguage !== editorLanguage) {
+                ed.setEditorLanguage(editorLanguage ?: EmptyLanguage())
+                // 配色同理：语法被清空时必须回落到基础配色，否则残留 Monarch 令牌色。
+                ed.setColorScheme(monarchScheme ?: scheme)
             }
         }
     )

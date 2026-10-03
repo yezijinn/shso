@@ -20,7 +20,7 @@
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 452 tests / 0 failures / 1 skipped |
+| 单元测试 | 468 tests / 0 failures / 1 skipped |
 | lint | 0 errors / 31 warnings |
 | release 体积 | 2.18 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
@@ -40,6 +40,80 @@
 ---
 
 ## 待办
+
+### A59. 第九轮全面 BUG 深挖（2026-10-03）
+
+前八轮已把业务 Kotlin 与守卫 shell 走完。A59 攻**UI 基建层**（此前从未审过），
+并把第七轮确认存在但未修的最高危项落地。
+
+- [x] **审计范围**：`AuroraComponents` / `DockBar` / `ColorWheelDialog` / `AuroraGlass` /
+      `SoraMonarchGrammars` / `SoraTextEditor`（合计约 1490 行）+ 全部调用点
+      （`TextEditorDialog` / `TerminalPage` / `SyntaxPackDialog` / `MainActivity`）。
+      该轮反编译了 Sora/Monarch 的 jar 与 Compose 源码来核实断言，未凭印象下结论
+
+- [x] **安全性：解释器内联执行此前完全不被判定（1 项 P0）**
+  - [x] `python3 -c "import shutil; shutil.rmtree('/system')"`、
+        `perl -e 'system("dd if=/dev/zero of=/dev/block/by-name/boot")'`、
+        `node -e "fs.rmSync('/system',{recursive:true})"` 全部**零 finding**。
+        `detectInterpreterExecution` 只在 `containsDecoderMarker`（base64 / atob /
+        xxd -r / openssl enc / `\x` / codecs.decode）命中时才报，而解码标记只是混淆执行的
+        **一种**形态，最直白的载荷一个标记都不含。`evaluateAtom` 的 when 无解释器分支
+        → `Verdict.Allow` → 档位 2 的自动执行链路放行，root 身份、无弹窗、无审计记录。
+        而守卫 `guard/` 下**没有** python/perl/node 包装器（第八轮已实测，该轮再确认
+        设备上 `python3` 本身就不存在）→ 静态层是唯一防线。
+        改为：命中内联开关（`-c`/`-e`/`-r`/`-m`/`--command`/`--eval`/`--execute`
+        及其 `=` 形态）即出 finding，规则 ID **沿用** `INTERPRETER_PAYLOAD`
+        （不新造 ID，避免同一语义被拆成两个规则导致下游漏判）；
+        脚本来源下按 `obfuscationLevel` 收敛到 CRITICAL 以拦停自动执行
+
+- [x] **性能瓶颈：编辑器每敲一个字重建一次 Layout（1 项 P0）**
+  - [x] `SoraTextEditor` 的 `update` 无条件调 `ed.setTextSize(fontSize.value)`，
+        而 Sora 的 `setTextSize` → `setTextSizePx` 是**无条件**
+        `requestLayoutIfNeeded(); createLayout(); invalidate()`（javap 核实）。
+        本组件所在重组域会读 `textRevision`（统计行用它），于是每按键重跑 update：
+        · 不换行：`LineBreakLayout` 重建时 `new SingleCharacterWidths(tabWidth)`，
+          其构造器分配 `new float[65536]`（**256KB**）+ SparseArray
+        · 换行：`WordwrapLayout` 全量重排所有可见行
+        同一段代码里 `setWordwrap` 早已加了门闩，字号漏了。现按 `ed.textSizePx` 比对后再设
+
+- [x] **静默错误结果（3 项）**
+  - [x] **取色器把纯白压成 `#FCFCFC` 并落盘**。预览用的饱和/明度下限 `0.01f` 同时被当成取值
+        下限：s=0 的纯白被算成 `1-1*0.01*1=0.99` → `#FCFCFC`。后果是「极光白」预设的
+        选中框永远不亮（拿 `#FCFCFC` 与 `#FFFFFF` 比恒为 false），且点确定后落盘的是
+        `#FCFCFC` —— 用户要的纯白被静默改写。真机 awk 复算对照：
+        纯白 新 `#FFFFFF` / 旧 `#FFFFFC`，纯黑 新 `#000000` / 旧 `#030303`。
+        现拆成 `previewColor`（绘制/hex 显示，带下限）与 `currentColor`（提交，无下限）
+  - [x] **语法无法被清除**：`if (ed.editorLanguage !== editorLanguage && editorLanguage != null)`
+        的 `!= null` 守卫使「`.py` 另存为 `.txt`」与「删除语法包」都因 null 而短路，
+        同一个 `CodeEditor` 继续用旧语法与 Monarch 配色，界面却已是 `.txt` / 提示已删除。
+        现去掉该守卫，null 时回落 `EmptyLanguage()` 并把基础配色无条件应用一次
+  - [x] **取色映射与 thumb 绘制用了两套公式**：触摸是 `x/width → [0,360]`，
+        thumb 画在 `hue/360*(width-28dp)`，两套差**半个 thumb 直径**
+        （≈300dp 宽条约 17° 色相）—— 点哪不是哪。现共用同一套映射
+
+- [x] **已核实为不成立 / 无需改动**（避免下轮重复排查）
+  - 语法注册表的**应用层失效链路是通的**：导入/删除/单项启停/全部启停四条路径都
+    `refresh()` → `onChanged()` → `invalidate()` + `syntaxRevision++`。
+    真正漏的是**进程级注册表**：`GrammarRegistry`/`LanguageRegistry` 无移除 API，
+    同 id 重新导入仍返回首次解析的旧 `Language`（清单 sha256 已更新、界面提示已导入，
+    着色仍是旧的，只能重启进程）—— 真实存在但需改动 Monarch scope 命名策略，
+    风险高于A59其他项，A59 未修，已记入下方待办
+  - `controller.editor` 挂载/卸载**无可利用竞争**：`applyChanges()` 先跑
+    `applier.applyChanges()`（factory 置 editor）再 `dispatchRememberObservers()`
+    （onDispose 置 null），同帧内 onDispose 不可能覆盖新建的 view
+  - RGB↔HSV 往返**无精度漂移**（16 个预设逐档验算字节级精确）；色相 360 与 0 等价
+  - `AuroraComponents` / `AuroraGlass` / `DockBar` / `AuroraTokens` **无组合期 IO、
+    无 Typeface 创建**（只用 `FontFamily.Monospace`，走 Compose 自带字体缓存）
+  - `DockBar` **无手势冲突、无实质防抖缺口**（Pager 消费位移后 clickable 自动取消，
+    `scroll{}` 互斥量天然串行化）
+  - `String.format` 未指定 Locale 的本地化数字问题已在预设项加 `Locale.ROOT` 时一并修掉
+
+- [x] **回归**：468 tests / 0 failures / 1 skipped；lint 0 errors / 31 warnings；
+      `build_apk.py` 红线通过（2.2 MB）。新增 `InterpreterInlineAndColorClampTest`（9 项）
+      与 `HsvValueClampTest`（7 项）
+- [x] **真机验证**：APK 安装冷启动 `FATAL=0`；用设备 awk 独立复算 HSV 转换，
+      确认「取值不设下限」后纯白/纯黑精确、旧实现确实掉档；
+      顺带确认设备上不存在 `python3`（呼应守卫无解释器包装器这一前提）
 
 ### A58. 第八轮全面 BUG 深挖（2026-10-03）
 

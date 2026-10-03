@@ -660,16 +660,58 @@ object PolicyEngine {
         for (a in atoms) {
             if (a.program !in INTERPRETERS) continue
             val joined = a.args.joinToString(" ")
-            if (containsDecoderMarker(joined)) {
+
+            // 内联代码开关：`-c` / `-e` / `-r` / `-m` / `--command` 及 `--command=`。
+            // 这类参数后面的字符串**本身就是要在运行时执行的代码**，无法静态展开。
+            //
+            // 原实现只在 `containsDecoderMarker` 命中时才报 finding，而解码标记
+            // （base64 / atob / xxd -r / openssl enc / \x / codecs.decode）只是
+            // 混淆执行的**一种**形态。于是最直白的载荷一个标记都不含、零 finding：
+            //   python3 -c "import shutil; shutil.rmtree('/system')"
+            //   perl -e 'system("dd if=/dev/zero of=/dev/block/by-name/boot")'
+            //   node -e "fs.rmSync('/system',{recursive:true})"
+            // `evaluateAtom` 的 when 没有解释器分支 → Verdict.Allow，
+            // `blocksUnattendedExecution` 为 false → 档位 2 自动执行，root 身份、
+            // 无弹窗、无审计记录。
+            //
+            // 而守卫侧 `guard/` 下**没有** python/perl/node 包装器（已实测），
+            // 顶层运行时不具备兜底能力 → 静态层是唯一防线，故按 fail-closed 上报。
+            val inlineCode = a.args.any { isInterpreterInlineSwitch(it) }
+            val hasDecoder = containsDecoderMarker(joined)
+            if (inlineCode || hasDecoder) {
                 findings.add(
                     Finding(
+                        // 规则 ID 沿用 INTERPRETER_PAYLOAD：既有下游（审计展示、
+                        // 档位收敛、回归测试）都按这个 ID 识别「解释器执行不可静态
+                        // 展开的载荷」。新增「内联开关」这一触发条件而不是新造 ID，
+                        // 避免同一个语义被拆成两个规则 ID 导致下游漏判。
                         "INTERPRETER_PAYLOAD", obfuscationLevel(source),
-                        "解释器内联执行解码后的载荷（${a.program} -c/-e …），属混淆执行",
+                        if (inlineCode) {
+                            "解释器内联执行代码（${a.program} ${a.args.firstOrNull { isInterpreterInlineSwitch(it) }} …），" +
+                                "该字符串会在运行时直接执行且无法静态展开"
+                        } else {
+                            "解释器内联执行解码后的载荷（${a.program} -c/-e …），属混淆执行"
+                        },
                         a.raw.take(200), line
                     )
                 )
             }
         }
+    }
+
+    /**
+     * 是否是「内联执行代码」型开关。
+     *
+     * 覆盖短选项 `-c`/`-e`/`-r`/`-m` 与长选项 `--command`/`--eval` 及其 `=` 形态。
+     * 单独出现（后面没有再跟参数）同样算命中 —— 参数个数无法静态确定时取保守侧。
+     */
+    private fun isInterpreterInlineSwitch(arg: String): Boolean = when {
+        arg == "-c" || arg == "-e" || arg == "-r" || arg == "-m" -> true
+        arg == "--command" || arg == "--eval" || arg == "--execute" -> true
+        arg.startsWith("--command=") -> true
+        arg.startsWith("--eval=") -> true
+        arg.startsWith("--execute=") -> true
+        else -> false
     }
 
     /**
