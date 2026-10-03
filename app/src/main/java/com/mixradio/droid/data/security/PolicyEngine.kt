@@ -172,6 +172,7 @@ object PolicyEngine {
             in RM_LIKE -> evaluateRm(atom, line, snippet, findings)
             "dd" -> evaluateDd(atom, line, snippet, findings)
             "truncate" -> evaluateTruncate(atom, line, snippet, findings)
+            in SHELL_PROGRAMS -> evaluateShellFileExecution(atom, source, line, snippet, findings)
             in MKFS_LIKE -> findings.add(
                 Finding("MKFS", RiskLevel.CRITICAL, "格式化文件系统/分区", snippet, line)
             )
@@ -425,6 +426,46 @@ object PolicyEngine {
     }
 
     /** rm 族：递归删除 + 路径分级。 */
+    /**
+     * `sh <文件>` / `bash <文件>`：把一个**文件**交给解释器执行。
+     *
+     * `SHELL_PROGRAMS` 此前只用在「管道终点」检测里，`evaluateAtom` 的 when
+     * 没有对应分支 → `sh /sdcard/p.dat` 零 finding。
+     *
+     * 为什么这是缺口：脚本**内容审查**（[ScriptAuditor]）只在「执行文件」链路上被调用
+     * （`RootService.executeFilePreflight`，且只对 `isSh` 为真的后缀生效）。
+     * 于是把含 `rm -rf /system`、`curl …|sh`、`python3 -c …` 的文件命名成任意
+     * 非 `.sh` 后缀，再在终端手输 `sh /sdcard/p.dat`，就完全绕过内容审查 ——
+     * 同一份内容走文件页会被拦（且高档位直接拒绝自动执行），走终端一路放行。
+     *
+     * 分级理由与管道终点一致：交互终端里用户是**显式输入**了这条命令，给可确认的
+     * DANGEROUS；脚本文件里出现说明作者刻意把载荷藏进非脚本后缀 → CRITICAL，
+     * 直接拦停自动执行链路。
+     *
+     * 只在「存在非选项操作数」时判定：`sh`、`sh -x` 这类交互式读 stdin 的用法不受影响。
+     */
+    private fun evaluateShellFileExecution(
+        atom: CommandParser.Atom,
+        source: CommandSource,
+        line: Int?,
+        snippet: String,
+        findings: ArrayList<Finding>
+    ) {
+        val scriptOperand = atom.operands.firstOrNull { !it.startsWith("-") } ?: return
+        findings.add(
+            Finding(
+                "SHELL_FILE_EXECUTION", obfuscationLevel(source),
+                "由解释器执行文件（${atom.program} $scriptOperand）：该文件内容不受命令文本审查，" +
+                    "若其扩展名不是脚本后缀则同时绕过了脚本内容扫描",
+                snippet, line
+            )
+        )
+    }
+
+    /**
+     * `sh <文件>` 的判定：见 [evaluateShellFileExecution]。
+     */
+
     private fun evaluateRm(atom: CommandParser.Atom, line: Int?, snippet: String, findings: ArrayList<Finding>) {
         val recursive = atom.program != "unlink" && (
             atom.args.any { it.startsWith("-") && it.contains("r", ignoreCase = true) && it.none { c -> c == '=' } }

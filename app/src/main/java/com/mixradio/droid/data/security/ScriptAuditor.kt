@@ -120,20 +120,44 @@ object ScriptAuditor {
     internal fun looksEncrypted(content: String): Boolean {
         if (content.isEmpty()) return false
         val n = content.length.coerceAtMost(8192)
-        var binaryChars = 0
+        var nulChars = 0
+        var replacementChars = 0
         for (i in 0 until n) {
-            val ch = content[i]
-            if (ch == '\u0000' || ch == '\uFFFD') binaryChars++
+            when (content[i]) {
+                '\u0000' -> nulChars++
+                // U+FFFD 单列：它是「解码失败」的产物，不是二进制本身的特征。
+                // 两条读取链路（本地 readText(UTF_8) 与 root 通道 InputStreamReader(UTF_8)）
+                // 都按 UTF-8 解码 → GBK/GB18030 脚本的中文注释会产出**大量** U+FFFD，
+                // 与 NUL 同权计入会让中文用户自写的脚本被判成 CRITICAL 混淆载荷而拒绝自动执行，
+                // 且提示「疑似加密/编码混淆」与真实原因（编码不符）不符。
+                // 同一脚本少写几行注释又不命中 → 判定随内容长度跳变。
+                '\uFFFD' -> replacementChars++
+            }
         }
-        // NUL / 替换符 占比 ≥5%：基本可判定为二进制或错误编码
-        if (binaryChars * 100 / n >= 5) return true
+        // NUL 是二进制的硬特征，占比 ≥5% 即可判定
+        if (nulChars * 100 / n >= 5) return true
+        // U+FFFD 只在**同时**没有 NUL、且密度极高时才作为二进制线索：
+        // 真二进制按 UTF-8 解码几乎必然产生大量替换符，而 GB18030 脚本虽也高但不含 NUL。
+        // 阈值取 40%：GB18030 中文注释的替换符密度通常在 30% 上下（双字节里约 2/3 不是合法
+        // UTF-8 序列但会合并成一个替换符），真二进制接近 100%。
+        if (replacementChars * 100 / n >= 40) return true
 
-        // 超长「纯 base64 字符集」单行：混淆载荷的典型形态（minified JS 含 {}(); 等符号，不会命中）
-        val firstLine = content.lineSequence().firstOrNull() ?: return false
-        if (firstLine.length > 2048 && firstLine.length % 4 == 0 &&
-            firstLine.none { it == ' ' || it == '\t' } &&
-            firstLine.all { it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' }
-        ) return true
+        // 超长「纯 base64 字符集」单行：混淆载荷的典型形态（minified JS 含 {}(); 等符号，不会命中）。
+        //
+        // 原实现只取**第一行**，而任何可执行脚本第一行都是 `#!/system/bin/sh`（长度 <2048），
+        // 于是该判据对脚本永久失效，把 base64 载荷放第 2 行即完全绕过 ——
+        // 与注释宣称的「混淆载荷第一道拦截」覆盖面不符（fail-open 方向）。
+        // 现遍历前若干行（跳过 shebang），逐行判定。
+        for (rawLine in content.lineSequence()) {
+            val line = rawLine.trim()
+            if (line.isEmpty()) continue
+            if (line.startsWith("#!")) continue          // shebang 不算载荷行
+            if (line.length > 2048 && line.length % 4 == 0 &&
+                line.none { it == ' ' || it == '\t' } &&
+                line.all { it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' }
+            ) return true
+            break
+        }
 
         return false
     }

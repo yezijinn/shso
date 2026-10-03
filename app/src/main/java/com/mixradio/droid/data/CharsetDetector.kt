@@ -48,13 +48,28 @@ object CharsetDetector {
         if (isStrictUtf8(bytes)) {
             return Detection(StandardCharsets.UTF_8, false, String(bytes, StandardCharsets.UTF_8))
         }
-        // ④ GB18030（中文 Windows 常见）
+        // ④ 非严格 UTF-8：可能是「少量非法字节的 UTF-8」，也可能是真正的 GB18030/其它编码。
+        //    **不能无条件落 GB18030** —— 那会造成不可逆的字节改写：
+        //    一个「基本是 ASCII、中间夹 1 个非法字节」的文件（日志里混进一行 GB18030 中文、
+        //    日志被截断在多字节字符中间）会让 isStrictUtf8 因 round-trip 不等而失败，
+        //    于是**整个文件**被按 GB18030 重解释：原本合法的 UTF-8 中文全部变乱码、
+        //    非法字节变 U+FFFD。用户看不出异常（只是满屏乱码），改一个字点保存
+        //    就按 GB18030 全量重写 → 原始字节被彻底替换，不可逆、不可撤销。
+        //    故先判「这到底是不是 GB18030」：GB18030 覆盖全部 Unicode 码位，
+        //    真正的 GB18030 文本不该含 U+FFFD；含得越多说明越不是它。
         try {
             val cs = Charset.forName("GB18030")
-            return Detection(cs, false, String(bytes, cs))
+            val gbText = String(bytes, cs)
+            val replacements = gbText.count { it == '\uFFFD' }
+            // 阈值 1%：正常 GB18030 文本的 U+FFFD 密度应为 0，给一点量化余量
+            if (replacements * 100 <= bytes.size) {
+                return Detection(cs, false, gbText)
+            }
         } catch (_: Throwable) {
             // 极端环境无 GB18030，回退 ISO-8859-1
         }
+        // ⑤ 都不是：按 ISO-8859-1 兜底。该编码对**任意**字节序列都一一映射到 U+0000..U+00FF，
+        //    往返无损，至少不会破坏用户的原始数据（GB18030 回落会把合法字节改成别的字符）。
         return Detection(StandardCharsets.ISO_8859_1, false, String(bytes, StandardCharsets.ISO_8859_1))
     }
 

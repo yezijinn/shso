@@ -79,7 +79,13 @@ object CommandParser {
     private val WRAPPER_PREFIXES = setOf(
         "busybox", "toybox", "magisk", "nohup", "timeout", "stdbuf", "sudo", "env",
         // xargs 同样是「执行后面那条命令」的派发器：`xargs rm -rf /system` 的真实命令是 rm
-        "xargs"
+        "xargs",
+        // 以下同样是「包一层再执行」的前缀，且都不改变命令本身的语义：
+        //   su -c "rm -rf /system"、nice rm -rf /system、setsid sh -c '…'、time sh -c '…'
+        // 此前它们不在名单里 → program 就是它们本身，`evaluateAtom` 的 when 无对应分支
+        // → Allow，整条命令零规则。`su`/`setsid` 还会重建环境（PATH 重置），
+        // 此时守卫 PATH 的兜底也不成立。
+        "su", "nice", "setsid", "time", "chrt", "taskset", "ionice", "unbuffer", "watch"
     )
     private val SHELL_PROGRAMS = setOf("sh", "bash", "ash", "dash", "mksh")
 
@@ -107,7 +113,23 @@ object CommandParser {
         "nohup" to emptySet(),
         "busybox" to emptySet(),
         "toybox" to emptySet(),
-        "magisk" to emptySet()
+        "magisk" to emptySet(),
+        // su 的取值选项。**必须登记 `-c`**：`su -c "rm -rf /system"` 里 `-c` 后面那条
+        // 就是要在另一个身份下执行的命令。若不登记，内层选项循环会在 `-c` 处 idx++ 走掉，
+        // 接着遇到命令字符串（非 `-`/数字/赋值）而 break → idx 恰好指到它，
+        // 剥出来的 program 反而是那条命令本身……但当命令串恰好以 `-` 开头或
+        // 剥到末尾无内容时，会走「剥完没东西了」分支直接返回 `su`，
+        // 内层就永远不会被 expandInnerCommand 展开 → 整条命令零规则。
+        "su" to setOf("-c", "--command", "-g", "--group", "-p", "--preserve-environment", "-s", "--shell"),
+        // 以下 wrapper 本身不吃选项值，登记空集以明确「剥到这里就没有更多选项了」
+        "nice" to emptySet(),
+        "setsid" to emptySet(),
+        "time" to emptySet(),
+        "chrt" to emptySet(),
+        "taskset" to emptySet(),
+        "ionice" to emptySet(),
+        "unbuffer" to emptySet(),
+        "watch" to setOf("-n", "--interval", "-d", "--differences", "-t", "--timestamps")
     )
 
     /** 重定向操作符（按长度降序匹配，避免 `>` 抢先吃掉 `>>`/`>&`/`&>`）。 */
@@ -406,6 +428,14 @@ object CommandParser {
         // 4) sh -c '...' / bash -c "..."：内层字符串本身是命令，递归解析（nested=true）
         val cIdx = args.indexOfFirst { isDashC(it) }
         if (program in SHELL_PROGRAMS && cIdx >= 0 && cIdx + 1 < args.size) {
+            expandInnerCommand(args[cIdx + 1], depth, atoms)
+        }
+
+        // 4b) su -c '...'：su 与 shell 同理 —— `-c` 后面那条就是在另一个身份下执行的命令。
+        // 此前 su 既不在 WRAPPER_PREFIXES（剥不掉）、也不在 SHELL_PROGRAMS（内层不展开），
+        // 于是 `su -c "rm -rf /system"` 剥掉 su 前缀后 program 是 su，`evaluateAtom` 的 when
+        // 无 su 分支 → 零 finding。而 su 会重建环境（PATH 重置），守卫 PATH 兜底也不成立。
+        if (program == "su" && cIdx >= 0 && cIdx + 1 < args.size) {
             expandInnerCommand(args[cIdx + 1], depth, atoms)
         }
 

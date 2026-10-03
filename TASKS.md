@@ -20,7 +20,7 @@
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 468 tests / 0 failures / 1 skipped |
+| 单元测试 | 481 tests / 0 failures / 1 skipped |
 | lint | 0 errors / 31 warnings |
 | release 体积 | 2.18 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
@@ -40,6 +40,69 @@
 ---
 
 ## 待办
+
+### A60. 第十轮全面 BUG 深挖（2026-10-03）
+
+前十轮已把所有源文件读过一遍。A60 不再重复扫描，改为**集中落地累积 backlog 里危害最高的项**，
+并对上一轮列为「待办」的两条争议项做真机复核。
+
+- [x] **安全性（3 项）**
+  - [x] **终端 `sh <任意文件>` 完全绕过脚本内容审查**。`SHELL_PROGRAMS` 此前只用在
+        「管道终点」检测，`evaluateAtom` 的 when 无对应分支 → `sh /sdcard/p.dat` 零 finding。
+        而脚本内容审查只在「执行文件」链路且后缀为 `.sh` 时才调用：把含
+        `rm -rf /system`、`curl …|sh`、`python3 -c …` 的文件命名成 `.dat`，再在终端手输
+        `sh <该文件>`，同一份内容走文件页会被拦（高档位直接拒绝自动执行）、走终端一路放行。
+        现新增 `evaluateShellFileExecution`，脚本来源下按 `obfuscationLevel` 收敛到 CRITICAL；
+        `sh` / `sh -x`（交互式读 stdin）不误报
+  - [x] **`su`/`nice`/`setsid`/`time` 等不在 wrapper 名单 → 整条命令零规则**。它们都是
+        「包一层再执行」的前缀，此前 program 就是它们本身，when 无分支 → Allow。
+        `su`/`setsid` 还会重建环境（PATH 重置），守卫 PATH 兜底不成立
+  - [x] **`su -c` 内层不展开**：即使把 `su` 加进 `WRAPPER_PREFIXES`，`-c` 未登记为取值选项，
+        内层选项循环会把它当普通 flag 跳过，随后走「剥完没东西了」分支直接返回 `su`，
+        内层永远不展开。现为 `su` 登记 `-c`/`--command`/`-g`/`-p`/`-s` 等取值选项，
+        并为新增的 `nice`/`setsid`/`time`/`chrt`/`taskset`/`ionice`/`unbuffer`/`watch`
+        补上各自的取值选项表
+
+- [x] **数据丢失（1 项 P0）**
+  - [x] **单个非法字节即让整个文件被重解释为 GB18030 → 保存后原始字节不可逆损坏**。
+        `isStrictUtf8` 是「解码再编码与原字节一致」的严格往返，一个非法字节就让它失败，
+        而失败后**无条件**落 GB18030。于是「基本是 ASCII、中间夹 1 个非法字节」的文件
+        （日志里混进一行 GB18030 中文、日志被截断在多字节字符中间）整个被按 GB18030 解读：
+        原本合法的 UTF-8 中文全变乱码、非法字节变 U+FFFD，用户看不出异常（只是满屏乱码），
+        改一个字点保存就按 GB18030 全量重写 → 原始字节彻底替换、不可撤销。
+        现先判「这到底是不是 GB18030」：GB18030 覆盖全部 Unicode 码位，真正的 GB18030 文本
+        不该含 U+FFFD，密度超 1% 即不认它 → 落 ISO-8859-1（对任意字节序列一一映射，
+        往返无损，至少不破坏用户数据）。真 GB18030 中文仍被正确识别
+
+- [x] **误判方向修正（1 项）**
+  - [x] **GBK/GB18030 中文脚本被误判为加密载荷而拒绝自动执行**。`looksEncrypted` 把
+        U+FFFD 与 NUL 同权计入「二进制字符」，≥5% 即判加密；而两条读取链路都按 UTF-8 解码，
+        GBK 脚本的中文注释会产出**大量** U+FFFD → CRITICAL `OBFUSCATED_PAYLOAD`，
+        提示写「疑似加密/编码混淆」与真实原因（编码不符）不符，且少写几行注释又不命中
+        → 判定随内容长度跳变。现 NUL 仍是二进制的硬特征（≥5%），
+        U+FFFD 单列且阈值提到 40%（真二进制接近 100%，GB18030 中文注释约 30% 上下）
+
+- [x] **同处修掉的 fail-open 盲区**
+  - [x] **base64 单行判据只看第一行 → 对脚本永久失效**。任何可执行脚本第一行是
+        `#!/system/bin/sh`（长度 <2048），该判据恒不成立；把 base64 载荷放第 2 行即完全绕过
+        —— 与注释宣称的「混淆载荷第一道拦截」覆盖面不符。现跳过 shebang 后判定载荷行
+
+- [x] **复核上一轮列为「待办」的两条争议项：均为误报，不予改动**
+  - [x] **「`mv -t` 跳过源判定」不成立**。真机实测（真实包装器 + 真实 PATH）：
+        `mv -t /system/bin src.txt` 与 `mv /system/bin/x -t <dir>` **均 exit=1 已拦截**，
+        正常 `mv src.txt <dir>/` 放行。源码 540–553 行也确实把源收集进 `_paths`
+  - [x] **「`ln` 硬链接搬运受保护 inode」不成立**。实测 `ln <src> /system/bin/x` 被守卫拦截
+        （exit=1，命中受保护路径）；另一条 `ln /system/bin/ls <dir>/hl` 的 exit=1 来自内核
+        `Cross-device link`（`/system` 与 `/data` 不同文件系统），**不是守卫判定**。
+        且 `cp /system/bin/ls <dir>/` 放行是**正确**行为 —— 读受保护文件并非破坏操作
+  - 教训：上一轮据静态阅读把这两条列为 P1，实测均不成立。**涉及守卫层的结论必须真机复现**，
+    且要分清「守卫拦截」与「内核/工具自身报错」—— 只看 exit code 会误判
+
+- [x] **回归**：481 tests / 0 failures / 1 skipped；lint 0 errors / 31 warnings；
+      `build_apk.py` 红线通过。新增 `EncodingAndShellExecRegressionTest`（13 项）
+- [x] **真机验证**：APK 安装冷启动 `FATAL=0`；探针已清理。编码探测的核心断言由 JVM 单测
+      覆盖（设备上 `iconv` 不可用、`/tmp` 在 Android 10 不存在，无法在设备侧复算，
+      不把「设备侧已验证」写进结论）
 
 ### A59. 第九轮全面 BUG 深挖（2026-10-03）
 
