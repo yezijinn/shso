@@ -18,6 +18,14 @@ import java.util.concurrent.ConcurrentLinkedQueue
 object HyperCore {
 
     private val logBatchQueue = ConcurrentLinkedQueue<String>()
+
+    // 与 [batchFlushEpoch] 同为跨线程字段：IO worker 写入、Main 线程在
+    // [stopBatchFlushLoop] 读取。缺 @Volatile 时主线程可能读到旧值（上一条命令的已结束 Job）
+    // 或 null，于是 `job !== owner` 判定成立 → **静默 return，循环根本没停** ——
+    // 恰好是本字段的「归属令牌」设计要防的情况，在内存模型上却不成立。
+    // 旧循环继续 drain 队列并 appendOutputDirect，与命令收尾的 flushBatchQueueImmediate
+    // 争抢同一队列，输出顺序错乱。
+    @Volatile
     private var batchFlushJob: Job? = null
 
     private const val MAX_LOG_LENGTH = 250_000
@@ -142,8 +150,12 @@ private var batchFlushEpoch: Int = 0
                     }
                 }
             } finally {
-                // 循环退出前必须把残留 pending 文本 flush 一次，避免丢日志
-                if (pending.isNotEmpty()) {
+                // 循环退出前把残留 pending 文本 flush 一次，避免丢日志。
+                // 但必须与循环体用**同一把**代次尺子：清屏只递增 epoch、清不掉本循环的
+                // 局部 pending，用户点「清屏」后若循环恰好在此刻退出，无守卫的 finally
+                // 会把最多 250ms / 400k 字符的清屏前内容整段回灌 —— 屏幕闪回一批旧输出
+                // 且与新内容无法区分，与循环体 L124 注释描述的是同一类故障，只是漏了这条路径。
+                if (pending.isNotEmpty() && batchFlushEpoch == seenEpoch) {
                     onFlush(pending.toString())
                     pending.setLength(0)
                 }

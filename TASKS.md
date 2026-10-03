@@ -20,7 +20,7 @@
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 506 tests / 0 failures / 1 skipped |
+| 单元测试 | 514 tests / 0 failures / 1 skipped |
 | lint | 0 errors / 31 warnings |
 | release 体积 | 2.20 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
 | 条目预算 | 中央目录**零分配结构遍历**取精确条目数（不信自报字段、不按体积折算） |
@@ -42,6 +42,96 @@
 ---
 
 ## 待办
+
+### A65. 第十五轮全面 BUG 深挖（2026-10-03）
+
+前十四轮的重心在安全策略、守卫安装、文件管理层，终端**文本处理链路**
+（`AnsiParser` / `HyperCore` / `SparseLineIndex`，合计 815 行）此前只在早期零散修过。
+三个文件报出 19 条候选，核对后**确认成立并已修 4 条**。
+
+这一轮有个明显特征：**四条全是「静默出错」而非崩溃**。崩溃用户能看见、能上报；
+这些缺陷用户只会看到内容不对 —— 错位的行、空白的行、裂开的 emoji、闪回的旧输出。
+因此除了常规核验，这轮额外做了**回退验证**（见下）。
+
+- [x] **产品范围**：`AnsiParser.kt`(447) / `HyperCore.kt`(160) / `SparseLineIndex.kt`(208)
+      全量重读，交叉核对 `RootService` 的分块与收尾、`ChunkedFileReader`、
+      `TerminalPage` 的滑动窗口与快照
+
+- [x] **P0 · 数据一致性：中途短读会让稀疏索引静默跳过字节、行内容错位**
+  - [x] `IndexedLineProvider.load` 的循环无条件 `ci++`，即假定每次 `getChunk(ci)`
+        都覆盖完整的 `[ci*256KB, (ci+1)*256KB)`。而 `ChunkedDocument.getChunk`
+        **只缓存满块** —— 非满块必然来自 reader 的短读。
+  - [x] 短读可达路径已核实：`ChunkedFileReader.readRangeRoot` 用
+        `minOf(startInBlock + count, raw.size)` 截断，root 路径 `dd` 读到被并发截断的
+        文件即返回不足 `count` 的数组；非 root 路径 `RandomAccessFile.read` 契约本身
+        允许短读。
+  - [x] 后果：该块剩余字节**永久跳过** → 换行计数少计 → 后续行整体前移，
+        而 `i - floor` 取到的是文件里更靠后的另一行，**行号仍然「看起来正确」**。
+        用户复制该行拿到的就是错的数据。这是 A57「索引不完整不得返回伪有效结果」
+        同一类故障的另一入口 —— A57 当时只给首块加了守卫，循环内没有。
+  - [x] 修法：循环内补等价守卫 —— 非满块且未到文件末尾即判索引失效，返回空交上层重建
+
+- [x] **P0 · 功能：超长行被截断时已读到的 4MB 全部丢弃**
+  - [x] `truncated = true` 的前提就是 `newlines < need`（跳出循环的条件），
+        而 `split('\n')` 最多产出 `newlines + 1` 段，`getOrNull(i - floor)` **必然为 null**，
+        `?: ""` 于是把辛苦读到的内容全扔了。
+  - [x] 用户侧表现：一行纯标注「…（本行超过 4MB，已截断显示）」，**一个字内容都没有**。
+        A57 加截断标记时只想到「不能冒充完整行」，没意识到前缀也没保住。
+  - [x] 修法：回退到 `parts.last()`，让已读到的真实内容显示出来
+
+- [x] **P1 · 边界条件：代理对跨输出块被劈开**
+  - [x] `feed()` 只跨块续接 `pendingEscape`，**没有任何字段承载孤立高代理**。
+        而 `RootService` 用 `CharArray(1024)` 读 stdout 后整块 `String(buffer, 0, count)`
+        入队，分块边界与码点无关 —— emoji、部分增补平面汉字的高低代理完全可能分处两次
+        `feed()`。已核实 `RootService.kt:415-418`。
+  - [x] 后果：孤立高代理落进 `curText` → 渲染成 U+FFFD 豆腐块且多占一列；
+        快照进 `parsedOutput.lines` 后「复制输出」还会把残缺代理写进剪贴板。
+        慢速输出（慢挂载的 `ls`、spinner）时必然发生。
+  - [x] 修法：`feed` 入口续接 —— 下一块以低代理开头则拼回，否则按 Unicode 替换字符落地
+        （与真实终端一致）；末尾高代理留到下一块；`finish()` 与 `reset()` 各自收尾
+
+- [x] **P1 · 并发：发布循环的归属令牌在内存模型上不成立**
+  - [x] `batchFlushJob` 是裸 `var`，而同文件的 `batchFlushEpoch` 明确加了 `@Volatile`
+        并注明「跨线程可见」—— 同文件同用法，一有一无，是明确疏漏。
+  - [x] 线程事实：`startBatchFlushLoop` 由 IO worker 调用（写），`stopBatchFlushLoop`
+        在主线程调用（读）。缺 happens-before 边时主线程可能读到旧值（上一条命令的
+        已结束 Job）或 null → `job !== owner` 判定成立 → **静默 return，循环根本没停** ——
+        恰好是这个「归属令牌」设计要防的情况。旧循环继续 drain 队列并
+        `appendOutputDirect`，与命令收尾的 `flushBatchQueueImmediate` 争抢同一队列。
+  - [x] 同时给 `finally` 补上代次守卫：循环体用 `batchFlushEpoch` 丢弃清屏前积压，
+        `finally` 却无守卫 —— 用户点「清屏」后循环恰好退出时，会把最多 250ms/400k 字符的
+        清屏前内容整段回灌，屏幕闪回一批旧输出。与循环体注释描述的是同一类故障，
+        只是漏了这条路径。
+  - [x] 修法：`@Volatile` + `finally` 内比对 `batchFlushEpoch == seenEpoch`
+
+- [x] **回归**：单元测试与 lint 全绿，Release 红线通过，APK 安装启动正常、
+      `FATAL=0` / `ANR=0`，终端页渲染正常（待命中态与四个动作按钮齐全）
+- [x] **回退验证（这轮的关键动作）**：三条行为类修复逐条临时回退，确认对应用例**确实变红**
+      （代理对 2 条、短读 1 条、超长行 1 条），随后恢复并复跑全绿。
+      源码断言类（`@Volatile`、代次守卫）无法用行为断言覆盖，改为直接读源码校验。
+      —— 只跑「修复后全绿」无法区分「用例真的在守护」和「用例根本没用例」，
+      这条纪律从 A61 沿用至今。
+- [x] **新增用例 8 条**：代理对切开必须续接 / 孤立高代理收尾 / 单块不受影响 /
+      连续多块反复切开 / 中途短读不得返回错位行 / 超长行必须保留已读内容 /
+      `batchFlushJob` 必须 volatile / `finally` 必须带代次守卫
+
+- [!] **核对后判定为误报、不可达或需改契约，未动**
+  - 「`snapshot()` 每帧 O(已完成行数) 重建整个列表」：现象成立，但属既有设计取舍
+    （返回不可变快照），改成增量视图需动 `TerminalPage` 的 diff 策略，收益与风险不匹配
+  - 「窗口裁剪引发 SGR 状态丢失 + 3.5× 重解析放大」：确认成立，但根治要新增
+    `dropPrefix()` 并重写裁剪路径，属结构性改动；当前表现是「日志顶部若干行褪成默认色」，
+    不丢内容
+  - 「`writeSegment` 绕过 C0 过滤，ESC 本体进屏」：确认成立，但触发需要输出里出现
+    `ESC` + C0 的组合（`cat` 二进制），且后果是多一个不可见占位列，非数据错误
+  - 「冒号式 SGR（`38:2::r:g:b`）被当成 reset」：确认成立，但需目标 shell 工具链输出
+    ECMA-48 子参数扩展色；修法涉及子参数拆分，改动面大于当前收益
+  - 「`completed` 无上界，只靠外部 reset 收敛」：确认是隐式契约，但已核实当前全部
+    写入 `outputLog` 的入口都走滑动窗口，暂不可达
+  - 「陈旧索引返回 `""` 而上层无重建路径」：确认成立（`peek` 恒 null、`loadError` 不置位），
+    但需要「索引建成后文件被外部改写」这一外部条件，且修法要动 `TextEditorDialog` 的
+    索引生命周期，留待后续
+  - 「`runCatching` 吞掉 `CancellationException`」：确认成立（取消 32MB 扫描会退到
+    旧的分段累积路径），属既有通用写法，全仓多处同款，单点修不一致，留待统一
 
 ### A64. 第十四轮全面 BUG 深挖（2026-10-03）
 
@@ -1934,6 +2024,7 @@ adb -s $DEVICE shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.
 | 应用 uid 写 `/data/adb/` 受 SELinux 限制 | 即便 `chmod 777` 仍可能 `Permission denied` → 判可写性必须实测 |
 | uiautomator dump 不含视口外内容 | 长列表超出视口的内容不会出现在 dump 里，据此判断「列表被截断」是误报 |
 | uiautomator bounds 对 Compose 文本按钮纵向偏上（实测约 70px） | 报 `[x1,521][x2,624]`，实际命中区在 590–610；按 bounds 中心点击会「点了没反应」，先做 y 方向小范围扫描再判定 |
+| **`adb shell input text` 在终端输入框完全不生效**（2026-10-03 复现） | 输入后 placeholder「请输入命令…」仍在，命令未发出、`input keyevent ENTER` 也无反应。同一坐标点击动作栏按钮有效，故非坐标问题。**终端交互不要依赖 `input text`**，改用真实代码路径验证（对应测试或 `su` 脚本），别把「命令没跑」误判成功能缺陷 |
 | 用 `su -c` 传含 `$`/`\` 的脚本内容 | 多层引号会被吃掉 → 改用「本地写文件 → push → `cp`」 |
 | `su -c "wc -l < /data/adb/…"` | `<` 重定向由**外层 shell**（shell 用户）执行 → `Permission denied`；写 `adb shell "su -c 'wc -l /路径'"` |
 | uiautomator 把每行**最后一个**控件报成 `bounds="[0,0][0,0]"` | 顶栏「设置」/ 动作行「发送」在横屏下被误判成「被挤没了」——实际正常渲染，**零 bounds 不能作为不可见证据**，用截图复核 |

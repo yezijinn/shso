@@ -126,6 +126,11 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
     /** 被块边界截断、尚未凑齐的转义序列（通常 < 32 字符）。 */
     private var pendingEscape: String? = null
 
+    /**
+     * 上一块末尾的孤立高代理，等待下一块的低代理续接。理由见 [feed]。
+     */
+    private var pendingHighSurrogate: Char? = null
+
     private fun defaultSpan(): SpanStyle =
         SpanStyle(color = defaultColor, fontWeight = FontWeight.Normal)
 
@@ -141,21 +146,45 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
         currentColor = defaultColor
         isBold = false
         pendingEscape = null
+        pendingHighSurrogate = null
     }
 
     /**
      * 喂入一块新增输出。可跨多次调用；调用方只传**增量**即可。
+     *
+     * 必须跨块续接**代理对**：[RootService] 用 `CharArray(1024)` 读 stdout 后
+     * `String(buffer, 0, count)` 整块入队，分块边界与码点无关 —— 4 字节字符（emoji、
+     * 部分增补平面汉字）的高、低代理完全可能分处两次 `feed()`。此前只有 [pendingEscape]
+     * 跨块续接，孤立高代理会直接落进 `curText`：Compose 渲染成 U+FFFD 豆腐块且多占一列，
+     * 快照进 `parsedOutput.lines` 后「复制输出」还会把残缺代理写进剪贴板。
+     * 慢速输出（慢挂载的 `ls`、spinner）时必然发生。
      */
     fun feed(chunk: String) {
         if (chunk.isEmpty()) return
-        val pending = pendingEscape
-        val input = if (pending != null) {
-            pendingEscape = null
-            pending + chunk
-        } else {
-            chunk
+        // 上一块末尾的孤立高代理：下一块以低代理开头则拼回，否则判定为传输截断，
+        // 按 Unicode 替换字符落地（真实终端同样如此），不把残缺码元写进文本。
+        var prefix = ""
+        pendingHighSurrogate?.let { carried ->
+            pendingHighSurrogate = null
+            prefix = if (chunk[0].isLowSurrogate()) carried.toString() else "�"
         }
-        feedInternal(input)
+        val pending = pendingEscape
+        val input = prefix + (if (pending != null) {
+            pendingEscape = null
+            pending
+        } else {
+            ""
+        }) + chunk
+        if (input.isEmpty()) return
+        // 末尾的高代理留给下一块续接，不写进文本。
+        // 它不可能属于转义序列（转义序列全为 ASCII），故与 pendingEscape 互斥、不受其影响。
+        val body = if (input[input.length - 1].isHighSurrogate()) {
+            pendingHighSurrogate = input[input.length - 1]
+            input.substring(0, input.length - 1)
+        } else {
+            input
+        }
+        if (body.isNotEmpty()) feedInternal(body)
     }
 
     /**
@@ -164,6 +193,11 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
      * 持续运行的终端不应调用——真实终端同样会等待序列补全。
      */
     fun finish() {
+        // 不会再有输入，残留的孤立高代理只能按替换字符收尾（与真实终端一致）
+        pendingHighSurrogate?.let {
+            pendingHighSurrogate = null
+            writeSegment("\uFFFD", 0, 1)
+        }
         val pending = pendingEscape ?: return
         pendingEscape = null
         writeSegment(pending, 0, pending.length)

@@ -180,6 +180,9 @@ class ChunkedDocument(
      * 锁粒度取整个 `getChunk`：块大小 256KB，读一次本身就要走 IO，
      * 持锁期间不会成为热点；换来的是缓存与返回值的强一致。
      */
+    /** 块长度（字节）。供上层判断某次读取是否为「中途短读」。 */
+    val chunkSizeBytes: Int get() = chunkSize
+
     @Synchronized
     fun getChunk(chunkIndex: Int): ByteArray {
         cache[chunkIndex]?.let { return it }
@@ -255,13 +258,30 @@ class IndexedLineProvider(
             }
             val chunk = doc.getChunk(ci)
             if (chunk.isEmpty()) break                   // EOF：最后一行无尾随换行也到此终止
+            // **中途短读 = 读取与索引不再可信**，必须停在这里。
+            //
+            // `getChunk` 只缓存满块（见 ChunkedDocument.getChunk），所以非满块必然来自
+            // reader 的短读：root 路径 `dd` 读到被并发截断的文件、或 `RandomAccessFile.read`
+            // 契约允许的短读。此时若继续 `ci++`，该块剩余的字节会被**永久跳过** ——
+            // `newlines` 随之少计，后续行全部前移，而 `i - floor` 取到的是文件里更靠后的
+            // 另一行，行号却仍然「看起来正确」。用户复制该行拿到的就是错的数据。
+            //
+            // 首块已有等价守卫（上面 `first.size <= skip`），循环内此前没有。
+            val chunkStart = ci.toLong() * doc.chunkSizeBytes
+            if (chunk.size < doc.chunkSizeBytes && chunkStart + chunk.size < index.totalBytes) {
+                return@withContext ""                    // 索引失效：交给上层重建，不冒充有效行
+            }
             out.write(chunk)
             newlines += countNewlines(chunk, 0, chunk.size)
             ci++
         }
         val bytes = out.toByteArray()
         if (bytes.isEmpty()) return@withContext ""
-        val line = String(bytes, charset).split('\n').getOrNull(i - floor) ?: ""
+        // 截断时**必须保留已读到的内容**。`truncated = true` 的前提就是 `newlines < need`，
+        // 而 `split('\n')` 最多产出 `newlines + 1` 段，`getOrNull(i - floor)` 必然为 null ——
+        // 直接 `?: ""` 等于把已经读到的 4MB 全部丢掉，用户只看到一行「已截断」提示。
+        val parts = String(bytes, charset).split('\n')
+        val line = parts.getOrNull(i - floor) ?: parts.last()
         // 截断标记必须让用户看得见：只读浏览里不能把残缺行当完整行渲染/复制
         if (truncated) "$line…（本行超过 ${MAX_READ_BYTES / 1024 / 1024}MB，已截断显示）" else line
     }
