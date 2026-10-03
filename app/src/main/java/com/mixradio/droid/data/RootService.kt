@@ -449,8 +449,7 @@ object RootService {
     /**
      * 以 Root 把字节写入目标文件（覆盖或追加）。
      * 统一替代各处自建 `ProcessBuilder("su","-c","cat > …")` 的旁路出口
-     * （TextCompare / TextEditorDialog / SecurityAuditLog），使 su 出口收敛。
-     * 属内部模板命令（INTERNAL_APP），不走策略判定。
+     * （TextCompare / TextEditorDialog），使 su 出口收敛。
      */
     fun writeBytesAsRoot(targetPath: String, bytes: ByteArray, append: Boolean = false, timeoutSec: Long = 60): Boolean {
         return try {
