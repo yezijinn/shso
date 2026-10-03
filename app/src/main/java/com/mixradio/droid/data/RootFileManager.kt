@@ -221,10 +221,18 @@ object RootFileManager {
         if (!isAllowedDataPath(resolved)) {
             return null to "该路径是符号链接，真实目标（$resolved）不在 /data 下，已拒绝"
         }
-        // 真实目标也必须仍在用户点选的路径之内，防止链到 /data 内的其它敏感位置
-        if (resolved != path && !resolved.startsWith(path.trimEnd('/') + "/") && resolved != path) {
-            // 链接指向别处属正常用法（如 /sdcard/Download → 别处），仅当目标越出 /data 才拦，
-            // 上面已拦；此处不额外限制，避免误伤合法外链。
+        // 真实目标也必须仍在用户点选的路径之内，防止链到 /data 内的其它敏感位置。
+        //
+        // 这一段此前只有判断和注释、函数体是空的，等于该检查从未存在：`isAllowedDataPath`
+        // 只能证明「解析后仍在 /data 下」，于是 `/data/local/tmp/m → /data/adb/modules`
+        // 这类链接会被放行，root 随后把 modules 目录 chmod/改属主，而确认弹窗显示的
+        // 只是链接自身的路径。链接指向自己或子目录（`p`、`p/x`）是正常用法，必须放行。
+        if (resolved != path) {
+            val selfBase = path.trimEnd('/')
+            val insideSelf = resolved == selfBase || resolved.startsWith("$selfBase/")
+            if (!insideSelf) {
+                return resolved to "路径不安全：真实目标（$resolved）不在你选择的路径（$path）之内"
+            }
         }
         return resolved to ""
     }
@@ -503,7 +511,10 @@ object RootFileManager {
         val escapedSource = RootService.escapeShellArg(sourcePath)
         val escapedDest = RootService.escapeShellArg(destinationPath)
 
-        val copyCmd = "cp -r $escapedSource $escapedDest && chmod 777 $escapedDest"
+        // 目录必须递归 chmod：设计目的是「让其他应用也能自由读写其中的文件」，
+        // 只改顶层的话子文件/子目录仍是源权限（如 0700），第三方文件管理器照样读不到。
+        val chmodCmd = if (sourceFile.isDirectory) "chmod -R 777" else "chmod 777"
+        val copyCmd = "cp -r $escapedSource $escapedDest && $chmodCmd $escapedDest"
         val (copyCode, copyOut) = RootService.runCommandSync(copyCmd)
 
         if (copyCode != 0) {
@@ -697,11 +708,20 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         // 实际目标路径：OVERWRITE 用原名；RENAME 冲突时用 _new 名
         val finalPath = if (destExists() && onConflict == MoveDestinationConflict.RENAME) renamedDestPath() else destinationPath
 
+        // 门禁必须先于任何实际动作。此前 Java 兜底分支的 `renameTo` 在 L702 就把文件移走，
+        // 判定与审计却排在它后面的 root 分支里 —— 同一文件系统内的移动因此完全绕过策略与
+        // 审计（对照 [addFileToShso] 里 autoDeleteSource 的同类修复）。
+        if (RootService.isRootGranted == true) {
+            guardDestructiveOp("mv $sourcePath $finalPath", "移动")?.let { return@withContext Pair(false, it) }
+        }
+
         try {
             val dest = File(finalPath)
-            if (source.renameTo(dest) &&
-                localType(sourcePath) == 0 && localType(finalPath) == sourceType
-            ) {
+            // renameTo 返回 true 即视为成功。原先还要求 `localType(finalPath) == sourceType`，
+            // 而目标常位于 app 无权 stat 的挂载点（FUSE/sdcardfs）或本身是 socket/FIFO，
+            // 复核必然失败 → 落到 root 分支再跑一次 mv（源已不在，报「移动失败」）。
+            // 移动其实已经完成，用户会重试，第二次就命中 OVERWRITE 分支，可能连带删掉目标同名文件。
+            if (source.renameTo(dest)) {
                 return@withContext Pair(true, "移动成功")
             }
         } catch (_: Exception) {
@@ -710,7 +730,6 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         if (RootService.isRootGranted == true) {
             val escapedSource = RootService.escapeShellArg(sourcePath)
             val escapedDestination = RootService.escapeShellArg(finalPath)
-            guardDestructiveOp("mv $sourcePath $finalPath", "移动")?.let { return@withContext Pair(false, it) }
             val (code, output) = RootService.runCommandSync(
                 "${guardPrefix()}mv $escapedSource $escapedDestination && test ! -e $escapedSource && " +
                     if (sourceType == 2) "test -d $escapedDestination" else "test -f $escapedDestination"
@@ -796,6 +815,24 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
     }
 
     /**
+     * 把文件名拆成「基名 / 后缀」两段，供拷贝重命名使用。
+     *
+     * 点开头的文件名（`.env` / `.gitignore` / `.bashrc`）必须整体作为基名、后缀留空：
+     * `File.nameWithoutExtension` 对它们返回**空串**（`lastIndexOf('.') == 0` →
+     * `substring(0, 0)`），直接用会产出 `_0.env`，前导点丢失。同文件
+     * [moveFile] 的 `renamedDestPath` 与 `ExternalOpen.reserveUniqueFile` 都用
+     * `dot > 0` 规避过，这里是遗漏。
+     */
+    internal fun splitCopyName(rawName: String): Pair<String, String> {
+        val dot = rawName.lastIndexOf('.')
+        return if (dot <= 0) {
+            rawName to ""
+        } else {
+            rawName.substring(0, dot) to rawName.substring(dot)
+        }
+    }
+
+    /**
      * 拷贝文件到同级目录，自动追加递增序号后缀（如 file.txt → file_0.txt → file_1.txt）。
      * 序号插入在扩展名之前（无扩展名则直接加在末尾）。仅用于文件（文件夹不调用）。
      *
@@ -817,9 +854,7 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
         }
         val srcFile = File(sourcePath)
         val parent = srcFile.parent ?: "/"
-        val base = srcFile.nameWithoutExtension
-        val ext = srcFile.extension
-        val suffix = if (ext.isNotEmpty()) ".$ext" else ""
+        val (base, suffix) = splitCopyName(srcFile.name)
 
         if (preferRoot()) {
             // 单条 shell 完成「找空位 + 拷贝」：i 从 0 起，先用 `set -C`（O_EXCL）原子占位，

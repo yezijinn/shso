@@ -20,7 +20,7 @@
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 492 tests / 0 failures / 1 skipped |
+| 单元测试 | 499 tests / 0 failures / 1 skipped |
 | lint | 0 errors / 31 warnings |
 | release 体积 | 2.20 MB，`verifyReleasePayload` 红线通过（≤2.2MB、无语法包、无 `tables/`） |
 | 条目预算 | 中央目录**零分配结构遍历**取精确条目数（不信自报字段、不按体积折算） |
@@ -42,6 +42,92 @@
 ---
 
 ## 待办
+
+### A63. 第十三轮全面 BUG 深挖（2026-10-03）
+
+前十二轮的重心在策略引擎与执行链路，文件管理层（`RootFileManager` 914 行 / `ExternalOpen`
+517 行）只被零星提及。这一轮整块重读，两个文件报出 19 + 9 条候选；**逐条到代码里核对后，
+确认成立并已修 6 条**，其余为误报或需改测试契约。确认成立率不到三分之一，所以下面只记
+核实过的结论。
+
+- [x] **产品范围**：`RootFileManager.kt`(914) / `ExternalOpen.kt`(517) 全量重读，
+      连带核对 `RootService.escapeShellArg`、`PolicyEngine` 词法、`ArchiveExtractor` 预算闸门
+
+- [x] **P0 · 安全：外部路径白名单不归一化，`..` 穿越直接过闸**
+  - [x] `isExternalPathAllowed` 此前只做前缀比对，**从不解析 `..`、从不 canonicalize**。
+        而 `Uri` 不会归一化 `..`，任意应用构造
+        `file:///storage/emulated/0/../../data/adb/modules/x/service.sh` 就能以
+        「`/storage/emulated/0/` 开头」命中允许前缀 → 放行，实际指向 `/data/adb/modules`；
+        本应用私有目录的前缀黑名单同样能被 `..` 绕开。
+  - [x] **今天靠下游偶然挡住**：`FilePage` 随后调 `statFilePath`，其 `isUnsafePath` 拒绝
+        任何 `..` 段 → 用户只看到「路径不合法」。但本函数的契约是「这条路径已可信」，
+        下游是否过滤属于实现细节 —— 换个调用方（安装/执行分派，或不经 `isUnsafePath`
+        的读取）就不再成立。
+  - [x] **既有测试完全没覆盖**：外部信任相关用例覆盖了 `/data/data/…`、`/data/adb/…`、
+        前缀混淆 `/storage/emulated/01` 与 `/storage/emulated/0evil`，**唯独没有一条 `..` 用例**。
+  - [x] **修法**：新增 `normalizeForContainment()` 做词法归一化（解析 `.`/`..`、折叠重复
+        斜杠、去尾斜杠），前缀比对前先归一；无法判定（非绝对路径、含控制字符、含 `..`）
+        一律 fail-closed。只做词法不做 `canonicalPath` —— 后者要 stat 每个路径，
+        交互式唤起无法承受。
+  - [x] **修复有效性直接对照**（同一 JVM 内跑新旧两版实现）：
+
+        | 路径 | 旧 | 新 |
+        |---|---|---|
+        | `/storage/emulated/0/../../data/adb/modules/x/service.sh` | 放行 | **拒绝** |
+        | `/storage/emulated/0/../data/data/com.other.app/files/token` | 放行 | **拒绝** |
+        | `/storage/emulated/0/../../data/data/com.mixradio.droid/shared_prefs/a.xml` | 放行 | **拒绝** |
+        | `/storage/emulated/0/Download/a.apk` | 放行 | 放行 |
+
+- [x] **P0 · 安全：`resolveWritableTarget` 的越界检查是空实现**
+  - [x] 注释写着「真实目标也必须仍在用户点选的路径之内，防止链到 /data 内的其它敏感位置」，
+        `if` 条件也在，但**函数体只有两行注释** —— 该检查从未存在过。
+        `isAllowedDataPath` 只能证明「解析后仍在 `/data` 下」，于是
+        `/data/local/tmp/m → /data/adb/modules` 被放行，root 随后把 modules 目录
+        chmod / 改属主，而确认弹窗显示的只是链接自身的路径。
+  - [x] 补上实现：解析结果必须等于自身或落在自身之下（指向自己或子目录是正常用法，放行）
+
+- [x] **P0 · 安全：同文件系统内的移动完全绕过策略与审计**
+  - [x] `moveFile` 的 Java 兜底分支 `source.renameTo(dest)` 排在 `guardDestructiveOp`
+        **之前** —— 同一文件系统内移动成功就直接返回，判定与审计都被跳过。
+        同文件 `addFileToShso` 的 `autoDeleteSource` 已修过同一类问题，`moveFile` 漏了。
+  - [x] 门禁上提到所有执行分支之前
+
+- [x] **P1 · 数据一致性：移动已成功却报「移动失败」**
+  - [x] `renameTo` 返回 true 后又要求 `localType(finalPath) == sourceType`，而目标常位于
+        app 无权 stat 的挂载点（FUSE/sdcardfs）或本身是 socket/FIFO → 复核必然失败 →
+        落到 root 分支再跑一次 `mv`（源已不在，报错）。**移动其实已经完成**。
+  - [x] 危害链：用户看到失败会重试 → 第二次命中 OVERWRITE 分支 → 可能连带删掉目标同名文件。
+  - [x] `renameTo` 返回 true 即视为成功
+
+- [x] **P1 · 功能：点开头的文件名被改名**
+  - [x] `File.nameWithoutExtension` 对 `.env` 返回**空串**（`lastIndexOf('.') == 0` →
+        `substring(0, 0)`），`File.extension` 则返回 `env`。于是 `base + "_" + n + suffix`
+        产出 `_0.env`，前导点丢失；「加入 shso」的独立目录名更退化成 `/data/adb/shso/_12345`。
+  - [x] 同文件 `moveFile.renamedDestPath` 与 `ExternalOpen.reserveUniqueFile` 都用
+        `dot > 0` 正确规避过 —— 是遗漏而非设计。
+  - [x] 真机验证：`.env` 加入 shso 后目录名为 `.env_<戳>`（修复前是 `_<戳>`）
+
+- [x] **P2 · 功能：目录拷贝只改顶层权限**
+  - [x] `cp -r … && chmod 777 <顶层>` 缺 `-R`，子文件/子目录仍是源权限（如 0700），
+        与「让其他应用也能自由读写其中的文件」的设计目的相悖 —— 第三方文件管理器照样读不到。
+  - [x] 真机验证：源 `sub/` 与 `deep.txt` 均为 700，拷贝后 `deep.txt` 为 `rwxrwxrwx`
+
+- [x] **回归**：单元测试与 lint 全绿，Release 红线通过，APK 安装启动正常且 `FATAL=0`
+- [x] **新增用例 7 条**：`..` 穿越三类拒绝 / 归一化后合法路径仍放行 / 无法判定 fail-closed /
+      点开头命名拆分 / 门禁时序（源码断言 `guardDestructiveOp` 早于 `renameTo`）/
+      越界检查不得是空实现 / 目录必须用 `chmod -R`
+
+- [!] **核对后判定为误报或需改测试契约，未动**
+  - 「送审串未转义会导致漏拦」：动词在送审串与执行串里都是字面量，倾向偏严而非偏松，
+    未找到可证实的漏拦路径
+  - `renameTo`/`delete` 的空 catch：均最终返回 `false` + 文案，不构成「假成功」
+  - `listFiles` 无条目上限、`moveFile` 最多 fork 8 次 su：性能问题，非这轮重点
+  - `ExternalOpenHub.sequence` 非原子自增：当前不可达（唯一两个调用点都在主线程
+    `LaunchedEffect` 内），记为隐患不记为缺陷
+  - `uniqueFile` 非原子且生产无调用方：确认是死代码，但删除属清理动作，未纳入这轮
+  - `isUnsafeFileName` 用子串判 `..`（会误杀 `a..b.txt`）：确认是真问题，但
+    `RootFileManagerEscapingTest` 有一条用例把现状锁死，改语义需一并调整该契约，
+    留待后续
 
 ### A62. 第十二轮全面 BUG 深挖（2026-10-03）
 

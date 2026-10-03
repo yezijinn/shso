@@ -309,19 +309,55 @@ object ExternalOpen {
     /**
      * 判断一个**外部来源**解析出的路径是否允许被 shso 直接使用。
      * 纯函数，便于 JVM 单测。
+     *
+     * 必须先做词法归一化再比对前缀，否则白名单形同虚设：`Uri` 不会归一化 `..`，
+     * 任意应用都能构造 `file:///storage/emulated/0/../../data/adb/modules/x/service.sh`，
+     * 它以 `/storage/emulated/0/` 开头 → 直接命中允许前缀 → 返回 true，而实际指向
+     * `/data/adb/modules`。同理本应用私有目录也能用 `..` 绕开前缀黑名单。
+     *
+     * 本函数的契约是「这条路径已经可以放心使用」，因此任何无法判定的情况都必须
+     * 返回 false，不能指望下游再兜一道 —— 下游是否过滤 `..` 属于实现细节，
+     * 换个调用方（安装/执行分派，或不经 `isUnsafePath` 的读取）就不再成立。
      */
     fun isExternalPathAllowed(
         path: String,
         allowedPrefixes: List<String> = EXTERNAL_FILE_URI_ALLOWED_PREFIXES,
         appPrivatePrefixes: List<String> = APP_PRIVATE_PREFIXES
     ): Boolean {
-        val p = path.trimEnd('/')
+        val p = normalizeForContainment(path) ?: return false
         if (p.isEmpty()) return false
         for (priv in appPrivatePrefixes) {
-            val base = priv.trimEnd('/')
+            val base = normalizeForContainment(priv) ?: continue
             if (p == base || p.startsWith("$base/")) return false
         }
-        return allowedPrefixes.any { p == it.trimEnd('/') || p.startsWith(it.trimEnd('/') + "/") }
+        return allowedPrefixes.any {
+            val base = normalizeForContainment(it) ?: return@any false
+            p == base || p.startsWith("$base/")
+        }
+    }
+
+    /**
+     * 词法归一化：解析 `.` 与 `..`、折叠重复斜杠、去尾部斜杠。
+     *
+     * 只做词法、不做 `canonicalPath`（后者会 stat 每个路径，交互式唤起无法承受），
+     * 但足以消除 `..` 穿越与前缀混淆。解析不出合法绝对路径时返回 null（fail-closed）。
+     */
+    internal fun normalizeForContainment(raw: String): String? {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty() || !trimmed.startsWith("/")) return null
+        // 出现 NUL 或换行直接判否：这两者无法出现在合法路径里，只可能来自构造
+        if (trimmed.any { it.code < 0x20 || it.code == 0x7F }) return null
+        val out = ArrayList<String>()
+        for (seg in trimmed.split('/')) {
+            when (seg) {
+                "", "." -> {}
+                // 根之上的 `..`（如 `/../x`）按 POSIX 语义仍落在根，保留 x；
+                // 但为了让「路径里有无意义穿越」也被拦下，这里选择整体判否。
+                ".." -> return null
+                else -> out.add(seg)
+            }
+        }
+        return "/" + out.joinToString("/")
     }
 
     /**

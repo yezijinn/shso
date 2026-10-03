@@ -172,4 +172,64 @@ class RootFileManagerEscapingTest {
         assertTrue("覆盖前必须先判定目标类型", branch.contains("destType"))
         assertTrue("只有目录目标才允许预先删除", branch.contains("if (destType == 2)"))
     }
+
+    // ========================================================================
+    // 点开头文件名 / 门禁时序 / 越界检查
+    // ========================================================================
+
+    @Test fun `点开头文件名不得被拆成空基名`() {
+        // File.nameWithoutExtension 对 `.env` 返回空串（lastIndexOf('.')==0 → substring(0,0)），
+        // 于是拷贝名变成 `_0.env`，前导点丢失。同文件 moveFile.renamedDestPath 用
+        // `dot > 0` 规避过，copyFile 此前是遗漏。
+        assertEquals("", java.io.File(".env").nameWithoutExtension)
+        // File.extension = name.substringAfterLast('.') → 对 `.env` 给出 "env"（不含点），
+        // 于是 nameWithoutExtension="" + suffix=".env" 之外还会再拼一次扩展名，正是错名来源
+        assertEquals("env", java.io.File(".env").extension)
+        assertEquals(".env" to "", RootFileManager.splitCopyName(".env"))
+        assertEquals(".gitignore" to "", RootFileManager.splitCopyName(".gitignore"))
+        assertEquals("a" to ".apk", RootFileManager.splitCopyName("a.apk"))
+        assertEquals("archive.tar" to ".gz", RootFileManager.splitCopyName("archive.tar.gz"))
+        assertEquals("noext" to "", RootFileManager.splitCopyName("noext"))
+        // 拼装结果：点开头文件序号追加在末尾，其余按「基名_序号.后缀」
+        assertEquals(".env_0", RootFileManager.copyCandidatePath("/d", ".env", "", 0).substringAfterLast('/'))
+        assertEquals("a_0.apk", RootFileManager.copyCandidatePath("/d", "a", ".apk", 0).substringAfterLast('/'))
+    }
+
+    @Test fun `moveFile 的门禁必须早于任何实际移动`() {
+        // 回归护栏：Java 兜底分支的 renameTo 曾排在 guardDestructiveOp 之前，
+        // 同一文件系统内的移动因此完全绕过策略判定与审计。
+        val s = java.io.File("src/main/java/com/mixradio/droid/data/RootFileManager.kt").readText()
+        val fn = s.indexOf("suspend fun moveFile")
+        assertTrue("应能找到 moveFile", fn > 0)
+        val body = s.substring(fn, fn + 6000)
+        val guardAt = body.indexOf("guardDestructiveOp(\"mv ")
+        val renameAt = body.indexOf("source.renameTo(dest)")
+        assertTrue("应存在门禁调用", guardAt > 0)
+        assertTrue("应存在 renameTo 调用", renameAt > 0)
+        assertTrue("门禁必须排在 renameTo 之前，否则移动绕过策略与审计", guardAt < renameAt)
+    }
+
+    @Test fun `resolveWritableTarget 的越界检查不得是空实现`() {
+        // 该检查此前只有 if 条件与注释、函数体是空的，等于从未存在。
+        val s = java.io.File("src/main/java/com/mixradio/droid/data/RootFileManager.kt").readText()
+        val fn = s.indexOf("suspend fun resolveWritableTarget")
+        assertTrue("应能找到 resolveWritableTarget", fn > 0)
+        val body = s.substring(fn, fn + 2000)
+        val at = body.indexOf("真实目标也必须仍在用户点选的路径之内")
+        assertTrue("应保留该注释", at > 0)
+        val after = body.substring(at)
+        val retAt = after.indexOf("return resolved to \"\"")
+        assertTrue("应能找到正常返回", retAt > 0)
+        assertTrue(
+            "越界时必须真的返回错误，而不是只有注释",
+            after.substring(0, retAt).contains("不在你选择的路径")
+        )
+    }
+
+    @Test fun `复制目录必须递归改权限`() {
+        // 只 chmod 顶层的话子文件仍是源权限（如 0700），第三方文件管理器读不到，
+        // 与「让其他应用也能自由读写其中的文件」的设计目的相悖。
+        val s = java.io.File("src/main/java/com/mixradio/droid/data/RootFileManager.kt").readText()
+        assertTrue("目录分支必须用 chmod -R", s.contains("\"chmod -R 777\""))
+    }
 }
