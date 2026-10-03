@@ -14,6 +14,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -542,6 +543,23 @@ object RootService {
         // 会按自己的代际判断把本任务的状态误清成「待命中」。
         terminalCommandGeneration.incrementAndGet()
         executionJob?.cancel()
+
+        // 心跳：脚本长时间无输出时，输出区会整段静止，用户无法区分「正在跑」与「已卡死」。
+        // 每 10s 追加一行计时；脚本一旦产出内容即停止打扰（满屏心跳会淹没真实日志）。
+        // 标志跨线程读写，用 AtomicBoolean 而非局部 @Volatile（后者不能修饰局部变量）。
+        val producedAnyOutput = java.util.concurrent.atomic.AtomicBoolean(false)
+        val heartbeatJob = scope.launch(Dispatchers.Main) {
+            var elapsed = 0L
+            while (isActive && isTaskRunning) {
+                delay(1000)
+                elapsed += 1000
+                if (producedAnyOutput.get()) return@launch
+                if (elapsed % 10_000L == 0L) {
+                    appendOutputDirect("[shso Engine] 仍在执行，已运行 ${formatElapsed(elapsed)}…\n")
+                }
+            }
+        }
+
         executionJob = scope.launch(Dispatchers.IO) {
             // 本次执行的身份：pgid 回填与状态清理都必须按它自检，否则会写到别人的槽位。
             val myJob = coroutineContext[Job]
@@ -600,11 +618,16 @@ object RootService {
                     if (executionJob === myJob) runPgid = pgid
                 }
 
+                // 脚本是否产出过内容：静默脚本（只做 rm/touch、无任何 echo）在终端里
+                // 除横幅与退出码外一片空白，用户会以为没执行。收尾时据此补一句说明。
                 process.inputStream.use { stream ->
                     InputStreamReader(stream, Charsets.UTF_8).use { reader ->
                         val buffer = CharArray(2048)
                         var count: Int
                         while (reader.read(buffer).also { count = it } != -1) {
+                            if (ExecutionFeedback.hasVisibleOutput(String(buffer, 0, count))) {
+                                producedAnyOutput.set(true)
+                            }
                             val chunk = String(buffer, 0, count)
                             HyperCore.queueLogChunk(chunk)
                         }
@@ -612,6 +635,7 @@ object RootService {
                 }
 
                 val exitCode = process.waitFor()
+                val elapsedMs = System.currentTimeMillis() - taskStartTime
                 HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
                 // 本次执行仍是当前任务（代际判断）才写「退出」文案；被新任务/重启取代后由对方写
                 withContext(Dispatchers.Main) {
@@ -626,8 +650,14 @@ object RootService {
                         HyperCore.stopBatchFlushLoop(fileFlushLoop)
                         HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
                         lastExitCode = exitCode
+                        heartbeatJob.cancel()
                         if (appSettings?.showShsoBanner != false) {
-                            appendOutputDirect("\n[shso Engine] 任务已退出，退出码: $exitCode\n")
+                            if (!producedAnyOutput.get()) {
+                                appendOutputDirect("\n[shso Engine] 脚本执行完成，未产生任何输出\n")
+                            }
+                            appendOutputDirect(
+                                "[shso Engine] 任务已退出，退出码: $exitCode，用时 ${formatElapsed(elapsedMs)}\n"
+                            )
                         }
                     }
                 }
@@ -646,6 +676,9 @@ object RootService {
                     }
                 }
             } finally {
+                // 心跳挂在 scope 上而非 executionJob 下，取消执行协程停不掉它；
+                // 不在这里收掉就会在任务结束后继续往输出区插计时行。
+                heartbeatJob.cancel()
                 // 任何取消路径（kill/restart/覆盖启动）必然走到这里；
                 // 但只有本次仍是当前执行协程（执行 Job 未被替换）时才清理 Compose 状态。
                 // 关键：executionJob 在协程外已切换到新值（覆盖启动先 cancel 再赋新 job），
@@ -1045,4 +1078,40 @@ internal fun buildProcessGroupKillCommand(signal: Int, pgid: Int, myPid: Int): S
         "[ \"\$(cut -d' ' -f5 /proc/\$P/stat)\" = \"\$P\" ] && " +
         "[ \"\$(cut -d' ' -f5 /proc/\$M/stat)\" != \"\$P\" ] && " +
         "kill -$signal -- -\$P"
+}
+
+/**
+ * 执行反馈的纯判定逻辑（便于 JVM 单测；`RootService` 是 object，单测无法加载）。
+ */
+internal object ExecutionFeedback {
+
+    /**
+     * 一段输出是否算「有内容」。
+     *
+     * 纯空白（空行、缩进、裸换行）不携带任何信息，不能据此认为脚本真的干了活 ——
+     * 否则静默脚本会被误判成有输出、收尾时又不给提示，用户依旧一头雾水。
+     */
+    fun hasVisibleOutput(text: String): Boolean = text.any { !it.isWhitespace() }
+
+    /** 分块读取时任一块有内容即整体算有输出（读取循环按块累积，不能只看最后一块）。 */
+    fun anyChunkHasContent(chunks: List<String>): Boolean = chunks.any { hasVisibleOutput(it) }
+}
+
+/**
+ * 把耗时格式化为人类可读文本（**顶层纯函数**，便于 JVM 单测）。
+ *
+ * 结束行带耗时是「这脚本到底跑了没有」最直接的证据：静默脚本的输出区本来一片空白，
+ * 有了耗时与退出码，至少能确认它真的执行过且执行了多久。
+ */
+internal fun formatElapsed(ms: Long): String = when {
+    ms < 0 -> "0秒"
+    ms < 1000 -> "${ms}毫秒"
+    ms < 60_000 -> String.format(java.util.Locale.ROOT, "%.1f秒", ms / 1000.0)
+    else -> {
+        val totalSec = ms / 1000
+        val min = totalSec / 60
+        val sec = totalSec % 60
+        val hour = min / 60
+        if (hour > 0) "${hour}小时${min % 60}分${sec}秒" else "${min}分${sec}秒"
+    }
 }

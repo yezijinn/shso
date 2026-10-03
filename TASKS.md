@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 340 tests / 0 failures / 1 skipped |
+| 单元测试 | 348 tests / 0 failures / 1 skipped |
 | lint | 0 errors / 31 warnings |
 | release 体积 | 2.08 MB，`verifyReleasePayload` 红线通过 |
 | 条目预算 | 中央目录**零分配结构遍历**取精确条目数（不信自报字段、不按体积折算） |
@@ -2220,4 +2220,30 @@ adb -s $DEVICE shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.
       真机 `BIYLBAFQQSS8DA69` 实测脚本执行、终端一次性命令、实时流式回显、
       中文与彩色 Emoji、退出码、`whoami`→`root`、`id -u`→`0`、PATH 无守卫目录，
       全程 `FATAL=0` / `ANR=0`
+---
 
+### A69. 执行反馈增强：静默脚本可感知（2026-10-03）
+
+真机反馈：`/data/adb/shso/d.sh`（只做 `rm` + `touch`、无任何 `echo`）执行后
+终端除横幅与退出码外一片空白，用户误以为软件没执行。实测确认脚本本身正常
+（删档 → App 执行 → 5 个目标文件全部重建），问题在反馈而非功能。
+沿「执行生命周期」单点补三处反馈，正常脚本零额外噪音。
+
+- [x] **A 静默提示**：读取循环累计「是否产出过非空白内容」，收尾时若全程无输出则
+      补一行「脚本执行完成，未产生任何输出」。纯空白（空行 / 缩进 / 裸换行）不计入，
+      否则静默脚本会被误判为有输出、又不给提示。
+- [x] **B 耗时显示**：收尾行补 `用时`，按量级切换格式（毫秒 / 秒一位小数 / 分秒 / 时分秒），
+      强制 `Locale.ROOT` 保证小数点稳定为 `.`（中文环境下 `String.format` 会输出逗号）。
+- [x] **C 运行中心跳**：执行期间每 10s 追加一行已运行时长；脚本一旦产出内容即停止播报
+      （满屏心跳会淹没真实日志）。心跳挂在 `scope` 上而非 `executionJob` 下，
+      故在 `finally` 里显式 `cancel()` —— 否则任务结束后仍会继续插话。
+      跨线程标志用 `AtomicBoolean`（局部变量不能加 `@Volatile`）。
+- [x] **纯逻辑抽出便于单测**：`formatElapsed`（顶层）与 `ExecutionFeedback`
+      （`hasVisibleOutput` / `anyChunkHasContent`）—— `RootService` 是 object，
+      单测无法加载。新增 `ExecutionFeedbackTest` 8 例覆盖格式切换、负值兜底、
+      小数点稳定性、全空白判定、分块累积判定。
+- [x] **验证**：**348 tests / 0 failures / 1 skipped**；lint 0 errors / 31 warnings；
+      Release 2.08 MB。真机实测：
+      - `d.sh`（静默）→「脚本执行完成，未产生任何输出」+「退出码: 0，用时 176毫秒」
+      - `slow.sh`（静默 sleep 25s）→ 第 10 秒出现「仍在执行，已运行 10.0秒…」，顶栏「运行中...」
+      - `selftest.sh`（有输出）→ 无心跳干扰、无静默误报，正常「退出码: 0，用时 94毫秒」
