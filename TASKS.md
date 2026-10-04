@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（`c620dc6`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 457 tests / 0 failures / 1 skipped |
+| 单元测试 | 466 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.03 MB（移除未使用的 commons-compress ZIP keep，省 48 KiB），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -67,6 +67,36 @@
 ---
 
 ## 待办
+
+### A82. 执行入口改为菜单 + 身份选择（2026-10-04）
+
+- [x] **移除列表行内「执行」按钮**
+  - [x] 该按钮 gated 在 `!compact && isExecutable`，而双列布局下每列约 205dp，
+    恒小于 220dp 的紧凑阈值 → 手机上永远不渲染。占着行内空间却点不到。
+  - [x] 同处一个 `if/else if` 链的「预览」保留（改结构时勿连带删掉）。
+- [x] **`pendingExecuteItem` 是声明后从未使用的死状态**
+  - [x] 槽位与注释（「点击「执行」先暂存待执行文件，弹窗确认后再真正执行」）都在，
+    但没有任何代码写入或消费它。编译与测试都通过，用户点了没有任何反应。
+  - [x] 动作菜单新增 `执行` 项（限 `isExecutableScript || isExecutableBinary`）
+    写入该槽位；新增 `ExecuteConfirmDialog` 消费它。
+- [x] **执行身份三选：取消 / 无ROOT / 有ROOT**
+  - [x] 此前只有 `executeFile(path, runAsRoot = null)` 一条路，`null` 落成 `true`
+    即一律 ROOT —— 以应用自身身份跑一次没有入口。
+  - [x] `有ROOT` → `onExecuteFileAndNavigate(path, true)`；`无ROOT` → 传 `false`。
+  - [x] ROOT 状态先 probe 再落本地 state（不在组合期读全局 `isRootGranted`，
+    否则牵动整页重组）；未授权时 `有ROOT` 置灰并说明只能以普通用户身份执行 ——
+    留着可点的话用户拿到的是一串 su 失败输出，而不是一句「没授权」。
+- [x] **弹窗两处布局/取值缺陷（真机首版暴露后修）**
+  - [x] 三枚 Material3 按钮最小宽度 + 24dp 内边距本就超出行宽，不定宽时
+    `有ROOT` 被压到最窄、文字逐字竖排（真机实测「有 / R / O / O / T」）。
+    改为 `weight(1f)` 等分 + `maxLines = 1, softWrap = false`。
+  - [x] 原先列出 `fileItem.permissions`：目录列举得到的 `FileItem` 不带该字段
+    （默认空串），界面上是一行空值。已删除该行；权限信息在同菜单的「权限/属性」里。
+- [x] 守护：`ExecuteEntryRegressionTest`（9 项），其中「待执行槽位不得只声明不接线」
+  盯的正是上面那条死状态。
+- [x] 真机验证：`无ROOT` → 横幅「执行身份: 非 Root」，`/data/adb/shso/smoke.sh`
+  如实返回 `Permission denied`、退出码 127；`有ROOT` → 横幅「执行身份: Root」，
+  输出 `SMOKE_OK`、退出码 0。两种身份确实走了不同路径。
 
 ### A81. 双列状态隔离审查（2026-10-04）
 

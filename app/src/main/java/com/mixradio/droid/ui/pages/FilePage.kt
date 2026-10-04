@@ -99,6 +99,7 @@ import com.mixradio.droid.data.displayPath
 import com.mixradio.droid.ui.components.ApkExtractDialog
 import com.mixradio.droid.ui.components.BookmarksDialog
 import com.mixradio.droid.ui.components.BuiltInFilePicker
+import com.mixradio.droid.ui.components.ExecuteConfirmDialog
 import com.mixradio.droid.ui.components.FileListSettingsDialog
 import com.mixradio.droid.ui.components.FilePermissionDialog
 import com.mixradio.droid.ui.components.FileShortcutButton
@@ -1183,18 +1184,13 @@ fun FilePage(
                                                     )
                                                 }
 
-                                                if (!compact && isExecutable) {
-                                                    // 「执行」按钮：去掉矩形底，直接裸文字 + 红色加粗（与终端页按钮裸文字化风格一致）
-                                                    Text(
-                                                        text = "执行",
-                                                        fontSize = 12.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = AuroraTokens.Error,
-                                                        modifier = Modifier
-                                                            .clickable { onExecuteFileAndNavigate(item.path, null) }
-                                                            .padding(horizontal = 6.dp, vertical = 8.dp)
-                                                    )
-                                                } else if (!compact && isFontFile) {
+                                                // 行内按钮只剩字体预览。
+                                                //
+                                                // 这里原先还有一枚「执行」：双列布局下每列约 205dp，
+                                                // 恒小于 220dp 的紧凑阈值，该按钮在手机上永远不显示 ——
+                                                // 占了行内空间却点不到。执行改由动作菜单进入，
+                                                // 见 showActionDialog 中的「执行」项。
+                                                if (!compact && isFontFile) {
                                                     Button(
                                                         onClick = {
                                                             previewFontItem = item
@@ -1791,6 +1787,16 @@ fun FilePage(
                         } else {
                             feedbackMessage = resultPath
                         }
+                    }
+                }
+
+                // 执行：脚本与可执行二进制。执行身份（ROOT / 普通用户）不在这里定，
+                // 交给后续确认框选 —— 默认一律 root 的话，用户想以自己的身份跑一个脚本
+                // （读自己的文件、用自己的环境变量）就没有入口了。
+                if (item.isExecutableScript || item.isExecutableBinary) {
+                    ActionTextRow("执行", AuroraTokens.Error) {
+                        showActionDialog = false
+                        pendingExecuteItem = item
                     }
                 }
 
@@ -2766,6 +2772,28 @@ fun FilePage(
             pendingInstallItem = null
             if (target != null) startInstall(target, installAsRoot, confirmedSha256, stagedPath)
             else File(stagedPath).delete()
+        }
+    )
+    // ===== 执行确认弹窗：执行身份由用户显式选择 =====
+    //
+    // ROOT 状态与安装确认同理：先 probe 一次落到本地 state，不在组合期直接读
+    // RootService.isRootGranted（那是全局 mutableStateOf，会牵动整页重组）。
+    var rootGrantedForExecute by remember { mutableStateOf(RootService.isRootGranted == true) }
+    LaunchedEffect(pendingExecuteItem) {
+        if (pendingExecuteItem == null) return@LaunchedEffect
+        rootGrantedForExecute = withContext(Dispatchers.IO) {
+            RootService.isRootGranted == true || RootService.checkRoot()
+        }
+    }
+    ExecuteConfirmDialog(
+        show = pendingExecuteItem != null,
+        fileItem = pendingExecuteItem,
+        rootGranted = rootGrantedForExecute,
+        onDismiss = { pendingExecuteItem = null },
+        onPick = { asRoot ->
+            val target = pendingExecuteItem
+            pendingExecuteItem = null
+            if (target != null) onExecuteFileAndNavigate(target.path, asRoot)
         }
     )
 }
