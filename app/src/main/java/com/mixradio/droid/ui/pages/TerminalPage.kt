@@ -104,7 +104,7 @@ internal fun terminalLineKey(index: Int, @Suppress("UNUSED_PARAMETER") line: Ann
  * Compose 的 `Text` 会对整串文本做断行排版，成本与该行字符数成正比。实测单行 10 万字符
  * （`cat` 二进制 / minified JSON / 单行大文件这类输出）会让主线程排版约 20 秒——
  * Choreographer 跳帧 1210、`Davey! duration=20182ms`、直接触发 ANR，期间连输入事件都派发不出去。
- * 终端日志本就按「行」呈现，超长行只渲染前 N 字符并标注省略量；**模型不动**——
+ * 终端日志本就按「行」呈现，超长行只渲染前 N 字符并标注省略量；**数据层不动**——
  * [ParsedAnsiResult.plainText] 仍是全文，「复制输出」拿到的是完整内容。
  */
 internal const val MAX_RENDER_CHARS_PER_LINE = 4000
@@ -190,8 +190,17 @@ fun TerminalPage(
     // 必须用**前置**自增：表达式 `p[0]++` 的值是自增**前**的旧值，写进 p[0] 的是新值，
     // 于是 myGen 恒等于 p[0] - 1，两处 `p[0] == myGen` 守卫恒为假 —— 每次 collect 都在
     // 解析完的结果上直接 return，parsedOutput 永不更新，终端输出区永远空白。
-    val parseGenRef = remember { intArrayOf(0) }
-    val myGen = remember(terminalDefaultColor) { ++parseGenRef[0] }
+    // 代次计数器必须是**进程级**，不能是 remember。
+    //
+    // `remember` 的值随组合销毁：旋转屏幕 / 分屏重建 Activity 后拿到的是**全新数组**，
+    // 新旧两个 Activity 的 myGen 都等于 1，`parseGenRef[0] == myGen` 两侧同时成立，
+    // 守卫等于不存在。旧 Activity 那个 in-flight 解析块（纯 CPU、无挂起点，取消打不断）
+    // 会与新 Activity 的首个 collect 串行进入 `synchronized(ansiParser)`，
+    // 各自持有自己捕获的 prev，后进入的那个按旧 prev 把同一段再喂一次
+    // → 终端出现最多一批（≤ 一个 flush 间隔）的重复行。
+    //
+    // 放在与解析器同生命周期的文件级对象里，才能真正跨 Activity 生效。
+    val myGen = remember(terminalDefaultColor) { ++TerminalParseGeneration.ref[0] }
     var parsedOutput by remember(terminalDefaultColor) {
         mutableStateOf(cachedParse?.result ?: ParsedAnsiResult(emptyList()))
     }
@@ -235,14 +244,14 @@ fun TerminalPage(
                         // 出现「解析器已前进、进度没记」——否则重进会把同一段再喂一次，日志出现重复行。
                         // 代次守卫：解析期间若发生了新一轮（换色 / 组件离组合重建），
                         // 本结果已过期，写回会让新组合按错误的进度重喂。
-                        if (parseGenRef[0] == myGen) {
+                        if (TerminalParseGeneration.ref[0] == myGen) {
                             parseHolder.state?.let { it.consumedLog = log; it.result = r }
                         }
                         r
                     }
                     result
                 }
-                if (parseGenRef[0] != myGen) return@collect
+                if (TerminalParseGeneration.ref[0] != myGen) return@collect
                 if (parseHolder.state == null) {
                     parseHolder.state = TerminalParseState(terminalDefaultColor, ansiParser, log, snap)
                         .also { TerminalParseCache.state = it }
@@ -263,10 +272,20 @@ fun TerminalPage(
     }
 
     // 自动滚动到底部：跟随意图为真时即时跳到底（scrollToItem 而非 animateScrollTo，避免每帧动画 churn）。
-    // key 用行数而非字符串长度，避免每次 flush 都取消并重启协程。
-    LaunchedEffect(parsedOutput.lines.size, isImeVisible) {
+    //
+    // key 必须包含**末行长度**，不只是行数：
+    // 输出**不含换行**时（cat 单行大 JSON、curl 长响应、二进制 cat），
+    // 行数恒定不变 → effect 根本不重跑 → 视口停在原处不动，
+    // 而新增内容全落在软换行折叠线以下。用户观感是「命令跑着跑着终端不刷新了」，
+    // 且没有任何提示。
+    val lastLineLength = parsedOutput.lines.lastOrNull()?.length ?: 0
+    LaunchedEffect(parsedOutput.lines.size, lastLineLength, isImeVisible) {
         if (followTail && parsedOutput.lines.isNotEmpty()) {
-            listState.scrollToItem(parsedOutput.lines.lastIndex)
+            val last = parsedOutput.lines.lastIndex
+            // scrollToItem 只把该 item 的**顶端**对齐视口顶端；对超过视口高度的 item
+            // （超长行被软换行成多个视觉行），尾部永远在屏外。故必须显式钉到底。
+            listState.scrollToItem(last)
+            listState.scrollToItem(last, Int.MAX_VALUE / 2)
         }
     }
 
@@ -745,4 +764,16 @@ private class ParseHolder(@Volatile var state: TerminalParseState?)
 private object TerminalParseCache {
     @Volatile
     var state: TerminalParseState? = null
+}
+
+/**
+ * 终端解析代次的**进程级**计数器。
+ *
+ * 放在文件级而非 `remember`：解析器实例本身是进程级缓存（[TerminalParseCache]），
+ * 代次必须与它同生命周期。若代次随组合重建，旋转屏幕后新旧 Activity 各持一份计数器，
+ * 「本结果是否过期」的判据在跨 Activity 场景下恒为真 —— 守卫形同虚设。
+ */
+internal object TerminalParseGeneration {
+    /** 单调递增；仅在主线程读写（`remember` 的计算与解析块的守卫都在主线程）。 */
+    val ref = intArrayOf(0)
 }

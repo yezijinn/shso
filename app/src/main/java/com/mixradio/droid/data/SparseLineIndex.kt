@@ -3,6 +3,8 @@
 package com.mixradio.droid.data
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.nio.charset.Charset
@@ -252,6 +254,12 @@ class IndexedLineProvider(
         var ci = firstChunk + 1
         var truncated = false
         while (newlines < need) {
+            // 行滑出可视窗口时协程已被取消，但 IO 调度器的取消是**协作式**的：
+            // 不会中断阻塞中的 getChunk，循环会一路读到凑够换行数或 EOF。
+            // 快速拖动滑块时几十个已取消的 load 同时跑满 IO，
+            // 且各自持有最多 4MB 的 ByteArrayOutputStream → GC 抖动、正常行排队，
+            // 极端情况 OOM。与 ArchiveExtractor.copyStream 是同一类遗漏。
+            currentCoroutineContext().ensureActive()
             if (out.size() > MAX_READ_BYTES) {          // 极端超长行保护（≈4MB 仍无换行）
                 truncated = true
                 break

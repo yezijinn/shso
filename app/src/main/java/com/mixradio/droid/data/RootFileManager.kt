@@ -3,7 +3,9 @@
 
 package com.mixradio.droid.data
 
+import android.os.SystemClock
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.file.Files
@@ -29,6 +31,9 @@ object RootFileManager {
     const val DEFAULT_SHSO_DIR = "/data/adb/shso"
 
     private val PERMISSION_MODE_PATTERN = Regex("^[0-7]{3,4}$")
+
+    /** 同名副本探测的次数上限：防止异常目录里 `exists()` 无限循环。 */
+    private const val COPY_NAME_PROBE_LIMIT = 1000
     private val OWNER_OR_GROUP_PATTERN = Regex("^[a-zA-Z0-9._-]+$")
 
     /**
@@ -48,6 +53,16 @@ object RootFileManager {
     @Volatile
     var rememberedDirectory: String? = null
 
+    /**
+     * 「文件」页右列记忆的上次浏览目录。
+     *
+     * 双列布局下两列各自独立导航，各记各的落点。与 [rememberedDirectory]
+     * 一样是**进程内**记忆（AppSettings.rememberDirectory 开启时读写），
+     * 进程被杀后重置，符合「临时缓存」语义。
+     */
+    @Volatile
+    var rememberedRightDirectory: String? = null
+
     // 目录只需建立一次，进程内去重，避免每次刷新/切目录都重复发起一次 su 调用
     @Volatile
     private var shsoDirEnsured = false
@@ -58,7 +73,54 @@ object RootFileManager {
      * 只有在授权了 ROOT 时才优先走 su 以获得更完整的路径访问能力，
      * 无 ROOT 或 su 失败时回退标准 File API（授予「所有文件访问」后可操作 /sdcard）。
      */
-    private fun preferRoot(): Boolean = RootService.isRootGranted == true
+    /**
+     * 是否「优先使用 ROOT」：已确获 ROOT 授权时为 true。
+     *
+     * 设计原则：普通用户本就能做的操作（浏览/读写/增删自己的存储）不强制依赖 ROOT；
+     * 只有在授权了 ROOT 时才优先走 su 以获得更完整的路径访问能力，
+     * 无 ROOT 或 su 失败时回退标准 File API（授予「所有文件访问」后可操作 /sdcard）。
+     *
+     * `null`（尚未探测）**不算**「无 ROOT」：探测在 MainActivity 里异步进行，
+     * 与首帧列目录并发。若把 null 当 false，首帧就会跳过 su 直接走本地 File API，
+     * 而此时「所有文件访问」可能刚授权尚未生效、或路径在应用无权访问的位置，
+     * 于是拿到空列表/无权限 —— 用户看到「当前目录为空」，实际目录里有大量文件。
+     * 真机实测：Debug 首启即进文件页，root=null 时 /storage/emulated/0 列出 0 项。
+     * 因此 null 时先等待探测落定，由 [awaitRootState] 负责。
+     */
+    private suspend fun preferRoot(): Boolean {
+        // 只需「等探测落定」，返回值本身不参与判定：
+        // 等待超时（返回 false）时按当前已知状态处理，可能仍是 null → false。
+        // 写成 if (awaitRootState()) return X / return X 两条相同分支是纯装饰。
+        awaitRootState()
+        return RootService.isRootGranted == true
+    }
+
+    /**
+     * ROOT 状态尚未确定时最多等待 [ROOT_STATE_WAIT_MS]，让异步探测落定。
+     *
+     * 不无限等待：授权弹窗可能长时间挂起（用户没看见/没点），此时必须继续走本地兜底，
+     * 否则文件页会一直停在骨架屏。超时后按当前已知状态（可能是 null）处理。
+     */
+    private suspend fun awaitRootState(): Boolean {
+        if (RootService.isRootGranted != null) return true
+        val deadline = SystemClock.elapsedRealtime() + ROOT_STATE_WAIT_MS
+        while (RootService.isRootGranted == null) {
+            val remaining = deadline - SystemClock.elapsedRealtime()
+            if (remaining <= 0L) return false
+            delay(minOf(ROOT_STATE_POLL_MS, remaining))
+        }
+        return true
+    }
+
+    /**
+     * ROOT 状态未落定时的最长等待。
+     *
+     * 3 秒是在「授权弹窗要用户点」与「页面不能一直卡在骨架屏」之间的折中。
+     * 但更关键的是 [preferRoot] 现在**只在本地列举拿不到条目时**才会走到这里
+     * （见 listDirectoryLocal 的快路径），因此这个等待绝大多数情况下不会发生。
+     */
+    private const val ROOT_STATE_WAIT_MS = 3_000L
+    private const val ROOT_STATE_POLL_MS = 50L
 
     /**
      * 路径级非法校验：拒绝空路径、反斜杠、NUL、换行、回车，以及含 `..` 的路径段（防路径穿越）。
@@ -264,62 +326,196 @@ object RootFileManager {
         }
     }
 
-    suspend fun listFiles(dirPath: String): List<FileItem> = withContext(Dispatchers.IO) {
+    /**
+     * 目录列举结果：把「目录确实是空的」与「列举失败」彻底分开。
+     *
+     * 旧接口返回裸 [List]，上层只能靠 `isEmpty()` 判断，于是「root 调用失败」
+     * 与「空目录」被压成同一个信号，UI 显示「当前目录为空」——用户看到的是
+     * 一个断言，而真实情况是这次读取根本没成功（su 被拒、输出被截断、
+     * stat 全部解析失败等）。空目录是事实陈述，不能承载失败。
+     */
+    sealed interface DirectoryListing {
+        /** 列举成功。items 为空即目录确实为空。 */
+        data class Success(val items: List<FileItem>) : DirectoryListing
+
+        /** 目录不存在 / 不可达。 */
+        data object Missing : DirectoryListing
+
+        /** 列举失败。reason 面向用户可读。 */
+        data class Failed(val reason: String) : DirectoryListing
+    }
+
+    /**
+     * 单次 su 内「名称通道」与「元数据通道」的分隔标记。
+     *
+     * 用一个正常文件名不会出现的组合，两侧由 printf 各补一个 NUL，
+     * 使 split('\0') 后边界绝对清晰。旧实现靠两次 find 的**输出顺序**配对，
+     * 两次遍历之间目录若发生变化就会整体错位（某条目拿到别人的大小与时间）。
+     */
+    private const val META_SEP = "__SHSO_META_5A1C__"
+
+    /** 单条目的元数据（不含名称）。 */
+    private data class StatMeta(val isDirectory: Boolean, val size: Long, val modified: Long)
+
+    /** 拼接目录与条目名；目录以 / 结尾时不重复加斜杠。 */
+    private fun joinPath(directory: String, name: String): String =
+        if (directory.endsWith("/")) "$directory$name" else "$directory/$name"
+
+    /** 解析 `权限串|字节数|mtime`，跳过畸形行。不做 trim：名称在另一条通道。 */
+    private fun parseStatMeta(output: String): List<StatMeta> {
+        val out = ArrayList<StatMeta>()
+        for (line in output.lineSequence()) {
+            val trimmed = line.trim()
+            if (trimmed.isEmpty()) continue
+            val parts = trimmed.split('|')
+            if (parts.size < 3) continue
+            val perms = parts[0]
+            if (perms.length < 2) continue
+            out.add(
+                StatMeta(
+                    isDirectory = perms[0] == 'd',
+                    size = parts[1].toLongOrNull() ?: 0L,
+                    modified = statSecondsToMillis(parts[2].toLongOrNull() ?: 0L)
+                )
+            )
+        }
+        return out
+    }
+
+    /**
+     * 列举目录条目，并区分「成功（含空目录）」/「目录不存在」/「列举失败」。
+     *
+     * 与 [listFiles] 的差别：不再把失败压成空列表。这是「当前目录为空」
+     * 误报的根因修复点 —— 调用方必须能区分二者才能给出正确文案。
+     */
+    suspend fun listDirectory(dirPath: String): DirectoryListing = withContext(Dispatchers.IO) {
         val targetPath = if (dirPath.isEmpty()) "/" else dirPath
-        if (isUnsafePath(targetPath)) return@withContext emptyList()
-        val items = mutableListOf<FileItem>()
+        if (isUnsafePath(targetPath)) return@withContext DirectoryListing.Failed("路径非法")
 
-        // ROOT 已授权时优先走 su 批量取条目（1~2 次 fork/exec，可访问受保护/系统路径）；
-        // 未授权 ROOT 时跳过 su 探测，直接本地读取，避免无谓的 su 调用与超时。
+        val escapedPath = RootService.escapeShellArg(targetPath)
+
         if (preferRoot()) {
-            val escapedPath = RootService.escapeShellArg(targetPath)
-            // 批量取全部条目：1~2 次 fork/exec 即可，避免逐文件 stat 产生的 2N 次进程创建开销。
-            // find -exec + 由 find 自行分批，不受 ARG_MAX 限制；stat -L 跟随符号链接，行为同旧版 [ -d ] 判断。
-            // 输出格式：权限串|字节数|mtime|文件名，权限串首字符 'd' 即目录。
-            val primaryCmd =
-                "cd $escapedPath 2>/dev/null && find . -maxdepth 1 -mindepth 1 -exec stat -L -c \"%A|%s|%Y|%n\" {} + 2>/dev/null"
-            // 个别系统 find 不支持 -exec + 时退化为通配批量（仅超大目录存在 ARG_MAX 风险）
-            val fallbackCmd =
-                "cd $escapedPath 2>/dev/null && stat -L -c \"%A|%s|%Y|%n\" .* * 2>/dev/null"
-
-            // 约束：不可用 exitCode 判断成败。只要目录内有任一条目 stat 失败（典型如
-            // /adb_keys 这类断链符号链接，stat -L 跟随不存在的目标即报错），find/stat
-            // 便返回非 0，但其余条目的输出完全有效。这里只以「有无输出、能否解析出条目」为准。
-            for (cmd in listOf(primaryCmd, fallbackCmd)) {
-                val (_, output) = RootService.runCommandSync(cmd)
-                if (output.isNotBlank()) {
-                    val before = items.size
-                    parseStatOutput(output, targetPath, items)
-                    if (items.size > before) break
-                }
+            // ── 单次 su 完成「存在性 + 名称 + 元数据」────────────────────────
+            //
+            // 旧实现是三次串行 su：test -d → find -print0 → find -exec stat。
+            // 三次各自 fork su、各自解析一遍命令，除去延迟（实测每轮 su 往返数十毫秒，
+            // 冷启动 / Magisk 首次授权时可达数百毫秒，用户观感就是「进目录后长时间不出文件」），
+            // 更本质的问题是**三次之间存在 TOCTOU 窗口**：test -d 成功后目录可能被删除，
+            // 此时 find 零输出而旧逻辑据此返回「空目录」——把「目录刚被删掉」报成「当前目录为空」。
+            //
+            // 合并后由退出码区分三种情况，语义不再依赖输出是否为空：
+            //   3 → cd 失败（目录不存在或不可进入）；4 → 不是目录；0 → 成功。
+            //
+            // 两个 find 之间用固定标记分隔：名称通道整体以 NUL 结尾（NUL 不可能出现在
+            // 文件名里，是唯一可靠记录边界），标记两侧再补 NUL，于是 split('\0') 后
+            // 标记前全是文件名、标记后全是元数据行，两者互不污染 —— 文件名里的
+            // \n、| 、前后空格都不会错切记录，也不会像旧 `%A|%s|%Y|%n` 那样把
+            // 含 \n 的名字劈成两条记录（一条指向不存在的幻影文件，长按删除即误删真文件）。
+            val (code, out) = RootService.runCommandSync(
+                "cd $escapedPath 2>/dev/null || exit 3; test -d . || exit 4; " +
+                    "find . -maxdepth 1 -mindepth 1 -print0; printf '\\0$META_SEP\\0'; " +
+                    "find . -maxdepth 1 -mindepth 1 -exec stat -L -c \"%A|%s|%Y\" {} + 2>/dev/null"
+            )
+            if (code == 3 || code == 4) {
+                // ROOT 明确「进不去」或「不是目录」。仍给本地一次机会：
+                // 无 ROOT 场景或应用恰好有权限时可能读得到。
+                return@withContext listDirectoryLocal(targetPath)
             }
+            if (code == -1) {
+                // su 被拒 / 超时 / fork 失败：这次调用根本没跑成，不能断言目录为空。
+                return@withContext listDirectoryLocal(targetPath, rootUnavailable = true)
+            }
+
+            val cut = out.indexOf(META_SEP)
+            if (cut < 0) {
+                // 标记缺失说明命令在中途被杀或输出被截断。如实报失败，
+                // 绝不能把「只拿到一半输出」当成「目录为空」。
+                return@withContext DirectoryListing.Failed("目录读取结果不完整")
+            }
+            val names = out.substring(0, cut)
+                .split('\u0000')
+                .asSequence()
+                .map { it.removePrefix("./") }
+                .filter { it.isNotEmpty() && it != "." && it != ".." }
+                .toList()
+            val metas = parseStatMeta(out.substring(cut + META_SEP.length))
+
+            // ROOT 已确认可进入：条目列表就是权威结果，零条目即「目录确实为空」。
+            // 绝不能回落到本地判定 —— /data/adb/shso 等目录应用侧被 SELinux 拦，
+            // 本地 listFiles() 返回 null，据此报「无权限」就是把空目录说成故障。
+            val items = names.mapIndexed { index, name ->
+                val meta = metas.getOrNull(index)
+                FileItem(
+                    name = name,
+                    path = joinPath(targetPath, name),
+                    isDirectory = meta?.isDirectory == true,
+                    size = meta?.size ?: 0L,
+                    lastModified = meta?.modified ?: 0L
+                )
+            }
+            return@withContext DirectoryListing.Success(items.distinctBy { it.path })
         }
 
-        // 无 ROOT 或 ROOT 取空/失败：本地兜底（授予「所有文件访问」后可浏览 /sdcard）
-        if (items.isEmpty()) {
-            try {
-                val localFiles = File(targetPath).listFiles()
-                if (localFiles != null) {
-                    for (f in localFiles) {
-                        items.add(
-                            FileItem(
-                                name = f.name,
-                                path = f.absolutePath,
-                                isDirectory = f.isDirectory,
-                                size = if (f.isDirectory) 0L else f.length(),
-                                lastModified = f.lastModified()
-                            )
-                        )
-                    }
-                }
+        // 无 ROOT，或 ROOT 调用失败：交给本地兜底判定。
+        // 能走到这里说明 preferRoot() 为 false —— su 从未被调用过，
+        // 因此不存在「ROOT 不可用」这一前提，不传该标记。
+        // （su 被拒/超时的情形已在上面 code == -1 分支显式以 rootUnavailable=true 兜底。）
+        listDirectoryLocal(targetPath)
+    }
+
+    /**
+     * 本地 [File] API 兜底列举（应用自身权限内）。
+     *
+     * @param rootUnavailable ROOT 不可用（无授权或 su 调用失败）。用于区分失败语义：
+     *   true  → 读不到是**权限/环境**问题，报 Failed；false → 读不到即不存在，报 Missing。
+     */
+    private suspend fun listDirectoryLocal(
+        targetPath: String,
+        rootUnavailable: Boolean = false
+    ): DirectoryListing = withContext(Dispatchers.IO) {
+        val localFiles = try {
+            File(targetPath).listFiles()
+        } catch (_: Exception) {
+            null
+        }
+        if (localFiles == null) {
+            // 读不到。先确认路径本身是否存在：不存在是 Missing（可回退），
+            // 存在却读不到才是 Failed（真实故障，需提示重试）。
+            val exists = try {
+                File(targetPath).isDirectory
             } catch (_: Exception) {
+                false
+            }
+            return@withContext if (exists) {
+                DirectoryListing.Failed("无权限读取该目录")
+            } else if (rootUnavailable) {
+                // ROOT 不可用且路径不存在：无法进一步区分「本来就不存在」与
+                // 「被 ROOT 授权问题掩盖」，如实报失败而不是断言不存在。
+                DirectoryListing.Failed("ROOT 调用失败，请检查授权")
+            } else {
+                DirectoryListing.Missing
             }
         }
+        val items = localFiles.map { f ->
+            FileItem(
+                name = f.name,
+                path = f.absolutePath,
+                isDirectory = f.isDirectory,
+                size = if (f.isDirectory) 0L else f.length(),
+                lastModified = f.lastModified()
+            )
+        }
+        DirectoryListing.Success(items.distinctBy { it.path })
+    }
 
-        // 仅去重后返回：展示顺序由 UI 层（applyFileViewSettings：目录恒在前 + 名称/时间升/降序）
-        // 统一决定，此处不再二次排序——原地排序会被 UI 层立即覆盖，且其比较器内逐次
-        // name.lowercase() 会带来 O(N log N) 次临时字符串分配。
-        items.distinctBy { it.path }
+    suspend fun listFiles(dirPath: String): List<FileItem> = withContext(Dispatchers.IO) {
+        when (val result = listDirectory(dirPath)) {
+            is DirectoryListing.Success -> result.items
+            // 旧接口无法表达失败：调用方（选择器等）只关心条目，
+            // 失败与不存在同样给空列表，但**不得**据此断言目录为空。
+            is DirectoryListing.Missing -> emptyList()
+            is DirectoryListing.Failed -> emptyList()
+        }
     }
 
     /**
@@ -379,43 +575,6 @@ object RootFileManager {
         )
     }
 
-    private fun parseStatOutput(output: String, targetPath: String, items: MutableList<FileItem>) {
-        for (line in output.lineSequence()) {
-            val trimmed = line.trim()
-            if (trimmed.isEmpty()) continue
-
-            // limit=4：文件名自身可含 '|'，故只切前三段，余下整体作为文件名
-            val parts = trimmed.split("|", limit = 4)
-            if (parts.size != 4) continue
-
-            val perms = parts[0]
-            if (perms.length < 2) continue
-
-            val isDir = perms[0] == 'd'
-            val size = parts[1].toLongOrNull() ?: 0L
-            // stat -c %Y 给的是「秒」；lastModified 契约是「毫秒」，此处必须换算（见 statSecondsToMillis）
-            val modified = statSecondsToMillis(parts[2].toLongOrNull() ?: 0L)
-            var name = parts[3]
-
-            // find 输出带 "./" 前缀
-            if (name.startsWith("./")) name = name.removePrefix("./")
-            // 格式化串用 %n（仅文件名），不会附加 " -> 链接目标"（那是 stat -l / %N 的行为），
-            // 因此不能按 " -> " 截断，否则名字里含该串的文件会被截出错误的 name / path。
-            if (name.isEmpty() || name == "." || name == "..") continue
-
-            val itemPath = if (targetPath.endsWith("/")) "$targetPath$name" else "$targetPath/$name"
-
-            items.add(
-                FileItem(
-                    name = name,
-                    path = itemPath,
-                    isDirectory = isDir,
-                    size = size,
-                    lastModified = modified
-                )
-            )
-        }
-    }
 
     suspend fun addFileToShso(
         sourcePath: String,
@@ -713,22 +872,13 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
         Pair(false, "删除失败")
     }
 
-    /** 拷��时追加序号的重名查找上限；超过即视为异常目录（避免无限循环）。 */
-    private const val COPY_NAME_PROBE_LIMIT = 1000
-
-    /**
-     * 不 fork su 的存在性探测（仅用于 Java 回退路径的重名查找）。
-     *
-     * ROOT 路径下仍可能被 Java 判定为「不存在」，但那种情况下 [copyFile] 的 shell 分支
-     * 已经先跑过并成功了，走到这里说明确实没有 ROOT，用 [File.exists] 足够。
-     */
-    private fun pathExistsQuiet(path: String): Boolean = File(path).exists()
 
     /**
      * 在同级目录里找首个不存在的 `<base>_<n><ext>` 目标名。
      *
      * 纯函数，便于单测。**只做词法构造，不碰文件系统** —— 实际占用检查在
      * [copyFile] 里用单条 shell 完成（见该函数注释）。
+
      */
     internal fun copyCandidatePath(parent: String, base: String, suffix: String, n: Int): String {
         val name = "${base}_$n$suffix"
@@ -808,12 +958,17 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
         }
 
         // Java 路径：同样需要重名查找，但走 File.exists() 不 fork su
+
+                // 单次 File.exists() 即可：此前写成 `File(destPath).exists() || pathExistsQuiet(destPath)`，
+        // 而后者函数体就是 File(path).exists() —— `||` 只在左为 true 时省下右，
+        // 左为 false（正是需要继续探测下一个名字的情况）时必然**再做一次完整 stat**。
+        // 同名副本 N 个 → 2N 次系统调用。
         var n = 0
         var destPath: String
         do {
             destPath = copyCandidatePath(parent, base, suffix, n)
             n++
-        } while (n < COPY_NAME_PROBE_LIMIT && (File(destPath).exists() || pathExistsQuiet(destPath)))
+        } while (n < COPY_NAME_PROBE_LIMIT && File(destPath).exists())
         if (n >= COPY_NAME_PROBE_LIMIT) {
             return@withContext Pair(false, "同级重名过多，未找到可用的目标名")
         }

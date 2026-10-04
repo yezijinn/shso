@@ -94,7 +94,7 @@ object ExternalRequestParser {
  * 类型不统一：真实分享应用多传 `Uri`（Parcelable），`am start --eu` 等传 `String`，
  * 而 `SEND_MULTIPLE` 与部分实现传 `ArrayList<Uri>` —— 早期实现直接 `value.toString()`，
  * 对列表会得到 `[uri1, uri2]`（带方括号）导致解析失败、静默降级为主页。
- * 列表取首个元素（与当前单文件模型一致）。
+ * 列表取首个元素（与当前单文件限制一致）。
  *
  * 顶层纯函数：不依赖 Activity，可 JVM 单测。
  */
@@ -326,15 +326,35 @@ object ExternalOpen {
     ): Boolean {
         val p = normalizeForContainment(path) ?: return false
         if (p.isEmpty()) return false
-        for (priv in appPrivatePrefixes) {
-            val base = normalizeForContainment(priv) ?: continue
+        // 两组前缀都是模块级常量，归一化是纯词法函数、无外部依赖，
+        // 因此每次调用都在重复计算恒定的结果：一次 isExternalPathAllowed 至少跑 6 次
+        // normalizeForContainment，而 resolveToRealPath 一次唤起最多调它 4 次
+        // → 单次唤起 24 次重复的 split/join。这里按列表身份缓存归一化结果。
+        val normalizedPrivate = normalizedPrefixes(appPrivatePrefixes)
+        for (base in normalizedPrivate) {
             if (p == base || p.startsWith("$base/")) return false
         }
-        return allowedPrefixes.any {
-            val base = normalizeForContainment(it) ?: return@any false
-            p == base || p.startsWith("$base/")
+        val normalizedAllowed = normalizedPrefixes(allowedPrefixes)
+        for (base in normalizedAllowed) {
+            if (p == base || p.startsWith("$base/")) return true
         }
+        return false
     }
+
+    /**
+     * 归一化后的前缀列表，按**列表相等性**缓存。
+     *
+     * 调用方两次传入的都是同一份模块级常量（`==` 成立），
+     * 因此命中率接近 100%；万一传入动态列表也只是退化为重新归一化，语义不变。
+     */
+    private val normalizedPrefixCache = HashMap<List<String>, List<String>>()
+
+    private fun normalizedPrefixes(prefixes: List<String>): List<String> =
+        synchronized(normalizedPrefixCache) {
+            normalizedPrefixCache.getOrPut(prefixes) {
+                prefixes.mapNotNull { normalizeForContainment(it) }
+            }
+        }
 
     /**
      * 词法归一化：解析 `.` 与 `..`、折叠重复斜杠、去尾部斜杠。
@@ -399,8 +419,8 @@ object ExternalOpen {
         // 自建 provider 完全可以对任意 URI 返回 `/data/data/<别人>/files/x` 或
         // `/data/adb/modules/x/service.sh`，且这条链路下游会用 root 去 stat / 读取 / 执行
         // （EXECUTE 只需用户在弹窗点一次）。因此这里必须与 `file://` 同等对待，
-        // 只放行共享存储与本地临时目录 —— 一切 `/data/data/*`、`/data/user/*`、
-        // `/data/adb/*` 自然落在白名单之外。合法分享不受影响：FileProvider /
+        // 只放行共享存储与本地临时目录 —— 一切 `/data/data`、`/data/user`、
+        // `/data/adb` 下的路径自然落在白名单之外。合法分享不受影响：FileProvider /
         // MediaStore / Downloads 的真实路径本就在共享存储内。
         return fromProvider.takeIf { isExternalPathAllowed(it) }
     }
@@ -515,21 +535,6 @@ object ExternalOpen {
 
     /** 单个收件箱内同名文件的重名探测上限。 */
     private const val MAX_NAME_PROBE = 1000
-
-    /** 在目录内构造不冲突的文件名：`x.apk` → `x_1.apk` → `x_2.apk`… */
-    fun uniqueFile(dir: File, name: String): File {
-        val candidate = File(dir, name)
-        if (!candidate.exists()) return candidate
-        val dot = name.lastIndexOf('.')
-        val stem = if (dot > 0) name.substring(0, dot) else name
-        val ext = if (dot > 0) name.substring(dot) else ""
-        var index = 1
-        while (true) {
-            val next = File(dir, "${stem}_$index$ext")
-            if (!next.exists()) return next
-            index += 1
-        }
-    }
 
     /**
      * 解析外部 intent 的目标为可直接使用的真实路径。

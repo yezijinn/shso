@@ -27,13 +27,22 @@ class PickerAndPermissionRegressionTest {
         // 回归护栏：原实现在 !exists 分支只改了 currentDir，`loaded` 仍是 emptyList()，
         // 于是路径行显示「内部存储」而列表空白 —— 用户会得出「内部存储是空的」的错误结论。
         // 拔过 SD 卡 / 删过记忆目录后必现。
+        //
+        // 目录列举改为三态（listDirectory）后，回退分支必须**对回退目录重新列举**，
+        // 而不能只改路径栏。这里锁定的是「必须发生第二次列举」这一语义，
+        // 不绑定具体 API 名称，以免把护栏钉死在实现细节上。
         val s = src("BuiltInFilePicker.kt")
         val fn = s.indexOf("fun loadDirectory(path: String)")
         assertTrue("应能找到 loadDirectory", fn > 0)
         val body = s.substring(fn, fn + 2500)
+
+        val missingAt = body.indexOf("is DirectoryListing.Missing")
+        assertTrue("应存在目录不存在的回退分支", missingAt > 0)
+
+        val retryAt = body.indexOf("RootFileManager.listDirectory(fallback)", missingAt)
         assertTrue(
-            "回退分支必须对 resolved 调 listFiles，而不是固定用 path",
-            body.contains("RootFileManager.listFiles(resolved)")
+            "回退分支必须对回退目录重新列举，而不是只改路径栏",
+            retryAt > missingAt
         )
         assertFalse(
             "不得再用 emptyList() 顶替回退目录的内容",

@@ -138,6 +138,8 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
         SpanStyle(color = currentColor, fontWeight = if (isBold) FontWeight.Bold else FontWeight.Normal)
 
     fun reset() {
+        droppedLines = 0
+
         completed.clear()
         curText = StringBuilder()
         curStyles = ArrayList()
@@ -511,11 +513,39 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
 
     private fun endLine() {
         completed.add(buildCurrentLine())
+        // 行数上界：滑窗（HyperCore.MAX_LOG_LENGTH）只约束**字符数**，
+        // 而其裁剪点按 '\n' 对齐 —— 对「全空行」输出等价于「一个字符 = 一行」，
+        // 于是 250k 字符的窗口就是 250k 行。每行还要新建 AnnotatedString +
+        // 空 ArrayList + RangeList（buildCurrentLine），约 4 对象/行，
+        // 滑窗满后每次 flush 都走 reset()+feed(整段) 全量重解析
+        // → 单次 10~25MB、4 次/秒，叠加新旧两份快照峰值 40~50MB，
+        // 表现为持续掉帧 + GC Major，极端情况 OOM。
+        //
+        // 超过上限就从**头部**丢弃：终端语义上「旧的滚出屏幕」本来就不可见，
+        // 保留最新 MAX_LINES 行即可，且让 snapshot() 的规模恒定有界。
+        if (completed.size > MAX_COMPLETED_LINES) {
+            val excess = completed.size - MAX_COMPLETED_LINES
+            // 一次性 removeRange(0, excess) 而非逐个 removeAt(0)（后者是 O(n) 搬移）。
+            completed.subList(0, excess).clear()
+            droppedLines += excess
+        }
         curText = StringBuilder()
         curStyles = ArrayList()
         curCols = null
         curCol = 0
     }
+
+    /**
+     * 已完成行（含当前行）的硬上限。
+     *
+     * 取 4000 行：足够滚屏回看，又把 snapshot() 的分配压到常数级。
+     * 单行渲染另有 4000 字符上限（见 [TerminalPage]），二者互不冲突。
+     */
+    private val MAX_COMPLETED_LINES = 4000
+
+    /** 因超出 [MAX_COMPLETED_LINES] 而被丢弃的行数，供 UI 如实告知「已省略 N 行」。 */
+    var droppedLines: Int = 0
+        private set
 
     private fun buildCurrentLine(): AnnotatedString {
         val cols = curCols

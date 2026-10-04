@@ -57,6 +57,15 @@ val TEXT_EXTENSIONS = setOf(
 /** 可浏览的常见图片扩展名（小写；比较前先 lowercase）。 */
 val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "bmp", "gif", "webp", "ico", "tiff", "tif")
 
+/**
+ * 「.数字」尾缀（腾讯产品下载后追加的 .1，如 qq.apk.1）。
+ *
+ * 提到顶层并只编译一次：此前它在 [FileItem.realExtension] 与 [realArchiveName]
+ * 里每次访问都 `Regex(...)` 现场构造，而这两个属性在文件列表的**每一行、
+ * 每一次重组**里被求值多次（图标、字号、颜色三处各判一次类型）。
+ */
+private val NUMERIC_SUFFIX = Regex("\\.\\d+$")
+
 data class FileItem(
     val name: String,
     val path: String,
@@ -65,37 +74,44 @@ data class FileItem(
     val lastModified: Long = 0L,
     val permissions: String = ""
 ) {
-    val extension: String
-        get() = if (isDirectory) "" else name.substringAfterLast('.', "").lowercase(Locale.ROOT)
+    // ── 以下属性一律在**构造期算一次**，不再每次访问重算 ──────────────────
+    //
+    // 它们此前全是 `get()` 计算属性，而文件列表的行内容会对同一项连续求值三轮
+    // （图标文案 / 字号 / 颜色各判一次 isInstallable、isViewableImage、isEditableText），
+    // 于是单个可见行每次重组要构造 7 次 Regex、7 次匹配、14 个临时字符串、
+    // 6 次 extension，外加一次 String.format。仅「选中态变化」这种轻量重组
+    // 就会在 20 个可见行上放大成 150+ 次正则构造。
+    //
+    // 全部只依赖构造入参，构造期求值语义等价且无副作用。
+    // 声明顺序有意义：isExtensionlessText 依赖下面几个，必须排在它们之后。
+
+    val extension: String =
+        if (isDirectory) "" else name.substringAfterLast('.', "").lowercase(Locale.ROOT)
 
     /** 剥除「.数字」尾缀后的真实扩展名（兼容腾讯产品下载后追加 .1 的情况，如 qq.apk.1）。 */
-    val realExtension: String
-        get() {
-            var base = name
-            // 仅当以 ".<数字>" 结尾（如 .apk.1）时剥离一次，避免把 "file1" 误判
-            val suffixMatch = Regex("\\.\\d+$").find(base)
-            if (suffixMatch != null) {
-                base = base.substring(0, suffixMatch.range.first)
-            }
-            return if (isDirectory) "" else base.substringAfterLast('.', "").lowercase(Locale.ROOT)
-        }
+    val realExtension: String = run {
+        val stripped = NUMERIC_SUFFIX.find(name)?.let { name.substring(0, it.range.first) } ?: name
+        if (isDirectory) "" else stripped.substringAfterLast('.', "").lowercase(Locale.ROOT)
+    }
 
-    val isExecutableScript: Boolean
-        get() = !isDirectory && extension == "sh"
+    /** 剥除「.数字」尾缀后的文件名（供压缩包类型判定用）。 */
+    private val realArchiveName: String =
+        if (NUMERIC_SUFFIX.matches(name)) name.substringBeforeLast('.') else name
 
-    val isExecutableBinary: Boolean
-        get() = !isDirectory && extension == "so"
+    val isExecutableScript: Boolean = !isDirectory && extension == "sh"
 
-    val isSupportedExecutable: Boolean
-        get() = isExecutableScript || isExecutableBinary
+    val isExecutableBinary: Boolean = !isDirectory && extension == "so"
+
+    val isSupportedExecutable: Boolean = isExecutableScript || isExecutableBinary
 
     /** 是否可安装的 APK 系文件（apk/xapk/apks/aspk/apkm），大小写不敏感，兼容 .1 尾缀。 */
-    val isInstallable: Boolean
-        get() = !isDirectory && realExtension in INSTALLABLE_EXTENSIONS
+    val isInstallable: Boolean = !isDirectory && realExtension in INSTALLABLE_EXTENSIONS
 
-    /** 是否常见文本文档（可编辑保存）。 */
-    val isEditableText: Boolean
-        get() = !isDirectory && (realExtension in TEXT_EXTENSIONS || isExtensionlessText)
+    /** 是否常见图片（可浏览）。 */
+    val isViewableImage: Boolean = !isDirectory && realExtension in IMAGE_EXTENSIONS
+
+    /** 是否为已知压缩包（zip/tar/tgz/7z/gz/xz/bz2/lz4 等）——长按菜单据此显示「自动解压文件」。 */
+    val isArchive: Boolean = !isDirectory && ArchiveExtractor.isKnownArchive(realArchiveName)
 
     /**
      * 无扩展名（`Dockerfile`、`Makefile`、`hosts`、`crontab`）或点开头的隐藏配置（`.gitignore`）
@@ -103,45 +119,40 @@ data class FileItem(
      *
      * 对外可见：外部唤起需要据此判断「谓词无法区分类型、应以 MIME 为准」。
      */
-    val isExtensionlessText: Boolean
-        get() {
-            if (isDirectory) return false
-            val dots = name.count { it == '.' }
-            if (dots == 0) return true
-            // Keep dot-prefixed configuration files text-like, but preserve
-            // known action types such as .apk, .zip, .sh and .png.
-            return name.startsWith(".") && dots == 1 &&
-                !isInstallable && !isSupportedExecutable && !isViewableImage && !isArchive
+    val isExtensionlessText: Boolean = run {
+        if (isDirectory) return@run false
+        val dots = name.count { it == '.' }
+        if (dots == 0) return@run true
+        // Keep dot-prefixed configuration files text-like, but preserve
+        // known action types such as .apk, .zip, .sh and .png.
+        name.startsWith(".") && dots == 1 &&
+            !isInstallable && !isSupportedExecutable && !isViewableImage && !isArchive
+    }
+
+    /** 是否常见文本文档（可编辑保存）。 */
+    val isEditableText: Boolean =
+        !isDirectory && (realExtension in TEXT_EXTENSIONS || isExtensionlessText)
+
+    /**
+     * 是否实际可解压。
+     *
+     * 所有已知格式均可解压（rar 已彻底移除），因此与 [isArchive] 同源。
+     * 保留独立属性是为了不改动既有调用点。
+     */
+    val isExtractableArchive: Boolean = isArchive
+
+    val formattedSize: String = run {
+        if (isDirectory) return@run "目录"
+        val kb = size / 1024.0
+        val mb = kb / 1024.0
+        val gb = mb / 1024.0
+        when {
+            gb >= 1.0 -> String.format(Locale.getDefault(), "%.2f GB", gb)
+            mb >= 1.0 -> String.format(Locale.getDefault(), "%.2f MB", mb)
+            kb >= 1.0 -> String.format(Locale.getDefault(), "%.1f KB", kb)
+            else -> "$size B"
         }
-
-    /** 是否常见图片（可浏览）。 */
-    val isViewableImage: Boolean
-        get() = !isDirectory && realExtension in IMAGE_EXTENSIONS
-
-    /** 是否为已知压缩包（zip/tar/tgz/7z/gz/xz/bz2/lz4 等）——长按菜单据此显示「自动解压文件」。 */
-    val isArchive: Boolean
-        get() = !isDirectory && ArchiveExtractor.isKnownArchive(realArchiveName)
-
-    private val realArchiveName: String
-        get() = if (name.matches(Regex(".+\\.\\d+$"))) name.substringBeforeLast('.') else name
-
-    /** 是否实际可解压（rar 仅识别，暂不支持解压）。 */
-    val isExtractableArchive: Boolean
-        get() = !isDirectory && ArchiveExtractor.isExtractable(realArchiveName)
-
-    val formattedSize: String
-        get() {
-            if (isDirectory) return "目录"
-            val kb = size / 1024.0
-            val mb = kb / 1024.0
-            val gb = mb / 1024.0
-            return when {
-                gb >= 1.0 -> String.format(Locale.getDefault(), "%.2f GB", gb)
-                mb >= 1.0 -> String.format(Locale.getDefault(), "%.2f MB", mb)
-                kb >= 1.0 -> String.format(Locale.getDefault(), "%.1f KB", kb)
-                else -> "$size B"
-            }
-        }
+    }
 
     val formattedDate: String
         get() {

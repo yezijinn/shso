@@ -4,7 +4,9 @@
 package com.mixradio.droid.data
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 import net.lingala.zip4j.ZipFile as Zip4jFile
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
@@ -21,13 +23,13 @@ import java.io.InputStream
 import java.util.Locale
 
 /**
- * 压缩包智能解压。
+ * 压缩包自动解压。
  *
  * 支持格式：归档型 zip / 7z / tar / tgz / tar.gz / tar.xz / tar.bz2 / tar.lz4，
  * 单文件压缩型 gz / xz / bz2 / lz4（直接解压为去后缀原文件名）。
  * rar 为专有商业格式不支持；zstd（.zst）已移除：原生库占 release 包近半体积，与使用场景不匹配。
  *
- * 智能解压：根目录仅 1 个顶层目录（条件 A）→ 直接解压到当前目录（剥离顶层前缀避免嵌套）；
+ * 自动解压：根目录仅 1 个顶层目录（条件 A）→ 直接解压到当前目录（剥离顶层前缀避免嵌套）；
  * 否则（条件 B）→ 在当前目录新建「压缩包名（去后缀）」文件夹解压。重名冲突自动追加 _N。
  *
  * 加密包（zip 条目加密 / 7z 头加密）返回 [ExtractResult.NeedPassword] 由 UI 收集密码重试；
@@ -104,10 +106,14 @@ object ArchiveExtractor {
     /** 单文件压缩型扩展。 */
     private val SINGLE_EXTENSIONS = listOf(".gz", ".xz", ".bz2", ".lz4")
 
+    /**
+     * 是否为已知压缩包。
+     *
+     * 所有已知格式均可解压（rar 已彻底移除），因此本判定同时就是「可解压」判据。
+     * 旧实现另有一个 `isExtractable`，函数体与之**逐字相同**、无任何差异分支，
+     * 且注释还停留在「rar 暂不支持解压」，与实现矛盾。现已合并为本函数。
+     */
     fun isKnownArchive(name: String): Boolean = kindOf(name) != null
-
-    /** 所有已知格式均可解压（rar 已彻底移除）。 */
-    fun isExtractable(name: String): Boolean = kindOf(name) != null
 
     /**
      * 识别压缩包类型；未知格式返回 null。
@@ -259,7 +265,7 @@ object ArchiveExtractor {
     private fun openTar(path: String): TarArchiveInputStream = TarArchiveInputStream(openDecompress(path))
 
     /**
-     * 智能解压主入口。
+     * 自动解压主入口。
      *
      * @param archivePath 压缩包绝对路径
      * @param targetParent 当前工作目录（解压目标所在目录）
@@ -420,7 +426,7 @@ object ArchiveExtractor {
         return null
     }
 
-    private fun extractZip(path: String, target: String, password: String?, stripPrefix: String?): ExtractResult {
+    private suspend fun extractZip(path: String, target: String, password: String?, stripPrefix: String?): ExtractResult {
         return try {
             val budget = ExtractionBudget()
             Zip4jFile(path).use { zip ->
@@ -440,7 +446,8 @@ object ArchiveExtractor {
                 for (h in headers) {
                     budget.beginEntry(if (h.isDirectory) 0L else h.uncompressedSize)
                     val entryName = stripPrefix?.let { stripTopFolder(h.fileName, it) } ?: h.fileName
-                    val dest = safeDest(target, entryName)
+                    val dest = safeDest(target, entryName, fallbackName = placeholderNameFor(entryName))
+                        ?: return ExtractResult.Failure("\u5f52\u6863\u5305\u542b\u8d8a\u754c\u8def\u5f84: $entryName")
                     if (!writtenPaths.add(dest.canonicalPath)) {
                         return ExtractResult.Failure("归档包含重复条目: $entryName")
                     }
@@ -476,7 +483,7 @@ object ArchiveExtractor {
         }
     }
 
-    private fun extractTar(path: String, target: String, stripPrefix: String?): ExtractResult {
+    private suspend fun extractTar(path: String, target: String, stripPrefix: String?): ExtractResult {
         return try {
             val budget = ExtractionBudget()
             val writtenPaths = HashSet<String>()
@@ -485,7 +492,8 @@ object ArchiveExtractor {
                     val entry = tarIn.nextEntry ?: break
                     budget.beginEntry(if (entry.isDirectory) 0L else entry.size)
                     val entryName = stripPrefix?.let { stripTopFolder(entry.name, it) } ?: entry.name
-                    val dest = safeDest(target, entryName)
+                    val dest = safeDest(target, entryName, fallbackName = placeholderNameFor(entryName))
+                        ?: return ExtractResult.Failure("\u5f52\u6863\u5305\u542b\u8d8a\u754c\u8def\u5f84: $entryName")
                     if (!writtenPaths.add(dest.canonicalPath)) {
                         return ExtractResult.Failure("归档包含重复条目: $entryName")
                     }
@@ -505,7 +513,7 @@ object ArchiveExtractor {
         }
     }
 
-    private fun extract7z(path: String, target: String, password: String?, stripPrefix: String?): ExtractResult {
+    private suspend fun extract7z(path: String, target: String, password: String?, stripPrefix: String?): ExtractResult {
         return try {
             val budget = ExtractionBudget()
             val writtenPaths = HashSet<String>()
@@ -517,13 +525,18 @@ object ArchiveExtractor {
             }
             archive.use { sevenZ ->
                 while (true) {
+                    // 与 copyStream 同理：IO 调度器的取消是协作式的，
+                    // 不在条目边界显式检查，七个压缩包的解压会一路写满预算才停，
+                    // 外层的 CancellationException 清理分支永远等不到。
+                    currentCoroutineContext().ensureActive()
                     val entry = sevenZ.nextEntry ?: break
                     if (!entry.isDirectory && entry.size < 0L) {
                         throw IllegalStateException("7Z 条目大小未知，拒绝解压")
                     }
                     budget.beginEntry(if (entry.isDirectory) 0L else entry.size)
                     val entryName = stripPrefix?.let { stripTopFolder(entry.name, it) } ?: entry.name
-                    val dest = safeDest(target, entryName)
+                    val dest = safeDest(target, entryName, fallbackName = placeholderNameFor(entryName))
+                        ?: return ExtractResult.Failure("\u5f52\u6863\u5305\u542b\u8d8a\u754c\u8def\u5f84: $entryName")
                     if (!writtenPaths.add(dest.canonicalPath)) {
                         return ExtractResult.Failure("归档包含重复条目: $entryName")
                     }
@@ -600,58 +613,88 @@ object ArchiveExtractor {
     }.getOrDefault(false)
 
     /**
-     * 安全化条目名并解析为目标文件。
+     * 把归档条目名解析为 target 之内的落盘路径；**越界一律拒绝（返回 null）**。
      *
-     * **双层防御（Zip Slip）**：
-     * ① 词法层：剥离绝对路径与前缀 `../`，把行内 `..` 段折叠成 `/`；
-     * ② 真实路径层：用 `canonicalFile` 解析 `..` 与**符号链接**后，结果必须仍落在 target 之内；
-     *    越界则丢弃目录部分、只保留文件名（fail-closed，绝不写到 target 之外）。
+     * 双重判定（两者都 fail-closed，缺一不可）：
+     *  - 词法层：剥离前导 `/`、`../`、`a/../`，消掉绝对路径与路径穿越；
+     *  - 真实路径层：`canonicalFile` 解析 `..` 与**符号链接**，
+     *    再校验是否仍位于 target 之内（`<target>/link -> /system` 之���无法逃逸）。
+     *  - canonical 解析异常时同样拒绝：无法证明在 target 之内就不能写。
      *
-     * 仅靠 ① 不够：词法层看不到符号链接，`<target>/link -> /system` 之类仍可逃逸；
-     * 而 ② 在异常（如 canonical 解析失败）时同样退化为「只保留文件名」，不留 fail-open 口子。
+     * 越界**不**做静默改名（旧实现把 `../evil.sh` 改名写到 target 根）：
+     * 那会让磁盘结构与归档声明不一致，且恶意归档里 `../../x.apk` 与 `sub/x.apk`
+     * 映射到同一 canonicalPath 后触发重复条目判定 → 整次解压失败并删掉全部已解压内容。
+     * 「静默改写」避免不了失败，只是把失败点挪到更晚、更难归因的位置。
+     *
+     * @param fallbackName 仅用于「归一化后条目名为空」的**合法**情形
+     *   （条目名为 `./`、`..` 之类）。这时给一个占位名继续；为 null 则拒绝。
+     *   不能用 `File(target, "")` —— 那会得到 target 本身，随后 `FileOutputStream(target)`
+     *   抛异常被兜底成 `dest.delete()`，**把用户预期的目标目录删掉**。
      */
-    internal fun safeDest(target: String, entryName: String): File {
+    /**
+     * 为「归一化后条目名为空」的合法条目生成一个安全的占位文件名。
+     *
+     * 必须**自身合法**（不含分隔符、不为 `.`/`..`）：直接把 entryName 当占位名会在
+     * entryName 为 `..` 时再次落空，条目被无谓地拒绝。
+     */
+    private fun placeholderNameFor(entryName: String): String {
+        val flat = entryName.replace('/', '_').replace('\\', '_').trim()
+        val safe = flat.takeIf { it.isNotEmpty() && it != "." && it != ".." } ?: "entry"
+        return "unnamed_" + Integer.toHexString(entryName.hashCode()) + "_" + safe.take(32)
+    }
+
+    internal fun safeDest(target: String, entryName: String, fallbackName: String? = null): File? {
         var n = entryName.replace('\\', '/')
         while (n.startsWith("/")) n = n.substring(1)
         while (n.startsWith("../")) n = n.removePrefix("../")
         n = n.replace(Regex("(^|/)\\.\\.(/|$)"), "/").trim()
-        // 单点段（`.`）也要剥掉：`./` 与 `.` 归一后同样只剩 target 自身。
-        while (n.startsWith("./")) n = n.removePrefix("./")
-        n = n.trim('/')
-        // 归一后可能什么都不剩（条目名是 `..`、`.`、`./` 或空串，
-        // 例如 stripTopFolder 在条目名恰等于顶层前缀时会产出空串）。
-        // `File(target, "")` 会被归一化成 **target 本身**，于是
-        // `FileOutputStream(target)` 抛异常后，调用方的 `dest.delete()` 会把本次
-        // 原子预留的目标目录删掉，后续条目写到 `dest.parentFile` 之外被丢弃。
-        // 这里显式拒绝：条目名无效时用一个稳定且唯一的占位名。
+        // 上一步把 `..` 替成 `/`，而 trim() 不去斜杠 —— 于是 `..` 变成 `/`，
+        // 既不满足 isEmpty 也不等于 "."/".."，会绕过下面的空名分支，
+        // 直接 `File(target, "/")`（绝对路径）→ 写到文件系统根，Zip Slip。
+        // 这里统一剥掉首尾斜杠，再判空。
+        n = n.trim('/').trim()
         if (n.isEmpty() || n == "." || n == "..") {
-            val stamp = Integer.toHexString(entryName.hashCode())
-            return File(target, "unnamed_$stamp")
+            // 占位名必须**自身合法**：不能含分隔符、不能是 . / ..，
+            // 否则「合法条目走占位名」这条路会再次落空（entryName 恰为 ".." 时）。
+            val name = fallbackName?.takeIf { candidate ->
+                candidate.isNotEmpty() &&
+                    candidate != "." && candidate != ".." &&
+                    !candidate.contains('/') && !candidate.contains('\\')
+            } ?: return null
+            return File(target, name)
         }
         val candidate = File(target, n)
-        val fallback = File(target, candidate.name.ifEmpty { "unnamed" })
         return try {
             val base = File(target).canonicalFile
             val real = candidate.canonicalFile
             val basePath = base.path
-            if (real.path == basePath) {
-                // 解析结果就是 target 自身：同样不可写（与空名同因）
-                fallback
-            } else if (real.path.startsWith(basePath + File.separator)) {
-                real
-            } else {
-                fallback
+            when {
+                real.path == basePath -> candidate.takeIf { it.path != basePath }
+                real.path.startsWith(basePath + File.separator) -> real
+                else -> null
             }
         } catch (_: Exception) {
-            fallback
+            null
         }
     }
 
-    private fun copyStream(input: InputStream, dest: File, budget: ExtractionBudget) {
+    private suspend fun copyStream(input: InputStream, dest: File, budget: ExtractionBudget) {
         BufferedOutputStream(FileOutputStream(dest)).use { out ->
             val buffer = ByteArray(64 * 1024)
-            var count: Int
-            while (input.read(buffer).also { count = it } != -1) {
+            while (true) {
+                // 每个 64KB 块边界检查一次取消。
+                //
+                // `extract` 整体在 withContext(Dispatchers.IO) 里，而 IO 调度器的取消是
+                // **协作式**的：不会中断阻塞中的 `input.read()`，块体会一路跑到自然结束，
+                // `withContext` 只在块体返回时才抛 CancellationException ——
+                // 而那三处 `catch (e: CancellationException)` 的清理分支写在块体**内部**，
+                // 永远看不到它。后果：用户取消/离开页面后，磁盘 IO 继续写满整个
+                // ExtractionBudget（最大 1GB），`targetFile?.delete()` 不执行，
+                // 目标目录留在磁盘上；同时 isExtracting 已复位，用户可再次发起解压，
+                // 两个解压并发写同一父目录。
+                currentCoroutineContext().ensureActive()
+                val count = input.read(buffer)
+                if (count == -1) break
                 budget.consume(count)
                 out.write(buffer, 0, count)
             }

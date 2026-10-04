@@ -47,6 +47,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -57,6 +58,7 @@ import com.mixradio.droid.data.FileItem
 import com.mixradio.droid.data.INTERNAL_STORAGE_LABEL
 import com.mixradio.droid.data.INTERNAL_STORAGE_PATH
 import com.mixradio.droid.data.RootFileManager
+import com.mixradio.droid.data.RootFileManager.DirectoryListing
 import com.mixradio.droid.data.displayPath
 import com.mixradio.droid.ui.components.BookmarksDialog
 import com.mixradio.droid.ui.theme.AuroraTextStyles
@@ -104,6 +106,9 @@ fun BuiltInFilePicker(
     var fileList by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var selectedFile by remember { mutableStateOf<FileItem?>(null) }
     var isLoading by remember { mutableStateOf(false) }
+// 目录读取失败原因（null = 无失败）。与「目录为空」严格区分：
+// 一次 su 失败绝不能被显示成「当前目录为空」。
+var loadError by remember { mutableStateOf<String?>(null) }
     var showListSettings by remember { mutableStateOf(false) }
     var showBookmarks by remember { mutableStateOf(false) }
     var showNewFileDialog by remember { mutableStateOf(false) }
@@ -127,28 +132,41 @@ fun BuiltInFilePicker(
         loadJobHolder[0].cancel()
         isLoading = true
         selectedFile = null
+        loadError = null
         loadJobHolder[0] = scope.launch {
             try {
-                // 先探测目录是否真实存在（不可用 isEmpty 判断——合法空目录也返回空列表）
-                val exists = RootFileManager.pathExists(path)
+                // 单次列举同时判定「存在」与「有哪些条目」，不再 pathExists() + listFiles()
+                // 两次独立 su 调用：两次都要 fork su，且中间存在竞态窗口，
+                // 任一次静默失败都会退化成空列表，被误读为「目录为空」。
+                val listing = RootFileManager.listDirectory(path)
                 // 目录不存在时回退到初始目录，并且**必须真的去列回退目录**。
                 // 此前这里只在 !exists 分支改了 currentDir，`loaded` 仍是 emptyList()，
                 // 于是路径行显示「内部存储」而列表空白 —— 用户会得出「内部存储是空的」
                 // 的错误结论（拔过 SD 卡 / 删过记忆目录后必现）。
-                val resolved = if (exists) {
-                    path
-                } else {
-                    if (appSettings.rememberDirectory) {
-                        RootFileManager.rememberedDirectory?.takeIf { it != path && RootFileManager.pathExists(it) }
-                            ?: INTERNAL_STORAGE_PATH
-                    } else {
-                        INTERNAL_STORAGE_PATH
+                val (resolved, loaded) = when (listing) {
+                    is DirectoryListing.Success -> path to listing.items
+
+                    is DirectoryListing.Missing -> {
+                        val fallback = if (appSettings.rememberDirectory) {
+                            RootFileManager.rememberedDirectory
+                                ?.takeIf { it != path && RootFileManager.pathExists(it) }
+                                ?: INTERNAL_STORAGE_PATH
+                        } else {
+                            INTERNAL_STORAGE_PATH
+                        }
+                        when (val retry = RootFileManager.listDirectory(fallback)) {
+                            is DirectoryListing.Success -> fallback to retry.items
+                            // 回退目录也读不到：报失败，保留旧列表。
+                            // 清空会让用户看到「内部存储为空」，与事实相反。
+                            else -> fallback to fileList
+                        }
                     }
-                }
-                val loaded = if (resolved == path) {
-                    RootFileManager.listFiles(path)
-                } else {
-                    RootFileManager.listFiles(resolved)
+
+                    // 列举失败不是「目录为空」。保留上一份列表并记录原因，
+                    // 由空态区呈现「读取失败」而非谎称空目录。
+                    is DirectoryListing.Failed -> path to fileList.also {
+                        loadError = listing.reason
+                    }
                 }
                 // 已被更新的请求取代：丢弃本次结果。**记忆目录的写入也必须放在这道守卫之后** ——
                 // 它是本次加载的副作用，放在前面会让一个更慢的陈旧请求把「上次浏览目录」
@@ -156,12 +174,13 @@ fun BuiltInFilePicker(
                 if (gen != loadGen[0]) return@launch
                 fileList = loaded
                 currentDir = resolved
-                if (appSettings.rememberDirectory) {
+                if (appSettings.rememberDirectory && listing is DirectoryListing.Success) {
                     RootFileManager.rememberedDirectory = resolved
                 }
             } catch (_: Exception) {
                 if (gen != loadGen[0]) return@launch
-                fileList = emptyList()
+                // 异常同样属读取故障，保留旧列表而非谎称空目录。
+                loadError = "读取目录时出错"
             } finally {
                 if (gen == loadGen[0]) isLoading = false
             }
@@ -365,10 +384,20 @@ fun BuiltInFilePicker(
                                     modifier = Modifier.fillMaxSize(),
                                     contentAlignment = Alignment.Center
                                 ) {
+                                    // 读取失败与目录为空必须分开表述：
+                                    // emptyHint 是调用方给的「空目录」文案，
+                                    // 故障时用它会误导用户反复翻找实际存在的文件。
+                                    val error = loadError
                                     Text(
-                                        text = emptyHint,
+                                        text = if (error != null) "读取失败：$error" else emptyHint,
                                         style = AuroraTextStyles.footnote1,
-                                        color = AuroraTokens.TextSecondary
+                                        color = if (error != null) {
+                                            AuroraTokens.Warning
+                                        } else {
+                                            AuroraTokens.TextSecondary
+                                        },
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(horizontal = 32.dp)
                                     )
                                 }
                             } else {

@@ -201,8 +201,19 @@ private const val KEY_LEGACY_UNMIGRATED = "edit_history.unmigrated"
             }.sortedByDescending { it.timestamp }
         } catch (_: Throwable) {
             // 备份损坏原文再放弃本次写入：直接覆盖等于把用户的编辑历史清零。
+            //
+            // 备份键**必须固定**（"$key.corrupt"）且只在不存在时写：
+            // 此前用带时间戳的新键（"$key.corrupt.<millis>"），而主键仍是那份损坏数据，
+            // 于是此后每次停顿快照（2.5s 后）/ 草稿快照再失败一次就**再写一份完整原文**
+            // （单键上限 100 万字符，最坏 ~3MB），20 次即 60MB 灌进 shso_editor.xml，
+            // 且永不清理 —— 每次启动都要全量解析该 XML，越大越慢、越慢越易失败，正反馈。
             runCatching {
-                prefs.edit { putString("$key.corrupt.${System.currentTimeMillis()}", raw) }
+                if (!prefs.contains("$key.corrupt")) {
+                    prefs.edit {
+                        putString("$key.corrupt", raw)
+                        remove(key)
+                    }
+                }
             }
             null
         }

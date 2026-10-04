@@ -12,9 +12,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,6 +30,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 
@@ -37,12 +40,14 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import android.os.SystemClock
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -56,6 +61,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -65,6 +71,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -86,6 +93,7 @@ import com.mixradio.droid.data.MoveDestinationConflict
 import com.mixradio.droid.data.computeSha256Strict
 import com.mixradio.droid.data.syntax.SyntaxPackTags
 import com.mixradio.droid.data.RootFileManager
+import com.mixradio.droid.data.RootFileManager.DirectoryListing
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.displayPath
 import com.mixradio.droid.ui.components.ApkExtractDialog
@@ -168,16 +176,51 @@ fun FilePage(
     } else {
         INTERNAL_STORAGE_PATH
     }
-    var currentDirectory by remember { mutableStateOf(initialDirectory) }
-    var fileList by remember { mutableStateOf<List<FileItem>>(emptyList()) }
-    // 过滤+排序后的展示列表：在 Dispatchers.Default 计算后写入，组合期不再做 O(N log N) 排序
-    var displayFileList by remember { mutableStateOf<List<FileItem>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(false) }
-    // 名称过滤（搜索）：只过滤当前目录的展示列表，切目录即清空；
-    // 过滤与排序在同一次后台遍历里完成（见 applyFileViewSettings(nameQuery)）。
-    var showSearch by remember { mutableStateOf(false) }
-    var nameQuery by remember { mutableStateOf("") }
-    var directoryLoadFailed by remember { mutableStateOf(false) }
+    // ── 双列浏览状态 ────────────────────────────────────────────────────
+    //
+    // 左右两列各自持有一份完整状态（目录、列表、加载态、过滤、多选、代次守卫）。
+    // 之所以抽成类而不是散落 15 个 var：双列意味着这些状态各有两份，
+    // 平铺写会让 refresh/navigateTo 与二十多个弹窗无从判断「操作的是哪一列」。
+    //
+    // 聚焦列（focusedIndex）决定所有页面级操作作用于谁 —— 顶栏快捷键、
+    // 返回上级、长按菜单、批量操作、跳转路径等一律落到聚焦列，
+    // 与参考项目 MPManager 的 lastPaneSelected 语义一致。
+    val leftListState = rememberLazyListState()
+    val rightListState = rememberLazyListState()
+
+    /** 右列的默认落点。取一个与左列（内部存储）不同的常用目录，
+     *  使「同步」按钮初始即可用。 */
+    val defaultRightPaneDir = "/storage/emulated/0/Android"
+    val leftPane = remember { FilePaneState(initialDirectory, leftListState) }
+    // 右列默认落在内部存储：与左列同一起点便于对照，
+    // 用户切到别处后由下面的 rememberedRightDirectory 记住。
+    // 右列**刻意不与左列同起点**：两列都停在同一目录时，「同步」无事可做、
+    // 一打开就是禁用态，用户会以为功能坏了。默认给右列一个不同的落点，
+    // 让同步按钮从一开始就有意义（参考 MPManager：两列各自记忆 home1 / home2）。
+    val rightPane = remember {
+        FilePaneState(
+            RootFileManager.rememberedRightDirectory ?: defaultRightPaneDir,
+            rightListState
+        )
+    }
+    val panes = listOf(leftPane, rightPane)
+    fun paneIndexOf(pane: FilePaneState): Int = panes.indexOf(pane)
+    var focusedIndex by remember { mutableStateOf(0) }
+    val activePane = panes[focusedIndex]
+
+    var currentDirectory by PaneProp({ activePane.currentDirectory }, { activePane.currentDirectory = it })
+    var fileList by PaneProp({ activePane.fileList }, { activePane.fileList = it })
+    var displayFileList by PaneProp({ activePane.displayFileList }, { activePane.displayFileList = it })
+    var isLoading by PaneProp({ activePane.isLoading }, { activePane.isLoading = it })
+    var listIsStale by PaneProp({ activePane.listIsStale }, { activePane.listIsStale = it })
+    var directoryLoadFailed by PaneProp({ activePane.directoryLoadFailed }, { activePane.directoryLoadFailed = it })
+    var directoryLoadError by PaneProp({ activePane.directoryLoadError }, { activePane.directoryLoadError = it })
+    var showSearch by PaneProp({ activePane.showSearch }, { activePane.showSearch = it })
+    var nameQuery by PaneProp({ activePane.nameQuery }, { activePane.nameQuery = it })
+    var multiSelectMode by PaneProp({ activePane.multiSelectMode }, { activePane.multiSelectMode = it })
+    var highlightPath by PaneProp({ activePane.highlightPath }, { activePane.highlightPath = it })
+    val listState = activePane.listState
+    val selectedPaths = activePane.selectedPaths
 
     // 执行确认：点击「执行」先暂存待执行文件，弹窗确认后再真正执行。
     // 用 rememberSaveable：确认框属用户显式意图，旋转/分屏后不应被静默丢弃
@@ -237,18 +280,22 @@ fun FilePage(
     var conflictDestination by remember { mutableStateOf("") }
     var isMoving by remember { mutableStateOf(false) }
 
-    // 多选模式状态：进入后单击文件=切换选中（仅文件，文件夹不参与）；长按文件弹批量菜单
-    var multiSelectMode by remember { mutableStateOf(false) }
-    val selectedPaths = remember { mutableStateListOf<String>() }
+
+    // 选中集合的 HashSet 视图：selectedPaths 是 SnapshotStateList，
+    // contains / containsAll 都是**线性扫描**。每个可见行都要判一次 isSelected，
+    // 全选判定还要 containsAll(N)，选中 500 项 + 15 个可见行 = 单次重组约 7500 次字符串比较。
+    val selectedPathSet = remember(selectedPaths) { selectedPaths.toHashSet() }
+
+    // 当前目录下的全部文件路径（不含文件夹），供全选/取消全选共用。
+    // 用 mapNotNull 一趟完成，替代 filter{}.map{} 两趟。
+    val allFilePaths = remember(displayFileList) {
+        displayFileList.mapNotNull { if (it.isDirectory) null else it.path }
+    }
     var showModeDialog by remember { mutableStateOf(false) }
     var showBatchDialog by remember { mutableStateOf(false) }
     var showBatchRenameDialog by remember { mutableStateOf(false) }
     var batchRenameInput by remember { mutableStateOf("") }
 
-    // 按目录重建 LazyListState：切目录即天然回到顶部（新状态初始位置为 0），无需调用可挂起的
-    // `scrollToItem(0)`——那样会阻塞 LaunchedEffect（列表尚未组合时该调用会一直挂起），
-    // 使紧随其后的 refresh() 永不执行，表现为「进入目录后一直空白、点刷新才出来」。
-    val listState = remember(currentDirectory) { LazyListState() }
 
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
     var installStatusMessage by remember { mutableStateOf<String?>(null) }
@@ -262,10 +309,6 @@ fun FilePage(
     var showPermissionDialog by remember { mutableStateOf(false) }
     var permissionMetadata by remember { mutableStateOf<FilePermissionMetadata?>(null) }
 
-    // 刷新代次（非 Compose 状态，赋值不触发重组）：每发起一次刷新 +1，用于作废更早的刷新结果。
-    val refreshGenRef = remember { intArrayOf(0) }
-    // 刷新任务引用：切目录时取消上一次，省掉无谓的 root 列目录开销。
-    val refreshJobRef = remember { arrayOfNulls<kotlinx.coroutines.Job>(1) }
 
     /**
      * 当前目录是否可作为解压目标（null = 未测或正在测）。
@@ -294,6 +337,33 @@ fun FilePage(
      * 删除会继续落在**旧目录**，而收尾 `refresh()` 刷的是新目录 ——
      * Toast 浮在无关列表上，旧目录删了哪些文件用户全程不可见、不可中断、不可撤销。
      */
+
+    /** 上次重算所依据的搜索词，用于判断本次是否由搜索词变化触发。 */
+
+    /**
+     * 刷新指定列。
+     *
+     * 必须接收列参数：双列下刷新是**逐列独立**的 —— 左列正在列举时右列切了目录，
+     * 右列的刷新不能被左列的代次守卫挡下，反之亦然。
+     * 所有记账（refreshGenRef / loadingGenRef / refreshJobRef / 节流窗口）
+     * 都落在 [pane] 自己的字段上。
+     */
+
+
+    // 同目录连续刷新的合并窗口（毫秒）。
+    val refreshThrottleMs = 120L
+
+    // 名称过滤的防抖窗口（毫秒）。
+    val searchDebounceMs = 250L
+
+    // 冷启动自愈重试的延迟，避开与列举落盘的节流窗口。
+    val PANE_RETRY_DELAY_MS = 400L
+
+    /** 统一切目录入口：批量破坏性任务进行中时拒绝切换。
+     *  批量删除跑在 batchScope（不被旋屏取消），期间用户仍可点顶栏快捷键、
+     *  点文件夹进入、甚至被 singleTask 的外部 Intent 改写目录。删除会继续落在**旧目录**，
+     *  而收尾刷新的是新目录 —— Toast 浮在无关列表上，用户全程不可见、不可中断、不可撤销。
+     */
     fun navigateTo(dir: String) {
         if (isBatchRunning) {
             feedbackMessage = "批量操作进行中，暂不能切换目录"
@@ -301,65 +371,184 @@ fun FilePage(
         }
         currentDirectory = dir
     }
+    fun refreshPane(paneIndex: Int, showToast: Boolean = false) {
+        val pane = panes[paneIndex]
+        // 同目录节流：删除 / 重命名 / 移动等操作常在**同一个回调里连着调多次**
+        // refresh（如「移动完成」既更新选中态又刷新列表）。每次都要 fork 一次 su
+        // 走完整列举，密集触发时用户看到的就是列表反复 loading。
+        //
+        // 只对「同一目录且刚刚成功过」节流：跨目录切换、切回上一级、
+        // 用户手动点刷新都必须立即生效，不能被节流挡住。
+        // 窗口取得很小（120ms），既吃掉同一批回调的连发，又不影响真实操作。
+        val now = SystemClock.elapsedRealtime()
+        if (pane.currentDirectory == pane.lastLoadedDirRef[0] &&
+            now - pane.lastLoadedAtRef[0] < refreshThrottleMs &&
+            !showToast
+        ) {
+            return
+        }
 
-    fun refresh(showToast: Boolean = false) {
         // 记录本次要加载的目录。切目录时旧协程不会被自动取消（它挂在页面级 scope 上，
-        // 不是 LaunchedEffect(currentDirectory) 的子协程），若不校验就会用**旧目录的结果覆盖新目录**：
+        // 不是 LaunchedEffect(pane.currentDirectory) 的子协程），若不校验就会用**旧目录的结果覆盖新目录**：
         // 表现是路径栏已是 B、列表却是 A，随后的删除/移动会作用到错误路径（数据风险）。
-        val requestedDir = currentDirectory
-        val gen = ++refreshGenRef[0]
-        refreshJobRef[0]?.cancel()
-        isLoading = true
-        directoryLoadFailed = false
-        refreshJobRef[0] = scope.launch {
+        val requestedDir = pane.currentDirectory
+        val gen = ++pane.refreshGenRef[0]
+        // 标记本代「尚未落盘」。依赖 pane.fileList 重算展示列表的协程必须等它清除，
+        // 否则会拿着上一份 pane.fileList 算出结果并覆盖本代列表（表现为进入目录后显示为空）。
+        pane.loadingGenRef[0] = gen
+        pane.refreshJobRef[0]?.cancel()
+        pane.isLoading = true
+        pane.directoryLoadFailed = false
+        pane.directoryLoadError = null
+        // 立即作废旧列表的可操作性。此刻 pane.fileList 还是**上一个目录**的内容，
+        // 而路径栏已是 requestedDir；若继续可点，用户长按删除的是旧目录里的文件，
+        // 路径栏却显示新目录 —— 误删且无从察觉。列表本身随后由本代结果替换。
+        if (pane.currentDirectory != requestedDir || pane.fileList.isNotEmpty()) {
+            pane.listIsStale = true
+        }
+        // 关键：**不再清空列表**。
+        //
+        // 旧实现在这里把 pane.fileList / pane.displayFileList 清空，于是每次刷新（切目录、
+        // 删除后、返回上级、手动刷新）都会进入一段「列表为空」的窗口：骨架屏或
+        // 「当前目录为空」占位。列举要经过一次 su 往返，实测上百毫秒，冷启动或
+        // Magisk 首次授权时更久 —— 用户观感就是「刷新后长时间看不见文件」，
+        // 以及偶发的「当前目录为空」误报（列表尚未回来时先渲染了空态文案）。
+        //
+        // 保留旧列表即可消除该窗口；为了不引入误删风险，改由 [pane.listIsStale]
+        // 承担「不可操作」语义：列表可见但点击/长按一律不生效，
+        // 因此不会出现「路径栏是 B、列表是 A，长按删掉 A 里的文件」。
+        //
+        // 仅首屏（确实没有任何历史列表）才需要骨架屏，由 pane.isLoading && 列表为空 判定。
+        pane.listIsStale = pane.displayFileList.isNotEmpty()
+        pane.refreshJobRef[0] = scope.launch {
             try {
-                // 先探测目录是否真实存在（不可用 `fileList.isEmpty()` 判断——合法空目录也返回空列表）
-                val exists = RootFileManager.pathExists(requestedDir)
-                val loaded = if (exists) {
-                    RootFileManager.listFiles(requestedDir)
-                } else {
-                    emptyList()
-                }
-                // 过滤 + 排序放在后台线程，避免组合期在主线程做 O(N log N) 排序
-                val showHidden = appSettings.showHiddenFiles
-                val sortMode = appSettings.fileSortMode
-                val display = withContext(Dispatchers.Default) {
-                    applyFileViewSettings(loaded, showHidden, sortMode, nameQuery)
-                }
-                // 已有更新的刷新接替（切目录或重复刷新）：本次结果过期，直接丢弃。
-                if (gen != refreshGenRef[0]) return@launch
-                // 两个状态之间没有挂起点：只产生一次重组，不会出现「新目录列表 + 旧排序结果」的中间帧
-                fileList = loaded
-                displayFileList = display
-                if (!exists) {
-                    // 记忆的目录已失效（被删除/不可达）：随后回退初始目录
-                    directoryLoadFailed = true
-                } else {
-                    // 目录加载成功（含合法空目录）：开启记忆时记录为「上次浏览目录」。
-                    // 外部 Intent 驱动的跳转**不得**落盘：否则任意应用发一条 Intent
-                    // 就能把「上次浏览目录」永久改成它指定的任意路径（进程级持久状态篡改，
-                    // 且下次冷启动直接落在那里）。
-                    // 标志在本次落盘判定后清空：用户后续的主动导航应恢复正常记忆行为。
-                    val skipPersist = pendingExternalDirectory[0]
-                    if (skipPersist) pendingExternalDirectory[0] = false
-                    if (appSettings.rememberDirectory && !skipPersist) {
-                        RootFileManager.rememberedDirectory = requestedDir
+                // 单次调用同时判定「目录是否存在」与「条目有哪些」。
+                // 旧实现先 pathExists() 再 listFiles()，是两次独立的 su 调用：
+                // 两次之间目录可能被删除/权限变化，且两次都要 fork su；
+                // 更糟的是任一次静默失败都会得到空列表，被上层读成「空目录」。
+                // 合并为一次列举后，不存在/失败/真空三种情况互不混淆。
+                when (val listing = RootFileManager.listDirectory(requestedDir)) {
+                    is DirectoryListing.Missing -> {
+                        if (gen != pane.refreshGenRef[0]) return@launch
+                        // 目录不存在：如实给出原因，而不是让空态文案落到
+                        // 「当前目录为空」——那是在断言一个事实，而此刻的事实是
+                        // 「这个路径读不到」。回退逻辑（pane.directoryLoadFailed）
+                        // 随后会把用户带回可用目录。
+                        pane.directoryLoadError = "目录不存在或无法访问"
+                        pane.listIsStale = false
+                        pane.directoryLoadFailed = true
+                    }
+
+                    is DirectoryListing.Failed -> {
+                        if (gen != pane.refreshGenRef[0]) return@launch
+                        // 失败不等于目录为空：旧列表已在发起时清空（不可操作），
+                        // 这里只如实记录原因，由空态区显示「读取失败」而非谎称空目录。
+                        pane.directoryLoadError = listing.reason
+                    }
+
+                    is DirectoryListing.Success -> {
+                        val loaded = listing.items
+                        // 过滤 + 排序放在后台线程，避免组合期在主线程做 O(N log N) 排序
+                        val showHidden = appSettings.showHiddenFiles
+                        val sortMode = appSettings.fileSortMode
+                        val display = withContext(Dispatchers.Default) {
+                            applyFileViewSettings(loaded, showHidden, sortMode, pane.nameQuery)
+                        }
+                        // 已有更新的刷新接替（切目录或重复刷新）：本次结果过期，直接丢弃。
+                        if (gen != pane.refreshGenRef[0]) return@launch
+                        // 两个状态之间没有挂起点：只产生一次重组，不会出现「新目录列表 + 旧排序结果」的中间帧
+                        pane.fileList = loaded
+                        pane.displayFileList = display
+                        pane.listIsStale = false
+                        pane.lastLoadedDirRef[0] = requestedDir
+                        pane.lastLoadedAtRef[0] = SystemClock.elapsedRealtime()
+                        // 目录加载成功（含合法空目录）：开启记忆时记录为「上次浏览目录」。
+                        // 外部 Intent 驱动的跳转**不得**落盘：否则任意应用发一条 Intent
+                        // 就能把「上次浏览目录」永久改成它指定的任意路径（进程级持久状态篡改，
+                        // 且下次冷启动直接落在那里）。
+                        // 标志在本次落盘判定后清空：用户后续的主动导航应恢复正常记忆行为。
+                        val skipPersist = pendingExternalDirectory[0]
+                        if (skipPersist) pendingExternalDirectory[0] = false
+                        if (appSettings.rememberDirectory && !skipPersist) {
+                            RootFileManager.rememberedDirectory = requestedDir
+                        }
                     }
                 }
             } catch (_: Exception) {
-                if (gen != refreshGenRef[0]) return@launch
-                fileList = emptyList()
-                displayFileList = emptyList()
+                if (gen != pane.refreshGenRef[0]) return@launch
+                pane.directoryLoadError = "读取目录时出错"
             } finally {
                 // 仅最新一代收尾：否则被取消的旧刷新会误清新刷新的加载态（cancel 的 finally 异步执行）
-                if (gen == refreshGenRef[0]) {
-                    isLoading = false
+                if (gen == pane.refreshGenRef[0]) {
+                    // 本代已收尾：pane.fileList / pane.displayFileList 均已反映当前目录，
+                    // 允许依赖它们的重算协程工作。
+                    pane.loadingGenRef[0] = -1
+                    pane.isLoading = false
+                    // 收尾后做一次「静默空列表」自愈检查（冷启动异常守护）。
+                    // 此处不能只看聚焦列：右列同样会冷启动失败，而它不在委托可见范围内。
+                    if (pane.directoryLoadError == null && !pane.directoryLoadFailed &&
+                        !pane.retriedForEmptyOnce
+                    ) {
+                        pane.retriedForEmptyOnce = true
+                        scope.launch {
+                            delay(PANE_RETRY_DELAY_MS)
+                            val stillSilent = pane.displayFileList.isEmpty() && !pane.isLoading &&
+                                pane.directoryLoadError == null && !pane.directoryLoadFailed
+                            if (stillSilent) refreshPane(paneIndex)
+                        }
+                    }
                     // 用户手动点击「刷新」时给出明确反馈，避免「点了没反应」的错觉
                     if (showToast) feedbackMessage = "已刷新"
                 }
             }
         }
     }
+
+
+    fun refresh(showToast: Boolean = false): Unit = refreshPane(focusedIndex, showToast)
+
+
+
+    /** 刷新聚焦列。页面级动作（删除后、批量操作后）都经由它，语义即「刷当前列」。 */
+
+
+    /**
+     * 打开新建文件对话框，预填当时时间戳 + `txt` 后缀。
+     *
+     * 新建位置是**聚焦列的当前目录**（对话框内部读 `currentDirectory`）。
+     * “文件列表设置”弹窗的入口与底栏的入口共用此函数，避免两条路径各自演化后漂移。
+     */
+    fun openNewFileDialog() {
+        val sdf = SimpleDateFormat("yyyyMMddHHmmssSSS", Locale.US)
+        newFileName = sdf.format(Date())
+        newFileExt = "txt"
+        showNewFileDialog = true
+    }
+
+    /** 面板的对外名称，用于同步等反馈文案。 */
+    fun paneLabel(paneIndex: Int): String = if (paneIndex == 0) "左列" else "右列"
+
+    /**
+     * 同步：把**聚焦列当前目录**赋给另一列，让另一列跳转到该目录。
+     *
+     * 与参考项目 MPManager 的 `syncPaneButton`（MainActivity.java:1643）同义：
+     * 取当前面板路径写入另一个面板并加载。
+     *
+     * 目标列目录改变会由每列各自的 `LaunchedEffect(pane.currentDirectory)` 触发加载，
+     * 故此处**不再显式调 refreshPane** —— 那会与令牌并发、多起一次列举。
+     */
+    fun syncOtherPane() {
+        val otherIndex = 1 - focusedIndex
+        val from = panes[focusedIndex].currentDirectory
+        if (panes[otherIndex].currentDirectory == from) {
+            feedbackMessage = "两列已在同一目录"
+            return
+        }
+        panes[otherIndex].currentDirectory = from
+        feedbackMessage = "已同步「" + paneLabel(otherIndex) + "」到 " + from
+    }
+
+
 
     // 按指定冲突策略执行冲突目标集移动，完成后退出多选态回到普通浏览
     fun runMoveWithConflict(conflict: MoveDestinationConflict) {
@@ -385,19 +574,33 @@ fun FilePage(
     }
 
     // 记忆目录失效时自动回退初始目录
-    LaunchedEffect(directoryLoadFailed) {
-        if (directoryLoadFailed) {
-            directoryLoadFailed = false
-            currentDirectory = INTERNAL_STORAGE_PATH
-            if (appSettings.rememberDirectory) {
-                RootFileManager.rememberedDirectory = INTERNAL_STORAGE_PATH
+    // 目录失效回退**必须按列各自触发**：
+    // 去年写的 `LaunchedEffect(directoryLoadFailed)` 走委托，只能看见聚焦列的标记。
+    // 后果：非聚焦列（右列）的目录失效时回退永远不触发，
+    // 该列卡在一个已不存在的目录里、看不到文件也拿不到回退入口。
+    //
+    // 回退目标只回到内部存储（应用自身总是可读的）；已在回退目录上时再回一级到根，
+    // 避免两列被逐一进入无效目录。
+    panes.forEach { pane ->
+        LaunchedEffect(pane.directoryLoadFailed) {
+            if (!pane.directoryLoadFailed) return@LaunchedEffect
+            pane.directoryLoadFailed = false
+            val fallback = INTERNAL_STORAGE_PATH
+            if (pane.currentDirectory == fallback) {
+                pane.currentDirectory = "/"
+            } else {
+                pane.currentDirectory = fallback
+                // 只有聚焦列才落盘记忆目录：外部 Intent 带来的路径不应被永久改写。
+                if (appSettings.rememberDirectory && paneIndexOf(pane) == focusedIndex) {
+                    RootFileManager.rememberedDirectory = fallback
+                }
             }
         }
     }
 
     // 外部唤起目标落点（由 ExternalOpenHub 投递）：跳目录 + 高亮；OPEN 模式按类型分派动作。
     // highlightPath 仅用于视觉定位，切目录或用户点击后清空。
-    var highlightPath by remember { mutableStateOf<String?>(null) }
+    
 
     // ===== 单文件动作体：抽为局部函数，供动作菜单与「外部唤起」共用（不产生第二条执行路径）=====
 
@@ -588,15 +791,19 @@ fun FilePage(
         if (index >= 0) listState.scrollToItem(index)
     }
 
-    LaunchedEffect(currentDirectory) {
-        // 切目录：退出多选、清空选中。
-        // 多选态下若保留旧的 selectedPaths，批量删除/拷贝会作用到旧目录里同名路径（用户还看不见）。
-        // 滚动位置由上面的 `remember(currentDirectory) { LazyListState() }` 自动归零，无挂起调用。
-        multiSelectMode = false
-        selectedPaths.clear()
-        // 建目录与列目录并行执行，避免阻塞列表首屏加载。
-        launch { RootFileManager.ensureShsoDir() }
-        refresh()
+    // 切目录触发必须**按列各挂一个**：令牌只监听聚焦列的目录。
+    // 若这里只保留原来那一个，右列目录变了（如「同步」把左列路径赋给右列）
+    // 就不会触发任何加载 —— 右列的路径栏变了而列表仍是旧目录的内容。
+    panes.forEach { pane ->
+        LaunchedEffect(pane.currentDirectory) {
+            // 切目录：退出多选、清空选中。
+            // 多选态下若保留旧的 selectedPaths，批量删除/拷贝会作用到旧目录里同名路径（用户还看不见）。
+            pane.multiSelectMode = false
+            pane.selectedPaths.clear()
+            // 建目录与列目录并行执行，避免阻塞列表首屏加载。
+            launch { RootFileManager.ensureShsoDir() }
+            refreshPane(paneIndexOf(pane))
+        }
     }
 
     LaunchedEffect(feedbackMessage) {
@@ -620,18 +827,52 @@ fun FilePage(
         // 就会基于**旧目录**的列表算一遍；若它晚于 refresh 落盘，路径栏是新目录、
         // 列表是旧目录内容，而此后 key 不再变化、永远不会再重算 ——
         // 随后的删除/移动/重命名作用到用户看不见的路径。
-        val gen = refreshGenRef[0]
+        val gen = activePane.refreshGenRef[0]
+        // 代次相同**不等于**基准有效：refresh() 启动时递增代次，随后才在 IO 线程
+        // 读目录并落盘 fileList。若在它落盘前进入本协程，gen 已等于当前代次，
+        // 但 fileList 仍是**上一目录**（切目录场景下甚至是空列表），
+        // 守卫放行后就会把 displayFileList 覆盖成那份陈旧结果。
+        // 真机实测：首帧进 /storage/emulated/0 时本协程先跑（src=0），
+        // 随后 refresh 才落盘 150 项 —— 但本协程写的是空列表且无人再重算，
+        // 用户看到「当前目录为空」，而目录里其实有 150 个文件。
+        // 必须等 refresh 真正完成后再重算。
+        if (activePane.loadingGenRef[0] == gen) return@LaunchedEffect
         val source = fileList
         val showHidden = appSettings.showHiddenFiles
         val sortMode = appSettings.fileSortMode
         val query = nameQuery
+
+        // 搜索防抖：nameQuery 每敲一个字符都会重启本协程，而 LaunchedEffect 只能取消
+        // **协程**，已排进 Dispatchers.Default 队列的计算并不会被中断 ——
+        // 1 秒内敲 10 个字符就是 10 次「N 项过滤 + 2 次分组 + N 次 lowercase + 排序」
+        // 全部跑完再依次丢弃。表现为「打字时列表狂闪、越打越卡」。
+        //
+        // delay 必须放在**本协程内部**、计算之前：另起一个 LaunchedEffect 去 delay 是
+        // 与本协程并行的，起不到拦截作用。
+        //
+        // 只在「本次是由搜索词变化触发」时延迟：排序方式 / 隐藏文件开关是离散选择，
+        // 用户要立刻看到结果，不该被拖慢。用「与上一次成功重算时的搜索词比较」判定，
+        // 天然只在搜索词真的变了时才等。
+        if (query != activePane.lastRecomputedQueryRef[0]) {
+            delay(searchDebounceMs)
+            // 等价于「这是搜索词变化触发的重算」——供下次比较，
+            // 并保证下一次非搜索触发的重算不会误判为需要防抖。
+            activePane.lastRecomputedQueryRef[0] = query
+        }
+
         val computed = withContext(Dispatchers.Default) {
             applyFileViewSettings(source, showHidden, sortMode, query)
         }
         // 期间目录已被刷新/切换：refresh 会自己算出正确的 displayFileList，丢弃本次
-        if (gen != refreshGenRef[0]) return@LaunchedEffect
+        if (gen != activePane.refreshGenRef[0]) return@LaunchedEffect
+        // 重算期间 refresh 又启动了新一代：本次基于陈旧 fileList，丢弃
+        if (activePane.loadingGenRef[0] == gen) return@LaunchedEffect
+        // 列表已作废（读取失败、无旧列表可保留）：不得用空 fileList 重算并落盘，
+        // 否则会把「读取失败」状态覆盖成「目录为空」。
+        if (listIsStale) return@LaunchedEffect
         displayFileList = computed
     }
+
 
     // 切目录清空过滤词：否则新目录会沿用旧关键字，表现为「目录打不开」（实为空结果）
     LaunchedEffect(currentDirectory) {
@@ -665,6 +906,468 @@ fun FilePage(
 
     val listFontSize = appSettings.fileListFontSize.sp
     val listSecondaryFontSize = (appSettings.fileListFontSize - 5f).coerceAtLeast(8f).sp
+
+
+    /**
+     * 单列的列表区：骨架 / 空态 / 条目列表，以及紧凑模式下的信息取舍。
+     *
+     * @param compact 窄列（<220dp）时为 true：去掉权限串与内联「执行 / 预览」按钮，
+     *   并收窄行内边距。两者在长按动作菜单里都仍可触达，不是功能丢失。
+     */
+    @Composable
+    fun PaneBody(pane: FilePaneState, paneIndex: Int, compact: Boolean) {
+        Box(modifier = Modifier.fillMaxSize()) {
+        if (pane.isLoading && pane.displayFileList.isEmpty()) {
+                                    // 骨架占位：加载期间先铺出列表轮廓，消除首屏空白观感
+                                    LazyColumn(state = pane.listState, modifier = Modifier.fillMaxSize()) {
+                                        items(10) {
+                                            Column(modifier = Modifier.fillMaxWidth()) {
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(width = 18.dp, height = 12.dp)
+                                                            .clip(RoundedCornerShape(0.dp))
+                                                            .background(AuroraTokens.SurfaceHover)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(12.dp))
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth(0.55f)
+                                                                .height(12.dp)
+                                                                .clip(RoundedCornerShape(0.dp))
+                                                                .background(AuroraTokens.SurfaceHover)
+                                                        )
+                                                        Spacer(modifier = Modifier.height(6.dp))
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth(0.28f)
+                                                                .height(9.dp)
+                                                                .clip(RoundedCornerShape(0.dp))
+                                                                .background(AuroraTokens.SurfaceHover)
+                                                        )
+                                                    }
+                                                }
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(start = if (compact) 6.dp else 16.dp)
+                                                        .height(0.7.dp)
+                                                        .background(AuroraTokens.SurfaceHover.copy(alpha = 0.6f))
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else if (pane.displayFileList.isEmpty()) {
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            modifier = Modifier.padding(horizontal = 32.dp)
+                                        ) {
+                                            // 三种「列表为空」各有不同成因，文案必须分开：
+                                            // 搜索无命中 / 读取失败 / 目录确实为空。
+                                            // 旧实现只有后两者共用「当前目录为空」，
+                                            // 于是 su 被拒、输出截断等故障都被说成目录是空的。
+                                            val errorText = directoryLoadError
+                                            val hint = when {
+                                                nameQuery.isNotEmpty() -> "无匹配项：" + nameQuery
+                                                errorText != null -> "读取失败：$errorText"
+                                                else -> "当前目录为空"
+                                            }
+                                            Text(
+                                                text = hint,
+                                                style = AuroraTextStyles.body2,
+                                                color = if (errorText != null && nameQuery.isEmpty()) {
+                                                    AuroraTokens.Warning
+                                                } else {
+                                                    AuroraTokens.TextSecondary
+                                                },
+                                                textAlign = TextAlign.Center
+                                            )
+                                            // 读取失败时给出可执行的下一步，而不是让用户对着
+                                            // 一句错误文案猜原因。旧列表仍在，可直接重试。
+                                            if (errorText != null && nameQuery.isEmpty()) {
+                                                Spacer(modifier = Modifier.height(12.dp))
+                                                Text(
+                                                    text = "点右上角刷新重试",
+                                                    style = AuroraTextStyles.footnote2,
+                                                    color = AuroraTokens.TextSecondary
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    LazyColumn(
+                                        state = pane.listState,
+                                        modifier = Modifier.fillMaxSize()
+                                    ) {
+                                        // key 只用唯一的 item.path：混入下标会在删除/排序导致位移时使后续项 key 全变，
+                                        // LazyColumn 复用失效、整段重建（滚动抖动、状态错位）。path 由 listFiles 去重保证唯一。
+                                        itemsIndexed(pane.displayFileList, key = { _, item -> item.path }) { _, item ->
+                            // 用 HashSet 判选中：selectedPaths 是 SnapshotStateList，
+                            // contains 为线性扫描，选中项多时每行每帧都要扫一遍。
+                            val paneSelectedPaths = remember(pane.selectedPaths) {
+                                pane.selectedPaths.toHashSet()
+                            }
+                                            val isExecutable = item.isExecutableScript || item.isExecutableBinary
+                                            val isFontFile = !item.isDirectory && (item.name.endsWith(".ttf", ignoreCase = true) || item.name.endsWith(".otf", ignoreCase = true))
+
+                                            Column(modifier = Modifier.fillMaxWidth()) {
+                                                // 刷新期间旧列表仍可见（不造成空白闪烁），用轻微降透明度表达
+                                                // 「这批数据已过期、暂不可操作」，避免用户点了没反应。
+                                                val dimmed = pane.listIsStale
+                                                // 用 HashSet 判选中：selectedPaths.contains 是线性扫描，
+                                                // 选中项多时每行每帧都要扫一遍。
+                                                val isSelected = pane.multiSelectMode && item.path in paneSelectedPaths
+                                                // 外部唤起定位：命中行加强调色底，便于一眼找到
+                                                val isHighlighted = item.path == pane.highlightPath
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .alpha(if (dimmed) 0.45f else 1f)
+                                                        .combinedClickable(
+                                                            // 列表正在刷新：保留旧列表只为避免空白闪烁，
+                                                            // 此时它属于**上一个目录**（切目录场景），
+                                                            // 任何点击/长按都必须失效 —— 否则路径栏显示 B、
+                                                            // 用户长按删掉的却是 A 里的文件，且无从察觉。
+                                                            // 首屏无旧列表时本就不可点，故用 pane.displayFileList 非空判定。
+                                                            enabled = !pane.listIsStale,
+                                                            onClick = {
+                                                                if (isHighlighted) pane.highlightPath = null
+                                                                if (item.isDirectory) {
+                                                                    // 文件夹：非多选模式单击进入；多选模式文件夹不参与选择
+                                                                    if (!pane.multiSelectMode) navigateTo(item.path)
+                                                                } else {
+                                                                    if (pane.multiSelectMode) {
+                                                                        // 多选模式：单击文件 = 切换选中状态
+                                                                        if (selectedPaths.contains(item.path)) selectedPaths.remove(item.path)
+                                                                        else selectedPaths.add(item.path)
+                                                                    } else {
+                                                                        // 非多选：单击文件弹动作菜单
+                                                                        selectedItem = item
+                                                                        showActionDialog = true
+                                                                    }
+                                                                }
+                                                            },
+                                                            onLongClick = {
+                                                                if (isHighlighted) pane.highlightPath = null
+                                                                if (item.isDirectory) {
+                                                                    // 文件夹长按：始终弹动作菜单
+                                                                    selectedItem = item
+                                                                    showActionDialog = true
+                                                                } else {
+                                                                    selectedItem = item
+                                                                    if (pane.multiSelectMode) {
+                                                                        // 多选模式：长按弹批量操作菜单
+                                                                        showBatchDialog = true
+                                                                    } else {
+                                                                        // 非多选：长按弹 进入/退出多选模式
+                                                                        showModeDialog = true
+                                                        modeTargetItem = item
+                                                                    }
+                                                                }
+                                                            }
+                                                        )
+                                                        .background(
+                                                            when {
+                                                                isSelected -> AuroraTokens.Accent.copy(alpha = 0.16f)
+                                                                isHighlighted -> AuroraTokens.Accent.copy(alpha = 0.22f)
+                                                                else -> Color.Transparent
+                                                            }
+                                                        )
+                                                        .padding(horizontal = if (compact) 6.dp else 16.dp, vertical = 0.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                // 类型图标：无底色方框、左右零间隙，直接裸文字
+                                                // 文本文件优先显示**具体语言**（由已导入语法包决定），无法识别时才用通用 TXT
+                                                Text(
+                                                    text = when {
+                                                        item.isDirectory -> "📁"
+                                                        item.isExecutableScript -> "SH"
+                                                        item.isExecutableBinary -> "SO"
+                                                        item.isInstallable -> "APK"
+                                                        isFontFile -> if (item.name.endsWith(".otf", ignoreCase = true)) "OTF" else "TTF"
+                                                        item.isViewableImage -> "IMG"
+                                                        item.isEditableText -> SyntaxPackTags.tagFor(context, item.name) ?: "TXT"
+                                                        else -> "📄"
+                                                    },
+                                                    fontSize = if (item.isDirectory || (!isExecutable && !isFontFile && !item.isInstallable && !item.isViewableImage && !item.isEditableText)) 16.sp else 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = when {
+                                                        item.isDirectory -> AuroraTokens.Accent
+                                                        item.isExecutableScript -> AuroraTokens.Accent
+                                                        item.isExecutableBinary -> AuroraTokens.GlowBlue
+                                                        item.isInstallable -> AuroraTokens.AccentViolet
+                                                        isFontFile -> AuroraTokens.AccentViolet
+                                                        item.isViewableImage -> AuroraTokens.AccentViolet
+                                                        item.isEditableText -> AuroraTokens.GlowBlue
+                                                        else -> AuroraTokens.TextSecondary
+                                                    }
+                                                )
+
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = item.name,
+                                                        style = AuroraTextStyles.body1,
+                                                        fontSize = listFontSize,
+                                                        fontWeight = FontWeight.Normal,
+                                                        color = AuroraTokens.Text,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    Spacer(modifier = Modifier.height(2.dp))
+                                                    Row(
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Text(
+                                                            text = if (item.isDirectory) "文件夹" else item.formattedSize,
+                                                            style = AuroraTextStyles.footnote2,
+                                                            fontSize = listSecondaryFontSize,
+                                                            color = AuroraTokens.TextSecondary
+                                                        )
+
+                                                        if (!compact && item.permissions.isNotEmpty()) {
+                                                            Text(
+                                                                text = item.permissions,
+                                                                style = AuroraTextStyles.footnote2,
+                                                                fontSize = listSecondaryFontSize,
+                                                                fontFamily = FontFamily.Monospace,
+                                                                color = AuroraTokens.TextSecondary.copy(0.7f)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+
+                                                // 多选模式选中标记：极光渐变对勾（无底色方块，纯文字）
+                                                if (isSelected) {
+                                                    Text(
+                                                        text = "✓",
+                                                        style = AuroraTextStyles.title3.copy(
+                                                            fontSize = 18.sp,
+                                                            fontWeight = FontWeight.Black,
+                                                            brush = androidx.compose.ui.graphics.Brush.horizontalGradient(
+                                                                colors = listOf(AuroraTokens.GlowCyan, AuroraTokens.GlowBlue, AuroraTokens.AccentViolet)
+                                                            )
+                                                        ),
+                                                        modifier = Modifier.padding(start = 8.dp)
+                                                    )
+                                                }
+
+                                                if (!compact && isExecutable) {
+                                                    // 「执行」按钮：去掉矩形底，直接裸文字 + 红色加粗（与终端页按钮裸文字化风格一致）
+                                                    Text(
+                                                        text = "执行",
+                                                        fontSize = 12.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = AuroraTokens.Error,
+                                                        modifier = Modifier
+                                                            .clickable { onExecuteFileAndNavigate(item.path, null) }
+                                                            .padding(horizontal = 6.dp, vertical = 8.dp)
+                                                    )
+                                                } else if (!compact && isFontFile) {
+                                                    Button(
+                                                        onClick = {
+                                                            previewFontItem = item
+                                                            showFontPreviewDialog = true
+                                                        },
+                                                        colors = ButtonDefaults.buttonColors(
+                                                            containerColor = AuroraTokens.Accent,
+                                                            contentColor = AuroraTokens.OnAccent
+                                                        ),
+                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
+                                                        modifier = Modifier.clip(RoundedCornerShape(0.dp))
+                                                    ) {
+                                                        Text("预览", fontSize = 12.sp)
+                                                    }
+                                                }
+                                                }
+
+                                                // inset 分割线：图标已无底色方框，线从行内容起点起
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(start = if (compact) 6.dp else 16.dp)
+                                                        .height(0.7.dp)
+                                                        .background(AuroraTokens.SurfaceHover.copy(alpha = 0.6f))
+                                                )
+                                            }
+                                        }
+                                    }
+            }
+        }
+    }
+
+    /**
+     * 单列面板：细条 + 骨架 / 空态 / 列表 + 该列的悬浮导航。
+     *
+     * 局部 @Composable 而非独立函数，是为了直接捕获本函数里的页面级状态
+     * （selectedItem / showActionDialog / 二十多个弹窗标志 / 各类动作回调）。
+     * 抽成顶层函数要传 30 个参数，反而更难读也更易错。
+     *
+     * 面板背景按焦点区分：非聚焦列用 SurfaceVariant 轻微下沉，
+     * 让「当前操作的是哪一列」在余光里也能分辨，不只靠细条那 3dp 竖条。
+     */
+    @Composable
+    fun PaneHeader(pane: FilePaneState, isFocused: Boolean, compact: Boolean) {
+        val shortPath = remember(pane.currentDirectory, compact) {
+            val full = pane.currentDirectory
+            if (compact && full.length > 22) "\u2026" + full.takeLast(21) else full
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(if (isFocused) AuroraTokens.Accent.copy(alpha = 0.16f) else Color.Transparent)
+                .clickable { focusedIndex = paneIndexOf(pane) }
+                .padding(horizontal = 6.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // 焦点标记：聚焦列显示强调色竖条。颜色之外还有形状差异，
+            // 色觉障碍下仍可分辨。
+            Box(
+                modifier = Modifier
+                    .width(3.dp)
+                    .height(if (isFocused) 14.dp else 0.dp)
+                    .background(if (isFocused) AuroraTokens.Accent else Color.Transparent)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = shortPath,
+                style = AuroraTextStyles.footnote1,
+                color = if (isFocused) AuroraTokens.Text else AuroraTokens.TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            // 加载指示占固定宽度：出现 / 消失时整条细条不会抖动。
+            Box(modifier = Modifier.width(14.dp), contentAlignment = Alignment.CenterEnd) {
+                if (pane.isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(10.dp),
+                        strokeWidth = 1.5.dp,
+                        color = AuroraTokens.Accent
+                    )
+                }
+            }
+            if (!compact) {
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = pane.displayFileList.size.toString(),
+                    style = AuroraTextStyles.footnote2,
+                    color = AuroraTokens.TextSecondary
+                )
+            }
+        }
+    }
+
+    /**
+     * 单列面板：细条 + 骨架 / 空态 / 列表 + 该列的悬浮导航。
+     *
+     * 局部 @Composable 而非独立函数，是为了直接捕获本函数里的页面级状态
+     * （selectedItem / showActionDialog / 二十多个弹窗标志 / 各类动作回调）。
+     * 抽成顶层函数要传 30 个参数，反而更难读也更易错。
+     *
+     * 面板背景按焦点区分：非聚焦列用 SurfaceVariant 轻微下沉，
+     * 让「当前操作的是哪一列」在余光里也能分辨，不只靠细条那 3dp 竖条。
+     */
+    /** 底栏单个按钮：等分宽度、文字底栏；禁用时降透明度而非直接消失。 */
+    @Composable
+    fun RowScope.BottomBarButton(
+        label: String,
+        enabled: Boolean = true,
+        onClick: () -> Unit
+    ) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .clickable(enabled = enabled, onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = label,
+                style = AuroraTextStyles.body2,
+                color = if (enabled) AuroraTokens.Text else AuroraTokens.TextDisabled
+            )
+        }
+    }
+
+    /**
+     * 全局底栏：顶部 / 底部 / 新建 / 同步 / 刷新。
+     *
+     * 位于页面底部、全局 DockBar （MainActivity 提供、56dp）之上。
+     * 五个按钮等分占满宽度 —— 参考 MPManager activity_main.xml:116-179
+     * 的 bottomBar：五个 ImageView 均为 `layout_weight=1`。
+     *
+     * 为何收成全局而不是各列各一份：
+     * - 宽度：两列各只分到一半宽，容不下五个可用的按钮；
+     * - 语义：这五个操作本身就是「当前列」的操作。两列各放一套会让用户
+     *   误以为底部按钮影响「所有列」；
+     * - 命中率：底栏只有一份，手指可达目标只有一处。
+     *
+     * “同步”取聚焦列目录赋给另一列（参考 MPManager `syncPaneButton`，
+     * MainActivity.java:1643）。两列已在同一目录时按钮降透明度，
+     * 避免点了只看到一次 Toast。
+     */
+    @Composable
+    fun PaneBottomBar(modifier: Modifier) {
+        val pane = activePane
+        val sameDir = panes[1 - focusedIndex].currentDirectory == pane.currentDirectory
+        Row(
+            modifier = modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .background(AuroraTokens.Surface),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val hasItems = pane.displayFileList.isNotEmpty()
+            BottomBarButton(
+                label = "顶部",
+                enabled = hasItems,
+                onClick = { scope.launch { pane.listState.scrollToItem(0) } }
+            )
+            BottomBarButton(
+                label = "底部",
+                enabled = hasItems,
+                onClick = {
+                    val last = pane.displayFileList.lastIndex
+                    scope.launch { pane.listState.scrollToItem(last) }
+                }
+            )
+            BottomBarButton(label = "新建", onClick = { openNewFileDialog() })
+            BottomBarButton(label = "同步", enabled = !sameDir, onClick = { syncOtherPane() })
+            BottomBarButton(label = "刷新", onClick = { refresh(showToast = true) })
+        }
+    }
+
+    @Composable
+    fun PaneColumn(pane: FilePaneState, paneIndex: Int, modifier: Modifier) {
+        val isFocused = paneIndex == focusedIndex
+        // 窄列降级：竖屏 360dp 平分后每列仅 180dp，原行布局（16dp padding + 图标 +
+        // 名称 + 大小 + 权限 + 内联「执行」按钮）会把名称压到 78dp。紧凑模式去掉
+        // 权限串与内联按钮（长按菜单里都还有），只保留「图标 + 名称 + 大小」。
+        BoxWithConstraints(modifier = modifier) {
+            val compact = maxWidth < 220.dp
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(if (isFocused) AuroraTokens.Surface else AuroraTokens.SurfaceVariant)
+            ) {
+                PaneHeader(pane, isFocused, compact)
+                Box(modifier = Modifier.weight(1f)) {
+                    PaneBody(pane, paneIndex, compact)
+                }
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -895,317 +1598,47 @@ fun FilePage(
                 }
             }
 
-            // 文件列表区（占满）+ 悬浮三按钮：外层 Box 包裹，列表 fillMaxSize 占满。
-            // 列表底端必须恰好止于 DockBar 上沿：DockBar 是透明玻璃叠层，若列表继续延伸
-            // 到其下方，会透过导航栏看到文件行。Scaffold 的 innerPadding 已承担系统导航条
-            // inset，因此列表 Box 只需再预留 DockBar 内容高度 56.dp（不要再加 navigationBarsPadding，
-            // 否则与 innerPadding 重复计算，会多出一道系统导航条高度的空白带）。
-            Box(
+            // 文件列表区：左右双列，各占一半。
+            //
+            // 参考 MPManager（activity_main.xml:73-104）的 dual pane —— 两个 weight=1
+            // 的面板并排，各自独立导航，顶栏只显示**聚焦列**的路径。
+            //
+            // 底部仍预留 56.dp 给全局 DockBar：DockBar 由 MainActivity 提供，
+            // 是全局页签栏，不属于任何一列；不预留会让文件行透过导航栏显示出来。
+            // 系统导航条 inset 已由 Scaffold 的 innerPadding 承担，此处不再叠加
+            // navigationBarsPadding，否则会多出一道重复计算的空白带。
+            Row(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(bottom = 56.dp)
             ) {
-                // 列表容器：占满外层 Box
-                Box(modifier = Modifier.fillMaxSize()) {
-                if (isLoading && displayFileList.isEmpty()) {
-                    // 骨架占位：加载期间先铺出列表轮廓，消除首屏空白观感
-                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                        items(10) {
-                            Column(modifier = Modifier.fillMaxWidth()) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(width = 18.dp, height = 12.dp)
-                                            .clip(RoundedCornerShape(0.dp))
-                                            .background(AuroraTokens.SurfaceHover)
-                                    )
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth(0.55f)
-                                                .height(12.dp)
-                                                .clip(RoundedCornerShape(0.dp))
-                                                .background(AuroraTokens.SurfaceHover)
-                                        )
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth(0.28f)
-                                                .height(9.dp)
-                                                .clip(RoundedCornerShape(0.dp))
-                                                .background(AuroraTokens.SurfaceHover)
-                                        )
-                                    }
-                                }
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(start = 16.dp)
-                                        .height(0.7.dp)
-                                        .background(AuroraTokens.SurfaceHover.copy(alpha = 0.6f))
-                                )
-                            }
-                        }
-                    }
-                } else if (displayFileList.isEmpty()) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = if (nameQuery.isNotEmpty()) "无匹配项：" + nameQuery else "当前目录为空",
-                            style = AuroraTextStyles.body2,
-                            color = AuroraTokens.TextSecondary
-                        )
-                    }
-                } else {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        // key 只用唯一的 item.path：混入下标会在删除/排序导致位移时使后续项 key 全变，
-                        // LazyColumn 复用失效、整段重建（滚动抖动、状态错位）。path 由 listFiles 去重保证唯一。
-                        itemsIndexed(displayFileList, key = { _, item -> item.path }) { _, item ->
-                            val isExecutable = item.isExecutableScript || item.isExecutableBinary
-                            val isFontFile = !item.isDirectory && (item.name.endsWith(".ttf", ignoreCase = true) || item.name.endsWith(".otf", ignoreCase = true))
-
-                            Column(modifier = Modifier.fillMaxWidth()) {
-                                val isSelected = multiSelectMode && selectedPaths.contains(item.path)
-                                // 外部唤起定位：命中行加强调色底，便于一眼找到
-                                val isHighlighted = item.path == highlightPath
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .combinedClickable(
-                                            onClick = {
-                                                if (isHighlighted) highlightPath = null
-                                                if (item.isDirectory) {
-                                                    // 文件夹：非多选模式单击进入；多选模式文件夹不参与选择
-                                                    if (!multiSelectMode) navigateTo(item.path)
-                                                } else {
-                                                    if (multiSelectMode) {
-                                                        // 多选模式：单击文件 = 切换选中状态
-                                                        if (selectedPaths.contains(item.path)) selectedPaths.remove(item.path)
-                                                        else selectedPaths.add(item.path)
-                                                    } else {
-                                                        // 非多选：单击文件弹动作菜单
-                                                        selectedItem = item
-                                                        showActionDialog = true
-                                                    }
-                                                }
-                                            },
-                                            onLongClick = {
-                                                if (isHighlighted) highlightPath = null
-                                                if (item.isDirectory) {
-                                                    // 文件夹长按：始终弹动作菜单
-                                                    selectedItem = item
-                                                    showActionDialog = true
-                                                } else {
-                                                    selectedItem = item
-                                                    if (multiSelectMode) {
-                                                        // 多选模式：长按弹批量操作菜单
-                                                        showBatchDialog = true
-                                                    } else {
-                                                        // 非多选：长按弹 进入/退出多选模式
-                                                        showModeDialog = true
-                                        modeTargetItem = item
-                                                    }
-                                                }
-                                            }
-                                        )
-                                        .background(
-                                            when {
-                                                isSelected -> AuroraTokens.Accent.copy(alpha = 0.16f)
-                                                isHighlighted -> AuroraTokens.Accent.copy(alpha = 0.22f)
-                                                else -> Color.Transparent
-                                            }
-                                        )
-                                        .padding(horizontal = 16.dp, vertical = 0.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                // 类型图标：无底色方框、左右零间隙，直接裸文字
-                                // 文本文件优先显示**具体语言**（由已导入语法包决定），无法识别时才用通用 TXT
-                                Text(
-                                    text = when {
-                                        item.isDirectory -> "📁"
-                                        item.isExecutableScript -> "SH"
-                                        item.isExecutableBinary -> "SO"
-                                        item.isInstallable -> "APK"
-                                        isFontFile -> if (item.name.endsWith(".otf", ignoreCase = true)) "OTF" else "TTF"
-                                        item.isViewableImage -> "IMG"
-                                        item.isEditableText -> SyntaxPackTags.tagFor(context, item.name) ?: "TXT"
-                                        else -> "📄"
-                                    },
-                                    fontSize = if (item.isDirectory || (!isExecutable && !isFontFile && !item.isInstallable && !item.isViewableImage && !item.isEditableText)) 16.sp else 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = when {
-                                        item.isDirectory -> AuroraTokens.Accent
-                                        item.isExecutableScript -> AuroraTokens.Accent
-                                        item.isExecutableBinary -> AuroraTokens.GlowBlue
-                                        item.isInstallable -> AuroraTokens.AccentViolet
-                                        isFontFile -> AuroraTokens.AccentViolet
-                                        item.isViewableImage -> AuroraTokens.AccentViolet
-                                        item.isEditableText -> AuroraTokens.GlowBlue
-                                        else -> AuroraTokens.TextSecondary
-                                    }
-                                )
-
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = item.name,
-                                        style = AuroraTextStyles.body1,
-                                        fontSize = listFontSize,
-                                        fontWeight = FontWeight.Normal,
-                                        color = AuroraTokens.Text,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Spacer(modifier = Modifier.height(2.dp))
-                                    Row(
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = if (item.isDirectory) "文件夹" else item.formattedSize,
-                                            style = AuroraTextStyles.footnote2,
-                                            fontSize = listSecondaryFontSize,
-                                            color = AuroraTokens.TextSecondary
-                                        )
-
-                                        if (item.permissions.isNotEmpty()) {
-                                            Text(
-                                                text = item.permissions,
-                                                style = AuroraTextStyles.footnote2,
-                                                fontSize = listSecondaryFontSize,
-                                                fontFamily = FontFamily.Monospace,
-                                                color = AuroraTokens.TextSecondary.copy(0.7f)
-                                            )
-                                        }
-                                    }
-                                }
-
-                                // 多选模式选中标记：极光渐变对勾（无底色方块，纯文字）
-                                if (isSelected) {
-                                    Text(
-                                        text = "✓",
-                                        style = AuroraTextStyles.title3.copy(
-                                            fontSize = 18.sp,
-                                            fontWeight = FontWeight.Black,
-                                            brush = androidx.compose.ui.graphics.Brush.horizontalGradient(
-                                                colors = listOf(AuroraTokens.GlowCyan, AuroraTokens.GlowBlue, AuroraTokens.AccentViolet)
-                                            )
-                                        ),
-                                        modifier = Modifier.padding(start = 8.dp)
-                                    )
-                                }
-
-                                if (isExecutable) {
-                                    // 「执行」按钮：去掉矩形底，直接裸文字 + 红色加粗（与终端页按钮裸文字化风格一致）
-                                    Text(
-                                        text = "执行",
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = AuroraTokens.Error,
-                                        modifier = Modifier
-                                            .clickable { onExecuteFileAndNavigate(item.path, null) }
-                                            .padding(horizontal = 6.dp, vertical = 8.dp)
-                                    )
-                                } else if (isFontFile) {
-                                    Button(
-                                        onClick = {
-                                            previewFontItem = item
-                                            showFontPreviewDialog = true
-                                        },
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = AuroraTokens.Accent,
-                                            contentColor = AuroraTokens.OnAccent
-                                        ),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
-                                        modifier = Modifier.clip(RoundedCornerShape(0.dp))
-                                    ) {
-                                        Text("预览", fontSize = 12.sp)
-                                    }
-                                }
-                                }
-
-                                // inset 分割线：图标已无底色方框，线从行内容起点起
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(start = 16.dp)
-                                        .height(0.7.dp)
-                                        .background(AuroraTokens.SurfaceHover.copy(alpha = 0.6f))
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 文件列表底部：全局三按钮（透明背景、极光渐变图标，靠右、距右边 50dp，位于 DockBar 上方）
-            // 图标样式复刻「浏览图片」查看器：40sp Black + 青→蓝→紫极光渐变
-            // 回到顶部 / 直达底部 / 立即刷新文件列表；整体靠右排列，置于可能出现的「执行」按钮左侧
-            val navIconBrush = androidx.compose.ui.graphics.Brush.horizontalGradient(
-                colors = listOf(AuroraTokens.GlowCyan, AuroraTokens.GlowBlue, AuroraTokens.AccentViolet)
-            )
-            val navIconStyle = AuroraTextStyles.title3.copy(
-                fontSize = 32.sp,
-                fontWeight = FontWeight.Black,
-                brush = navIconBrush
-            )
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .zIndex(1f)
-                    .padding(bottom = 8.dp, end = 50.dp)
-                    .height(60.dp),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                val navActions: List<Pair<String, () -> Unit>> = listOf(
-                    "⤒" to { scope.launch { if (displayFileList.isNotEmpty()) listState.scrollToItem(0) } },
-                    "⤓" to { scope.launch { if (displayFileList.isNotEmpty()) listState.scrollToItem(displayFileList.lastIndex) } },
-                    "⟳" to { refresh(showToast = true) }
-                )
-                navActions.forEach { (sym, action) ->
-                    Text(
-                        text = sym,
-                        style = navIconStyle,
-                        modifier = Modifier
-                            .clickable(onClick = action)
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                    )
-                }
-            }
-            // 文件列表右侧贴边细拖动条：拖动快速跳转（复刻文本编辑器 LineScrollBar 样式）
-            if (displayFileList.size > 1) {
-                ListScrollBar(
-                    listState = listState,
-                    itemCount = displayFileList.size,
+                PaneColumn(leftPane, 0, Modifier.weight(1f))
+                Box(
                     modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = 2.dp)
-                        .zIndex(1f)
+                        .width(1.dp)
+                        .fillMaxHeight()
+                        .background(AuroraTokens.SurfaceHover)
                 )
+                PaneColumn(rightPane, 1, Modifier.weight(1f))
             }
+
+            // 全局底栏（顶部 / 底部 / 新建 / 同步 / 刷新）。
+            // 底部再预留 56.dp 给全局 DockBar（MainActivity 提供的页签栏）：
+            // DockBar 是浮层，不预留就会透过它看到底栏按钮。
+            // 系统导航条 inset 已由 Scaffold 的 innerPadding 承担，此处不再叠加
+            // navigationBarsPadding，否则多出一道重复计算的空白带。
+            Box(modifier = Modifier.fillMaxWidth().padding(bottom = 56.dp)) {
+                PaneBottomBar(Modifier.fillMaxWidth())
             }
         }
     }
 
-    // 「全选文件」状态：当前是否**已全选所有文件**（不含文件夹）。用于把设置项文案切换为「取消全选」。
-    val allFilesSelected = run {
-        val filePaths = displayFileList.filter { !it.isDirectory }.map { it.path }
-        filePaths.isNotEmpty() && multiSelectMode && selectedPaths.containsAll(filePaths)
-    }
-
     if (showFileSettingsDialog) {
+        // 只在弹窗真正打开时才算「是否已全选」：此前它写在 if 之外，
+        // 而唯一消费者就是这个弹窗 —— 弹窗关着时纯属白算（每次重组多分配两个 N 长度列表
+        // 外加一次 N·M 的 containsAll）。
+        val allFilesSelected = allFilePaths.isNotEmpty() && multiSelectMode &&
+            selectedPathSet.containsAll(allFilePaths)
         FileListSettingsDialog(
             appSettings = appSettings,
             onDismissRequest = { showFileSettingsDialog = false },
@@ -1220,11 +1653,12 @@ fun FilePage(
             onSelectAllFilesRequest = {
                 // 全选**文件**（不含文件夹）：多选模式只针对文件，文件夹不参与选中与批量操作。
                 // 第一次点击 = 全选；已全选状态下再点击 = 取消全选（清空选择并退出多选模式）
-                val filePaths = displayFileList.filter { !it.isDirectory }.map { it.path }
+                // 复用 allFilePaths（已 mapNotNull 一趟算好），不再 filter{}.map{} 两趟
+                val filePaths = allFilePaths
                 showFileSettingsDialog = false
                 if (filePaths.isEmpty()) {
                     feedbackMessage = "当前目录没有可全选的文件"
-                } else if (multiSelectMode && selectedPaths.containsAll(filePaths)) {
+                } else if (multiSelectMode && selectedPathSet.containsAll(filePaths)) {
                     selectedPaths.clear()
                     multiSelectMode = false
                     feedbackMessage = "已取消全选（${filePaths.size} 个文件）"
@@ -2303,6 +2737,8 @@ fun FilePage(
         }
     )
 }
+
+    /** 上一次 refresh 发起时已成功加载的目录与其时刻，用于同目录节流。 */
 
 /**
  * 文件列表右侧贴边细拖动条（复刻文本编辑器 [com.mixradio.droid.ui.components.TextEditorDialog]

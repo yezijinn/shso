@@ -6,13 +6,15 @@
 # 原则：只保留会被反射 / SPI / native 调用的类，其余交由 R8 混淆与删除。
 
 # ─── commons-compress ────────────────────────────────────────────────────
-# 只保留实际使用的归档与压缩实现：全量 keep 会保留 584 个类
-# （arj / cpio / dump / jar / brotli / pack200 / zstandard 等均未使用）。
+# 只保留实际使用的归档与压缩实现（ar / cpio / dump / jar / brotli / pack200 /
+# zstandard 等均未使用，规则中不出现）。
 # SPI 工厂（ArchiveStreamFactory / CompressorStreamFactory）未使用，均为直接构造。
-# 收窄后需验证 zip / 7z / tar.* 各格式解压。
+#
+# 刻意**不**保留 archivers.zip：本项目的 ZIP 一律走 zip4j（见 ArchiveExtractor 的
+# Kind.ZIP 分支），commons-compress 的 ZipArchiveInputStream 从未被引用。
+# 该 keep 会连带留下 62 个 zip 类 + deflate64 支持，而它们全是死重量。
 -keep class org.apache.commons.compress.archivers.tar.** { *; }
 -keep class org.apache.commons.compress.archivers.sevenz.** { *; }
--keep class org.apache.commons.compress.archivers.zip.** { *; }
 -keep class org.apache.commons.compress.compressors.gzip.** { *; }
 -keep class org.apache.commons.compress.compressors.xz.** { *; }
 -keep class org.apache.commons.compress.compressors.bzip2.** { *; }
@@ -44,7 +46,7 @@
 # 依赖自带 consumer 规则并自动生效，**不要再写宽泛 keep**：
 #   editor.aar / language-monarch.aar 的 proguard.txt、moshi 的 META-INF/proguard/moshi.pro。
 # 例如 -keep class io.github.rosemoe.sora.** { *; } 会让整个引擎失去收缩与混淆，dex 明显变大。
-# 这里只补它们未覆盖的部分：Monarch 的语法/主题模型（无自带规则，经 Moshi 解析，
+# 这里只补它们未覆盖的部分：Monarch 的语法/主题定义（无自带规则，经 Moshi 解析，
 # 被混淆或删除会让语法 JSON 解析静默失败 → 无高亮且不崩溃）。
 -keep class io.github.dingyi222666.monarch.** { *; }
 

@@ -53,15 +53,53 @@ class SoraEditorController {
     /** 检索（查找/替换共用）。空串表示清除检索。 */
     fun search(query: String, caseInsensitive: Boolean) {
         val ed = editor ?: return
-        if (query.isEmpty()) { ed.searcher.stopSearch(); return }
+        if (query.isEmpty()) {
+            queryActive = false
+            ed.searcher.stopSearch()
+            return
+        }
         val options = io.github.rosemoe.sora.widget.EditorSearcher.SearchOptions(caseInsensitive, false)
         ed.searcher.search(query, options)
+        // search() 先写 currentPattern 再 executeMatch()，故此处 Sora 侧已持词。
+        queryActive = true
     }
 
-    fun gotoNextMatch() { editor?.searcher?.gotoNext() }
-    fun replaceAll(replacement: String) { editor?.searcher?.replaceAll(replacement) }
-    fun replaceCurrentMatch(replacement: String) { editor?.searcher?.replaceCurrentMatch(replacement) }
-    fun stopSearch() { editor?.searcher?.stopSearch() }
+    /**
+     * 本控制器是否持有一份**有效**的检索（`EditorSearcher.currentPattern != null`）。
+     *
+     * Sora 的 `EditorSearcher` 把「有无检索词」记在 `currentPattern` 上，
+     * 而 `gotoNext()` / `matchedPositionCount()` 的**第一条指令就是 `checkState()`**，
+     * 在 `currentPattern == null` 时无条件抛 `IllegalStateException`。
+     *
+     * 本控制器的 `search()` 与 UI 侧的 `findQuery` 是**两份独立状态**：
+     * 关闭查找弹窗只调 [stopSearch]（清 Sora 侧），而弹窗再次打开、
+     * 检索词与上次**相同**时，UI 侧判定「无需重新检索」（`findText == findQuery`）
+     * 直接走 [gotoNextMatch] —— 此时 Sora 侧已无检索词，必然抛异常。
+     * 该调用发生在 `Modifier.clickable` 回调里，无 try/catch → 直接闪退。
+     * `replaceAll` / `replaceCurrentMatch` / [searcherMatchCount] 同理。
+     *
+     * 故这里统一记录并守卫，避免把「会抛异常的方法」当取值 API 使用。
+     */
+    private var queryActive = false
+
+    fun gotoNextMatch() {
+        if (!queryActive) return
+        runCatching { editor?.searcher?.gotoNext() }
+    }
+    fun replaceAll(replacement: String) {
+        if (!queryActive) return
+        runCatching { editor?.searcher?.replaceAll(replacement) }
+    }
+    fun replaceCurrentMatch(replacement: String) {
+        if (!queryActive) return
+        runCatching { editor?.searcher?.replaceCurrentMatch(replacement) }
+    }
+
+    /** 清除检索。同时清掉本地有效性标记，否则后续 [gotoNextMatch] 会撞上 `checkState`。 */
+    fun stopSearch() {
+        queryActive = false
+        runCatching { editor?.searcher?.stopSearch() }
+    }
 
     /**
      * 全部替换并在**主线程**回调完成。
@@ -70,8 +108,9 @@ class SoraEditorController {
      * 故必须走完成回调；回调线程由 Sora 决定，这里统一切回主线程再执行 [onDone]。
      */
     fun replaceAll(replacement: String, onDone: () -> Unit) {
+        if (!queryActive) { MAIN.post(onDone); return }
         val searcher = editor?.searcher ?: return
-        searcher.replaceAll(replacement) { MAIN.post(onDone) }
+        runCatching { searcher.replaceAll(replacement) { MAIN.post(onDone) } }
     }
 
     private val MAIN = android.os.Handler(android.os.Looper.getMainLooper())
@@ -82,7 +121,16 @@ class SoraEditorController {
      * 故 `> 0` 是「检索已完成」的可靠信号——替换必须在检索完成后调用，否则 Sora 判定
      * `isResultValid() == false` 直接 Toast 后返回（表现为「点了替换没反应」）。
      */
-    fun searcherMatchCount(): Int = editor?.searcher?.matchedPositionCount ?: 0
+    /**
+     * 当前匹配数。**无有效检索时返回 0**，绝不把 `checkState()` 的异常抛给调用方。
+     *
+     * 调用点包括 `LaunchedEffect` 里的轮询（[awaitSearchDone]）与替换流程，
+     * 异常会从协程逃出直达崩溃。
+     */
+    fun searcherMatchCount(): Int {
+        if (!queryActive) return 0
+        return runCatching { editor?.searcher?.matchedPositionCount ?: 0 }.getOrDefault(0)
+    }
 }
 
 /** 依据 Aurora 暗色令牌构建 Sora 配色（底为 Darcula 预设，仅覆盖关键槽位）。 */

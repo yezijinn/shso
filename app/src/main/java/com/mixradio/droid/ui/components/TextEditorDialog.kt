@@ -133,7 +133,16 @@ private fun TextEditorDialogContent(
     val scope = rememberCoroutineScope()
     val appSettings = remember { AppSettings.getInstance(context) }
 
-    var currentFilePath by remember { mutableStateOf(initialFilePath) }
+    // 保存目标必须是 rememberSaveable —— 注释承诺「与未保存标记一起跨重建保留」，
+    // 实际却用了 remember，两者生命周期不一致，状态自相矛盾：
+    //
+    // 旋转后 currentFilePath 回到 initialFilePath（另存为前的原文件），
+    // 而 dirty 仍被 rememberSaveable 保留、随后又被加载流程清零。
+    // 用户在 b.txt 上继续编辑并保存 → 写的是 a.txt → **b.txt 停在旧内容、
+    // a.txt 被覆盖**，两个文件同时受损。
+    //
+    // 路径是 String（标量），Bundle 成本可忽略，与同组的状态一致。
+    var currentFilePath by rememberSaveable { mutableStateOf(initialFilePath) }
     var contentValue by remember { mutableStateOf(TextFieldValue("")) }
 
     // Sora 编辑器（MP-Manager 同款引擎）：文本驻留在 CodeEditor 内部（行索引增量 Content），
@@ -250,7 +259,7 @@ private fun TextEditorDialogContent(
             if (textRevision == 0) { stats = statsEmpty; return@collectLatest }
             // 防抖：连按结束后再取一次文本统计。
             delay(600L)
-            val t = soraEditor.text()
+            val t = runCatching { soraEditor.text() }.getOrNull() ?: return@collectLatest
             if (t.isEmpty()) { stats = statsEmpty; return@collectLatest }
             // 超大文本放弃统计：compute 单遍全字段扫描 + toByteArray，大文本每次输入都跑会拖慢输入。
             if (t.length > LARGE_EDIT_STATS_SKIP_CHARS) return@collectLatest
@@ -288,7 +297,17 @@ private fun TextEditorDialogContent(
                     // 用户毫无察觉，一次无关编辑后保存就把原文件覆盖成残缺内容。
                     // 走既有的 loadError 通道 —— doSave 已按 `loadError != null` 阻止保存。
                     if (!load.isComplete) {
-                        loadError = "读取不完整（${load.loadedBytes}/${load.totalBytes} 字节），已阻止编辑以防保存时损坏原文件"
+                        // 两种成因要给不同的说法：
+                        //  - readFailed：大小探测失败，或目标是 procfs、sysfs、FIFO 等
+                        //    `stat %s` 恒为 0 的非普通文件。它们**有内容**，
+                        //    若当成「空文件」编辑，用户一保存就整文件覆盖 → 数据销毁。
+                        //  - 纯短读：内容残缺。
+                        loadError = if (load.readFailed) {
+                            "无法完整读取（已读 ${load.loadedBytes} 字节，" +
+                                "目标可能不是普通文件，如 /proc、/sys 或管道）。已阻止编辑以防保存时损坏原文件"
+                        } else {
+                            "读取不完整（${load.loadedBytes}/${load.totalBytes} 字节），已阻止编辑以防保存时损坏原文件"
+                        }
                         setEditorContent("", markDirty = false)
                         dirty = false
                         return@withContext
@@ -352,13 +371,20 @@ private fun TextEditorDialogContent(
         if (currentFilePath == null || !dirty) return@LaunchedEffect
         delay(2500L)
         val path = currentFilePath ?: return@LaunchedEffect
+        // 文本必须回主线程取：Sora 的 Content 只有 new Content(seq, threadSafe) 才线程安全，
+        // 而 CodeEditor 用的是单参构造（lock = null、lines 为普通 ArrayList）。
+        // 在 IO 线程 while 主线程正在 insert/delete 时遍历，可读到扩容中的空洞（null → NPE）、
+        // 错位下标（AIOOBE）或半截内容；而本协程没有 try/catch，异常直达崩溃。
+        // 即使不崩，撕裂的内容也会被写进历史，用户日后「恢复」它就换成乱码。
+        val t = runCatching { soraEditor.text() }.getOrNull() ?: return@LaunchedEffect
         withContext(Dispatchers.IO) {
-            val t = soraEditor.text()
-            val latest = EditHistoryManager.getHistory(path).firstOrNull()
-            if (latest == null || latest.content != t) {
-                EditHistoryManager.addHistory(path, t, EditHistoryManager.HistorySource.AUTO)
-                history = EditHistoryManager.getHistory(path)
+            runCatching {
+                val latest = EditHistoryManager.getHistory(path).firstOrNull()
+                if (latest == null || latest.content != t) {
+                    EditHistoryManager.addHistory(path, t, EditHistoryManager.HistorySource.AUTO)
+                }
             }
+            history = EditHistoryManager.getHistory(path)
         }
     }
 
@@ -380,10 +406,12 @@ private fun TextEditorDialogContent(
             val now = System.currentTimeMillis()
             if (now - lastAutoSaveAt >= autoSaveSeconds * 1000L) {
                 lastAutoSaveAt = now
+                // 同上：Content 非线程安全，文本必须在主线程取。
+                val path = currentFilePath ?: continue
+                val t = runCatching { soraEditor.text() }.getOrNull() ?: continue
                 withContext(Dispatchers.IO) {
-                    val t = soraEditor.text()
-                    EditHistoryManager.addHistory(currentFilePath!!, t, EditHistoryManager.HistorySource.DRAFT)
-                    history = EditHistoryManager.getHistory(currentFilePath!!)
+                    runCatching { EditHistoryManager.addHistory(path, t, EditHistoryManager.HistorySource.DRAFT) }
+                    history = EditHistoryManager.getHistory(path)
                 }
             }
         }
@@ -780,7 +808,14 @@ private fun TextEditorDialogContent(
         titleText = "选择对比文件",
         subtitleText = "仅显示与当前文件同后缀的文件（当前文件已隐藏）",
         emptyHint = "该目录下没有相同后缀的文件",
-        fileFilter = currentFilePath?.let { TextCompare.sameExtensionFilter(it) },
+        // 必须 remember：sameExtensionFilter 每次调用都返回**新的 lambda 实例**，
+        // 而 BuiltInFilePicker 把 fileFilter 用作 remember 的 key。
+        // 不固定身份 → 键永不相等 → 缓存每次重组都失效，
+        // 于是文本对比选择器打开时，编辑器每敲一个键都会重跑一次
+        // 「过滤 + 排序 + 每个文件项一次 File.canonicalPath(realpath 系统调用)」。
+        fileFilter = remember(currentFilePath) {
+            currentFilePath?.let { TextCompare.sameExtensionFilter(it) }
+        },
         onDismissRequest = { showDiffPicker = false },
         onFileSelected = { path ->
             showDiffPicker = false
@@ -935,6 +970,13 @@ private fun TextEditorDialogContent(
             // 与 doSave 同一套守卫：加载中 / 读取失败时 contentValue 不是完整原文。
             if (isLoading) { toastMessage = "正在加载，已阻止保存以防损坏原文件"; return@UnsavedChangesDialog }
             if (loadError != null) { toastMessage = "文件读取失败，已阻止保存以防损坏原文件"; return@UnsavedChangesDialog }
+            // 巨型文件只读浏览态：必须与 doSave（:isLargeFile 分支）/ SaveAsDialog 同款守卫。
+            // 此处漏掉时的失效链：只读态下 SoraTextEditor 未进入组合，
+            // syncSnapshot() 因 `!soraEditor.isAttached` 直接返回，
+            // contentValue.text 仍是初始空串（从未 setEditorContent），
+            // 下面的 writeTextFile(saveTarget, "", ...) 以「临时文件 + 原子替换」
+            // 把 32MB+ 的原文件写成 0 字节；该路径不写历史、不弹异常，内容不可恢复。
+            if (isLargeFile) { toastMessage = "文件超过可编辑上限，仅支持只读浏览，无法保存"; return@UnsavedChangesDialog }
             if (isSaving) { toastMessage = "正在保存，请稍候"; return@UnsavedChangesDialog }
             // 落盘前从编辑器取一次全文，否则关闭前最后一段输入会丢。
             syncSnapshot()
@@ -1943,7 +1985,9 @@ private fun EditorSettingsDialog(
                     Triple(name, text.count { it == '\n' } + 1, transform(text))
                 }
                 pendingTransform = result
-                isTransforming = false
+                // 此处不再重复 `isTransforming = false`：同一 try 块正常结束就紧接着执行
+                // finally，异常路径同样执行 finally —— 两个分支效果完全相同，
+                // 写两遍纯属复制粘贴留下的冗余语句。
             } finally {
                 isTransforming = false
             }
@@ -2394,7 +2438,7 @@ private fun HistoryDialog(
                 }
             } else {
                 LazyColumn(modifier = Modifier.height(320.dp)) {
-                    itemsIndexed(history) { index, entry ->
+                itemsIndexed(history, key = { _, entry -> entry.timestamp }) { index, entry ->
                         Column(
                             modifier = Modifier.fillMaxWidth().clickable { onRestore(entry) }.padding(vertical = 8.dp, horizontal = 8.dp)
                         ) {
@@ -2415,7 +2459,11 @@ private fun HistoryDialog(
                                         }
                                     )
                                     Text(
-                                        text = "${entry.content.lineSequence().count()} 行",
+                                        // 行数与预览串都只取决于 entry 自身，用 remember 固定：
+                        // 否则每次重组（滚动、点按、父级任意状态变化）都要对整篇内容
+                        // （EditHistoryManager 上限 20 万字符）重新扫一遍数换行，
+                        // 6 个可见行 ≈ 单次重组 120 万次字符比较。
+                        text = "${remember(entry) { entry.content.lineSequence().count() + 1 }} 行",
                                         style = AuroraTextStyles.footnote2,
                                         color = AuroraTokens.TextSecondary
                                     )
@@ -2426,7 +2474,7 @@ private fun HistoryDialog(
                                 style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary
                             )
                             Text(
-                                text = entry.content.take(80).replace("\n", " "),
+                                text = remember(entry) { entry.content.take(80).replace("\n", " ") },
                                 style = AuroraTextStyles.body2, color = AuroraTokens.Text, maxLines = 2
                             )
                         }

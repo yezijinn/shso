@@ -34,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -433,7 +434,15 @@ fun HomePage(
             } else {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     shsoFiles.forEachIndexed { index, fileItem ->
-                        val isSelected = filePathInput == fileItem.path
+                        // derivedStateOf 把「选中判定」对 filePathInput 的读**推迟到行内部**：
+                        // 直接在父组合域求值会让它在每次重组时都被读一次，于是
+                        // shsoFiles 的**每一行**都被判定为「依赖 filePathInput 发生过变化」，
+                        // 输入框里每敲一个字符 → N 行全部重组（forEachIndexed 是 inline，
+                        // 没有 LazyColumn 的窗口化可依赖）。
+                        // 包进 derivedStateOf 后，只有命中行会因选中态变化而重组。
+                        val isSelected by remember(fileItem.path) {
+                            derivedStateOf { filePathInput == fileItem.path }
+                        }
                         ShsoFileRow(
                             fileItem = fileItem,
                             isSelected = isSelected,

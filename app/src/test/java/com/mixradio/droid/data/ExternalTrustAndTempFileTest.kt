@@ -108,10 +108,25 @@ class ExternalTrustAndTempFileTest {
         base.mkdirs()
         try {
             for (name in listOf("", ".", "..", "./", "/")) {
+                // 归一化后条目名为空：不带 fallbackName 时直接拒绝（返回 null）。
+                // 关键点无论拒绝还是给占位名，都**不得**命中目标目录本身 ——
+                // 那会让随后的 FileOutputStream(target) 抛异常并被兜底成
+                // dest.delete()，把用户预期的目标目录删掉。
                 val dest = ArchiveExtractor.safeDest(target, name)
-                assertNotEquals("条目名 '$name' 不得命中目标目录本身", base.canonicalPath, dest.canonicalPath)
-                assertTrue("条目名 '$name' 必须落在目标目录内：" + dest.path,
-                    dest.canonicalPath.startsWith(base.canonicalPath + java.io.File.separator))
+                assertNotEquals(
+                    "条目名 '$name' 不得命中目标目录本身",
+                    base.canonicalPath,
+                    dest?.canonicalPath ?: ""
+                )
+                // 显式给占位名时必须落在目标目录内。
+                // 占位名必须自身合法（不含分隔符、不为 . / ..）——
+                // 直接把 entryName 当占位名会在 entryName == ".." 时再次落空。
+                val placeholder = "unnamed_" + name.hashCode().toString(16)
+                val withFallback = ArchiveExtractor.safeDest(target, name, fallbackName = placeholder)
+                    ?: throw AssertionError("带合法占位名时不得拒绝：$name")
+                assertNotEquals("条目名 '$name' 不得命中目标目录本身", base.canonicalPath, withFallback.canonicalPath)
+                assertTrue("条目名 '$name' 必须落在目标目录内：" + withFallback.path,
+                    withFallback.canonicalPath.startsWith(base.canonicalPath + java.io.File.separator))
             }
         } finally {
             base.deleteRecursively()
@@ -124,6 +139,7 @@ class ExternalTrustAndTempFileTest {
         base.mkdirs()
         try {
             val d = ArchiveExtractor.safeDest(target, "abc/def.txt")
+                ?: throw AssertionError("正常条目名不得被拒绝")
             assertEquals(
                 "abc/def.txt",
                 d.canonicalPath.removePrefix(base.canonicalPath + java.io.File.separator)

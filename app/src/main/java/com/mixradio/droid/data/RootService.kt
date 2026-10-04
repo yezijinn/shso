@@ -164,9 +164,13 @@ object RootService {
      * 槽位令牌在命令结束的 finally 里归还，startExecution 起新任务时置 0，
      * 因此「新任务已接管」时两者皆不成立。
      */
-    private fun stillOwnsExecution(targetJob: Job?): Boolean =
+    private fun stillOwnsExecution(targetJob: Job?, targetSlot: Long = 0L): Boolean =
         (targetJob != null && executionJob === targetJob) ||
-            (targetJob == null && terminalSlotOwner.get() != 0L)
+            // 终端命令：必须比对**精确令牌**，不能用「非 0 即归属」。
+            // 「非 0」只说明存在某条终端命令，不说明是本次要收尾的那条：
+            // 期间新命令接管槽位后判据仍为真，收尾就会把新命令的状态与发布循环清掉
+            // （进程还在跑、UI 却显示待命中、「结束进程」被禁用 → 用户失去唯一出口）。
+            (targetSlot != 0L && terminalSlotOwner.get() == targetSlot)
 
     private val nextSlotToken = AtomicLong(0)
 
@@ -232,26 +236,41 @@ object RootService {
      *
      * 实现要点：
      * - 读流放在独立线程，避免输出超过管道缓冲时进程阻塞写、主线程阻塞读的死锁；
-     * - 主线程 waitFor(timeoutMs) 做超时控制，超时强制 kill 并返回退出码 -1；
+     * - 主线程 waitFor(timeoutMs) 做超时控制，超时**整组回收**并返回退出码 -1；
      * - stdout/stderr 合并（redirectErrorStream），保证错误信息可见。
+     *
+     * 超时必须回收**进程组**，不能只杀 `su`：
+     * `su -c` 会把命令放进新会话，`su` 只是其直接子进程。`destroyForcibly()` 只对
+     * `su` 的 pid 发信号，被重挂到 init 的 `sh -c …`、`pm`、`cp` 会**继续以 root 运行**，
+     * 在系统里留下无人回收的孤儿（本函数在全项目有 60+ 调用点，含安装、拷贝、
+     * 解压、列目录）。上层拿到 -1 后立即把 `finally` 清理跑起来（如 `installApk`
+     * 删掉临时 APK），而那个 root 进程还在读它 → 半安装且无法归因。
+     *
+     * 输出累积必须线程安全：读线程在 `append`，主线程在超时或结束后 `toString`。
+     * 原实现用非线程安全的 `StringBuilder`，一旦超时路径下读线程尚未退出，
+     * 两者并发即产生撕裂字符串或越界异常，而该异常被外层 `catch (e: Exception)`
+     * 吞掉并替换成 `Pair(-1, e.message)` —— **已收集的输出全部丢失**。
      *
      * @param timeoutMs 超时毫秒（默认 120s）；耗时任务（安装大包等）可自行放宽。
      */
     fun runCommandSync(cmd: String, timeoutMs: Long = 120_000L): Pair<Int, String> {
         return try {
+            // 先记下 su 的 pid：超时时用它反查进程组并整组回收。
             val process = ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
+            val suPid = pidOfProcess(process)
             // 立即关闭子进程 stdin：本函数只读输出、从不喂输入。若不关闭，任何会读 stdin 的命令
             // （cat / read / 等 EOF 的交互式命令）都会一直阻塞到 timeoutMs（默认 120s）才返回。
             runCatching { process.outputStream.close() }
-            val output = StringBuilder()
+            val collector = CommandOutputCollector()
             val readerThread = Thread {
                 try {
                     process.inputStream.use { stream ->
                         InputStreamReader(stream, Charsets.UTF_8).use { reader ->
                             val buffer = CharArray(1024)
-                            var count: Int
-                            while (reader.read(buffer).also { count = it } != -1) {
-                                output.append(buffer, 0, count)
+                            while (true) {
+                                val count = reader.read(buffer)
+                                if (count == -1) break
+                                collector.append(buffer, count)
                             }
                         }
                     }
@@ -263,16 +282,88 @@ object RootService {
 
             val finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
             if (!finished) {
-                process.destroyForcibly()
+                // 先整组回收，再 destroy su 本身：顺序反了的话组组长已消失，
+                // 后续按 pgid 校验会 fail-closed 而漏掉子孙进程。
+                forceKillProcessTree(process, suPid)
                 readerThread.join(3000)
-                return Pair(-1, output.toString() + "\n[shso] 命令执行超时（>${timeoutMs}ms），已强制终止")
+                return Pair(-1, collector.snapshot() + "\n[shso] 命令执行超时（>${timeoutMs}ms），已强制终止")
             }
+            // 正常结束：管道写端全部关闭，读线程很快就会拿到 EOF。
+            // join 必须留足时间，否则尾部输出会随线程一起被丢弃（静默截断）。
             readerThread.join(5000)
-            Pair(process.exitValue(), output.toString())
+            if (readerThread.isAlive) {
+                // join 超时：读线程仍卡在 read()（说明有后代进程还持着管道写端）。
+                // 不再无限等待，但要让调用方知道输出可能不完整。
+                return Pair(process.exitValue(), collector.snapshot() + "\n[shso] 输出读取未完全结束，结果可能不完整")
+            }
+            Pair(process.exitValue(), collector.snapshot())
         } catch (e: Exception) {
             Pair(-1, e.message ?: "执行异常")
         }
     }
+
+    /**
+     * 强制回收一条命令的**全部**进程：先按进程组整组 kill，再杀直接子进程。
+     *
+     * pgid 由 `/proc/<pid>/stat` 的第 5 字段（pgrp）取得，并交给
+     * [buildProcessGroupKillCommand] 做三重校验（组长确认、不误杀本应用所在进程组）。
+     * 校验不通过时只 kill `su` 本身 —— 此时子孙已无法可靠归属，
+     * 宁可不杀也不能误杀无关进程组。
+     */
+    private fun forceKillProcessTree(process: Process, suPid: Int) {
+        if (suPid > 1) {
+            val pgrp = runCatching {
+                val stat = File("/proc/$suPid/stat").readText()
+                // 格式：pid (comm) state ppid pgrp …；comm 可能含空格与右括号，
+                // 故从**最后一个** ')' 之后开始切分。
+                stat.substringAfterLast(')').trim().split(' ').getOrNull(2)?.toIntOrNull()
+            }.getOrNull() ?: 0
+            if (pgrp > 1) {
+                buildProcessGroupKillCommand(9, pgrp, android.os.Process.myPid())?.let {
+                    runCommandSync(it, timeoutMs = 5_000L)
+                }
+            }
+        }
+        runCatching { process.destroyForcibly() }
+        // 再补一次直接子进程：某些 su 实现不新建会话，此时组杀会被自身进程组校验挡下。
+        if (suPid > 1) RootService.runCommandSync("kill -9 $suPid 2>/dev/null", timeoutMs = 5_000L)
+    }
+
+    /**
+     * 命令输出的线程安全累积器，带总量上限。
+     *
+     * 为什么不用 `StringBuilder`：读线程 append 与主线程 `toString` 并发时会撕裂
+     * （`AbstractStringBuilder` 非线程安全），异常还会被外层 catch 吞掉并把
+     * 已收集输出替换成异常消息。
+     *
+     * 上限用于兜住「一条命令吐几百 MB」（`find /`、`logcat -d` 全文）：
+     * 无上限时 StringBuilder 扩容峰值可达 2×，加上 50 万个条目对象直接 OOM。
+     * 超限后停止累积但**继续 drain**，否则写端填满管道会让子进程永久阻塞。
+     */
+    private class CommandOutputCollector(private val limit: Int = MAX_SYNC_OUTPUT_CHARS) {
+        private val buffer = StringBuilder()
+        private var truncated = false
+
+        @Synchronized
+        fun append(chunk: CharArray, count: Int) {
+            if (truncated) return
+            if (buffer.length + count > limit) {
+                buffer.append(chunk, 0, maxOf(0, limit - buffer.length))
+                truncated = true
+                return
+            }
+            buffer.append(chunk, 0, count)
+        }
+
+        @Synchronized
+        fun snapshot(): String {
+            val base = buffer.toString()
+            return if (truncated) "$base\n[shso] 输出超过 $limit 字符上限，已截断" else base
+        }
+    }
+
+    /** 单次同步命令的输出上限（约 4M 字符）。足以覆盖正常用法，又能兜住 OOM。 */
+    private const val MAX_SYNC_OUTPUT_CHARS = 4 * 1024 * 1024
 
     /**
      * 直接子进程 pid。Android 的 `java.lang.Process` 没有 `pid()`，只能反射取；失败退回 0。
@@ -504,6 +595,15 @@ object RootService {
         // 启动新任务即作废「终端一次性命令」的代际：否则那条命令稍后退出时，
         // 会按自己的代际判断把本任务的状态误清成「待命中」。
         terminalCommandGeneration.incrementAndGet()
+        // **必须清空槽位令牌**。上一条注释承诺了这一点，代码却只递增了 generation：
+        // 于是终端命令的槽位令牌一直留在 terminalSlotOwner 里，直到那条命令自己结束。
+        // 期间若 startExecution 因 isTaskRunning 先调 killCurrentProcess，
+        // 它的收尾在两轮 su 往返后才判归属，此时令牌仍非 0 →
+        // stillOwnsExecution 判真 → 把**本任务**的 isTaskRunning/currentTaskName/
+        // currentTaskPath 一并清掉，还 stop 掉本任务的批量发布循环。
+        // 结果：脚本真在跑，UI 显示「待命中」，「结束进程」被禁用，
+        // currentTaskPath 与 pgid 也被清空 → 用户失去唯一的终止出口，进程成 root 孤儿。
+        terminalSlotOwner.set(0L)
         executionJob?.cancel()
 
         // 心跳：脚本长时间无输出时，输出区会整段静止，用户无法区分「正在跑」与「已卡死」。
@@ -527,9 +627,32 @@ object RootService {
             val myJob = coroutineContext[Job]
             var process: Process? = null
             var writer: OutputStreamWriter? = null
+            // 记录执行前的权限，供 finally 还原（.so 直接执行需临时 +x，
+            // 收尾必须还原，否则用户的文件会永久停留在放宽后的权限上）。
+            val execAttrFile: File? = runCatching {
+                File(com.mixradio.droid.ShsoApplication.appContext.filesDir, ".exec_attr_${System.nanoTime()}")
+            }.getOrNull()
+            // .sh 归一化用的 app 私有临时文件（执行后必删）。
+            val normalizedShFile: File? = if (isSh) runCatching {
+                File(com.mixradio.droid.ShsoApplication.appContext.filesDir, ".sh_norm_${System.nanoTime()}")
+            }.getOrNull() else null
+            val escapedParent = escapeShellArg(parentDir)
+            val escapedFile = escapeShellArg(filePath)
+            // 归一化：去 BOM（仅首 3 字节）+ 去全部 CR。临时文件建不出来时退化为直读原文件。
+            val runShCmd: String = normalizedShFile?.let { tmp ->
+                val t = escapeShellArg(tmp.absolutePath)
+                val probe = escapeShellArg(tmp.absolutePath + ".bom")
+                val prepare = "( head -c 3 $escapedFile 2>/dev/null | od -An -tx1 | tr -d ' \n' > $probe 2>/dev/null; " +
+                    "if [ \"\$(cat $probe 2>/dev/null)\" = efbbbf ]; then " +
+                    "tail -c +4 $escapedFile 2>/dev/null | tr -d '\r' > $t 2>/dev/null; " +
+                    "else tr -d '\r' < $escapedFile > $t 2>/dev/null; fi; " +
+                    "rm -f $probe ) ; "
+                // 归一化产出为空但原文件非空 → 读取本身失败，此时必须回落原路径让真实报错浮现，
+                // 不能拿空脚本假装执行成功。原文件本就为空则保留「空脚本 = 空操作」的旧语义。
+                "$prepare" +
+                    "if [ -s $t ] || [ ! -s $escapedFile ]; then sh $t; else sh $escapedFile; fi"
+            } ?: "sh $escapedFile"
             try {
-                val escapedParent = escapeShellArg(parentDir)
-                val escapedFile = escapeShellArg(filePath)
                 // 开跑前清掉上一轮的记录并作废内存值，确保随后读到的 pgid 一定来自本次执行。
                 runCatching { runPgidFile?.delete() }
                 runPgid = 0
@@ -539,13 +662,68 @@ object RootService {
                 val pgidRecorder = if (useRoot) {
                     runPgidFile?.let { "echo " + "\$\$" + " > " + escapeShellArg(it.absolutePath) + "; " } ?: ""
                 } else ""
+                // 权限还原：直接执行 .so 需要 +x，而 chmod 会**永久**改写用户文件的权限
+                // （旧实现 chmod 755 且执行完不还原，等于擅自把 600 放宽成 world-readable）。
+                // 这里先把原权限落到 app 私有目录，执行完再按它还原。
+                val saveAttrCmd = execAttrFile?.let {
+                    "stat -L -c %a $escapedFile > ${escapeShellArg(it.absolutePath)} 2>/dev/null; "
+                } ?: ""
+                val restoreAttrCmd = execAttrFile?.let {
+                    // 只在确实改过 +x 时还原；chmod 失败也不能短路掉执行分支
+                    "( [ -s ${escapeShellArg(it.absolutePath)} ] && chmod \$(cat ${escapeShellArg(it.absolutePath)}) $escapedFile 2>/dev/null ); "
+                } ?: ""
+
                 val execCmd = if (useRoot) {
                     if (isSh) {
-                        // .sh：一律经 sh 运行，不给用户文件加执行位
-                        "${pgidRecorder}export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent && sh $escapedFile"
+                        // .sh：一律经 sh 运行，不给用户文件加执行位。
+                        //
+                        // 执行前归一化 CRLF 与 UTF-8 BOM，两条均为真机实证：
+                        //  1. CRLF 的 shebang 直接执行必失败 —— 内核把 `#!/system/bin/sh\r`
+                        //     当成解释器路径，实测报 `No such file or directory`；
+                        //  2. CRLF 会把变量值尾部带上 \r —— 实测 `export V=abc\r` 之后
+                        //     `${#V}` 为 4（应为 3），后续比较、路径拼接、字符串匹配全错。
+                        // 本应用编辑器**本身就能写出 CRLF**（行尾风格可选）并可勾选写入 BOM，
+                        // 即：能生成自己执行不了的脚本，且全程无任何提示。
+                        //
+                        // 归一化结果写 app 私有临时文件，而**不是管道喂 sh**：
+                        // 实测 `cat x.sh | sh` 会让脚本里的 `read` 吞掉后续脚本文本
+                        // （整个脚本无输出），`sh tmp.sh` 才能正常继承 stdin。
+                        //
+                        // BOM 判定用 od 比对首 3 字节，而非 `sed 1s|^\xEF\xBB\xBF||`：
+                        // Android 自带 toybox sed **不支持 \xNN 转义**，实测原样输出不生效。
+                        //
+                        // 原文件保持不动：执行一次就把用户磁盘上的脚本改掉不可接受。
+                        "${pgidRecorder}export TERM=xterm-256color && export LANG=en_US.UTF-8 && " +
+                            "cd $escapedParent && $runShCmd"
                     } else {
-                        // .so：直接执行需要 +x，755 即可（不再 777）
-                        "${pgidRecorder}export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent && chmod 755 $escapedFile && ( $escapedFile || sh $escapedFile )"
+                        // .so / ELF：直接执行需要 +x。
+                        //
+                        // 两处必须改：
+                        // 1) `chmod 755` 把用户文件从 600/640 改成 world-readable+executable
+                        //    且**执行完不还原**。改为先记录原权限、只补 owner 执行位，收尾还原。
+                        // 2) `( $f || sh $f )` 的 `||` 语义错误：ELF 正常返回非 0 退出码时
+                        //    会**回落执行 `sh <二进制>`**，把 ELF 字节当 shell 脚本喂进终端，
+                        //    产出满屏 U+FFFD 与控制字符，真实退出码也被 sh 的失败码覆盖。
+                        //    改为如实保留退出码，仅在 126/127（无法执行）时给出提示。
+                        // 权限还原必须排在**执行之后**：放在执行前是 600→600 的空操作，
+                        // 而真正把文件放宽的是紧随其后的 `chmod a+x`，之后若无还原，
+                        // 文件就永久停在 711。
+                        //
+                        // 放在 shell 内还原（而不是只靠 Kotlin 的 finally）才能覆盖
+                        // 「进程被强杀/OOM/用户划掉」这类 finally 根本不执行的路径：
+                        // 实测 finally 未参与时，600 的 .so 执行后停在 711。
+                        //
+                        // saveAttrCmd 则必须排在 chmod 之前 —— 它才是「记录原权限」的那一步。
+                        // 此前只拼了 restoreAttrCmd（还原），从未执行保存：属性文件恒为空，
+                        // finally 读到的 mode 为 null，**还原被静默跳过**，
+                        // 用户的 .so 就永久停留在 a+x 放宽后的权限上（实测 600 → 711 不再回退）。
+                        "$pgidRecorder" + saveAttrCmd +
+                            "export TERM=xterm-256color && export LANG=en_US.UTF-8 && " +
+                            "cd $escapedParent && chmod a+x $escapedFile && $escapedFile; C=\$?; " +
+                            restoreAttrCmd +
+                            "if [ \$C -eq 126 ] || [ \$C -eq 127 ]; then " +
+                            "echo \"[shso] \u65e0\u6cd5\u76f4\u63a5\u6267\u884c\uff08\u975e\u53ef\u6267\u884c ELF\uff09\"; fi; " +
+                            "exit \$C"
                     }
                 } else {
                     // 非 Root：普通 sh 执行（无 su 包装），改不动系统分区
@@ -658,6 +836,26 @@ object RootService {
                     try {
                         process?.destroy()
                     } catch (_: Exception) {}
+                    // 还原 .so 执行前的权限并清理临时记录文件。
+                    // 必须放在 NonCancellable 块内：协程被取消时 finally 仍会执行，
+                    // 若权限未还原，用户的 .so 会永久停留在被放宽后的权限上。
+                    if (execAttrFile != null) {
+                        if (isSo) {
+                            val mode = runCatching { execAttrFile.readText()?.trim() }.getOrNull()
+                            runCatching {
+                                if (!mode.isNullOrEmpty()) {
+                                    RootService.runCommandSync(
+                                        "chmod $mode ${escapeShellArg(filePath)}",
+                                        timeoutMs = 10_000L
+                                    )
+                                }
+                            }
+                        }
+                        runCatching { execAttrFile.delete() }
+                    }
+                    // 归一化脚本临时文件同样必须清理，否则每次执行 .sh 都在 filesDir 留一份。
+                    runCatching { normalizedShFile?.delete() }
+                    runCatching { normalizedShFile?.let { File(it.absolutePath + ".bom").delete() } }
                     HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
                     if (isCurrentJob) {
                         isTaskRunning = false
@@ -798,7 +996,7 @@ object RootService {
                 forceCloseProcess(targetProcess)
                 // 当前仍由本 kill 接管时才撤销全局句柄；
                 // 若期间新任务已启动，句柄属于新任务，由新任务线条负责。
-                if (stillOwnsExecution(targetJob)) {
+                if (stillOwnsExecution(targetJob, targetSlot)) {
                     activeProcess = null
                     processWriter = null
                 }
@@ -812,7 +1010,7 @@ object RootService {
                 withContext(Dispatchers.Main) {
                     // 同上：不能用裸 executionJob === targetJob，终端命令路径下它恒真，
                     // 于是「结束 A 失败」的提示会写进期间新启动的 B 的日志。
-                    if (stillOwnsExecution(targetJob)) {
+                    if (stillOwnsExecution(targetJob, targetSlot)) {
                         if (appSettings?.showShsoBanner != false) {
                             appendOutputDirect("\n[shso] 结束进程失败: ${e.message}\n")
                         }
@@ -831,7 +1029,7 @@ object RootService {
                     // 启动终端命令 B → A 的 kill 收尾落到这里：会把 **B** 的状态清掉、
                     // 停掉 B 的发布循环，`isTaskRunning=false` 让顶栏显示「待命中」、
                     // 「中断/结束进程」被禁用 —— B 还在跑，但用户失去了唯一的出口。
-                    if (stillOwnsExecution(targetJob)) {
+                    if (stillOwnsExecution(targetJob, targetSlot)) {
                         // 停发布循环并等积压刷完，再写「已结束」文案，保证日志顺序
                         HyperCore.stopBatchFlushLoop(targetFlushLoop)
                         HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
@@ -892,6 +1090,8 @@ object RootService {
         val targetWriter = processWriter
         val targetPid = processPid
         val targetPgid = runPgid
+        // 与 killCurrentProcess 同理：捕获**本次**的槽位令牌用于归属判定。
+        val targetSlot = terminalSlotOwner.get()
         scope.launch(Dispatchers.IO) {
             try {
                 if (isTaskRunning) {
@@ -900,8 +1100,15 @@ object RootService {
                     }
                     // ProcessBuilder 起的子进程没有 TTY，经 stdin 写入 ETX(0x03) 只是普通字符，
                     // 不会触发 SIGINT；真正能中断的是下方的 `kill`，故此处只写换行、不写 ETX。
-                    targetWriter?.write("\n")
-                    targetWriter?.flush()
+                    //
+                    // 必须与 sendInput 共用同一把锁：两者都写 targetWriter，
+                    // 而 OutputStreamWriter 内部的 StreamEncoder 非线程安全
+                    // （byteBuffer/charBuffer 与 leftover 状态），并发写互相覆盖残留字节，
+                    // 表现为写入脚本的 stdin 内容乱码/丢字符。
+                    synchronized(interactiveWriteLock) {
+                        targetWriter?.write("\n")
+                        targetWriter?.flush()
+                    }
 
                     // 对进程组发 SIGINT：只杀直接子进程会留下 `sh -c …` 与脚本进程继续运行。
                     if (targetPgid > 1) {
@@ -922,7 +1129,7 @@ object RootService {
                         // t+3s 时 isTaskRunning 为 true（B 在跑）且 null === null 成立 →
                         // 把「进程未响应 SIGINT」写进 **B 的日志**，用户会据此去点
                         // 「结束进程」，把 B 杀掉。这正是 stillOwnsExecution 要消除的归属漏洞。
-                        if (isTaskRunning && stillOwnsExecution(targetJob)) {
+                        if (isTaskRunning && stillOwnsExecution(targetJob, targetSlot)) {
                             appendOutputDirect("\n[shso] 进程未响应 SIGINT，可点击「结束进程」强制终止\n")
                         }
                     }
@@ -936,11 +1143,14 @@ object RootService {
     }
 
     fun restartTerminal() {
-        // 同步捕获旧任务实体：重启只作用于旧实体，新任务启动后由新线条负责
+        // 同步捕获当前任务实体，只作用于这些旧实体，绝不误杀新任务。
         val targetJob = executionJob
         val targetPid = processPid
         val targetPgid = runPgid
         val targetProcess = activeProcess
+        // 与 killCurrentProcess 同理：必须捕获**本次**的槽位令牌。
+        // 否则收尾判据退化为「存在任意终端命令」，会误清新命令的状态与发布循环。
+        val targetSlot = terminalSlotOwner.get()
 
         // 无任何活动实体时**只复位横幅，不发信号**。
         // `runPgid` 在任务收尾时被刻意保留（供「中断后子孙进程仍在」的场景回收），
@@ -979,7 +1189,7 @@ object RootService {
                 forceCloseProcess(targetProcess)
                 // 旧任务 finally 已通过代际判断清理状态；若期间新任务启动，
                 // 不能再动全局句柄（属于新任务）
-                if (stillOwnsExecution(targetJob)) {
+                if (stillOwnsExecution(targetJob, targetSlot)) {
                     activeProcess = null
                     processWriter = null
                 }
@@ -993,7 +1203,7 @@ object RootService {
                     // 仅当本次仍是当前执行协程时才清理状态并恢复横幅。
                     // 走 stillOwnsExecution 而非 `executionJob === targetJob`：后者对终端命令恒真，
                     // 会在「重启一条命令」时把期间新启动的命令状态误清成「待命中」并覆盖其横幅。
-                    if (stillOwnsExecution(targetJob)) {
+                    if (stillOwnsExecution(targetJob, targetSlot)) {
                         isTaskRunning = false
                         currentTaskName = null
                         currentTaskPath = null

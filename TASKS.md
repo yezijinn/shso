@@ -12,32 +12,873 @@
 
 ---
 
-## 当前状态速览（2026-10-03）
+## 当前状态速览（2026-10-04）
 
 | 项 | 值 |
 |---|---|
 | 分支 | `main`，与 `origin/main` 同步 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 348 tests / 0 failures / 1 skipped |
-| lint | 0 errors / 31 warnings |
-| release 体积 | 2.08 MB，`verifyReleasePayload` 红线通过 |
+| 单元测试 | 449 tests / 0 failures / 1 skipped |
+| lint | 0 errors |
+| release 体积 | 2.03 MB（移除未使用的 commons-compress ZIP keep，省 48 KiB），`verifyReleasePayload` 红线通过 |
+| 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
+| 文件名通道 | `find -print0`（NUL 分隔），元数据走不含文件名的 `%A\|%s\|%Y` → 文件名含换行/空格不再产出幻影条目 |
+| 列表一致性 | `listIsStale` + `loadingGenRef` 双护栏：陈旧列表不可操作，重算不越代落盘 |
+| 移动/复制 | 冲突探测单次化；覆盖目录先改名让位、失败回滚；拷贝只清 setuid/setgid 与 g/o 写位，保留执行位 |
+| root 探测时序 | `isRootGranted == null`（未探测）先等待探测落定，上限 3s，超时按已知状态处理 |
+| 执行归属 | `stillOwnsExecution` 比对精确槽位令牌；`startExecution` 清槽位兑现契约 → 新脚本不会被旧收尾误清 |
+| 文本读取 | `probeReadableBytes`（`dd \| wc -c`）区分「真空文件」与「procfs 有内容」；`readFailed` 阻止编辑保存 |
 | 条目预算 | 中央目录**零分配结构遍历**取精确条目数（不信自报字段、不按体积折算） |
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
-| 编辑器内核 | Sora Editor 0.23.6（打开即可编辑；语法由外置语法包提供） |
+| 编辑器内核 | Sora Editor 0.23.6（打开即可编辑；语法由外置语法包提供）；检索 API 全部经 `queryActive` 守卫 |
+| 保存守卫 | 三条保存入口（doSave / 另存为 / 未保存弹窗）均拦「加载中 / 读取失败 / 只读大文件」，后者曾漏检致 0 字节覆盖 |
+| 终端渲染 | 解析代次计数器为**文件级**（跨 Activity 有效）；自动滚动 key 含末行长度并钉到底 |
+| 解析规模 | `completed` 行数硬上限 4000（超限从头部一次性丢弃，`droppedLines` 如实计数）→ snapshot 分配恒定有界 |
+| 编辑器状态 | 保存目标 `currentFilePath` 用 `rememberSaveable`（与 dirty/编码/行尾同组）；编辑器内容一律主线程读取 |
+| 安装安全 | 分包套件**整套**暂存校验（兄弟分片不再走原始路径）；任一分片暂存失败即中止 |
+| 目录列举 | 单次 su 完成存在性+名称+元数据；存在性由**退出码**承担（3/4/0），不再依赖输出是否为空；两通道用 NUL + 固定标记分隔 |
+| 文件页布局 | 双列常驻（`Row` + 1dp 分隔），窄列自动切紧凑行、隐藏权限串与内联按钮 |
+| 全局底栏 | `顶部 / 底部 / 新建 / 同步 / 刷新` 置于 DockBar 上方；作用对象为聚焦列，`同步` 把聚焦列目录赋给另一列 |
+| 逐列状态 | 左右列各自持有目录、列表、过滤、多选、刷新代次（`FilePaneState`）；目录失效回退与静默空列表自愈均按列独立触发 |
+| 列表刷新 | **不再清空列表**（消除刷新期空白）；保留期间由 `enabled = !listIsStale` 真正禁用交互并降透明度；同目录刷新 120ms 节流 |
+| 列表性能 | `FileItem` 类型判定构造期一次算好（不再每帧重算正则）；选中判定走 HashSet；搜索 250ms 防抖；主页行用 derivedStateOf 隔离 |
+| 代码结构 | 无重复分支/无用中间层：`preferRoot` 已扁平、`pathExistsQuiet`/`uniqueFile`/`isExtractable` 已删 |
+| 脚本执行 | `.sh` 执行前归一化 CRLF 与 BOM（写临时文件，不改原文件）；`.so` 权限先记录后还原，还原排在执行之后 |
 | 语法包 | 62 语言 / 187 扩展名，`syntax-packs.zip`(37KB)，永固直链 tag `syntaxpacks-v2` |
-| 执行模型 | 命令与脚本直通执行，无策略判定、无执行记录（守卫/档位/审计已移除） |
-| OBB 事务锁 | 单文件 `set -C`(O_EXCL) 原子 CAS；真机 8 进程并发恰好 1 成功；**建目录早于取锁** |
-| 真机 | `$DEVICE`（OnePlus PACM00 / Android 10 / 1080×2280 / Magisk root） |
+| 执行方式 | 命令与脚本直通执行，无策略判定、无执行记录（守卫/档位/审计已移除） |
+| OBB 事务锁 | 单文件 `set -C`(O_EXCL) 原子 CAS；真机 8 进程并发恰好 1 成功；**建目录早于取锁**；幂等条目不进回滚表 |
+| 真机 | `$DEVICE`（Android 10 / 1080×2280 / Magisk root） |
 | 已知环境坑 | `adb shell su -c "a; b"` 的 `;` 会让后半段以 shell 用户执行 → 必须 `su -c 'sh script.sh'` |
 | 已知环境坑 | Android 的 mksh **不支持**算术展开里的位运算符（`$(( 0600 & 022 ))` 真机实测返回非 0）。判权限位只能用 `find -perm /022` 或 `stat -c %A` 逐位取，别写位与 |
+| 已知环境坑 | 本机 toybox `find -print0` 可用，但 **`find -printf` 不可用**（`bad arg '-printf'`）；`stat -L -c %s` 正常 |
+| 已知环境坑 | `test -f /proc/cpuinfo` 返回**真**（procfs 项类型就是普通文件）→ 判断「真空 vs 有内容」不能用文件类型，只能实读（`dd \| wc -c`） |
+| 已知环境坑 | `stat -L -c %s` 对 `/proc/*`、`/sys/*`、FIFO **恒为 0** 但内容非空（三者与真空文件的 `stat %s` 完全相同） |
+| 已知环境坑 | 内联 SQL 经 mksh 传参会被引号规则拆坏；`stat -c "%A\|%s"` 必须用脚本文件（`su -c 'sh x.sh'`）下发，直接在 `adb shell` 里会被 PowerShell 抢先解析 |
 | 已知环境坑 | 设备的 `shared_prefs` 读不到（SELinux 拦 su 直读），且 pager 把四个 Tab 装在同一个 Activity 里 → **无法从设备侧观测外部唤起被接受还是被拒**。这类判定只能靠 JVM 单测覆盖谓词本身；设备侧只能验证「不崩、前台稳定」 |
+| 已知环境坑 | Debug APK 与 Release 签名不同，装 Debug 需先 `pm uninstall`；`adb install` 在本机报 `Failure [-99]`，改用 `adb push` 到 `/data/local/tmp` 后 `su -c 'pm install -r -t'` 可成功 |
+| 已知环境坑 | Magisk 授权策略可用 `magisk --sqlite <文件>` 批量写入（`policies` 表 `policy=2` 为允许），避免弹窗阻塞自动化；直接内联 SQL 会被 mksh 的引号规则拆坏，必须落文件 |
+| 已知环境坑 | Compose 页面在本机 `uiautomator dump` 里 `content-desc` 与 `text` 常为空或为**上一个页面**的缓存，坐标易失效 → 复杂交互改用截图确认，或在 shell 层复刻判定链验证 |
+| 已知环境坑 | 屏幕会自行熄灭导致截图全黑；长时间真机操作前先 `svc power stayon true` + `input keyevent KEYCODE_WAKEUP` |
 | `/data/adb/shso` 是 0777 但 **SELinux 拦住第三方**（目录标签 `adb_data_file`）。实测：`shell` 域与 app 域（`run-as` → `u:r:runas_app`，派生自 `untrusted_app`）对该目录的 list / unlink / symlink / write **全部 Permission denied**，dmesg 有对应 `avc: denied { getattr }`；只有 `su`(magisk 域) 能写 |
-| 备份 | 守卫相关全部内容备份在 `C:\AI_WORKSPACE\PROJECTS\com.mixradio.droid\守卫模块备份`（基线 `d6c3b0f`） |
-| 发版 | tag `20261002`（纯数字，与 `versionCode` 对齐）；双端同名 Release 覆盖旧 APK |
+| `/data/local/tmp` 子目录默认 `root:root 755`，adb（shell 身份）**无法写入** → 需 `su -c 'chmod 777'` 后再 push |
+| 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
+| 发版 | tag `20261004`（纯数字，与 `versionCode` 对齐）；双端同名 Release，资产 `app-release.apk`；Gitee `20261002` 旧资产需网页端删除 |
 
 ---
 
 ## 待办
+
+### A80. 冷启动双列一列不加载（2026-10-04）
+
+需求：冷启动时双列不应出现某一列不刷新、看不到文件。
+
+#### 已修为防守护（A79 同一处定位）
+
+- [x] **代次守卫误写为 `activePane.*` → 左列永远卡在骨架屏**
+  - [x] 两列共用同一份代次：左列 gen=1，右列紧接着 gen=2 自增同一计数器
+    → 左列结果被全部丢弃，永远停在骨架屏。已改为全部 `pane.*`。
+
+#### 新增修复
+
+- [x] **P0 · 目录失效回退只触发聚焦列 → 右列卡在无效目录里拿不到回退**
+  - [x] `LaunchedEffect(directoryLoadFailed)` 走委托，只能看见聚焦列的标记。
+  - [x] 非聚焦列的目录失效时回退永远不触发。
+  - [x] 已改为每列各挂 `LaunchedEffect(pane.directoryLoadFailed)`；回退目标只取内部存储，
+    已在回退目录上时再降一级到根，避免两列被逐一进入无效目录。
+
+- [x] **P1 · 冷启动「静默空列表」自愈守护**
+  - [x] 冷启动时两列的 `listDirectory` 可能因 ROOT 授权尚未落定、`su` 首次启动开销较慢
+    而返回零条目。那时两列都显示「当前目录为空」，而目录里实际有文件
+    ——用户看到的是一个**谓言**，且无任何提示可操作。
+  - [x] 在每列列举收尾后做一次自愈检查：**无内容且也无错误原因**时延迟 400ms 重试一次。
+  - [x] 三条守卡：有错误原因不重试（已有可读文案，重试反而遮蔽真故障）；
+    真空目录不重试（下次仍返零条目）；每列只重试一次（`retriedForEmptyOnce`），避免无限循环。
+
+#### 验证与未复现项
+
+- [x] 449 tests / 0 failures / 1 skipped；lint 0 errors；Debug APK 已装真机
+- [x] **冷启动压测 8 轮全部通过**：每轮截图 464~465KB，与「双列均正常」的基线一致（骨架屏时为 337KB）。
+- [ ] **未能复现该现象**。以上压测未出现任一列为空。
+  推测所见属于另一条路径（如特定目录、或从内部 Intent 进入时 `pendingExternalDirectory` 的分支）。
+  已把「静默空列表」变为自动恢复，且补上了非聚焦列的失效回退，
+  两条路径都已覆盖。
+
+### A79. 文件页全局底栏（2026-10-04）
+
+把到顶部 / 到底部 / 刷新从「列内」提到**全局底栏**，并新增「新建」「同步」。
+
+#### 参考实现
+
+- MPManager `activity_main.xml:116-179` 的 `bottomBar`：`layout_alignParentBottom=true`，
+  5 个按钮均为 `layout_weight=1` 等分占满宽度，每个带 `selectableItemBackground`。
+- MPManager `MainActivity.java:1643` 的 `syncPaneButton`：取聚焦列路径写入另一列并加载；
+  `:2213` 在非文件视图时 `setEnabled(false)` 置灰。
+
+#### 实施
+
+- [x] **新增 `PaneBottomBar`**：顶部 / 底部 / 新建 / 同步 / 刷新，五个按钮等分，
+      位于页面底部、全局 DockBar（56dp）之上。面板区取消了原来的 `padding(bottom=56.dp)`，
+      该让位改由底栏外层 Box 承担。
+- [x] **为何收全局而非各列一份**：两列各只分到一半宽，容不下五个按钮；
+      五个操作本身就是「当前列」的操作，各列一套会让用户误以为影响「所有列」；
+      底栏只有一份才能命中。
+- [x] **新建**：抽出 `openNewFileDialog()`，预填时间戳 + `txt`；
+      “文件列表设置弹窗」的旧入口与底栏共用此函数，避免两条路径各自演化后漂移。
+- [x] **同步**：取聚焦列当前目录赋给另一列。不显式调 `refreshPane` ——
+      目标列目录变化会由每列各自的 `LaunchedEffect` 触发，显式调会与令牌并发、多起一次列举。
+- [x] **禁用态**：两列同目录时「同步」降透明度（参考 `setEnabled(false)`）；
+      列表为空时「顶部/底部」降透明度。
+- [x] **右列默认落点改为 `/storage/emulated/0/Android`**：两列都停在同目录时「同步」一打开就是禁用态，
+      用户会以为功能坏了。参考 MPManager 两列各自记忆 home1 / home2。
+
+#### 修复的两个真实缺陷
+
+- [x] **P0 · 变更目录只传闻聚焦列 → 另一列永远不加载**
+  - [x] `LaunchedEffect(currentDirectory)` 走委托只监听聚焦列；“同步」把左列路径赋给右列后，
+        右列目录变了而没任何触发 —— 路径栏变了而列表仍是旧目录内容。
+  - [x] 改为 `panes.forEach { pane -> LaunchedEffect(pane.currentDirectory) { ... } }`，每列各自触发。
+- [x] **P0 · 代次守卫误写为 `activePane.*` → 左列永远卡在骨架屏**
+  - [x] 批量替换时把 `refreshPane` 内的代次守卫与节流窗口一并写成了 `activePane.*`（聚焦列），
+    而状态读写是 `pane.*`。
+  - [x] 后果：两列共用同一份代次。左列启动 gen=1，右列紧接着启动 gen=2 并自增同一计数器
+    → 左列 `gen != refreshGenRef[0]` 恒成立 → **左列结果被全部丢弃，永远停在骨架屏**。
+  - [x] 真机截图发现（左列怎样卡住、右列正常），定位后全部改回 `pane.*`。
+  - [x] 同期发现 4 条测试守护揫反并变绿 —— 它们早以来被我的错误实现带偏了。
+    已一并回正为正确写法（页面级重算协程读 `activePane` 仍是正确的，不应改）。
+
+#### 验证
+
+- [x] lint 0 errors
+- [x] 真机实测：双列均正常渲染（左列 158 项、右列 Android 目录）；
+      底栏五按钮正常可点；**「同步」实测生效** —— 右列从 `.../Android` 跳到 `/storage/emulated/0`，
+      随后「同步」自动置灰（同目录无需同步）。logcat 无 FATAL。
+
+### A78. 文件页双列布局（2026-10-04）
+
+按需求把「文件」页改为**左右平分双列**，交互语义对齐参考项目 MPManager 的 dual pane。
+
+#### 实施
+
+- [x] **状态一分为二**：新增 `ui/pages/FilePaneState.kt`，把原先页面级的 15 个状态
+      （目录 / 列表 / 加载态 / 作废标记 / 过滤 / 多选 / 滚动位置 / 5 个代次守卫）
+      收进一个 `@Stable` 类，左右两列各持一份。
+- [x] **读写委托 `PaneProp`**：页面里上百处 `currentDirectory` / `nameQuery` / `isLoading`
+      的读写**语义与重构前逐字一致**，diff 里能清楚看出真正的逻辑改动。
+- [x] **双列渲染**：`Row { PaneColumn(左,1f) │ 1dp │ PaneColumn(右,1f) }`，
+      每列 = 细条（焦点 + 短路径 + 计数/加载）+ 骨架/空态/列表 + 该列的悬浮导航。
+- [x] **聚焦路由**：点列内条目即聚焦该列；细条可点以切换聚焦。
+      顶栏快捷键 / 返回上级 / 长按菜单 / 批量操作 / 跳转路径一律作用于聚焦列
+      —— 与 MPManager 的 `lastPaneSelected` 一致。
+- [x] **逐列独立刷新**：`refreshPane(paneIndex)`，代次守卫与节流窗口都落在各自 pane 上；
+      右列的刷新不会被左列的代次挡下。
+- [x] **紧凑行**（窄列 < 220dp）：行内边距 16→6dp、去掉权限串、去掉内联「执行 / 预览」按钮
+      （长按菜单里都仍可触达，非功能丢失）。竖屏 360dp 平分后每列 180dp。
+
+#### 过程中的一次事故（已修正）
+
+第 2 步实施中我执行了 `git checkout -- FilePage.kt` 想回到干净基准重做，
+**连带回退掉了此前 A76 / A77 已验证并测试通过的修复**（三态空态文案、刷新不清空列表、
+交互门禁、落盘标记、节流、防抖）。已按备份逐项核对恢复 ——
+被回退的 10 项测试守护重新变绿即是证据。对承载多次改动的大文件不用 `git checkout --` 回退：它会一并回退既有成果。
+
+#### 验证
+
+- [x] lint 0 errors；Debug APK 已装真机，Activity 正常 Resumed、logcat 无 FATAL
+- [ ] **未完成**：双列布局的真机视觉确认。该设备 UI 自动化一贯失效
+      （`input tap` 点 DockBar「文件」未触发换页），未能截图取证。
+      需手动打开文件页确认左右两列渲染与紧凑行效果。
+
+### A77. 第二十四轮：性能（反应慢）与无用嵌套清理（2026-10-04）：性能（反应慢）与无用嵌套清理（2026-10-04）
+
+前一次修的是「刷新清空列表」。横向排查同类问题：**不报错、不崩，只让用户觉得卡**，
+以及**该扁平化却层层包裹**的代码。修复 11 处，测试 432 → **449**。
+
+#### 反应慢
+
+- [x] **P0 · `FileItem` 全部类型判定是 `get()` 计算属性，每行每帧重算**
+  - [x] `extension / realExtension / realArchiveName / isInstallable / isViewableImage /
+        isEditableText / isArchive / formattedSize` 全无 backing field，
+        每次访问都重新 `Regex(...)` 构造 + 多次 `lowercase` + `String.format`。
+  - [x] 而文件列表的行内容对同一项**连续求值三轮**（图标文案 / 字号 / 颜色各判一次类型），
+        单个可见行每次重组约 7 次 `realExtension` → 7 次正则构造 + 14 个临时字符串。
+  - [x] 20 个可见行 ≈ 单次重组 150+ 次正则构造；仅「选中态变化」这种轻量重组即触发。
+  - [x] 该文件 149–150 行的注释本就自认「每项每帧都会读取本属性」，
+        但当时只修了 `formattedDate`（复用预编译 formatter），其余全部漏掉。
+  - [x] 修复：全部改为**构造期求值的 `val`**（只依赖构造入参，语义等价）；
+        正则提到顶层 `NUMERIC_SUFFIX` 只编译一次。
+        保留 `formattedDate` 的 `get()` —— 它已复用 `FILE_DATE_FORMATTER`，无收益且改动无益。
+
+- [x] **P0 · `fileFilter` 每次重组都是新 lambda → 缓存每帧失效**
+  - [x] `TextEditorDialog` 里 `fileFilter = currentFilePath?.let { TextCompare.sameExtensionFilter(it) }`
+        **每次调用返回一个新 lambda 实例**，而 `BuiltInFilePicker` 把它用作 `remember` 的 key。
+  - [x] 键永不相等 → 缓存每次重组都失效 → 文本对比选择器打开时，
+        **编辑器每敲一个键**都重跑「过滤 + 排序 + 每个文件项一次 `File.canonicalPath`
+        （realpath 系统调用）」。
+  - [x] 修复：`remember(currentFilePath)` 固定 lambda 身份。
+
+- [x] **P1 · 主页行在父组合域读 `filePathInput` → 每击键全表重组**
+  - [x] `shsoFiles.forEachIndexed` 是 inline 函数（无 LazyColumn 窗口化），
+        行内 `val isSelected = filePathInput == fileItem.path` 在**父组合域**求值，
+        于是输入框每敲一个字符 → **N 行全部重组**（每行还带一次 `String.format`）。
+  - [x] 该处注释声称「独立成 Composable 以提升跳过性」，但这个收益拿不到。
+  - [x] 修复：`derivedStateOf` 把判定推迟到行内部，只有命中行因选中态变化而重组。
+
+- [x] **P1 · 选中集合线性扫描 + 全选判定白算**
+  - [x] `selectedPaths` 是 `SnapshotStateList`，`contains`/`containsAll` 为线性扫描；
+        全选判定每次重组还要额外分配 2 个 N 长度列表。
+  - [x] `allFilesSelected` 写在 `if (showFileSettingsDialog)` **之外**，
+        而唯一消费者就是这个弹窗 —— 弹窗关着时纯属白算。
+  - [x] 修复：`selectedPathSet = remember(selectedPaths) { toHashSet() }`；
+        `allFilePaths` 用 `mapNotNull` 一趟完成（替代 `filter{}.map{}` 两趟）；
+        全选判定移进弹窗分支内。
+
+- [x] **P1 · 搜索缺防抖**
+  - [x] `nameQuery` 每敲一个字符重启重算协程，而 `LaunchedEffect` 只能取消**协程**，
+        已排进 `Dispatchers.Default` 队列的计算不会中断 ——
+        1 秒内敲 10 个字符 = 10 次全量「过滤 + 2 次分组 + N 次 lowercase + 排序」并发跑完再依次丢弃。
+  - [x] 修复：`delay(250ms)` 放在**协程内部、计算之前**。
+        只在「本次确由搜索词变化触发」时延迟（与上次重算的搜索词比较），
+        排序方式 / 隐藏文件开关是离散选择，仍即时生效。
+  - [x] 踩过的坑：另起一个 `LaunchedEffect(nameQuery)` 去 delay 是**并行**的，拦不住原协程。
+
+- [x] **P2 · 历史面板每行在组合期全文扫描**
+  - [x] `entry.content` 上限 20 万字符，每行 `lineSequence().count()` 数换行，
+        6 个可见行 ≈ 单次重组 120 万次字符比较，且每次重组重跑。
+  - [x] 修复：`remember(entry)` 固定行数与预览串；补稳定 key `key = { _, e -> e.timestamp }`。
+
+- [x] **P2 · 前缀常量每次调用重复归一化**
+  - [x] `isExternalPathAllowed` 每次至少跑 6 次 `normalizeForContainment`，
+        而两组前缀都是模块级常量、归一化是纯词法函数无副作用；
+        `resolveToRealPath` 一次唤起最多调它 4 次 → 单次唤起 24 次重复 split/join。
+  - [x] 修复：按列表相等性缓存归一化结果。
+
+#### 无用嵌套
+
+- [x] **`preferRoot()` 两条分支返回逐字相同的表达式**（纯装饰）
+- [x] **`rootFailed` 死变量**：从未被置 true，恒为 false。
+      注：语义本身**正确**（能走到该行说明 su 从未被调用；su 失败已在 `code == -1` 处
+      以 `rootUnavailable = true` 兜底），属死代码而非缺陷 —— 已删除。
+- [x] **`pathExistsQuiet` 无用中间层**：函数体就是 `File(path).exists()`，
+      与调用处左操作数逐字相同。`||` 只在左为 true 时省下右，
+      而左为 false（正是需继续探测下一个名字时）必然**再做一次完整 stat** → 同名副本 N 个 = 2N 次系统调用。
+- [x] **`isExtractable` 与 `isKnownArchive` 函数体逐字相同**，且注释停留在
+      「rar 暂不支持解压」的旧状态（rar 已移除）→ 合并为一个。
+- [x] **`uniqueFile` 无生产调用点且 `while (true)` 无上界**
+      （兄弟函数 `reserveUniqueFile` 有 1000 次上限）→ 连同其测试一并删除。
+- [x] **`runTextTransform` 里必被覆盖的死写**：try 体内的 `isTransforming = false`
+      必被紧随的 `finally` 覆盖（正常与异常两条路径效果完全相同）。
+
+#### 验证
+
+- [x] 新增 `PerfAndNestingRegressionTest` 17 项，覆盖上述全部判断
+- [x] 真机（PACM00 / Android 10 / Magisk）安装 Debug APK 并启动：
+      Activity 已 Resumed、进程存活、logcat 无 FATAL、无 ANR；
+      列表通道实测 `/storage/emulated/0` 154 项、`Android` 7 项、`/data/adb/shso` 5 项
+- [x] lint 0 errors；release 2.033 MB
+
+### A76. 第二十三轮：文件列表「空白刷新 / 误报空目录」根治（2026-10-04）：文件列表「空白刷新 / 误报空目录」根治（2026-10-04）
+
+需求指出三个症状：**目录经常显示「当前目录为空」**、**加载慢**、**刷新期长时间看不见文件**。
+三者同源，根因在 `refresh()` 与 `listDirectory()`。修复 5 条，测试 424 → **432**。
+
+- [x] **P0 · 每次刷新都清空列表 → 必然经过一段空白窗口（症状的直接成因）**
+  - [x] `refresh()` 开头无条件 `fileList = emptyList()` + `displayFileList = emptyList()`，
+        于是**每一次**刷新（切目录、删除后、返回上级、手动刷新）都会进入列表为空的时段。
+  - [x] 该时段内 UI 命中 `isLoading && displayFileList.isEmpty()` 走骨架屏；
+        但**加载完成的瞬间必然先经过一次空态分支**，而空态的兜底文案正是
+        「当前目录为空」—— 这就是「目录为空」的误报来源：不是数据为空，
+        而是**数据还没回来**。
+  - [x] 用户观感即「刷新后长时间看不见文件」+「偶发当前目录为空」。
+  - [x] 修复：**不再清空列表**。旧列表保留可见，空白窗口消失。
+
+- [x] **P0 · 保留列表后必须禁用交互，否则引入误删（数据一致性）**
+  - [x] 原本「清空列表」同时承担了两个职责：避免空白窗口 + 阻止用户操作上一目录的文件。
+        只去掉前者的做法会让后者失守：路径栏显示 B、列表是 A，
+        用户长按删除作用的是 **A 里的文件**，无回收站、不可撤销。
+  - [x] 查证 `listIsStale` **此前只在 693 行被读取**，从未真正禁用过点击——
+        也就是说旧实现里「不可操作」这件事其实**只由清空列表在兜**，
+        状态位本身是空的。这需补齐的缺口。
+  - [x] 修复：列表项 `combinedClickable(enabled = !listIsStale)` 真正禁用点击与长按；
+        同时降透明度（0.45）表达「这批数据已过期」，避免用户点了没反应。
+  - [x] `listIsStale = displayFileList.isNotEmpty()`：首屏无历史列表时不置位，
+        否则首屏列表将恒不可点。
+
+- [x] **P0 · 三次串行 `su` → 合并为单次，且消除 TOCTOU 窗口**
+  - [x] 旧实现是 `test -d` → `find -print0` → `find -exec stat` 三次独立 su，
+        每次各自 fork su、各自解析命令（`runStatMeta` 还有第四次重试）。
+  - [x] 真机实测：单轮 su 往返约 21ms，三步合计 138ms（800 项）；
+        合并后 93ms（50 项）、87ms（300 项）。慢设备 / 冷启动 / Magisk 首次授权时更甚。
+  - [x] 更本质的问题是**三次之间存在 TOCTOU 窗口**：`test -d` 通过后目录可能被删除，
+        此时 find 零输出而退出码非 -1，旧逻辑据此判 Success(emptyList())
+        → 把「目录刚被删掉」报成「当前目录为空」。**这正是该误报的成因**。
+  - [x] 修复：单次 su，退出码承载存在性语义
+        （`3` = cd 失败 / `4` = 不是目录 / `0` = 成功），语义不再依赖输出是否为空。
+  - [x] 真机实测：不存在目录返回 **exit 3**，不再落到空目录。
+
+- [x] **P1 · 两个通道由两次 find 按输出顺序配对 → 改用固定标记分隔**
+  - [x] 两次 find 之间目录若发生变化，条目会**整体错位**（拿到别人的大小与时间），
+        断链符号链接等 stat 失败场景更会直接少一截。
+  - [x] 修复：同一条命令内用固定标记 `META_SEP` 分隔，标记两侧由 `printf` 各补一个 NUL。
+        名称通道整体以 NUL 结尾（NUL 不可能出现在文件名里），
+        于是 `split('\0')` 后边界绝对清晰。
+  - [x] 真机实测：含换行的 `./x\ny`、含竖线的 `./p|q` 均完整解析；
+        标记出现恰好 1 次；空目录输出为 `@META@`（零条目）→ 正确判为真空目录。
+
+- [x] **P1 · 同目录连续刷新无节流**
+  - [x] 删除 / 重命名 / 移动等操作常在**同一回调里连着调多次 `refresh()`**，
+        每次都走完整列举（fork su）。密集触发时列表反复 loading。
+  - [x] 修复：同目录且刚成功加载过则合并（窗口 120ms）；
+        **跨目录切换、切回上级、手动点刷新一律不受节流影响**（`showToast` 绕开）。
+
+#### 附带修复
+
+- [x] `Missing` 分支补 `directoryLoadError`：
+      原先只置 `directoryLoadFailed` 而错误文案为 null，空态会落到
+      「当前目录为空」——把「读不到」断言成「没有文件」。
+- [x] 删除已无调用者的 `parseStatOutput`（旧单通道解析函数，37 行死代码）。
+
+#### 验证
+
+- [x] 真机（PACM00 / Android 10 / Magisk）端到端实测：
+      目录标记识别正确（3 个目录）、空目录零条目、
+      **不存在目录 exit 3（不再误报空目录）**、单次 su 87~93ms
+- [x] 新增 `FileListingRefreshRegressionTest` 8 项：
+      刷新不清空列表、保留列表必须禁用交互、作废标记仅在有旧列表时置位、
+      骨架屏优先于空态、空目录文案只在无搜索词且无错误时出现、
+      Missing 必须给出原因、同目录刷新必须节流、单次 su 与通道分隔
+- [x] 更新 `DirectoryListingTest` 断言以匹配新结构（语义目标不变，取证方式改变）
+- [x] lint 0 errors；release 2.033 MB
+
+### A75. 第二十二轮：安全与资源类残留清理（2026-10-04）：安全与资源类残留清理（2026-10-04）
+
+前四轮按「层」推进（文件 / 执行解压 / 编辑器终端 / 累积高危），
+本次专挑**安全**与**资源泄漏**两类残留。修复 5 条，测试 411 → **424**。
+
+- [x] **P0 · 分包套件只暂存了被点中的那个 → 兄弟分片可被换包顶替（root 静默装入任意代码）**
+  - [x] 根因：`installApk` 里 `stagedPaths = set.orderedWrites.map { if (it == sourcePath) apkPath else it }`
+        —— 被点中的走已校验的 app 私有暂存副本，**其余分片仍按原始路径取**。
+  - [x] 而分片才是真正的代码载体（base 只含清单与入口）。
+        确认弹窗停留期间（阅读提示、切应用），共享存储上的兄弟分片可被替换：
+        下载器续传重写、另一应用写 `/sdcard`（该分区任何应用可写）、
+        或用户自己用本应用的编辑器覆盖该文件。
+  - [x] 后果：用户看到的那个 SHA-256 完全正确，实际被 `pm install` 装入的却是替换后的字节
+        → 任意代码以 root 静默装入（install-commit 阶段无系统确认），且**无从察觉**。
+  - [x] 代码注释此前把「确认后未被替换」当成已有保证，是**承诺与实现不符**。
+  - [x] 修复：整套分片逐个 `stageApkForInstall`；任一暂存失败即中止安装
+        （宁可不装，也不能装可能被替换的字节）；安装结束清理本次暂存副本。
+  - [x] 分片数上限 `MAX_SPLITS` 有界（64），暂存代价可接受。
+
+- [x] **P1 · `.so` 权限还原排在执行之前 → 空操作，文件永久停在 711**
+  - [x] `execCmd` 拼成 `pgidRecorder + restoreAttrCmd + "…chmod a+x …" + exec`，
+        还原在 `chmod a+x` **之前**执行：此时文件还是 600，`chmod 600` 是 600→600 的空操作；
+        真正放宽权限的 `chmod a+x` 在其后，之后再无还原。
+  - [x] 更糟的是 `saveAttrCmd`（记录原权限那一步）**从未被拼进命令**，
+        属性文件恒为空，Kotlin `finally` 读到的 `mode` 为 null，**兜底还原也被静默跳过**。
+  - [x] 双重失守下，用户 600 的 .so 执行一次就永久停在 711（world-readable + 可执行）。
+  - [x] 修复：`saveAttrCmd` 前置于 `chmod a+x`，`restoreAttrCmd` 后置到执行之后、`exit $C` 之前。
+  - [x] 放在 shell 内还原而非只靠 `finally`，才能覆盖「进程被强杀 / OOM / 用户划掉」
+        这类 `finally` 根本不执行的路径。
+
+- [x] **P1 · CRLF / BOM 脚本无法执行 → 应用能产出自己执行不了的脚本**
+  - [x] 三条真机实证：
+        1. CRLF 的 shebang 直接执行必失败 —— 内核把 `#!/system/bin/sh\r` 当解释器路径，
+           实测 `No such file or directory`；
+        2. CRLF 污染变量值 —— 实测 `export V=abc\r` 后 `${#V}` 为 **4**（应为 3），
+           后续比较、路径拼接、字符串匹配全错；
+        3. 应用编辑器**本身就能写出 CRLF**（行尾风格可选）并可勾选写入 BOM。
+  - [x] 修复：执行前归一化（去首 3 字节 BOM + 去全部 CR）到 app 私有临时文件，原文件不动。
+  - [x] 两个实现细节均由真机试错确定，不是猜的：
+        - **不能管道喂 sh**：`cat x.sh | sh` 会让脚本里的 `read` 吞掉后续脚本文本
+          （实测整个脚本无输出），必须 `sh 临时文件` 才能继承 stdin；
+        - **不能用 `sed '1s|^\xEF\xBB\xBF||'`**：Android 自带 toybox sed 不支持 `\xNN`
+          （实测原样输出、不生效），改用 `od -An -tx1` 比对首 3 字节。
+  - [x] 归一化产出为空但源文件非空 → 回落原路径让真实报错浮现，
+        不能拿空脚本假装执行成功（否则空脚本从「空操作」变成 `exit=127`）。
+
+- [x] **P2 · `SparseLineIndex.load` 的读取循环无取消检查**
+  - [x] 行滑出可视窗口时协程已取消，但 IO 调度器的取消是**协作式**的：
+        不会中断阻塞中的 `getChunk`，循环会一路读到凑够换行数或 EOF。
+  - [x] 快速拖动滑块时几十个已取消的 load 同时跑满 IO，各自持有最多 4MB 的
+        `ByteArrayOutputStream` → GC 抖动、正常行排队，极端情况 OOM。
+  - [x] 与上一轮 `ArchiveExtractor.copyStream` 属同一类遗漏（补一处漏一处，故本次全量排查）。
+
+- [x] **P2 · 历史损坏后每次快照都再写一份完整原文 → prefs 无界膨胀**
+  - [x] 备份键带时间戳（`$key.corrupt.<millis>`），而主键仍是那份损坏数据
+        → 此后每次停顿快照（2.5s 后）/ 草稿快照再失败一次就**再写一份完整原文**
+        （单键上限 100 万字符，最坏约 3MB）。
+  - [x] 20 次即约 60MB 灌进 `shso_editor.xml`，且永不清理；
+        每次启动都要全量解析该 XML，越大越慢、越慢越易失败 —— 正反馈。
+  - [x] 修复：备份键固定为 `$key.corrupt`，只在不存在时写，并同时清掉主键。
+
+#### 验证
+
+- [x] 真机（PACM00 / Android 10 / Magisk）逐条实测，见上文各条「真机实证」
+- [x] `.so` 权限回退实测：`600 → 执行 → 600`、`640 → 执行 → 640`，退出码保持
+- [x] 归一化实测 6 项：CRLF 变量污染 `len=3`（旧行为 4）、BOM+CRLF 正常、
+      `read` 继承 stdin 正常、退出码透传 42、空脚本 0、原脚本字节未被改写
+- [x] 真机装 Debug APK 后确认 `filesDir` 无 `.sh_norm` / `.exec_attr` 残留（仅 12K）
+- [x] 新增 `SecondRoundSecurityAndResourceTest` 13 项（分片整套暂存、暂存清理、
+      取消检查位置、损坏键固定、CRLF/BOM 归一化、不得管道喂 sh、
+      权限还原时序、不得回退守卫）
+- [x] lint 0 errors；release 2.033 MB
+
+### A74. 第二十一轮：累积高危项清理（2026-10-04）：累积高危项清理（2026-10-04）
+
+前四轮（A71~A73）分块覆盖了文件管理、执行解压、文本编辑、终端渲染。
+本次不再开新战场，专门清理**前几轮已定位但未修**的高危项。
+修复 4 条，测试 401 → **411**（新增 10 项，含一组真实压测）。
+
+- [x] **P0 · 另存为后旋转屏幕 → 保存回原文件并覆盖它（两个文件同时受损）**
+  - [x] 根因是**状态生命周期不一致**：`dirty` / `currentCharset` / `currentLineEnding` /
+        `hasBom` 用 `rememberSaveable`，而 `currentFilePath`（保存目标）用 `remember`。
+  - [x] 触发：打开 a.txt → 另存为 b.txt（`currentFilePath` 改为 b.txt）→ 在 b.txt 上继续编辑
+        → 旋转 → 再编辑并保存。重建后 `currentFilePath` 回到 `initialFilePath`（a.txt），
+        写的是 a.txt → **b.txt 停在旧内容、a.txt 被覆盖**。
+  - [x] 该文件原有注释本就写着「编码 / 换行 / BOM 与**文件路径**、未保存标记一起用
+        rememberSaveable」—— 实现与承诺不符，属注释已描述意图但代码没跟上。
+  - [x] 修复：`currentFilePath` 改为 `rememberSaveable`（String 标量，Bundle 成本可忽略）。
+
+- [x] **P0 · 后台线程读 Sora `Content` 与主线程编辑竞争 → 闪退或写入损坏的历史**
+  - [x] 两处历史快照（停顿快照 `LaunchedEffect(textRevision, …)` 与
+        草稿快照循环）在 `withContext(Dispatchers.IO)` 内调用 `soraEditor.text()`。
+  - [x] Sora 的 `Content` 只有 `new Content(seq, threadSafe)` 才线程安全，
+        而 `CodeEditor` 用的是**单参构造**（`lock = null`、`lines` 为普通 `ArrayList`）。
+        IO 线程遍历 `lines` 的同时主线程 `insert`/`delete` 正在 `ArrayList.add/removeRange`，
+        可读到**扩容中的空洞（null → NPE）**、错位下标（AIOOBE）或半截内容；
+        所在协程无 try/catch，`LaunchedEffect` scope 无 `CoroutineExceptionHandler`
+        → 异常直达 `Thread.uncaughtExceptionHandler` → 闪退。
+  - [x] 即便不崩，撕裂的内容会被写进 `EditHistoryManager`，成为**内容损坏的历史**，
+        用户日后「恢复」它就把编辑器换成乱码。
+  - [x] 修复：三处 `soraEditor.text()` 全部移回主线程读取（`runCatching` 收口），
+        IO 块内只做纯文件操作（`EditHistoryManager` 读写）。
+
+- [x] **P1 · 解析器 `completed` 无界 → 滑窗满后每次 flush 全量重解析，分配 80MB/s**
+  - [x] `HyperCore` 的滑窗只约束**字符数**（`MAX_LOG_LENGTH = 250_000`），
+        裁剪点按 `\n` 对齐 —— 对「全空行」输出等价于「一个字符 = 一行」，
+        于是 250k 字符的窗口就是 **250k 行**。
+  - [x] 每行还要新建 `AnnotatedString` + 空 `ArrayList` + `RangeList`
+        （`buildCurrentLine`，约 4 对象/行）；且滑窗裁掉头部后
+        `TerminalPage` 的增量判据 `log.startsWith(prev)` **必然不成立**，
+        于是每次 flush 都回落 `reset()` + `feed(整段)` 全量重解析 ——
+        单次 10~25MB、每秒 4 次，新旧两份快照叠加峰值 40~50MB。
+  - [x] 后果：终端持续掉帧、GC 频繁 Major，极端情况 `OutOfMemoryError`；
+        且用户不在终端页时（pager 保留全部 4 页）解析协程仍在全额付费。
+  - [x] 修复：`IncrementalAnsiParser` 增加 `MAX_COMPLETED_LINES = 4000` 硬上限，
+        超限时用 `subList(0, excess).clear()` **一次性**从头部丢弃
+        （逐个 `removeAt(0)` 是 O(n) 搬移，每行触发会退化成 O(n²)），
+        并累计 `droppedLines` 供 UI 如实告知「已省略 N 行」。
+  - [x] 这样 `snapshot()` 的规模恒定有界，全量重解析的每帧分配从 10~25MB 降到常数级。
+  - [x] 尚未处理（记录待办）：裁剪后仍走全量分支。根治需给解析器加
+        「静默快进」模式（只推进 SGR/光标状态、不构造行对象），
+        改动面较大，本次只做上界止损。
+
+- [x] **P1 · 上述解析开销在用户不在终端页时仍然全额发生**
+  - [x] `MainActivity` 用 `beyondViewportPageCount = 3` 保留全部 4 页，
+        与 `TerminalPage` 注释里「离屏即销毁本页」的**设计前提不一致** ——
+        那套「离屏即销毁、重进重建状态」的论证在当前工程并不成立。
+  - [x] 本次未改（属架构取舍：常驻省重建开销 vs 持续付解析成本），
+        已连同上一条记入待办，待有实测数据再定。
+
+#### 验证
+
+- [x] 新增 `AnsiParserStressTest`：10 万行输入后行数被上界约束（≤5000）、
+      省略计数正确、`reset()` 归零 —— **不依赖 UI 的真实压测**
+- [x] 新增 `EditorStateAcrossRebuildTest`：保存目标必须 `rememberSaveable`；
+      静态扫描确认**没有任何 IO 块内直接读编辑器内容**的调用点
+- [x] 新增 `AnsiParserLineCapTest`：行数上限存在、一次性移除、计数归零、上界取值合理
+- [x] lint 0 errors；release 2.033 MB
+
+### A73. 第二十轮全面 BUG 深挖：文本编辑层 + 终端渲染层（2026-10-04）
+
+前三轮覆盖文件管理层（A71）与执行解压层（A72）。本次转向**从未审过的两大块**：
+文本编辑层（`TextEditorDialog` 2500+ 行是全项目最大文件、`SoraTextEditor`、
+`TextCompare`、`SparseLineIndex`、`EditHistoryManager`）与终端渲染层
+（`TerminalPage`、`AnsiParser`、`HyperCore`、`SyntaxPackStore`、`ExternalOpen`）。
+报出 33 条候选，核实后**修复 5 条**（含 1 条必崩、1 条不可逆数据破坏）。
+测试 392 → **401**，全部通过。
+
+#### 不可逆数据破坏
+
+- [x] **P0 · 只读大文件被「保存并关闭」写成 0 字节，且无历史可恢复**
+  - [x] 完整失效链（逐环核实）：
+        打开 > 32MB（`MAX_LOAD_BYTES`）文件 → 稀疏行索引**只读浏览态**（`isLargeFile = true`）
+        → 设置里改「换行」或「写入 BOM」，二者都无条件 `dirty = true`，顶栏出现「● 未保存」
+        → 点「✕ 关闭」→「未保存的更改」→「保存并关闭」
+        → `UnsavedChangesDialog.onSave` 只判 `isLoading` / `loadError` / `isSaving`，**漏掉 `isLargeFile`**
+        → 只读态下 `SoraTextEditor` 未进入组合，`syncSnapshot()` 因 `!isAttached` 直接返回，
+        `contentValue.text` 仍是初始空串（该分支从不调 `setEditorContent`）
+        → `writeTextFile(path, "", …)` 以「临时文件 + 原子替换」把 32MB+ 原文件**写成 0 字节**，
+        界面弹「已保存」。
+  - [x] 该路径**不写 `addHistory`**，草稿快照循环也因 `isLargeFile` 跳过
+        → 历史里没有任何可恢复版本，文件内容彻底消失。
+  - [x] `doSave` 与 `SaveAsDialog` **都有**该守卫（`isLargeFile` 分支），
+        唯独未保存弹窗漏了 —— 三处各自抄一遍守卫的结构性缺陷。
+  - [x] 修复：补齐 `isLargeFile` 守卫，并给出可读原因。
+        （另有一版把三条入口收敛为单一 `saveBlockedReason()` 的改法，
+        但实测编辑过程中改动过大、需回退重做；已改为最小补丁 + 护栏测试锁定三处覆盖。）
+
+#### 必崩
+
+- [x] **P0 · 关闭查找弹窗后用同一检索词点「查找下一个」→ `IllegalStateException` 闪退**
+  - [x] Sora 的 `EditorSearcher` 把「有无检索词」记在 `currentPattern`，
+        而 `gotoNext()` / `matchedPositionCount()` / `replaceCurrentMatch()`
+        的**第一条指令就是 `checkState()`**，`currentPattern == null` 时无条件抛。
+  - [x] 触发：查找 → 输入 `abc` → 查找下一个 → 「✕ 关闭」（`stopSearch()` 清 Sora 侧）
+        → 再打开、输入**相同**的 `abc` → UI 侧判定 `findText == findQuery`「无需重新检索」
+        → 直接 `gotoNextMatch()` → 抛异常。该调用在 `Modifier.clickable` 回调里，
+        **无 try/catch** → 直接闪退。
+  - [x] 成因：控制器侧检索状态与 UI 侧 `findQuery` 是**两份独立状态**，
+        `stopSearch()` 只清了其中一份。
+  - [x] 修复：`SoraEditorController` 增加 `queryActive` 记录有效性，
+        `search()` 置真、`stopSearch()` 清零；`gotoNextMatch` / `replaceAll` /
+        `replaceCurrentMatch` / `searcherMatchCount` 一律先判有效性，
+        并额外用 `runCatching` 兜底（防库行为变化）。`searcherMatchCount` 无检索时返回 0 而非抛。
+
+- [x] **P1 · 「替换/全部替换」进行中关闭查找弹窗 → `searcherMatchCount()` 抛异常闪退**
+  - [x] 与上条同源：`awaitSearchDone` 的轮询与替换流程都把它当取值 API 使用，
+        且调用点在协程里（异常直达崩溃）。已由同一处收口一并修复。
+
+#### 状态机失效
+
+- [x] **P1 · 解析代次守卫跨 Activity 重建完全失效 → 旋转屏幕出现重复行**
+  - [x] `parseGenRef` 是 `remember`：旋转后新旧 Activity 各持一份**全新数组**，
+        `myGen` 都等于 1，`parseGenRef[0] == myGen` 两侧同时成立 → 守卫等于不存在。
+  - [x] 旧 Activity 那个 in-flight 解析块（纯 CPU、无挂起点，取消打不断）
+        会与新 Activity 的首个 collect 串行进入 `synchronized(ansiParser)`，
+        各自持有自己捕获的 `prev`，后进入者按旧 prev 把同一段再喂一次
+        → 终端出现最多一批（≤ 一个 flush 间隔）的重复行。
+  - [x] 修复：代次计数器提到**文件级** `TerminalParseGeneration`（与进程级解析器缓存同生命周期）。
+        前置自增的约束保留（后置自增会使守卫恒假、输出区永远空白），并加护栏锁定。
+
+#### 功能逻辑
+
+- [x] **P1 · 输出不含换行时自动滚动停在行首，新输出永不可见**
+  - [x] `LaunchedEffect(parsedOutput.lines.size, isImeVisible)` 只以**行数**为 key。
+        命令输出不含换行时（`cat` 单行大 JSON、`curl` 长响应、二进制 `cat`）
+        行数恒定 → effect 根本不重跑 → 视口停在原处，
+        新增内容全落在软换行折叠线以下。观感是「命令跑着跑着终端不刷新了」，且无任何提示。
+  - [x] 即便重跑也不够：`scrollToItem` 只把该 item 的**顶端**对齐视口顶端，
+        对超过视口高度的行（软换行后多个视觉行），尾部永远在屏外。
+  - [x] 修复：key 加入**末行长度**，滚动后再 `scrollToItem(last, Int.MAX_VALUE / 2)` 钉到底。
+        原注释「key 用行数而非字符串长度，避免每次 flush 都取消并重启协程」
+        只对多行输出成立，对单行持续输出恰好是缺陷来源，已一并更正。
+
+#### 真机验证（Debug APK + root）
+
+- [x] 终端链路正常：`重启终端` 正确输出反馈并自动滚到底
+- [x] `FATAL` / `ANR` / `Exception` 全程 0
+
+#### 本次观察到的工具限制
+
+- [x] `adb shell input text` 对含空格/长串的命令在本机**常静默失败**
+      （输入框被清空但命令未执行、输出区空白）→ 终端命令类验证不能用它作为唯一手段，
+      需改用「按钮触发型」操作（如重启终端）或脚本下发
+
+### A72. 第十九轮全面 BUG 深挖：执行解压层（2026-10-04）
+
+A71 修完文件管理层后，本次转向**执行与解压链路**
+（`RootService.runCommandSync` / `ArchiveExtractor` / `ApkInstaller`）。
+核实后**修复 6 条**，其中 **1 条是本次新发现的真实 Zip Slip**（由新加的护栏当场抓到）。
+测试 385 → **392**，全部通过；lint 0 errors；release 2.033 MB。
+
+#### 资源回收：超时留下 root 孤儿（本次最高危）
+
+- [x] **P0 · `runCommandSync` 超时只杀 `su`，子孙进程继续以 root 运行**
+  - [x] 真机实测（PACM00 / Android 10）：
+        `su -c 'sleep 300 & echo $!'` → `CHILD=5361 SHELLPID=5360`；
+        `ps -o pid,pgid,args` 显示 `5361 5360 sleep 300`，即 **su 的子 shell 自任组长**
+        （pgid == pid），`sleep` 继承该组。`destroyForcibly()` 只对 `su` 的 pid 发信号，
+        被重挂到 init 的 `sh -c …` / `pm` / `cp` **继续以 root 运行**。
+  - [x] 放大路径：本函数在全项目有 60+ 调用点（安装、拷贝、解压、列目录、权限）。
+        上层拿到 -1 后立刻跑 `finally` 清理 —— `installApk` 会删掉临时 APK，
+        而那个 root 进程还在读它 → 后续偶发 `INSTALL_FAILED_*` 或半安装态，
+        用户完全无法归因（界面只显示「命令执行超时」）。
+  - [x] 修复：新增 `forceKillProcessTree` —— 先从 `/proc/<suPid>/stat` 取 pgrp，
+        复用既有的 `buildProcessGroupKillCommand`（三重校验：pgid > 1、
+        确认是组长、不是本应用所在进程组）整组 SIGKILL，再 `destroyForcibly` + 补杀 su。
+  - [x] `comm` 可能含空格与右括号，故从**最后一个** `')'` 之后切分 `/proc/pid/stat`。
+  - [x] 真机验证按 pgid 整组回收有效：`before=1` → `after=0`。
+
+- [x] **P1 · 输出累积用非线程安全 `StringBuilder`，异常被吞后输出全丢**
+  - [x] 读线程 `append` 与主线程 `toString` 并发：超时路径下读线程尚未退出，
+        `AbstractStringBuilder` 撕裂或越界；该异常被外层 `catch (e: Exception)`
+        吞掉并替换为 `Pair(-1, e.message)` —— **已收集的输出全部丢失**。
+  - [x] 改为 `CommandOutputCollector`（`@Synchronized` 的 append 与 snapshot）。
+  - [x] 顺带加**输出上限** `MAX_SYNC_OUTPUT_CHARS = 4M`：无上限时一条 `find /`
+        或 `logcat -d` 就能让 StringBuilder 扩容峰值达 2× 加上条目对象直接 OOM。
+        超限后**继续 drain**（否则写端填满管道会让子进程永久阻塞）并如实标注「已截断」。
+  - [x] `join(5000)` 超时后不再静默返回，如实标注「结果可能不完整」——
+        该情形说明有后代进程仍持着管道写端，尾部输出会丢。
+
+- [x] **P1 · 安装超时时删掉了仍在被读取的 APK**
+  - [x] `installApk` 的 `finally` 无条件 `rm -f` 临时 APK。
+        `runCommandSync` 超时只代表「没等到」，**不保证子进程已死**。
+  - [x] 修复：`-1` 时保留临时文件，并在失败文案里如实告知路径，由用户稍后自行清理。
+
+#### 解压安全
+
+- [x] **P0 · 归档名为 `..` 的条目解析到文件系统根（新发现，本次护栏当场抓到）**
+  - [x] 归一化里 `n.replace(Regex("(^|/)\.\.(/|$)"), "/")` 把 `..` 替成 `/`，
+        而紧随其后的 `trim()` **不去斜杠** —— `..` 变成 `/`，既不满足 `isEmpty`
+        也不等于 `.` / `..`，**绕过空名分支**，直接 `File(target, "/")`。
+        `File` 见到以 `/` 开头的子路径会当作**绝对路径**，条目被写到文件系统根。
+  - [x] 危害：归档里名为 `..` 的条目即可在 `/` 下创建文件；名称可控时覆盖根目录同名文件。
+  - [x] 修复：归一化后统一 `trim('/')` 再判空。
+  - [x] 该缺陷是本次**先加护栏、护栏立即失败**才发现的 —— 说明 A71 修 `safeDest`
+        时只改了返回类型，没重新推演归一化链上的每一环。
+
+- [x] **P1 · 越界条目被静默改名落盘，而非拒绝**
+  - [x] 旧实现在越界时把条目改名写到 target 根（`../evil.sh` → `./evil.sh`）。
+        除了「磁盘结构与归档声明不一致」，更实际的后果是：恶意归档里
+        `../../x.apk` 与 `sub/x.apk` 映射到同一 canonicalPath →
+        触发 `writtenPaths` 重复判定 → **整次解压失败并删掉全部已解压内容**。
+        也就是说静默改写避免不了失败，只是把失败点挪到更晚、更难归因的位置。
+  - [x] 修复：`safeDest` 越界返回 `null`，调用方明确报「归档包含越界路径」。
+        与既有的「重复条目」处理一致：立刻失败、明确报错、清理已解压内容。
+  - [x] 同步加固：`fallbackName` 必须**自身合法**（不含分隔符、不为 `.`/`..`），
+        否则「合法条目走占位名」这条路在 `entryName == ".."` 时会再次落空。
+        新增 `placeholderNameFor` 生成安全占位名。
+
+- [x] **P1 · 解压取消完全无效，清理分支是死代码**
+  - [x] `extract` 整体在 `withContext(Dispatchers.IO)` 里，而 IO 调度器的取消是
+        **协作式**的：不会中断阻塞中的 `input.read()`，块体一路跑到自然结束，
+        `withContext` 只在块体返回时才抛 `CancellationException` ——
+        而三处 `catch (e: CancellationException)` 的清理分支写在块体**内部**，永远看不到它。
+  - [x] 后果：`targetFile?.delete()` / `finalTarget.deleteRecursively()` 永不执行；
+        用户取消后磁盘 IO 继续写满整个 ExtractionBudget（最大 1GB）；
+        同时 `isExtracting` 已复位，用户可再次发起解压 → **两个解压并发写同一父目录**。
+  - [x] 修复：`copyStream` 每个 64KB 块边界、7z 每个条目边界调 `ensureActive()`。
+        为此把 `extractZip` / `extractTar` / `extract7z` / `extractSingle` 改为 `suspend`。
+
+#### 直接执行路径：权限被永久放宽、退出码被吞
+
+- [x] **P1 · 执行 `.so` 永久把用户文件从 600 放宽成 world-readable+可执行**
+  - [x] 旧实现 `chmod 755 $file && ( $file || sh $file )`，且**执行完不还原**。
+        用户放在 `/data/adb/shso` 的私有文件被应用单方面改成 755，
+        同设备其他 root 环境（Recovery、其他工具链）随之可读。
+  - [x] 修复：执行前 `stat -L -c %a` 把原权限记到 app 私有目录，
+        只补 `chmod a+x`（不再整体改 755），收尾在 `NonCancellable` 块内
+        按原权限 `chmod` 还原并删除记录文件。
+        放在 NonCancellable 内是必须的：协程被取消时 `finally` 仍执行，
+        否则权限永远还原不了。
+
+- [x] **P1 · `( $f || sh $f )` 把 ELF 字节当 shell 脚本喂进终端，退出码被覆盖**
+  - [x] `||` 语义是「前一条失败才执行后一条」。ELF **正常返回非 0 退出码**时，
+        会回落执行 `sh <二进制>` → `InputStreamReader(UTF_8)` 产出大量 U+FFFD
+        与控制字符灌进 AnsiParser，用户看到满屏乱码，
+        而真实退出码被 `sh` 的失败码（127）覆盖 —— 排障时被彻底误导。
+  - [x] 修复：如实保留退出码 `exit $C`，仅在 126/127（无法执行 / 格式不对）时
+        补一句明确提示，不再用 `sh` 兜底二进制。
+
+#### 真机验证（Debug APK + root）
+
+- [x] 权限还原链路：`600 → 711（执行中）→ 600（还原后）`
+- [x] 退出码保留：脚本 `exit 42` 经执行路径后仍为 `42`，未被 `sh` 兜底覆盖
+- [x] 按 pgid 整组回收：`before=1 → after=0`
+- [x] 文件页 150 项正常列出（新 NUL 双通道）
+- [x] `runCommandSync` 改动后 lint 0 errors / release 2.033 MB
+
+#### 本次新增设备事实
+
+- [x] `su -c` 的子 shell **自任进程组组长**（pgid == pid），子孙继承该组
+      → 超时回收必须按 pgid 整组杀，只杀 `su` 会留下 root 孤儿
+
+### A71. 第十八轮全面 BUG 深挖（2026-10-04）
+
+前一轮（A70）修完「当前目录为空」，本次用 **Debug APK + root 真机** 做全项目深挖：
+并行审查文件管理层（`RootFileManager` / `FileItem` / `ZipEntryCountProbe` / `ChunkedFileReader`）
+与执行解压层（`RootService` / `ArchiveExtractor` / `ApkInstaller` / `ApkExtractor` /
+`HyperCore` / `ExecutionForegroundService`），报出 30 条候选。
+
+**其中 10 条经代码核对确认成立并已修复**，其中 2 条是 A70 修复引入的**反向回归**
+（真机复现后立即修正），4 条属不可撤销的数据破坏，2 条属安全，2 条属状态机失效。
+测试 367 → **385**（新增 18 项护栏），全部通过。
+
+#### A70 修复引入的反向回归（本次最先发现并修正）
+
+- [x] **P0 · 合法空目录被误判为「读取失败：无权限读取该目录」，重试永远失败**
+  - [x] A70 用 `rootProducedOutput`（find 是否有输出）区分「空」与「不存在」，
+        但这两者 find 输出**同为空白、退出码同为非 -1**，判据本身不成立。
+  - [x] 真机复现：`/data/adb/shso/emptydir`（空目录，应用侧被 SELinux 拦）
+        在文件页显示「读取失败」；`runCommandSync` 实测 root 侧 `find` 退出码 0、零输出。
+  - [x] 改为先用 `test -d && echo <标记>` 取**存在性证据**，与「里面有什么」分开提问：
+        ROOT 确认可进入 + 零条目 = 权威的「真空」；ROOT 确认不是目录 = `Missing`。
+  - [x] `Missing`/`Failed` 的最终区分下沉到新的 `listDirectoryLocal`
+        （只取决于本地读不到时的存在性复核，与 ROOT 无关）。
+
+- [x] **P0 · 有 ROOT 时 `DirectoryListing.Missing` 永远不可达，回退逻辑全面失效**
+  - [x] 分支顺序错误：本地 `listFiles()` 返回 null 被 `rootAttempted` 抢在前面
+        判成 `Failed`，永远走不到 `Missing`。
+  - [x] 后果：`FilePage` 的「目录失效回退内部存储」与 `BuiltInFilePicker` 的
+        回退重列在**有 ROOT 的设备上完全失效** —— 记忆目录被删后用户被卡在旧路径，
+        且配合下一条可在旧列表上执行删除。
+  - [x] 由存在性证据重排后修复：先问「在不在」，再问「有什么」。
+
+#### 不可撤销的数据破坏
+
+- [x] **P0 · 列表陈旧期间可对「上一目录」的文件执行删除**
+  - [x] A70 的 `Failed` 分支刻意「保留旧列表」，但 `currentDirectory` 已是新目录。
+        渲染层只在列表为空时显示空态，否则照常可长按/多选/删除。
+  - [x] 触发：切目录或读取失败期间（配合上面两条，空目录必然进入该状态），
+        路径栏显示 B、列表是 A 的文件，长按删除 → **删掉 A 里的文件**，无回收站。
+  - [x] 修复：`refresh()` 发起即 `listIsStale = true` 并清空 `fileList`/`displayFileList`，
+        让旧列表立即不可操作；重算协程在 `listIsStale` 期间不得落盘
+        （否则会把「读取失败」覆盖回「目录为空」）。
+
+- [x] **P0 · 文件名含换行会产出幻影条目，长按删除即误删真实文件**
+  - [x] 旧格式 `stat -L -c '%A|%s|%Y|%n'` 把裸文件名放进**以 `\n` 分隔**的记录里。
+        ext4/f2fs 允许文件名含 `\n`，故名为 `x\ndrwxr-xr-x|0|0|y` 的文件被解析成两条：
+        一条指向不存在的 `<dir>/x`（幻影），一条是伪造的「目录 y」。
+        长按删除幻影 `x` → `rm -rf <dir>/x` → **删掉真实的 x**。
+        尾随空格同样被 `trim()` 抹掉后指向同名但不同的文件。
+  - [x] 真机能力探测（PACM00 / Android 10 toybox）：
+        `find -print0` **可用**，`find -printf` **不可用**（`bad arg '-printf'`）。
+  - [x] 改为双通道：**名称走 `find -print0`（NUL 分隔，NUL 不可能出现在文件名里）**，
+        **元数据走不含文件名的 `%A|%s|%Y`**（只含权限串与两个整数，按 `\n` 切分永远安全），
+        按索引配对；数量不等时缺失项按非目录处理（几乎只发生在断链符号链接 `stat -L` 失败，
+        而断链本来就不是目录）。删除了已无引用的 `parseStatOutput`。
+  - [x] 真机实测：造名含真实换行的文件，`find -print0` 输出 3 条记录 = 3 个真实条目，
+        名字完整未截断，无幻影条目。
+
+- [x] **P0 · procfs / sysfs 节点被当成「完整的空文件」，编辑器一保存即清空**
+  - [x] 缺陷链条：这类文件 `stat %s` 恒为 0 但**有内容**；
+        `loadAll` 见 `total <= 0` 返回空文本，而 `isComplete` 写作
+        `totalBytes <= 0L || loadedBytes >= totalBytes` → 0 被判为「读完了」。
+        编辑器标 `dirty = false`，用户毫无察觉，一次无关编辑后
+        `writeTextFile` 用空内容整文件覆盖 —— 对 root 可写的节点就是数据销毁。
+  - [x] 真机实测**推翻了看似可行的修法**：`test -f /proc/cpuinfo` 返回**真**
+        （procfs 项的类型就是普通文件），所以「零字节时查文件类型」拦不住。
+        三者的 `stat %s` 完全相同（都是 0），只有实读能区分：
+        `dd if=/proc/cpuinfo | wc -c` = 1、真空文件 = 0。
+  - [x] 改为 `probeReadableBytes()`（`dd … | wc -c`）作为唯一可靠判据；
+        `fileSize` 探测失败改返回 **-1**，与真空区分；
+        `LoadResult` 新增 `readFailed`，`isComplete` 改为 `!readFailed && loadedBytes >= totalBytes`。
+  - [x] 编辑器按 `readFailed` 区分文案（内容残缺 vs 目标非普通文件），两条都走
+        `loadError` 通道阻止保存。
+  - [x] 顺带修 `readRange` 的负 offset 越界与 `count > 2GB` 的 `toInt()` 溢出，
+        并把 `readRangeRoot` 整体包进 `try`（原先 `copyOfRange` 在 try 外，
+        异常会逃出并跳过本地兜底，把「root 通道失败」变成崩溃）。
+
+- [x] **P1 · `moveFile` 的冲突策略可被绕过，静默覆盖用户文件**
+  - [x] `destExists()` 被调用两次（冲突分支一次、算 `finalPath` 又一次），
+        每次都 fork su，两次结果可以不同（su 超时即返回 false）：
+        第一次 false → 完全跳过冲突校验；第二次 true 且 RENAME → `finalPath` 取
+        `_new` 名而该名**从未校验过** → `mv` 静默覆盖已存在的 `xxx_new`。
+  - [x] 改为单次探测 `destCollides`，两处共用同一结论。
+  - [x] 顺带修 OVERWRITE 覆盖目录「先 `rm -rf` 再 `mv`」无回滚：
+        改为先把旧目录**改名让位**，移动成功后才清理，失败则改回；
+        回滚也失败时如实告知占位路径，不再让目标目录静默消失。
+  - [x] 顺带修符号链接移动被误报失败：验证由 `test -f/-d`（跟随链接，必然为假）
+        改为「源已消失 + 目标已存在」。
+
+- [x] **P1 · `copyFile` 的 `chmod 644` 抹掉可执行位**
+  - [x] `cp -p` 刚保留完权限，下一句 `chmod 644` 把它改成 rw-r--r--，
+        连普通 0755 的执行位也一并抹掉 —— 拷出的 `.sh` / `.so` 立刻失去执行权限。
+  - [x] 改为「只减不增」：`chmod u-s,g-s,go-w`（清 setuid/setgid 与 g/o 写位，保留 x）。
+  - [x] Java 回退路径同样按来源权限设置可执行位，两条路径产物一致。
+
+- [x] **P0 · XAPK 安装失败会删掉「安装前就存在」的 OBB**
+  - [x] 幂等分支（目标 OBB 已存在且内容一致，刻意不碰该文件）却把它写进了
+        `installedObbTargets` 回滚表；`outer finally` 在锁释放前遍历该表，
+        `removeOwnedObb` 的两道校验此时都通过 → `rm -f` 命中。
+  - [x] 与 `copyObbAtomically`「绝不覆盖用户原有 OBB」的设计直接矛盾。
+  - [x] 修复：幂等条目改登记到 `preexistingObbTargets`，回滚时做减集；
+        并在删除循环里再加一道 `path in preexistingObbTargets` 的兜底。
+
+#### 状态机失效
+
+- [x] **P0 · 新启动的脚本失去唯一的终止出口，进程成为 root 孤儿**
+  - [x] `stillOwnsExecution` 的判据是「`targetJob == null && terminalSlotOwner != 0`」，
+        只说明**存在某条**终端命令，不说明是本次要收尾的那条。
+  - [x] 而 `startExecution` 只 `terminalCommandGeneration.incrementAndGet()`，
+        **从不**清 `terminalSlotOwner` —— 上一条注释承诺的契约代码里根本没实现。
+  - [x] 时序：`startExecution` 因 `isTaskRunning` 先调 `killCurrentProcess`，
+        kill 的 `finally` 早于新任务的 `waitFor` 返回，令牌仍非 0 → 判真 →
+        把**新任务**的 `isTaskRunning`/`currentTaskName`/`currentTaskPath` 清空、
+        停掉它的批量发布循环。脚本真在跑，UI 显示「待命中」，
+        「结束进程」被禁用，pgid 与路径记录也被清 → 用户失去唯一出口。
+  - [x] 修复：`startExecution` 兑现契约（`terminalSlotOwner.set(0L)`）；
+        `stillOwnsExecution` 改为比对**精确令牌**（用掉此前捕获却从未使用的
+        `targetSlot` 死变量），`restartTerminal` / `sendInterrupt` 同样补上捕获。
+
+- [x] **P2 · `sendInterrupt` 未走交互写锁，与 `sendInput` 并发写同一 encoder**
+  - [x] `sendInput` 显式加了 `interactiveWriteLock`，`sendInterrupt` 直接写
+        `targetWriter`。`OutputStreamWriter` 的 `StreamEncoder` 非线程安全
+        （byteBuffer/charBuffer 与 leftover 状态），并发写互相覆盖残留字节。
+  - [x] 修复：纳入同一把锁。
+
+#### 本次新增的环境事实（写入状态速览）
+
+- [x] `find -print0` 可用、`find -printf` **不可用**（toybox `bad arg`）；
+      `stat -L -c %s` 正常返回数字，但 `test -f` 对 procfs 节点返回真
+      → 判定「真空 vs 有内容」只能用实读（`dd | wc -c`）
+
+### A70. 「当前目录为空」误报专项（2026-10-04）
+
+用户报文件页「经常出现『当前目录为空』」。这一轮用 **Debug APK + root 真机** 定位，
+报出**三个叠加缺陷**：前两个是真机可复现的数据错误，第三个是掩盖前两者的一层失真表达。
+三者共同构成一条完整的失效链：探测时序 → 竞态覆盖 → 文案失真。
+
+#### 已修（三处，367 tests 全绿 + 真机验证）
+
+- [x] **P0 · 目录列举无法区分「真空」与「失败」，失败被显示成「当前目录为空」**
+  - [x] `RootFileManager.listFiles` 返回裸 `List`，上层只能 `isEmpty()`。
+        su 被拒 / 并发 fork 失败 / 输出截断 / stat 全解析失败，四类故障全被压成
+        「空目录」这一个信号 —— 而空目录是**事实陈述**，不该承载失败。
+  - [x] 改为 `sealed interface DirectoryListing`：`Success(items)` / `Missing` / `Failed(reason)`。
+  - [x] 判定细化：`code == -1`（su 失败/超时）→ `Failed`；有输出但零条目 → `Failed`；
+        本地兜底返回 null 且路径非目录 → `Missing`；是目录但读不到 → `Failed`。
+  - [x] UI 相应改为三态文案：`读取失败：<原因>` + 「点右上角刷新重试」，
+        保留旧列表不覆盖；「无匹配项」「当前目录为空」两种真空态文案不变。
+  - [x] `BuiltInFilePicker.loadDirectory` 同病同治：`catch` 分支原会
+        `fileList = emptyList()`（谎称空目录），现保留旧列表并记 `loadError`。
+
+- [x] **P0 · root 探测未完成即列目录：`null` 被当成「无 ROOT」而误降级**
+  - [x] 真机复现（Debug 首启 + 已授权 Magisk）：
+        `refresh gen=1 dir=/storage/emulated/0 root=null loaded=0 display=0`，
+        而该目录实际有 **150 项**。授权完成后同一路径 `root=true loaded=1`（`/storage/emulated` 只有 1 项，正确）。
+  - [x] 成因：`isRootGranted` 是 `Boolean?`，初值 `null`；`preferRoot()` 写作 `== true`，
+        首帧探测尚未落定 → 直接跳过 su 走本地 `File` API，而「所有文件访问」
+        可能刚授权未生效、或路径在应用无权访问处 → 空列表。
+  - [x] `null` 的语义是**尚未探测**而非**无 ROOT**，改为 `awaitRootState()`：
+        轮询等探测落定，上限 `ROOT_STATE_WAIT_MS = 3_000`，`ROOT_STATE_POLL_MS = 50`。
+        超时后按已知状态继续，**不无限阻塞**文件页（授权弹窗可能长期挂起）。
+  - [x] 计时用 `SystemClock.elapsedRealtime()`，抗系统时间跳变。
+  - [x] `preferRoot` 随之改为 `suspend`，12 处调用点全部已在 suspend 上下文（逐个核对）。
+
+- [x] **P0 · 展示列表重算协程用陈旧 `fileList` 覆盖新目录列表（竞态）**
+  - [x] 真机复现（同一日志相邻两行，顺序即缺陷）：
+        `recompute gen=1 src=0 out=0` **先于** `refresh gen=1 ... loaded=0` 落盘。
+  - [x] 成因：`LaunchedEffect(showHiddenFiles, fileSortMode, nameQuery)` 与 `refresh()` 并发。
+        它抓 `refreshGenRef[0]` 作守卫，但该代次只在 `refresh()` **启动**时递增；
+        在其 IO 落盘前进入本协程时代次**恰好相同**、守卫放行，
+        于是用**上一份** `fileList`（切目录时即空列表）算出结果并写入 `displayFileList`，
+        此后 key 不再变化、**永远无人重算** → 用户看到「当前目录为空」。
+  - [x] 代次相同 ≠ 基准有效。新增 `loadingGenRef`（`-1` = 无加载进行中）表示
+        「本代是否已把 `fileList` 落盘」：`refresh` 启动时置 `gen`，
+        `finally` 中**仅限最新一代**清为 `-1`；重算协程在计算前后各判一次。
+  - [x] `navigateTo` 刻意不碰该标记 —— 否则会在 refresh 尚未启动时短暂呈现
+        「已落盘」，让重算协程得以用旧 `fileList` 落盘，缺陷复现。
+
+#### 真机验证（Debug APK + root）
+
+- [x] 撤销 Magisk 授权策略模拟冷启动 → 启动即进文件页：
+      `/storage/emulated/0` **150 项全部列出**（修前同一场景显示「当前目录为空」）
+- [x] `/storage/emulated` → 1 项（`0`），路径栏与列表一致
+- [x] 点刷新后列表稳定保持，不再被重算协程清空
+- [x] 主页 `/data/adb/shso` 4 项正常（`archtest` / `shso.hidden` / `d.sh` / `smoke.sh`）
+- [x] 全程 `FATAL` / `ANR` / `NoClassDefFoundError` = 0
+- [x] 临时探针（`shsoPROBE`）已从源码移除，哈希与索引一致
+
+#### 回归护栏
+
+- [x] 新增 `DirectoryListingTest`（14 项），覆盖三态互不混淆、su 失败上报、
+      有输出零条目判失败、本地兜底失败不谎称空、`navigateTo` 不碰标记、
+      等待逻辑有超时与轮询等
+- [x] 更新 `PickerAndPermissionRegressionTest.回退目录必须真的去列内容`：
+      原断言钉死 `listFiles(resolved)` 这一实现细节，三态改造后必然失效。
+      改为锁定**语义**（回退分支必须对回退目录重新发生一次列举），不绑定 API 名称。
+- [x] `compileDebugKotlin` 无警告
 
 ### A66. 第十六轮全面 BUG 深挖（2026-10-03）
 
@@ -190,7 +1031,7 @@
   - [x] 修法：`feed` 入口续接 —— 下一块以低代理开头则拼回，否则按 Unicode 替换字符落地
         （与真实终端一致）；末尾高代理留到下一块；`finish()` 与 `reset()` 各自收尾
 
-- [x] **P1 · 并发：发布循环的归属令牌在内存模型上不成立**
+- [x] **P1 · 并发：发布循环的归属令牌在内存语义上不成立**
   - [x] `batchFlushJob` 是裸 `var`，而同文件的 `batchFlushEpoch` 明确加了 `@Volatile`
         并注明「跨线程可见」—— 同文件同用法，一有一无，是明确疏漏。
   - [x] 线程事实：`startBatchFlushLoop` 由 IO worker 调用（写），`stopBatchFlushLoop`
@@ -562,7 +1403,6 @@ A61 修掉审计写入的软链 TOCTOU 后，这里回头复核它改过的每�
         「su 被拒」误记成「疑似软链」、每条审计 fork 5~6 次进程、`readTail` 全量加载 512KB
         —— 均**确认成立但A61 未修**，已记入下方待办
 
-- [x] **过程教训（已写入本文件）**
   - 第一次验证 P0-1 时，我用**裸 `su -c "printf ... >> audit.log"`** 去复现，
     结果自然显示「受害者文件被写入」—— 但那只证明了**内核的 `>>` 会跟随软链**
     （任何程序都拦不住），并没有验证应用的写入路径，属于**用错了验证方式**。
@@ -628,7 +1468,7 @@ A61 修掉审计写入的软链 TOCTOU 后，这里回头复核它改过的每�
         （exit=1，命中受保护路径）；另一条 `ln /system/bin/ls <dir>/hl` 的 exit=1 来自内核
         `Cross-device link`（`/system` 与 `/data` 不同文件系统），**不是守卫判定**。
         且 `cp /system/bin/ls <dir>/` 放行是**正确**行为 —— 读受保护文件并非破坏操作
-  - 教训：上一轮据静态阅读把这两条列为 P1，实测均不成立。**涉及守卫层的结论必须真机复现**，
+  - 仅靠静态阅读把这两条列为 P1，实测均不成立。**涉及守卫层的结论必须真机复现**，
     且要分清「守卫拦截」与「内核/工具自身报错」—— 只看 exit code 会误判
 
       `build_apk.py` 红线通过。新增 `EncodingAndShellExecRegressionTest`（13 项）
@@ -764,7 +1604,6 @@ A61 修掉审计写入的软链 TOCTOU 后，这里回头复核它改过的每�
   - 打包产物核对：`assets/shso_guard.zip` 内 `guard/common.sh` 含两处修复标记、
     `module.prop` 为 `v1.4.3`、`sh -n` 通过
   - APK 冷启动 `FATAL=0`；探针文件已清理
-- [x] **过程教训（已写入本文件，避免重犯）**
   - 插桩副本用 PowerShell `WriteAllLines` 生成会得到 **CRLF**，mksh 在 `case ... in` 处直接
     语法报错（`unexpected 'in'`），一度误判为源码被改坏；改用 `WriteAllText` + 显式 `\n`
   - `[IO.File]::ReadAllLines` **不继承** PowerShell 的 `Set-Location`，相对路径会解析到错误目录；
@@ -1656,7 +2495,7 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][安全/并发]` `safeDest()` 只在写入前做 canonical 检查；检查后目标父路径或已有目录可被替换为符号链接，随后 `mkdirs`/`FileOutputStream` 仍可能逃逸，`ArchiveExtractor.kt:530-545`。当前防护是静态路径检查，未形成写入时原子安全保证
   - `[Medium][性能]` ZIP `zip.fileHeaders` 在条目数上限检查前一次性构造 central directory；极端高条目归档可能先造成内存峰值，`ArchiveExtractor.kt:131-145`、`355-371`。需确认 zip4j 可用的流式枚举 API 后再改
   - `[Medium][异常处理]` `extract7z` 对条目声明 `entry.size < 0` 或实际读取提前 EOF 只退出循环，仍可能返回成功并保留不完整文件；应将短读视为失败并清理，`ArchiveExtractor.kt:441-465`
-  - `[Medium][兼容性]` `ACTION_SEND_MULTIPLE` 与多项 `clipData` 仍只取首项，用户分享多文件时其余项目被静默丢弃；属于既有单文件模型限制，需先确定是否扩展 Hub/页面模型，`MainActivity.kt:147-155`
+  - `[Medium][兼容性]` `ACTION_SEND_MULTIPLE` 与多项 `clipData` 仍只取首项，用户分享多文件时其余项目被静默丢弃；属于既有单文件限制，需先确定是否扩展 Hub/页面结构，`MainActivity.kt:147-155`
   - `[Low][生命周期]` FilePage 除高危确认外的目录、多选、搜索与编辑器弹窗状态仍不全面保存；旋转/分屏会丢失用户上下文，但未发现数据写盘破坏，`FilePage.kt:134-214`
   - `[High][安全/数据一致性]` XAPK OBB 复制到真实 OBB 目录前没有确认目标是否为本次任务新建；安装失败回滚会直接 `rm -f` 已记录目标，可能删除用户原有同名 OBB，`ApkInstaller.kt:203-244`
   - `[High][安全/一致性]` ZIP/TAR/7Z 解压仍直接向 `safeDest()` 返回路径写入，重复条目覆盖和符号链接 TOCTOU 风险尚未修复；确认 A13 只覆盖 OBB 失败与 7Z 短读，不应把这两项标为已完成，`ArchiveExtractor.kt:382-476`
@@ -1685,7 +2524,7 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][并发]` OBB “不存在检查”与后续 `cp` 非原子；检查后其他进程可抢先创建同名目标，仍存在覆盖/回滚误删竞态。`ApkInstaller.kt:216-231`
   - `[High][安全]` ZIP/TAR/7Z 重复条目仍可覆盖同一路径输出；`safeDest` canonical 检查与实际 `mkdirs`/打开文件之间仍有符号链接 TOCTOU。`ArchiveExtractor.kt:382-479`、`534-548`
   - `[Medium][性能]` ZIP central directory 仍由 `zip.fileHeaders` 一次性构造后才检查条目上限；极端高条目归档可能在预算检查前产生内存峰值。`ArchiveExtractor.kt:137`、`383`
-  - `[Medium][兼容性]` 多文件分享仍只取首项；扩展需同时调整 `ExternalOpenHub` 单槽位与 FilePage 消费模型，不能单点改 `MainActivity`。`MainActivity.kt:147-155`
+  - `[Medium][兼容性]` 多文件分享仍只取首项；扩展需同时调整 `ExternalOpenHub` 单槽位与 FilePage 消费方式，不能单点改 `MainActivity`。`MainActivity.kt:147-155`
   - `[Low][生命周期]` FilePage 普通浏览/多选/搜索状态旋转丢失，属于上下文体验问题，暂未发现直接数据损坏。`FilePage.kt:134-214`
   - 已修复确认：staging 创建失败、OBB 已有目标拒绝覆盖、7Z 负数大小拒绝、OBB 失败回滚、7Z 提前 EOF；不重复计入
   - 现有测试覆盖：；新增发现缺少 OBB 部分复制失败、竞争创建、重复归档条目、符号链接并发替换测试
@@ -1701,11 +2540,10 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
 
   - `[High][兼容性/功能]` A16 使用 ROOT `ln` 把临时 OBB 硬链接到 `/sdcard/Android/obb`；Android emulated/FUSE 存储及部分 ROM 可能不支持跨目录/外部存储硬链接，导致合法 XAPK 的 OBB 安装全部失败。`ApkInstaller.kt:254-268`；当前无真机 OBB 回归
   - `[High][安全/并发]` 即使 `ln` 可用，临时文件复制、目标检查和最终链接依赖 shell 文件系统语义；外部进程可抢占目标或替换父目录，当前实现只保证同一实现的“目标不存在即链接”，不构成对抗性目录锁。`ApkInstaller.kt:254-268`
-  - `[High][安全]` ZIP/TAR/7Z 重复条目仍可覆盖相同输出；`safeDest()` canonical 检查与实际创建/打开之间仍有符号链接 TOCTOU，需原子、无跟随符号链接的写入模型，`ArchiveExtractor.kt:382-479`、`534-548`
+  - `[High][安全]` ZIP/TAR/7Z 重复条目仍可覆盖相同输出；`safeDest()` canonical 检查与实际创建/打开之间仍有符号链接 TOCTOU，需原子、无跟随符号链接的写入方式，`ArchiveExtractor.kt:382-479`、`534-548`
   - `[Medium][性能]` ZIP `fileHeaders` 仍在条目上限检查前整体构造，极端 central directory 可能先产生内存峰值，`ArchiveExtractor.kt:383`
-  - `[Medium][兼容性]` `ACTION_SEND_MULTIPLE` 仍只取首项；修复需扩展 Hub/页面数据模型，不宜单点修改，`MainActivity.kt:147-155`
+  - `[Medium][兼容性]` `ACTION_SEND_MULTIPLE` 仍只取首项；修复需扩展 Hub/页面数据结构，不宜单点修改，`MainActivity.kt:147-155`
   - `[Low][生命周期]` FilePage 普通目录、多选、搜索状态旋转丢失，当前未见数据写盘破坏，`FilePage.kt:134-214`
-  - 未发现新的终端解析、审计字段注入或守卫卸载路径注入证据；这些不重复计入
   - 验证基线沿用：、`lintDebug` 通过；未操作手机；高风险项保持待专项修复
 
 ### A18. OBB 落位兼容性修复（2026-09-30）
@@ -1722,7 +2560,7 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][兼容性]` `mv` 原子落位依赖同目录 rename 语义，目标目录 `/sdcard/Android/obb` 在不同 Android/FUSE/厂商 ROM 上行为不同；当前仅验证应用启动，未验证真实 OBB XAPK 安装
   - `[High][安全]` ZIP/TAR/7Z 重复条目仍可覆盖同一路径；`safeDest` canonical 检查与实际写入仍有符号链接 TOCTOU，`ArchiveExtractor.kt:382-479`、`534-548`
   - `[Medium][性能]` ZIP central directory 仍在条目上限检查前由 `fileHeaders` 一次性构造，极端归档可能先造成内存峰值，`ArchiveExtractor.kt:383`
-  - `[Medium][兼容性]` 多文件分享仍只消费首项，需扩展 `ExternalOpenHub`/FilePage 模型，`MainActivity.kt:147-155`
+  - `[Medium][兼容性]` 多文件分享仍只消费首项，需扩展 `ExternalOpenHub`/FilePage 数据结构，`MainActivity.kt:147-155`
   - `[Low][生命周期]` FilePage 普通导航、多选、搜索状态旋转丢失，当前未发现直接数据写盘破坏，`FilePage.kt:134-214`
   - A18 已修复确认：硬链接改为同目录临时文件 + `mv`；新增的是锁生命周期、事务回滚和真实 OBB 兼容性风险，不重复计入
 
@@ -1732,9 +2570,8 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][安全/数据一致性]` OBB 外层安装失败回滚只按路径 `rm -f`，锁覆盖的 OBB 事务已结束后，其他进程仍可能替换目标，回滚会误删新文件；锁需覆盖 OBB 落位到 APK 安装完成，或回滚需验证唯一身份，`ApkInstaller.kt:239-245`
   - `[High][安全]` 解压仍未拒绝重复条目；ZIP/TAR/7Z 后出现同路径条目会覆盖前一条，且写入跟随符号链接，`ArchiveExtractor.kt:382-479`
   - `[Medium][性能]` ZIP `fileHeaders` 在预算检查前整体加载，极端 central directory 仍可能产生内存峰值，`ArchiveExtractor.kt:383`
-  - `[Medium][兼容性]` 多文件分享仍只处理首项，涉及单槽位 Hub 与 FilePage 模型，`MainActivity.kt:147-155`
+  - `[Medium][兼容性]` 多文件分享仍只处理首项，涉及单槽位 Hub 与 FilePage 数据结构，`MainActivity.kt:147-155`
   - `[Low][生命周期]` FilePage 普通状态旋转丢失，未发现直接数据写盘破坏，`FilePage.kt:134-214`
-  - 未发现新的终端、审计注入或守卫路径注入问题
 
 ### A21. 安全档位默认值调整（2026-09-30）
 
@@ -1757,8 +2594,7 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][数据一致性]` OBB 回滚仍按路径删除；即使事务锁持续到 APK 结束，锁被强杀后回收再被新任务获得时，旧进程无法继续安全回滚，需 token/所有权校验，`ApkInstaller.kt:241-254`
   - `[High][安全]` ZIP/TAR/7Z 重复条目仍覆盖输出；`safeDest` canonical 检查与实际写入间仍有符号链接 TOCTOU，`ArchiveExtractor.kt:382-479`、`534-548`
   - `[Medium][性能]` ZIP central directory 仍一次性构造后才检查条目上限，`ArchiveExtractor.kt:383`
-  - `[Medium][兼容性]` 多文件分享仍只消费首项，需扩展 Hub/FilePage 模型，`MainActivity.kt:147-155`
-  - 未发现新的终端、审计字段注入或守卫路径注入问题
+  - `[Medium][兼容性]` 多文件分享仍只消费首项，需扩展 Hub/FilePage 数据结构，`MainActivity.kt:147-155`
 
 ### A24. OBB 锁所有权修复（2026-09-30）
 
@@ -1774,8 +2610,7 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][兼容性]` 目标旁 `.shso.lock`、`.shso.tmp.*` 文件位于用户可见 OBB 目录，Android 媒体扫描、厂商文件管理器或权限策略可能暴露/处理这些中间项；当前未验证真实 OBB XAPK 流程
   - `[High][安全]` ZIP/TAR/7Z 重复条目覆盖和符号链接 TOCTOU 仍未修复，`ArchiveExtractor.kt:382-479`、`534-548`
   - `[Medium][性能]` ZIP `fileHeaders` 一次性构造后才检查条目上限，`ArchiveExtractor.kt:383`
-  - `[Medium][兼容性]` 多文件分享只处理首项，需要扩展单槽位 Hub 与 FilePage 模型，`MainActivity.kt:147-155`
-  - 未发现新的终端、审计或守卫注入问题
+  - `[Medium][兼容性]` 多文件分享只处理首项，需要扩展单槽位 Hub 与 FilePage 数据结构，`MainActivity.kt:147-155`
 
 ### A26. 归档重复条目修复（2026-09-30）
 
@@ -1790,8 +2625,7 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][数据一致性]` OBB 回滚验证 token 只验证锁，不验证目标文件仍由本次 `mv` 创建；外部进程可删除后创建同名目标，回滚仍可能删除新目标。`ApkInstaller.kt:250-260`、`315-321`
   - `[Medium][性能]` ZIP central directory 仍由 `fileHeaders` 一次性构造后才检查预算。`ArchiveExtractor.kt:383`
   - `[Medium][兼容性]` OBB 锁、临时文件位于用户可见目录，真实 XAPK OBB 安装尚未在设备上验证；厂商媒体扫描/文件管理器可能看到中间文件。`ApkInstaller.kt:254-305`
-  - `[Medium][功能]` 多文件分享仍只处理首项，需扩展单槽位 Hub 与 FilePage 模型。`MainActivity.kt:147-155`
-  - 未发现新的终端、审计、守卫路径注入问题
+  - `[Medium][功能]` 多文件分享仍只处理首项，需扩展单槽位 Hub 与 FilePage 数据结构。`MainActivity.kt:147-155`
 
 ### A28. OBB 回滚身份修复（2026-09-30）
 
@@ -1805,9 +2639,8 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][并发/数据一致性]` OBB 锁只覆盖当前 `installXapk` 协程；锁释放后外层异常/回滚路径与其他安装调用的资源身份仍可能交叉，当前 token 不能覆盖进程死亡后的完整事务，`ApkInstaller.kt:245-260`
   - `[High][安全]` 重复条目检测基于 canonical 路径，仍无法阻止 `safeDest` 检查后目录被替换为符号链接并实际跟随写入，`ArchiveExtractor.kt:382-494`、`546-561`
   - `[Medium][性能]` ZIP central directory 仍在预算前整体加载，`ArchiveExtractor.kt:383`
-  - `[Medium][兼容性]` 多文件分享只取第一项，需扩展 Hub/FilePage 模型，`MainActivity.kt:147-155`
+  - `[Medium][兼容性]` 多文件分享只取第一项，需扩展 Hub/FilePage 数据结构，`MainActivity.kt:147-155`
   - `[Low][生命周期]` FilePage 普通导航/多选/搜索状态旋转丢失，未见直接写盘破坏，`FilePage.kt:134-214`
-  - 未发现新的终端、审计、守卫注入问题
 
 ### A30. OBB 锁陈旧恢复修复（2026-09-30）
 
@@ -1824,7 +2657,6 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[Medium][性能]` ZIP `fileHeaders` 仍整体加载后才执行条目预算，`ArchiveExtractor.kt:383`
   - `[Medium][兼容性]` 多文件分享仍只消费首项，`MainActivity.kt:147-155`
   - `[Low][文档一致性]` A24/A30 任务记录仍描述“超过 TTL 自动回收/不再自动删除”两种不同语义，实际代码已改为元数据+PID校验；需在发布前统一文档措辞
-  - 未发现新的终端、审计、守卫注入问题
 
 ### A33. OBB 锁 PID 复用修复（2026-09-30）
 
@@ -1840,7 +2672,6 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][安全]` 解压实际写入仍跟随 `safeDest()` 解析出的符号链接，重复条目检测不构成无跟随写入，`ArchiveExtractor.kt:382-494`、`546-561`
   - `[Medium][性能]` ZIP central directory 仍一次性加载后才检查预算，`ArchiveExtractor.kt:383`
   - `[Medium][兼容性]` 多文件分享仍只处理首项，`MainActivity.kt:147-155`
-  - 未发现新的终端、审计、守卫注入问题
 
 ### A35. OBB 锁元数据原子发布（2026-09-30）
 
@@ -1856,7 +2687,6 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][安全]` 解压写入仍跟随 `safeDest()` 路径，canonical 检查与 `FileOutputStream` 之间仍有符号链接 TOCTOU，`ArchiveExtractor.kt:382-494`、`546-561`
   - `[Medium][性能]` ZIP central directory 仍整体加载后才检查预算，`ArchiveExtractor.kt:383`
   - `[Medium][兼容性]` 多文件分享仍只处理首项，`MainActivity.kt:147-155`
-  - 未发现新的终端、审计、守卫注入问题
 
 ### A38. 全面 BUG 挖掘（2026-09-30）
 
@@ -1865,7 +2695,6 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][安全]` 解压输出继续跟随符号链接，canonical 检查与实际写入之间存在 TOCTOU；重复条目拒绝不改变该结论，`ArchiveExtractor.kt:382-494`、`546-561`
   - `[Medium][性能]` ZIP central directory 仍整体加载，预算检查滞后，`ArchiveExtractor.kt:383`
   - `[Medium][兼容性]` 多文件分享仍只取首项，`MainActivity.kt:147-155`
-  - 未发现新的终端、审计、守卫注入问题
 
 ### A39. OBB 锁原子接管修复（2026-09-30，历史记录）
 
@@ -1880,7 +2709,6 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][安全]` 解压仍直接向 `safeDest()` 路径打开，canonical 检查与实际写入之间存在符号链接 TOCTOU，`ArchiveExtractor.kt:382-494`、`546-561`
   - `[Medium][性能]` ZIP central directory 仍整体加载后才检查预算，`ArchiveExtractor.kt:383`
   - `[Medium][兼容性]` 多文件分享仍只处理首项，`MainActivity.kt:147-155`
-  - 未发现新的终端、审计、守卫注入问题
 
 ### A41. 全面 BUG 挖掘（2026-09-30）
 
@@ -1889,7 +2717,6 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][安全]` 解压仍存在符号链接 TOCTOU，`safeDest` canonical 检查不能保证后续 `FileOutputStream` 不跟随链接，`ArchiveExtractor.kt:382-494`、`546-561`
   - `[Medium][性能]` ZIP central directory 仍整体加载后才检查预算，`ArchiveExtractor.kt:383`
   - `[Medium][兼容性]` 多文件分享仍只处理首项，`MainActivity.kt:147-155`
-  - 未发现新的终端、审计、守卫注入问题
 
 ### A44. 全面 BUG 挖掘（2026-09-30）
 
@@ -1898,16 +2725,14 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][安全]` 解压符号链接 TOCTOU 仍未解决，`safeDest` canonical 校验不等于无跟随写入，`ArchiveExtractor.kt:382-494`、`546-561`
   - `[Medium][性能]` ZIP central directory 仍一次性加载，`ArchiveExtractor.kt:383`
   - `[Medium][兼容性]` 多文件分享仍只取第一项，`MainActivity.kt:147-155`
-  - 未发现新的终端、审计或守卫注入问题
 
 ### A45. 全面 BUG 挖掘（2026-09-30）
 
   - `[High][文档/状态]` A39 仍标记为 `[/]`，而 A42 已标记完成；A31~A44 多处重复记录同一锁问题，当前 TASKS 不能准确表达实际完成状态，发布前容易误读。
   - `[High][并发/安全]` A42 quarantine 仍保留旧锁清理链路，A43/A44 已确认其非原子窗口；当前实现未形成可证明的 compare-and-swap。
-  - `[High][安全]` 解压仍以 `FileOutputStream(dest)` 跟随路径写入，符号链接替换可逃逸 canonical 检查；需要无跟随链接的原子文件创建模型，不能靠继续增加路径判断解决。
+  - `[High][安全]` 解压仍以 `FileOutputStream(dest)` 跟随路径写入，符号链接替换可逃逸 canonical 检查；需要无跟随链接的原子文件创建方式，不能靠继续增加路径判断解决。
   - `[Medium][性能]` ZIP `fileHeaders` 仍整体加载后才检查条目上限。
   - `[Medium][兼容性]` 多文件分享仍只取第一项。
-  - 未发现新的终端、审计字段注入、守卫路径注入
 
 ### A42. OBB 重试与 quarantine 竞态修复（2026-09-30，历史记录）
 
@@ -1922,7 +2747,6 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][安全]` 解压仍存在符号链接 TOCTOU；canonical 路径检查不等于无跟随写入，`ArchiveExtractor.kt:382-494`、`546-561`
   - `[Medium][性能]` ZIP central directory 仍整体加载，`ArchiveExtractor.kt:383`
   - `[Medium][兼容性]` 多文件分享仍只消费首项，`MainActivity.kt:147-155`
-  - 未发现新的终端、审计或守卫注入问题
 
 ### A46. 全面 BUG 挖掘（2026-09-30）
 
@@ -1931,7 +2755,6 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][安全]` 解压写入依旧跟随 `safeDest()` 路径，canonical 检查无法阻止检查后符号链接替换，`ArchiveExtractor.kt:382-494`、`546-561`
   - `[Medium][性能]` ZIP central directory 仍在预算检查前整体加载，`ArchiveExtractor.kt:383`
   - `[Medium][兼容性]` 多文件分享仍只取首项，`MainActivity.kt:147-155`
-  - 未发现新的终端、审计或守卫注入问题
 
 ### A47. 文档状态整理（2026-09-30）
 
@@ -1948,7 +2771,6 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][安全]` 解压文件写入仍跟随 `safeDest()` 路径；canonical 检查后符号链接替换可导致越界写，`ArchiveExtractor.kt:382-494`、`546-561`
   - `[Medium][性能]` ZIP central directory 仍整体加载，`ArchiveExtractor.kt:383`
   - `[Medium][兼容性]` 多文件分享仍只取首项，`MainActivity.kt:147-155`
-  - 未发现新的终端、审计、守卫注入问题
 
 ### A49. OBB 锁状态分类修复（2026-09-30 → 2026-10-02 收口）
 
@@ -1967,7 +2789,6 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][安全]` 解压仍直接向 `safeDest` 路径打开文件，符号链接可在 canonical 检查后被跟随；重复条目拒绝不能消除 TOCTOU，`ArchiveExtractor.kt:382-494`、`546-561`
   - `[Medium][性能]` ZIP `fileHeaders` 仍在预算前整体加载，`ArchiveExtractor.kt:383`
   - `[Medium][兼容性]` 多文件分享仍只取第一项，`MainActivity.kt:147-155`
-  - 未发现新的终端、审计、守卫注入问题
 
 ### A31. 全面 BUG 挖掘（2026-09-30）
 
@@ -1976,7 +2797,6 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
   - `[High][安全]` ZIP/TAR/7Z 写入仍跟随符号链接，canonical 检查不是原子安全写；重复条目拒绝不能消除该风险，`ArchiveExtractor.kt:382-494`、`546-561`
   - `[Medium][性能]` ZIP `fileHeaders` 仍整体加载后才做预算检查，`ArchiveExtractor.kt:383`
   - `[Medium][兼容性]` 多文件分享仍只处理第一项，`MainActivity.kt:147-155`
-  - 未发现新的终端、审计、守卫注入问题
 
 - [ ] **安全第三轮（可选）**：`GuardModuleInstaller` 卸载残留（`/data/adb/shso_guard/policy.conf` 与审计日志）；`ScriptAuditor` 跨行变量追踪；`$IFS` 之外的 shell 展开（`${x:-…}`、算术展开）
 - [ ] **内核级守卫（独立议题）**：PATH 前置型守卫无法拦绝对路径调用与 `PATH` 重置，彻底封堵需 seccomp/LSM hook
@@ -1998,7 +2818,7 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
       `ESC[K` 行内擦除、C0 控制字符过滤、转义缓冲 1KB 上限；旋转屏幕保留输入 / 历史 / 待确认高危命令；
       输出顺序（先停发布循环再写退出码）；终端命令超时 120s → 30min；>5s 命令前台保活；进程组 pid 按代际回填。
 - [x] **第三轮：渲染成本与解析进度（3 项）**：**单行超长输出 ANR**（单行 10 万字符 → 主线程排版 20s、
-      `Skipped 1210 frames`、`Davey! 20182ms`）以「渲染投影 4000 字符上限」修复，模型保持全文；
+      `Skipped 1210 frames`、`Davey! 20182ms`）以「渲染投影 4000 字符上限」修复，数据层保持全文；
       解析进度随 feed 原子落定（修重复行）；滑动窗口硬截不切代理对。
 - [x] **第四轮：交互跟随（1 项）+ 3 项负结果**：上翻读日志时发命令「看起来没反应」改为发命令 / 清屏自动回尾部；
       负结果：横屏按钮未被挤掉（uiautomator 零 bounds 是假象）、四个对话框均可滚动可达、发送后输入框保持焦点。
@@ -2060,7 +2880,7 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
 - **停止任务必须整组回收**：`kill -<sig> -- -<pgid>`，且每条停止入口（中断 / 结束进程 / 重启终端 / 覆盖启动前的清理）都要走同一套；
   兜底 `pkill` 只在进程组不可用时使用，且按**完整路径**匹配（按文件名会误杀同名重跑的新任务）。
 - **日志类 UI 的渲染成本受单行长度支配**：LazyColumn 只做项级虚拟化，必须给单行加渲染上限（当前 4000 字符），
-  模型层保持全文；新增任何「整行渲染」入口都要过 `renderableLine()`。
+  数据层保持全文；新增任何「整行渲染」入口都要过 `renderableLine()`。
 - **终端显示必须消化非 SGR 序列**：私有模式 CSI / OSC / `` / `ESC[K` 都要吞掉，未识别即会变成可见乱码。
 
 1. **`/data/adb/shso` 必须 777**：需让其他应用自由读写；曾改 755，用户明确要求回退。
@@ -2148,9 +2968,9 @@ adb -s $DEVICE shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.
 
 | 文件 | 用途 |
 |---|---|
-| `README.md` | 功能总览、执行模型、版本规则、在线编译入口 |
+| `README.md` | 功能总览、执行方式、版本规则、在线编译入口 |
 | `更新日志.md` | 变更清单，一行一条 |
-| `docs/PROJECT.md` | 技术栈、目录结构、架构、执行模型与已知注意点 |
+| `docs/PROJECT.md` | 技术栈、目录结构、架构、执行方式与已知注意点 |
 | `.github/workflows/publish-release.yml` | 纯日期标签发布 |
 | `.github/workflows/build-apk.yml` | 在线编译（自定义包名） |
 
@@ -2177,8 +2997,8 @@ adb -s $DEVICE shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.
 - [x] **测试**：`data/security/` 整目录删除；`RoundFiveRegressionTest` 剥离档位用例、
       `EncodingAndShellExecRegressionTest` 剥离策略与脚本审查用例（编码探测部分保留）；
       `RootFileManagerEscapingTest` 移除依赖 `guardDestructiveOp` 源码文本的护栏用例。
-      `ExternalTrustAndTempFileTest` 无守卫引用，原样保留。**336 tests / 0 failures / 1 skipped**
-- [x] **文档同步**：`README.md`（安全模型 → 执行模型）、`docs/PROJECT.md`（删除「安全子系统」章节）、
+`ExternalTrustAndTempFileTest` 无守卫引用，厚保留。
+- [x] **文档同步**：`README.md`（安全策略 → 执行方式）、`docs/PROJECT.md`（删除「安全子系统」章节）、
       `docs/命名规范.md`、`docs/文档规范.md`、`CONTRIBUTING.md` / `.en.md`、
       `B站专栏-shso分享.md`、`app/build.gradle.kts` 注释；`更新日志.md` 与 `docs/archive/` 属历史记录，不改
 - [x] **验证**：`:app:compileDebugKotlin` 通过；`:app:testDebugUnitTest --rerun-tasks` 全绿；
@@ -2214,7 +3034,7 @@ adb -s $DEVICE shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.
 
 - [x] **回归测试**：新增 `TerminalGenerationGuardTest`（4 例）锁定代次语义 ——
   后置自增必失效、前置自增恒成立、重新组合严格递增、连续多次组合仅最后一次有效。
-  **340 tests / 0 failures / 1 skipped**
+
 
 - [x] **验证**：`:app:lintRelease` 0 errors / 31 warnings；Release 2.08 MB；
       真机 `BIYLBAFQQSS8DA69` 实测脚本执行、终端一次性命令、实时流式回显、
@@ -2242,7 +3062,7 @@ adb -s $DEVICE shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.
       （`hasVisibleOutput` / `anyChunkHasContent`）—— `RootService` 是 object，
       单测无法加载。新增 `ExecutionFeedbackTest` 8 例覆盖格式切换、负值兜底、
       小数点稳定性、全空白判定、分块累积判定。
-- [x] **验证**：**348 tests / 0 failures / 1 skipped**；lint 0 errors / 31 warnings；
+- [x] **验证**：lint 0 errors / 31 warnings
       Release 2.08 MB。真机实测：
       - `d.sh`（静默）→「脚本执行完成，未产生任何输出」+「退出码: 0，用时 176毫秒」
       - `slow.sh`（静默 sleep 25s）→ 第 10 秒出现「仍在执行，已运行 10.0秒…」，顶栏「运行中...」

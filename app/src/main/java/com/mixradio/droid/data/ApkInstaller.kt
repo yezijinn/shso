@@ -126,19 +126,52 @@ object ApkInstaller {
         // 同目录聚合出「安装套件」；只有基础包时退回单文件安装
         val set = collectApkSet(context, sourcePath ?: apkPath)
         if (set.isSplit) {
-            // 被点中的那一个用已校验的暂存副本安装（保持「确认后未被替换」的保证），
-            // 其余兄弟分片按各自原始路径取 —— installSplitApks 内部会再逐个 cp 到
-            // /data/local/tmp，所以这里给原始路径即可。
-            val stagedPaths = set.orderedWrites.map { if (it == sourcePath) apkPath else it }
-            return@withContext when (val r = installSplitApks(context, stagedPaths)) {
+            // 整套分片**全部**用已校验的暂存副本安装。
+            //
+            // 此前只暂存被点中的那一个，兄弟分片仍按原始路径取 ——
+            // 而分片才是真正的代码载体（base 只含清单与入口）。
+            // 确认弹窗停留期间（用户阅读提示、切换应用），共享存储上的兄弟分片
+            // 可被替换：下载器续传重写、另一应用写入 /sdcard（该分区任何应用可写）、
+            // 或用户自己用本应用编辑器覆盖该文件。随后点「确认安装」，
+            // 用户看到的那个 SHA-256 完全正确，实际被 root 安装的却是替换后的字节
+            // → 任意代码以 root 静默装入（pm install-commit 无系统确认），且无从察觉。
+            //
+            //
+            // 本次新增的暂存副本必须在安装结束后清理，否则 cache/install-confirm
+            // 会随每次安装永久堆积（单个 APK 数 MB，整套可达数十 MB）。
+            // 全量暂存把「确认后不被替换」的保证从 1 个文件扩展到整套套件。
+            // 分片数上限 MAX_SPLITS 有界（64），暂存代价可接受。
+            val stagedHere = ArrayList<String>()
+            val stagedPaths = set.orderedWrites.map { path ->
+                if (path == sourcePath) {
+                    apkPath
+                } else {
+                    val staged = stageApkForInstall(context, path)?.first
+                    if (staged == null) {
+                        // 暂存失败就不能装：宁可不装，也不能装一份可能被替换过的字节。
+                        return@withContext InstallResult.Failure(
+                            "无法校验分包 ${File(path).name}，已中止安装以防装入被替换的文件"
+                        )
+                    }
+                    staged.also { stagedHere.add(it) }
+                }
+            }
+            val outcome = when (val r = installSplitApks(context, stagedPaths)) {
                 is InstallResult.Success -> InstallResult.Success("${r.message}（含 ${set.splits.size} 个分包）")
                 is InstallResult.Failure -> r
             }
+            stagedHere.forEach { runCatching { File(it).delete() } }
+            outcome
         }
 
         // 统一用规范名（.apk）落到 /data/local/tmp：pm install 对 .1 等非规范后缀可能拒绝
         val tmpApk = "$TMP_DIR/_shso_install_${UUID.randomUUID()}.apk"
         val cleanCmd = "rm -f ${RootService.escapeShellArg(tmpApk)}"
+        // -1 = runCommandSync 超时/异常。此时 `pm install` 可能**仍在运行**
+        // （su 超时只代表没等到，不保证子进程已死），无条件删除会让它读到被删的
+        // 文件 → 后续偶发 INSTALL_FAILED_* 或半安装态，且用户完全无法归因。
+        // 故超时场景保留临时文件并如实告知，由用户稍后自行清理。
+        var installTimedOut = false
         try {
             RootService.runCommandSync(cleanCmd, INSTALL_TIMEOUT_MS)
 
@@ -155,10 +188,20 @@ object ApkInstaller {
             if (installCode == 0 && (installOut.contains("Success") || installOut.contains("success"))) {
                 InstallResult.Success("安装成功")
             } else {
-                InstallResult.Failure("安装失败: ${installOut.trim().ifEmpty { "未知错误" }}")
+                if (installCode == -1) installTimedOut = true
+                val tail = if (installTimedOut) {
+                    "（安装超时，临时文件已保留以免打断仍在进行的安装：$tmpApk）"
+                } else {
+                    ""
+                }
+                InstallResult.Failure(
+                    "安装失败: ${installOut.trim().ifEmpty { "未知错误" }}$tail"
+                )
             }
         } finally {
-            RootService.runCommandSync(cleanCmd, INSTALL_TIMEOUT_MS)
+            if (!installTimedOut) {
+                RootService.runCommandSync(cleanCmd, INSTALL_TIMEOUT_MS)
+            }
         }
     }
 
@@ -175,6 +218,10 @@ object ApkInstaller {
         // 1. 解压 XAPK（zip4j，zip 条目名可能含中文，需 UTF-8）
         val stagingDir = File(File(xapkPath).parentFile ?: File(TMP_DIR), ".shso_xapk_${UUID.randomUUID()}")
         val installedObbTargets = mutableListOf<String>()
+        // 安装前就存在、走幂等分支而**未被本次改动**的目标 OBB。
+        // 必须与 installedObbTargets 严格分开：后者是「失败该清理」清单。
+        // 声明在 try 外，outer finally 的回滚要用它做减法。
+        val preexistingObbTargets = mutableSetOf<String>()
         var obbTransactionLock: String? = null
         var obbLockToken: String? = null
         var installSucceeded = false
@@ -313,7 +360,15 @@ object ApkInstaller {
                             // 该 XAPK 从此再也装不上。
                             val existing = readObbIdentity(targetPath)
                             if (existing != null && existing == readObbIdentity(obb.absolutePath)) {
-                                installedObbTargets += "$targetPath|$existing"
+                                // 关键：**不得**登记进 installedObbTargets。
+                                // 那张表是「本次安装亲手落位、失败时应清理」的清单，
+                                // 而这个文件是**安装前就存在**的用户数据（copyObbAtomically
+                                // 全程刻意不覆盖它）。登记后 outer finally 的回滚会
+                                // removeOwnedObb 把它删掉：两道校验此时都通过（锁仍是本次的，
+                                // 文件从未被本次改动），rm 命中 —— APK 安装失败时
+                                // 用户的游戏数据包被静默删除，且无处恢复。
+                                // 幂等分支只登记「无需清理」，不登记「需要清理」。
+                                preexistingObbTargets += targetPath
                                 continue
                             }
                             return@withContext InstallResult.Failure(
@@ -359,6 +414,9 @@ object ApkInstaller {
         } finally {
             if (!installSucceeded && installedObbTargets.isNotEmpty()) {
                 installedObbTargets.forEach { target ->
+                    // 双重保险：即便幂等条目被误登记，也绝不删除用户原有 OBB。
+                    val path = target.substringBefore('|')
+                    if (path in preexistingObbTargets) return@forEach
                     obbLockToken?.let { removeOwnedObb(target, obbTransactionLock, it) }
                 }
             }
