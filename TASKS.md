@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 `origin/main` 同步 |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（`c620dc6`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
 | 单元测试 | 449 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
@@ -62,7 +62,7 @@
 | `/data/adb/shso` 是 0777 但 **SELinux 拦住第三方**（目录标签 `adb_data_file`）。实测：`shell` 域与 app 域（`run-as` → `u:r:runas_app`，派生自 `untrusted_app`）对该目录的 list / unlink / symlink / write **全部 Permission denied**，dmesg 有对应 `avc: denied { getattr }`；只有 `su`(magisk 域) 能写 |
 | `/data/local/tmp` 子目录默认 `root:root 755`，adb（shell 身份）**无法写入** → 需 `su -c 'chmod 777'` 后再 push |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261004`（纯数字，与 `versionCode` 对齐）；双端同名 Release，资产 `app-release.apk`；Gitee `20261002` 旧资产需网页端删除 |
+| 发版 | tag `20261004`（纯数字，与 `versionCode` 对齐）；双端同名 Release，资产 `app-release.apk` 2132114 字节，双端下载 sha256 与本地一致；旧版 APK 已从 GitHub `20261003`、Gitee `20261003` 与 `20261002` 删除（下载返回 404） |
 
 ---
 
@@ -782,7 +782,7 @@ A71 修完文件管理层后，本次转向**执行与解压链路**
         `installedObbTargets` 回滚表；`outer finally` 在锁释放前遍历该表，
         `removeOwnedObb` 的两道校验此时都通过 → `rm -f` 命中。
   - [x] 与 `copyObbAtomically`「绝不覆盖用户原有 OBB」的设计直接矛盾。
-  - [x] 修复：幂等条目改登记到 `preexistingObbTargets`，回滚时做减集；
+  - [x] 修复：幂等条目改记入 `preexistingObbTargets`，回滚时做减集；
         并在删除循环里再加一道 `path in preexistingObbTargets` 的兜底。
 
 #### 状态机失效
@@ -1333,7 +1333,7 @@ A61 修掉审计写入的软链 TOCTOU 后，这里回头复核它改过的每�
       守卫 v1.4.3 仍安装；档位 3。共修 4 项，其中 2 项在真机复现过
 - [x] **回归**：单元测试与 lint 全绿，Release 2.20 MB 且 `verifyReleasePayload` 红线通过
 
-- [!] **未修，如实登记**
+- [!] **未修**
   - `PathClassifier` 对 `$'/system'` 这类 ANSI-C 引用只判 WARNING（`startsWith("$")`
     兜住了，但没按未解析目标升级）。脚本来源下需守卫兜底才能拦，而守卫目录实测
     **没有 `sh` 包装器** → 这条路径实际是敞开的
