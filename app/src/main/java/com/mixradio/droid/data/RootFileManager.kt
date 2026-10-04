@@ -388,7 +388,7 @@ object RootFileManager {
      * 与 [listFiles] 的差别：不再把失败压成空列表。这是「当前目录为空」
      * 误报的根因修复点 —— 调用方必须能区分二者才能给出正确文案。
      */
-    suspend fun listDirectory(dirPath: String): DirectoryListing = withContext(Dispatchers.IO) {
+    suspend fun listDirectory(dirPath: String, attempt: Int = 0): DirectoryListing = withContext(Dispatchers.IO) {
         val targetPath = if (dirPath.isEmpty()) "/" else dirPath
         if (isUnsafePath(targetPath)) return@withContext DirectoryListing.Failed("路径非法")
 
@@ -439,6 +439,19 @@ object RootFileManager {
                 .filter { it.isNotEmpty() && it != "." && it != ".." }
                 .toList()
             val metas = parseStatMeta(out.substring(cut + META_SEP.length))
+
+            // 名称与元数据取自**两趟独立的 find**，而元数据是按**下标**配对的
+            // （stat 的输出不能带文件名：文件名里的 | 与 \n 会把记录劈开）。
+            // 目录若在两趟之间发生变化，条目数就对不上，此时从第一条起全部错位：
+            // 每个条目拿到的是**别的文件**的类型 / 大小 / 时间。类型错会把文件
+            // 显示成目录（点进去只报「不存在」），大小错更具误导性。
+            //
+            // 路径本身不受影响（它由 names 派生），所以这不会误删误改文件，
+            // 但显示出来的是假信息。重来一次让两个通道落在同一份目录快照上；
+            // 只重试一次 —— 持续变化的目录（日志、下载中）否则会无限递归。
+            if (metas.size != names.size && attempt == 0) {
+                return@withContext listDirectory(targetPath, attempt + 1)
+            }
 
             // ROOT 已确认可进入：条目列表就是权威结果，零条目即「目录确实为空」。
             // 绝不能回落到本地判定 —— /data/adb/shso 等目录应用侧被 SELinux 拦，

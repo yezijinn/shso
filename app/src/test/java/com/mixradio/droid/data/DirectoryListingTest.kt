@@ -366,8 +366,8 @@ class DirectoryListingTest {
     val tail = page.substring(fn, fn + 900)
 
         assertTrue(
-            "重算落盘前必须检查 listIsStale",
-            tail.contains("if (listIsStale) return@LaunchedEffect")
+            "重算落盘前必须检查本列的 listIsStale",
+            tail.contains("if (pane.listIsStale) return@LaunchedEffect")
         )
     }
 
@@ -538,13 +538,17 @@ class DirectoryListingTest {
 
         assertTrue("必须存在落盘标记", page.contains("loadingGenRef"))
         assertTrue(
-            "重算前必须检查本代是否仍在加载",
-            page.contains("if (activePane.loadingGenRef[0] == gen) return@LaunchedEffect")
+            "重算前必须检查本列是否仍在加载",
+            page.contains("if (pane.loadingGenRef[0] == gen) return@LaunchedEffect")
         )
         assertTrue(
             "重算后必须再次检查（等待期间可能又启动了新一代）",
-            page.indexOf("if (activePane.loadingGenRef[0] == gen) return@LaunchedEffect",
+            page.indexOf("if (pane.loadingGenRef[0] == gen) return@LaunchedEffect",
                 page.indexOf("val computed = withContext(Dispatchers.Default)")) > 0
+        )
+        assertTrue(
+            "重算必须按列进行：代次守卫读聚焦列会让右列的结果被左列的加载态挡住",
+            !page.contains("activePane.loadingGenRef")
         )
     }
 

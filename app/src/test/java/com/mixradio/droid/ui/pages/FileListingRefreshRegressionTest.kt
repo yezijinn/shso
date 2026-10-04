@@ -84,10 +84,10 @@ class FileListingRefreshRegressionTest {
 
         val hintAt = page.indexOf("\"当前目录为空\"")
         assertTrue("应存在空目录文案", hintAt > 0)
-        val hintWindow = page.substring(hintAt - 400, hintAt)
+        val hintWindow = page.substring(hintAt - 500, hintAt)
         assertTrue(
             "「当前目录为空」只能在既无搜索词、也无读取错误时出现",
-            hintWindow.contains("errorText != null") && hintWindow.contains("nameQuery.isNotEmpty()")
+            hintWindow.contains("errorText != null") && hintWindow.contains("paneQuery.isNotEmpty()")
         )
     }
 

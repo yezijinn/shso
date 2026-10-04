@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（`c620dc6`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 449 tests / 0 failures / 1 skipped |
+| 单元测试 | 457 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.03 MB（移除未使用的 commons-compress ZIP keep，省 48 KiB），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -67,6 +67,49 @@
 ---
 
 ## 待办
+
+### A81. 双列状态隔离审查（2026-10-04）
+
+页面里绝大多数状态读写走 `PaneProp` 委托，语义是「聚焦列」。这条委托在单列时代
+恰好等价于页面状态，拆成两列后，**凡是本该按列的地方误用了委托，另一列就永远拿不到
+自己的状态**。这类缺陷不崩不报错，只是安静地显示错的文案、不重排、不清词。
+
+- [x] **排序 / 隐藏文件开关只重排聚焦列**
+  - [x] 两者是全局偏好，改一次应当两列同时生效；原实现只有一个
+    `LaunchedEffect(..., nameQuery)`，经委托只看得见聚焦列，另一列保持旧顺序
+    且此后再无重算时机，两列看上去「排序规则不一样」。
+  - [x] 重算特化改为 `panes.forEach { pane -> LaunchedEffect(..., pane.nameQuery) }`，
+    基准、代次守卫、落盘全部走 `pane.*`。
+- [x] **非聚焦列切目录后残留上一个目录的搜索词**
+  - [x] 清词原本是页面级 `LaunchedEffect(currentDirectory)` + 委托，只清聚焦列。
+    右列带着旧 keyword 进新目录，列表按旧词过滤 → 显示「无匹配项」。
+  - [x] 并入按列的 `LaunchedEffect(pane.currentDirectory)`。
+- [x] **非聚焦列读取失败被显示成「当前目录为空」**
+  - [x] `PaneBody` 空态取的是委托的 `directoryLoadError` / `nameQuery`：
+    右列失败时借到左列的 null，于是故障又被说成目录是空的 —— 正是这次要消除的误报，
+    只是搬到了右列。改读 `pane.*`。
+- [x] **保留旧列表时失败原因完全不可见**
+  - [x] 空态区只在 `displayFileList` 为空时渲染；失败时旧列表被保留（置灰），
+    路径栏也无标记，用户只看到一列变灰的列表。`PaneHeader` 补警告标记。
+- [x] **`retriedForEmptyOnce` 永不重置 → 自愈重试全进程只生效一次**
+  - [x] 「每列一次」本意是每个目录一次，实际只在进程启动时置位；冷启动那次用掉之后，
+    后续任何目录的静默空列表都不再重试。切目录时按列复位。
+- [x] **`remember(pane.selectedPaths)` 落在列表项作用域内**
+  - [x] 放进 `itemsIndexed` 的 item 里会得到「每个可见行各一份」：既没起缓存作用，
+    又把一次 O(N) 换成 O(可见行数 × N)。上提到 `PaneBody` 列级。
+- [x] **恒假死分支**：`pane.currentDirectory != requestedDir` —— `requestedDir` 刚从
+  `pane.currentDirectory` 取来，两者恒等，该条件永不命中，且下一行即被覆盖。
+- [x] **元数据按下标配对，目录中途变化会整体错位**
+  - [x] 名称通道 `find -print0` 与元数据通道 `find -exec stat` 是**两趟独立遍历**，
+    元数据不带文件名（带 `%n` 会被文件名里的 `|` 与 `\n` 劈开），只能按下标配对。
+    遍历之间若有文件增删，从第一条起全部错位：类型错会把文件显示成目录、大小错更具误导性。
+  - [x] 设备实测 toybox `stat -c` 不支持 `\0`（原样输出反斜杠零），无法改成 NUL 分隔的
+    四字段记录；改为检测数量不一致时**重取一次**（`attempt` 参数，只重试一次，
+    否则持续变化的目录上会无限递归）。路径本身由名称派生，不受影响。
+- [x] 守护：`DualPaneStateRegressionTest`（8 项）。`DirectoryListingTest` /
+  `PerfAndNestingRegressionTest` / `FileListingRefreshRegressionTest` 中锁定旧
+  聚焦列写法的断言改为按列语义，并补「不得出现 `activePane.loadingGenRef`」。
+- [x] 457 tests / 0 failures / 1 skipped；lint 0 errors。
 
 ### A80. 冷启动双列一列不加载（2026-10-04）
 

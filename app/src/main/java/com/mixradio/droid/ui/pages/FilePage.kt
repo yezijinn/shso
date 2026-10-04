@@ -403,9 +403,10 @@ fun FilePage(
         // 立即作废旧列表的可操作性。此刻 pane.fileList 还是**上一个目录**的内容，
         // 而路径栏已是 requestedDir；若继续可点，用户长按删除的是旧目录里的文件，
         // 路径栏却显示新目录 —— 误删且无从察觉。列表本身随后由本代结果替换。
-        if (pane.currentDirectory != requestedDir || pane.fileList.isNotEmpty()) {
-            pane.listIsStale = true
-        }
+        //
+        // 这里按「本列是否有可见列表」判定，而不是比较目录：requestedDir 刚从
+        // pane.currentDirectory 取来，两者恒等，那个比较分支永远不会命中。
+        //
         // 关键：**不再清空列表**。
         //
         // 旧实现在这里把 pane.fileList / pane.displayFileList 清空，于是每次刷新（切目录、
@@ -800,6 +801,13 @@ fun FilePage(
             // 多选态下若保留旧的 selectedPaths，批量删除/拷贝会作用到旧目录里同名路径（用户还看不见）。
             pane.multiSelectMode = false
             pane.selectedPaths.clear()
+            // 过滤词必须**按列**清。原实现是页面级的 `LaunchedEffect(currentDirectory)`，
+            // 经委托只看得见聚焦列：右列带着上一个目录的 keyword 切进新目录后，
+            // 列表按旧词过滤，用户看到的是「无匹配项」而不是新目录的内容。
+            pane.nameQuery = ""
+            // 自愈重试的「每列一次」是**每个目录一次**。只在进程启动时置位的话，
+            // 冷启动那一次用掉之后，后续任何目录的静默空列表都不再重试。
+            pane.retriedForEmptyOnce = false
             // 建目录与列目录并行执行，避免阻塞列表首屏加载。
             launch { RootFileManager.ensureShsoDir() }
             refreshPane(paneIndexOf(pane))
@@ -821,13 +829,20 @@ fun FilePage(
     }
 
     // 隐藏文件 / 排序偏好变化时后台重算展示列表，无需重新列目录
-    LaunchedEffect(appSettings.showHiddenFiles, appSettings.fileSortMode, nameQuery) {
+    // 展示列表重算必须**按列各挂一个**。
+    //
+    // 排序方式与「显示隐藏文件」是**全局偏好**：改一次应当两列同时生效。
+    // 原实现只有一个 `LaunchedEffect(..., nameQuery)`，经委托只看得见聚焦列 ——
+    // 在设置里改排序后只有当前那一列重排，另一列保持旧顺序且此后再无重算时机，
+    // 两列看上去「排序规则不一样」。
+    panes.forEach { pane ->
+    LaunchedEffect(appSettings.showHiddenFiles, appSettings.fileSortMode, pane.nameQuery) {
         // 抓取基准代次：refresh() 有 refreshGenRef 守卫，本特效此前**没有任何守卫**，
         // 且抓到的是当时的 fileList。进新目录（refresh 在 IO 中）时立刻改搜索/排序，
         // 就会基于**旧目录**的列表算一遍；若它晚于 refresh 落盘，路径栏是新目录、
         // 列表是旧目录内容，而此后 key 不再变化、永远不会再重算 ——
         // 随后的删除/移动/重命名作用到用户看不见的路径。
-        val gen = activePane.refreshGenRef[0]
+        val gen = pane.refreshGenRef[0]
         // 代次相同**不等于**基准有效：refresh() 启动时递增代次，随后才在 IO 线程
         // 读目录并落盘 fileList。若在它落盘前进入本协程，gen 已等于当前代次，
         // 但 fileList 仍是**上一目录**（切目录场景下甚至是空列表），
@@ -836,11 +851,11 @@ fun FilePage(
         // 随后 refresh 才落盘 150 项 —— 但本协程写的是空列表且无人再重算，
         // 用户看到「当前目录为空」，而目录里其实有 150 个文件。
         // 必须等 refresh 真正完成后再重算。
-        if (activePane.loadingGenRef[0] == gen) return@LaunchedEffect
-        val source = fileList
+        if (pane.loadingGenRef[0] == gen) return@LaunchedEffect
+        val source = pane.fileList
         val showHidden = appSettings.showHiddenFiles
         val sortMode = appSettings.fileSortMode
-        val query = nameQuery
+        val query = pane.nameQuery
 
         // 搜索防抖：nameQuery 每敲一个字符都会重启本协程，而 LaunchedEffect 只能取消
         // **协程**，已排进 Dispatchers.Default 队列的计算并不会被中断 ——
@@ -853,33 +868,32 @@ fun FilePage(
         // 只在「本次是由搜索词变化触发」时延迟：排序方式 / 隐藏文件开关是离散选择，
         // 用户要立刻看到结果，不该被拖慢。用「与上一次成功重算时的搜索词比较」判定，
         // 天然只在搜索词真的变了时才等。
-        if (query != activePane.lastRecomputedQueryRef[0]) {
+        if (query != pane.lastRecomputedQueryRef[0]) {
             delay(searchDebounceMs)
             // 等价于「这是搜索词变化触发的重算」——供下次比较，
             // 并保证下一次非搜索触发的重算不会误判为需要防抖。
-            activePane.lastRecomputedQueryRef[0] = query
+            pane.lastRecomputedQueryRef[0] = query
         }
 
         val computed = withContext(Dispatchers.Default) {
             applyFileViewSettings(source, showHidden, sortMode, query)
         }
         // 期间目录已被刷新/切换：refresh 会自己算出正确的 displayFileList，丢弃本次
-        if (gen != activePane.refreshGenRef[0]) return@LaunchedEffect
+        if (gen != pane.refreshGenRef[0]) return@LaunchedEffect
         // 重算期间 refresh 又启动了新一代：本次基于陈旧 fileList，丢弃
-        if (activePane.loadingGenRef[0] == gen) return@LaunchedEffect
+        if (pane.loadingGenRef[0] == gen) return@LaunchedEffect
         // 列表已作废（读取失败、无旧列表可保留）：不得用空 fileList 重算并落盘，
         // 否则会把「读取失败」状态覆盖成「目录为空」。
-        if (listIsStale) return@LaunchedEffect
-        displayFileList = computed
+        if (pane.listIsStale) return@LaunchedEffect
+        pane.displayFileList = computed
+    }
     }
 
 
-    // 切目录清空过滤词：否则新目录会沿用旧关键字，表现为「目录打不开」（实为空结果）
-    LaunchedEffect(currentDirectory) {
-        if (nameQuery.isNotEmpty()) nameQuery = ""
-    }
+    // 切目录清空过滤词已并入上面按列的 `LaunchedEffect(pane.currentDirectory)`：
+    // 那一处按列清，才能覆盖非聚焦列；这里再挂一个页面级的就只会清聚焦列。
 
-    // 选中集必须始终是**当前可见列表**的子集。
+    // 选中集必须始终是**当前可见列表**的子集，且按列各自收敛。
     //
     // 此前选中集不随名称筛选收敛：多选 5 个文件 → 用搜索把它们全筛掉（列表显示
     // 「无匹配项」，可见 0 个）→ 长按任意文件批量删除，确认框只报「选中的 5 个项目」，
@@ -889,19 +903,21 @@ fun FilePage(
     //
     // 这里在筛选词变化后把选中集裁剪到可见范围，并如实告知被裁掉的数量 ——
     // 「静默删掉用户的选择」也比「静默删掉用户的文件」可接受，但两者都不该静默。
-    LaunchedEffect(nameQuery) {
-        if (nameQuery.isEmpty()) return@LaunchedEffect
-        val visible = displayFileList.mapTo(HashSet()) { it.path }
-        val dropped = selectedPaths.count { it !in visible }
+    panes.forEach { pane ->
+    LaunchedEffect(pane.nameQuery) {
+        if (pane.nameQuery.isEmpty()) return@LaunchedEffect
+        val visible = pane.displayFileList.mapTo(HashSet()) { it.path }
+        val dropped = pane.selectedPaths.count { it !in visible }
         if (dropped <= 0) return@LaunchedEffect
-        val kept = selectedPaths.filter { it in visible }
-        selectedPaths.clear()
-        selectedPaths.addAll(kept)
+        val kept = pane.selectedPaths.filter { it in visible }
+        pane.selectedPaths.clear()
+        pane.selectedPaths.addAll(kept)
         feedbackMessage = if (kept.isEmpty()) {
             "筛选后无匹配项，已清空 $dropped 个选择"
         } else {
             "筛选后移除了 $dropped 个不可见项，剩余 ${kept.size} 个"
         }
+    }
     }
 
     val listFontSize = appSettings.fileListFontSize.sp
@@ -916,6 +932,10 @@ fun FilePage(
      */
     @Composable
     fun PaneBody(pane: FilePaneState, paneIndex: Int, compact: Boolean) {
+        // 选中集判选用的 HashSet 必须在**列级别**建一次。
+        // 放进 itemsIndexed 的 item 作用域里会得到「每个可见行各一份」：
+        // 十几行就是十几份集合，既没起到缓存作用，又把 O(N) 换成 O(可见行数 × N)。
+        val paneSelectedPaths = remember(pane.selectedPaths) { pane.selectedPaths.toHashSet() }
         Box(modifier = Modifier.fillMaxSize()) {
         if (pane.isLoading && pane.displayFileList.isEmpty()) {
                                     // 骨架占位：加载期间先铺出列表轮廓，消除首屏空白观感
@@ -976,16 +996,22 @@ fun FilePage(
                                             // 搜索无命中 / 读取失败 / 目录确实为空。
                                             // 旧实现只有后两者共用「当前目录为空」，
                                             // 于是 su 被拒、输出截断等故障都被说成目录是空的。
-                                            val errorText = directoryLoadError
+                                            //
+                                            // 必须读 **pane.** 而非页面级委托：委托指向聚焦列，
+                                            // 非聚焦列失败时会拿左列的错误（null）当自己的，
+                                            // 把「读取失败」显示成「当前目录为空」——
+                                            // 恰好是这次要消除的那类误报，只是搬到了右列。
+                                            val errorText = pane.directoryLoadError
+                                            val paneQuery = pane.nameQuery
                                             val hint = when {
-                                                nameQuery.isNotEmpty() -> "无匹配项：" + nameQuery
+                                                paneQuery.isNotEmpty() -> "无匹配项：" + paneQuery
                                                 errorText != null -> "读取失败：$errorText"
                                                 else -> "当前目录为空"
                                             }
                                             Text(
                                                 text = hint,
                                                 style = AuroraTextStyles.body2,
-                                                color = if (errorText != null && nameQuery.isEmpty()) {
+                                                color = if (errorText != null && paneQuery.isEmpty()) {
                                                     AuroraTokens.Warning
                                                 } else {
                                                     AuroraTokens.TextSecondary
@@ -994,7 +1020,7 @@ fun FilePage(
                                             )
                                             // 读取失败时给出可执行的下一步，而不是让用户对着
                                             // 一句错误文案猜原因。旧列表仍在，可直接重试。
-                                            if (errorText != null && nameQuery.isEmpty()) {
+                                            if (errorText != null && paneQuery.isEmpty()) {
                                                 Spacer(modifier = Modifier.height(12.dp))
                                                 Text(
                                                     text = "点右上角刷新重试",
@@ -1012,11 +1038,6 @@ fun FilePage(
                                         // key 只用唯一的 item.path：混入下标会在删除/排序导致位移时使后续项 key 全变，
                                         // LazyColumn 复用失效、整段重建（滚动抖动、状态错位）。path 由 listFiles 去重保证唯一。
                                         itemsIndexed(pane.displayFileList, key = { _, item -> item.path }) { _, item ->
-                            // 用 HashSet 判选中：selectedPaths 是 SnapshotStateList，
-                            // contains 为线性扫描，选中项多时每行每帧都要扫一遍。
-                            val paneSelectedPaths = remember(pane.selectedPaths) {
-                                pane.selectedPaths.toHashSet()
-                            }
                                             val isExecutable = item.isExecutableScript || item.isExecutableBinary
                                             val isFontFile = !item.isDirectory && (item.name.endsWith(".ttf", ignoreCase = true) || item.name.endsWith(".otf", ignoreCase = true))
 
@@ -1256,6 +1277,17 @@ fun FilePage(
                         color = AuroraTokens.Accent
                     )
                 }
+            }
+            // 读取失败但旧列表被保留时，空态区不渲染（它只在 displayFileList 为空时出现），
+            // 失败原因就完全不可见 —— 用户只看到一列变灰的列表，不知道出了什么事。
+            // 这里补一枚警告标记作为信号；重试入口是底栏的「刷新」。
+            if (pane.directoryLoadError != null && pane.displayFileList.isNotEmpty()) {
+                Text(
+                    text = "!",
+                    style = AuroraTextStyles.footnote2,
+                    color = AuroraTokens.Warning
+                )
+                Spacer(modifier = Modifier.width(4.dp))
             }
             if (!compact) {
                 Spacer(modifier = Modifier.width(6.dp))

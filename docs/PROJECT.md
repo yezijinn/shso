@@ -1,6 +1,6 @@
 # PROJECT.md — shso
 
-面向开发者：技术栈、目录结构、架构与构建约束、执行模型、已知注意点。
+面向开发者：技术栈、目录结构、架构与构建约束、执行方式、已知注意点。
 
 - 功能与用法：[`README.md`](../README.md)
 - 变更记录：[`更新日志.md`](../更新日志.md)
@@ -139,7 +139,7 @@ stat 失败或路径非法时禁止动作分派。
 - **单行渲染上限 `MAX_RENDER_CHARS_PER_LINE = 4000`**：`LazyColumn` 只做**项级**虚拟化、单个 item 内部不切分，
   而 Compose `Text` 的排版成本与该行字符数成正比——实测单行 10 万字符会让主线程排版约 20 秒并触发 ANR
   （`Skipped 1210 frames` / `Davey! 20182ms`）。所有行渲染前过 `renderableLine()` 投影（截断 + 标注省略量），
-  **模型层保持全文**（`plainText` / 「复制输出」不受影响）。
+  **数据层保持全文**（`plainText` / 「复制输出」不受影响）。
 - 日志跟随：`followTail` 只在滚动进行中采样用户真实落点（**不可**用 `!canScrollForward` 判定，
   新内容一追加它立刻变 true，会永久停跟）；发命令与清屏时把它置回 `true`，
   否则用户上翻读日志时发出的命令，其回显与结果都落在屏外、界面看起来「点了没反应」。
@@ -300,7 +300,7 @@ LGPL-2.1 允许以 GPL-3.0 组合）：
 | 设置 | `ui/pages/SettingsPage.kt`（+ `SettingsPagePartials.kt`） | `AppSettings` |
 | 外部唤起 | `MainActivity`（两个 alias）+ `data/ExternalOpen.kt` | `ContentResolver`、`ExternalOpenHub` |
 
-## 执行模型
+## 执行方式
 
 命令与脚本一律直通执行：终端输入直接派发，文件执行仅校验扩展名。
 原有的静态策略审查、运行时守卫、安全档位与审计日志均已移除，设置页不再有对应入口。
@@ -362,7 +362,7 @@ LGPL-2.1 允许以 GPL-3.0 组合）：
     `INSTALL_FAILED_INVALID_APK: Full install must include a base package`）。
   - `pm install-commit` 的失败会**回传到 stdout 并返回非 0**（形如
     `Failure [INSTALL_PARSE_FAILED_NOT_APK: ...]`，rc=4），可直接据此判定。
-- 套件聚合（`ApkInstaller.collectApkSet`）：优先命名约定，其次 manifest 的
+- 套件聚合（`ApkInstaller.collectApkSet`）：先按命名约定匹配，匹配不到再按 manifest 的
   「同包名 + 同版本号」；`bases.size != 1` 时退回单文件，不做猜测。
   改动需同步 `ApkInstallerSetTest`。
 - 「提取 APK」依赖 `QUERY_ALL_PACKAGES`，移除会导致应用列表残缺；

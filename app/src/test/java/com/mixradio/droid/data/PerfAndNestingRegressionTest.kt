@@ -116,7 +116,7 @@ class PerfAndNestingRegressionTest {
     // ── 反应慢：组合期重活 ──────────────────────────────────────────────
 
     @Test fun `搜索重算必须有防抖且 delay 在协程内部`() {
-        val effectAt = filePage.indexOf("LaunchedEffect(appSettings.showHiddenFiles, appSettings.fileSortMode, nameQuery)")
+        val effectAt = filePage.indexOf("LaunchedEffect(appSettings.showHiddenFiles, appSettings.fileSortMode, pane.nameQuery)")
         assertTrue("应能找到重算协程", effectAt > 0)
         val body = filePage.substring(effectAt, effectAt + 2600)
         assertTrue("重算前必须 delay 防抖", body.contains("delay(searchDebounceMs)"))
