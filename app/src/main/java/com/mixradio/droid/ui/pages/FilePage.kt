@@ -297,7 +297,12 @@ fun FilePage(
     // 对文本编辑器而言这是**数据丢失**：编辑器内部的 rememberSaveable 状态随
     // composable 一起被卸载重建，连同未落盘的改动一起消失，用户毫不知情。
     var showImageViewerDialog by rememberSaveable { mutableStateOf(false) }
-    var viewerImageList by rememberSaveable { mutableStateOf<List<String>>(emptyList()) }
+    // 图片列表是**无界**路径列表（整个目录的图片）：整表进 savedInstanceState 会撑爆
+    // binder 上限（见 MAX_SAVED_LIST_ENTRIES）。故经 savedPathListSaver 限量，
+    // 超限时不跨重建保留 —— 旋转后查看器不自动重开，好过 TransactionTooLargeException。
+    var viewerImageList by rememberSaveable(stateSaver = savedPathListSaver) {
+        mutableStateOf<List<String>>(emptyList())
+    }
     var viewerImageIndex by rememberSaveable { mutableIntStateOf(0) }
     var showTextEditorDialog by rememberSaveable { mutableStateOf(false) }
     var viewerTargetItem by rememberSaveable(stateSaver = FileItemSaver) { mutableStateOf<FileItem?>(null) }

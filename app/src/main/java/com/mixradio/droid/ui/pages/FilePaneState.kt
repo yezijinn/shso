@@ -17,6 +17,33 @@ import kotlin.reflect.KProperty
 import kotlinx.coroutines.Job
 
 /**
+ * 可跨配置变更保存的路径列表长度上限。
+ *
+ * `rememberSaveable` 的状态最终写进 Activity 的 `savedInstanceState`（Bundle），
+ * 经 binder 传递有约 **1MB** 上限（官方建议 savedInstanceState 保持 < 50KB），
+ * 超出即抛 TransactionTooLargeException，旋转 / 分屏当场崩溃。
+ *
+ * 选中集合与图片浏览列表都是**无界**的：`listDirectory` 对条目数无上限，
+ * 大目录全选可达数千条路径、每条 50~100 字节，与其它已保存状态叠加即可撑爆 Bundle。
+ * 超过上限时**整表不保存**：还原后该列表为空是「诚实的降级」——
+ * 只保存前 N 条会让用户看到「选中了一部分」的假象，比丢失选择更危险。
+ */
+internal const val MAX_SAVED_LIST_ENTRIES = 400
+
+/** 超限返回空表，否则返回可进 Bundle 的副本（判据见 [MAX_SAVED_LIST_ENTRIES]）。 */
+internal fun savedPathList(paths: List<String>): ArrayList<String> =
+    if (paths.size <= MAX_SAVED_LIST_ENTRIES) ArrayList(paths) else ArrayList()
+
+/** `List<String>` 的存档器：超限即不保存（供图片浏览列表等无界路径列表复用）。 */
+internal val savedPathListSaver: Saver<List<String>, Any> = Saver(
+    save = { savedPathList(it) },
+    restore = { saved ->
+        @Suppress("UNCHECKED_CAST")
+        saved as List<String>
+    }
+)
+
+/**
  * 把局部属性读写**转发到聚焦列**的委托。
  *
  * 页面里有上百处 `currentDirectory` / `nameQuery` / `isLoading` 之类的读写，
@@ -136,6 +163,9 @@ class FilePaneState(
          *
          * 只保存**用户可见的浏览态**：列表内容由目录变化重新列举，代次记账等运行时字段
          * 重建后本就该归零（保留反而会与新的刷新代次错配）。
+         *
+         * 选中集合经 [savedPathList] 限量：大目录全选时它是无界路径列表，整表进 Bundle
+         * 会撑爆 binder 上限（见 [MAX_SAVED_LIST_ENTRIES]）。
          */
         fun saver(listState: LazyListState): Saver<FilePaneState, Any> = listSaver(
             save = { pane ->
@@ -144,7 +174,7 @@ class FilePaneState(
                     pane.showSearch,
                     pane.nameQuery,
                     pane.multiSelectMode,
-                    ArrayList(pane.selectedPaths)
+                    savedPathList(pane.selectedPaths)
                 )
             },
             restore = { saved ->

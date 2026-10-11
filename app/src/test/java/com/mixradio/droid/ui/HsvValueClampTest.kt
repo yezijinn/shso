@@ -124,4 +124,41 @@ class HsvValueClampTest {
         val thumbX = (progress * thumbUsable).coerceIn(0f, thumbUsable)
         assertEquals("可用宽度被钳到 0 后 thumb 必须落在 0", 0f, thumbX, 0.0001f)
     }
+
+    // ========================================================================
+    // 触摸映射与 thumb 绘制映射必须同源（色相条 / 明暗条）
+    // ========================================================================
+
+    @Test fun `明暗条点选位置与 thumb 落点一致`() {
+        // 明暗条此前触摸用整宽、thumb 却画在 progress*(width-直径)，右侧点选偏移最多一个
+        // thumb 直径（色相条已修，明暗条漏改）。此处固化「同一套映射」的往返一致。
+        val widthPx = 300f
+        val thumb = 28f
+        val usable = (widthPx - thumb).coerceAtLeast(1f)
+        for (x in listOf(0f, 75f, 150f, 225f, 300f)) {
+            val value = 0.2f + (x.coerceIn(0f, usable) / usable) * 0.8f
+            val progress = ((value - 0.2f) / 0.8f).coerceIn(0f, 1f)
+            val thumbX = progress * (widthPx - thumb).coerceAtLeast(0f)
+            assertEquals(
+                "点选 x=$x 后 thumb 应落在同一位置",
+                x.coerceIn(0f, usable),
+                thumbX,
+                0.01f
+            )
+        }
+    }
+
+    @Test fun `取色器两条滑动条都扣除 thumb 直径`() {
+        // 源码契约：两处的触摸映射都必须减掉 thumb 直径，避免再次出现「只修一条、漏一条」。
+        val s = java.io.File(
+            "src/main/java/com/mixradio/droid/ui/components/ColorWheelDialog.kt"
+        ).readText()
+        val hits = Regex("maxWidthPx - thumbDiameterPx|size\\.width - thumbDiameterPx")
+            .findAll(s).count()
+        org.junit.Assert.assertTrue("色相条与明暗条的触摸映射都应扣除 thumb 直径", hits >= 4)
+        org.junit.Assert.assertTrue(
+            "明暗条不得再出现整宽触摸映射",
+            !s.contains("clampedX / maxWidthPx")
+        )
+    }
 }

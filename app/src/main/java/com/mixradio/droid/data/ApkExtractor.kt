@@ -94,11 +94,20 @@ object ApkExtractor {
      *
      * 单包应用 1 项；分包应用为 base + 每个 split 各一项（`-split1`、`-split2` …，序号从 1 起）。
      * 抽成纯函数：本机可能没有分包应用，靠单测覆盖这条分支的产物规划。
+     *
+     * [labelSuffix] 用于同名去重，拼进**标签段**：`<标签><后缀>-<版本>[-split<序号>].APK`。
+     * 后缀必须落在标签段而不是文件名末尾——套件 stem 由「去 `-split<数字>` 尾缀」导出，
+     * 末尾后缀会让 split 的 `-splitN` 不再处于结尾（`ApkInstaller.apkSetStem` 去不掉它），
+     * base 与 split 的 stem 不再配对，分包套件聚合随之失效（退化为单文件安装 → MISSING_SPLIT）。
      */
-    internal fun plannedTargets(app: InstalledAppInfo): List<Pair<String, String>> = buildList {
-        add(baseFileName(app.label, app.versionCode) to app.baseApk)
+    internal fun plannedTargets(
+        app: InstalledAppInfo,
+        labelSuffix: String = ""
+    ): List<Pair<String, String>> = buildList {
+        val label = app.label + labelSuffix
+        add(baseFileName(label, app.versionCode) to app.baseApk)
         app.splitApks.forEachIndexed { idx, path ->
-            add(splitFileName(app.label, app.versionCode, idx + 1) to path)
+            add(splitFileName(label, app.versionCode, idx + 1) to path)
         }
     }
 
@@ -132,13 +141,6 @@ object ApkExtractor {
         return if (existing == packageName) "" else "-${sanitizeFileName(packageName)}"
     }
 
-    /** 在扩展名前插入后缀；后缀为空则原样返回。 */
-    internal fun withSuffix(name: String, suffix: String): String {
-        if (suffix.isEmpty()) return name
-        val dot = name.lastIndexOf('.')
-        return if (dot > 0) name.substring(0, dot) + suffix + name.substring(dot) else name + suffix
-    }
-
     /**
      * 提取 [app] 的全部安装包到 [DOWNLOAD_DIR]。
      * 单包应用产出 1 个文件；分包应用产出 base + 每个 split 各一个文件。
@@ -152,18 +154,18 @@ object ApkExtractor {
         val rootGranted = runCatching { RootService.isRootGranted == true }.getOrDefault(false)
         val myId = Process.myUid()
 
-        val planned = plannedTargets(app)
-
         // 同名去重：`<应用名>-<versionCode>` 无法区分标签与版本码**同时相同**的不同应用
         // （典型为应用分身 / 同一 APK 双开），第二次提取会静默覆盖第一次的产物。
         // 仅当目标已存在且确认属于**另一个**包时才追加 `-<packageName>`：同一应用重复提取
         // 仍是覆盖刷新，常规场景的文件名与既有契约完全一致。
-        // 分包套件必须整组共用同一后缀，否则 base 与 split 的 stem 不再配对。
-        val suffix = collisionSuffix(context, File(dir, planned.first().first), app.packageName)
+        // 后缀拼进标签段，使分包套件整组共用同一 stem（见 plannedTargets 说明）。
+        val baseName = baseFileName(app.label, app.versionCode)
+        val suffix = collisionSuffix(context, File(dir, baseName), app.packageName)
+        val planned = plannedTargets(app, suffix)
 
         val written = ArrayList<String>(planned.size)
         for ((name, src) in planned) {
-            val dst = File(dir, withSuffix(name, suffix))
+            val dst = File(dir, name)
             val one = copyOne(src, dst, rootGranted, myId)
             if (!one.ok) return@withContext Result(false, one.message)
             written += dst.absolutePath

@@ -92,6 +92,63 @@ class CharsetDetectorTest {
         assertEquals(StandardCharsets.UTF_8, d.charset)
     }
 
+    /**
+     * 在一段合法 UTF-8 的**字符边界**上插入一个非法字节，模拟「日志混入坏字节 / 尾部被截断」。
+     *
+     * 必须插在边界而非字节中点：落在多字节字符中间会把该字符切成两段非法序列、
+     * 产生两个替换符，既有字符也不再完整，无法再断言「原文原样保住」。
+     */
+    private fun withStrayByte(valid: ByteArray, value: Byte = 0x80.toByte()): ByteArray {
+        var at = valid.size / 2
+        // 续接字节（10xxxxxx）之前不是字符边界，向后找到下一个起始字节
+        while (at < valid.size && (valid[at].toInt() and 0xC0) == 0x80) at++
+        val out = ByteArray(valid.size + 1)
+        System.arraycopy(valid, 0, out, 0, at)
+        out[at] = value
+        System.arraycopy(valid, at, out, at + 1, valid.size - at)
+        return out
+    }
+
+    @Test fun `长 UTF-8 中文混入一个非法字节仍判 UTF-8`() {
+        // 此前判据以「字节数」为分母，文件越长阈值越松：长文件含 1 个坏字节会被降级判成
+        // GB18030，中文全部乱码，保存一次就按 GB18030 全量重写 → 原始字节不可逆损坏。
+        val text = (1..40).joinToString("\n") { "第 $it 行中文内容，样本长度足够" }
+        val bytes = withStrayByte(text.toByteArray(StandardCharsets.UTF_8))
+        val d = CharsetDetector.detect(bytes)
+        assertEquals("长 UTF-8 文件含个别坏字节不得降级为 GB18030", StandardCharsets.UTF_8, d.charset)
+        // 合法部分必须原样保住，只有那个坏字节变替换符
+        assertEquals(text, d.text.replace("\uFFFD", ""))
+    }
+
+    @Test fun `短 UTF-8 中文混入一个非法字节仍判 UTF-8`() {
+        // 短样本最容易被「按字节数取比例」的旧判据误伤：20 来个字节里 1 个坏字节，
+        // 按字节算密度已到 1% 门槛边缘，按字符算则明显低于阈值。
+        val text = "你好世界，中文测试"
+        val bytes = withStrayByte(text.toByteArray(StandardCharsets.UTF_8))
+        val d = CharsetDetector.detect(bytes)
+        assertEquals(StandardCharsets.UTF_8, d.charset)
+        assertEquals(text, d.text.replace("\uFFFD", ""))
+    }
+
+    @Test fun `纯 GB18030 中文仍判 GB18030（不被 UTF-8 兜底抢走）`() {
+        val cs = java.nio.charset.Charset.forName("GB18030")
+        val text = (1..40).joinToString("\n") { "第 $it 行中文内容" }
+        val d = CharsetDetector.detect(text.toByteArray(cs))
+        assertEquals(cs, d.charset)
+        assertEquals(text, d.text)
+    }
+
+    @Test fun `ASCII 与 GB18030 中文混排仍判 GB18030`() {
+        // 「大量 ASCII + 中文」是 Windows 中文文本的常见形态：ASCII 部分解码无替换符，
+        // 会把整体替换符占比拉低（实测 0.26），阈值必须低于它，否则此类文件被判成 UTF-8、
+        // 中文全乱码并在保存时按 UTF-8 全量重写。
+        val cs = java.nio.charset.Charset.forName("GB18030")
+        val text = (1..40).joinToString("\n") { "line $it: 中文内容 mixed with ascii 文本" }
+        val d = CharsetDetector.detect(text.toByteArray(cs))
+        assertEquals(cs, d.charset)
+        assertEquals(text, d.text)
+    }
+
     @Test fun `UTF-16LE 长中文文本解码内容完全一致`() {
         val text = (1..60).joinToString("\n") { "第 $it 行：中文与 ASCII mixed 混排" }
         val d = CharsetDetector.detect(utf16LeNoBom(text))

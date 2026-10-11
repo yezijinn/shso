@@ -3,6 +3,8 @@
 
 package com.mixradio.droid.data
 
+import com.mixradio.droid.ui.pages.MAX_SAVED_LIST_ENTRIES
+import com.mixradio.droid.ui.pages.savedPathList
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -187,17 +189,53 @@ class ConcurrencyAndSessionGuardTest {
         // 阻塞读不响应协程取消：脚本把 stdout 交给逃逸到 init 下的后代后，read 永不返回
         // EOF，旧协程 + IO 线程 + Process 句柄一并常驻，任务每被 kill / 覆盖启动一次泄漏一份。
         // 必须改成「无数据即挂起等待」，让取消在挂起点立即生效。
+        // 判空还须问 **reader** 而非底层 stream：InputStreamReader 会预读一大块进自己的
+        // 字符缓冲，底层 available() 归零时 reader 里仍有数据，用 stream 判空会丢尾部输出。
         val s = source("data/RootService.kt")
         val start = s.indexOf("val buffer = CharArray(2048)")
         assertTrue("应能找到主执行读取循环", start > 0)
         val loop = s.substring(start, minOf(s.length, start + 1_400))
-        assertTrue("无数据时必须挂起等待", loop.contains("if (stream.available() <= 0) {"))
+        assertTrue("无数据时必须挂起等待", loop.contains("if (!reader.ready()) {"))
         assertTrue("挂起等待须用 delay", loop.contains("delay(OUTPUT_POLL_MS)"))
         // 新任务接管后继续排空管道而不是停止读取：提前退出会让后代进程的写端填满而永久阻塞。
         assertTrue("新任务接管后须继续排空管道", loop.contains("if (executionJob !== myJob) continue"))
         assertFalse(
+            "不得再用底层 stream 的 available() 判空（会丢掉 reader 缓冲里的尾部输出）",
+            loop.contains("stream.available() <= 0")
+        )
+        assertFalse(
             "主执行读取循环不得保留无条件阻塞读",
             loop.contains("reader.read(buffer).also { count = it } != -1")
+        )
+    }
+
+    @Test
+    fun `无界路径列表不得整表写入 savedInstanceState`() {
+        // savedInstanceState 是 Bundle，经 binder 传递约 1MB 上限（官方建议 < 50KB），
+        // 超出即 TransactionTooLargeException、旋转当场崩。选中集合与图片列表都随
+        // 目录条目数无界增长（listDirectory 对条目数无上限）。
+        val pane = source("ui/pages/FilePaneState.kt")
+        assertTrue("选中集合须经限量函数落盘", pane.contains("savedPathList(pane.selectedPaths)"))
+        val page = source("ui/pages/FilePage.kt")
+        assertTrue(
+            "图片列表须用限量存档器",
+            page.contains("rememberSaveable(stateSaver = savedPathListSaver)")
+        )
+    }
+
+    @Test
+    fun `路径列表存档器超限时整表丢弃而不截断`() {
+        // 只保存前 N 条会让用户看到「选中了一部分」的假象，比丢失选择更危险，
+        // 故超限一律整表丢弃；未超限则原样保留。
+        val small = List(10) { "/sdcard/f$it" }
+        assertEquals(small, savedPathList(small))
+        assertEquals(
+            MAX_SAVED_LIST_ENTRIES,
+            savedPathList(List(MAX_SAVED_LIST_ENTRIES) { "p" }).size
+        )
+        assertTrue(
+            "超限必须整表丢弃",
+            savedPathList(List(MAX_SAVED_LIST_ENTRIES + 1) { "p" }).isEmpty()
         )
     }
 
@@ -252,6 +290,10 @@ class ConcurrencyAndSessionGuardTest {
         val s = source("data/ApkExtractor.kt")
         assertTrue("须有归属判定", s.contains("private fun collisionSuffix(context: Context, baseTarget: File, packageName: String): String"))
         assertTrue("解析不出归属时保持覆盖语义", s.contains("}.getOrNull() ?: return \"\""))
-        assertTrue("整组须共用同一后缀", s.contains("val suffix = collisionSuffix(context, File(dir, planned.first().first), app.packageName)"))
+        assertTrue("后缀须传进标签段而非拼到文件名末尾", s.contains("val planned = plannedTargets(app, suffix)"))
+        assertTrue(
+            "归属判定须基于 base 名（后缀尚未参与）",
+            s.contains("val suffix = collisionSuffix(context, File(dir, baseName), app.packageName)")
+        )
     }
 }

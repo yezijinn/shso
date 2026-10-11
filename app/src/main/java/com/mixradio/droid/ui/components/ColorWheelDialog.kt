@@ -139,10 +139,10 @@ fun ColorWheelDialog(
         String.format(java.util.Locale.ROOT, "#%06X", 0xFFFFFF and argb)
     }
 
-    // 色相条 thumb 直径：触摸映射与绘制映射都要用，故提到外层作用域
-    val hueThumbDiameter = 28.dp
-    val hueThumbDiameterPx = with(androidx.compose.ui.platform.LocalDensity.current) {
-        hueThumbDiameter.toPx()
+    // 色相条/明暗条共用同一 thumb 直径；触摸映射与绘制映射必须同一套（见各条注释）
+    val thumbDiameter = 28.dp
+    val thumbDiameterPx = with(androidx.compose.ui.platform.LocalDensity.current) {
+        thumbDiameter.toPx()
     }
 
     val rainbowBrush = remember {
@@ -230,7 +230,7 @@ fun ColorWheelDialog(
                             // hue/360*(width-28dp)，两套公式差半个 thumb 直径
                             // （≈300dp 宽条上约 17° 色相）—— 点哪不是哪。
                             fun updateHue(x: Float, maxWidthPx: Float) {
-                                val usable = (maxWidthPx - hueThumbDiameterPx).coerceAtLeast(1f)
+                                val usable = (maxWidthPx - thumbDiameterPx).coerceAtLeast(1f)
                                 val clampedX = x.coerceIn(0f, usable)
                                 hue = (clampedX / usable) * 360f
                                 // 接近灰或黑时拖动色相在预览上看不出变化 —— 但这是**显示层**的补偿，
@@ -248,7 +248,7 @@ fun ColorWheelDialog(
                         .pointerInput(Unit) {
                             detectDragGestures { change, _ ->
                                 change.consume()
-                                val usable = (size.width - hueThumbDiameterPx).coerceAtLeast(1f)
+                                val usable = (size.width - thumbDiameterPx).coerceAtLeast(1f)
                                 val clampedX = change.position.x.coerceIn(0f, usable)
                                 hue = (clampedX / usable) * 360f
                                 // 同 updateHue：预览补偿只在显示层，不回写提交取值
@@ -258,12 +258,12 @@ fun ColorWheelDialog(
                     val widthPx = with(density) { maxWidth.toPx() }
                     
                     // 与 updateHue 同一套映射：x = hue/360 * (width - thumbDiameter)
-                    val thumbX = (hue / 360f * (widthPx - hueThumbDiameterPx)).coerceIn(0f, (widthPx - hueThumbDiameterPx).coerceAtLeast(0f))
+                    val thumbX = (hue / 360f * (widthPx - thumbDiameterPx)).coerceIn(0f, (widthPx - thumbDiameterPx).coerceAtLeast(0f))
 
                     Box(
                         modifier = Modifier
                             .offset { IntOffset(thumbX.roundToInt(), with(density) { 3.dp.toPx().roundToInt() }) }
-                            .size(hueThumbDiameter)
+                            .size(thumbDiameter)
                             .shadow(4.dp, RoundedCornerShape(0.dp))
                             .clip(RoundedCornerShape(0.dp))
                             .background(Color.White)
@@ -300,8 +300,12 @@ fun ColorWheelDialog(
                         .background(brightnessBrush)
                         .pointerInput(Unit) {
                             fun updateBrightness(x: Float, maxWidthPx: Float) {
-                                val clampedX = x.coerceIn(0f, maxWidthPx)
-                                val ratio = clampedX / maxWidthPx
+                                // 与 thumb 绘制同一套映射：usable = width - thumb 直径。
+                                // 此前用整宽，点击最右端 value 到 1.0 而 thumb 只到 width-直径，
+                                // 右侧点选时 thumb 落在手指左侧十余像素（色相条已修，这里漏改）。
+                                val usable = (maxWidthPx - thumbDiameterPx).coerceAtLeast(1f)
+                                val clampedX = x.coerceIn(0f, usable)
+                                val ratio = clampedX / usable
                                 // 明度下限 0.2：终端文字在纯黑下不可读，故映射到 [0.2, 1]
                                 value = (0.2f + ratio * 0.8f).coerceIn(0.2f, 1f)
                             }
@@ -313,8 +317,9 @@ fun ColorWheelDialog(
                         .pointerInput(Unit) {
                             detectDragGestures { change, _ ->
                                 change.consume()
-                                val clampedX = change.position.x.coerceIn(0f, size.width.toFloat())
-                                val ratio = clampedX / size.width.toFloat()
+                                val usable = (size.width - thumbDiameterPx).coerceAtLeast(1f)
+                                val clampedX = change.position.x.coerceIn(0f, usable)
+                                val ratio = clampedX / usable
                                 // 同 updateBrightness：明度区间为 [0.2, 1]
                                 value = (0.2f + ratio * 0.8f).coerceIn(0.2f, 1f)
                             }
@@ -322,8 +327,6 @@ fun ColorWheelDialog(
                 ) {
                     val widthPx = with(density) { maxWidth.toPx() }
                     
-    val thumbDiameter = 28.dp
-    val thumbDiameterPx = with(density) { thumbDiameter.toPx() }
                     val progress = ((value - 0.2f) / 0.8f).coerceIn(0f, 1f)
                     // min > max 时 Float.coerceIn 抛 IllegalArgumentException：窄容器
                     // （分屏小窗 / 折叠屏外屏 / 极端显示缩放）下 widthPx 可能小于 thumb 直径。

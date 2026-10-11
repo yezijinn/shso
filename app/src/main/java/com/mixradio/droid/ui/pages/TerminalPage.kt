@@ -48,6 +48,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -231,11 +232,15 @@ fun TerminalPage(
     // 即使不崩，旧协程把 consumedLog 回写成较旧值，下次 startsWith 判错 → 重复行或整段丢行。
     // 故整块同步，并加代次守卫禁止过期协程写回。
     //
-    // isVisible 进 key：离屏时不解析。命令持续输出时，离屏页会被滑窗裁剪反复触发全量重解析，
-    // 而这部分开销用户完全看不到。停掉后，离屏期间的输出合并为回到本页时的一次追赶
-    // （日志仍是本页内容的增量就只喂增量，窗口被裁过一次全量），CPU 只花在该看的时候。
-    LaunchedEffect(terminalDefaultColor, isVisible) {
-        if (!isVisible) return@LaunchedEffect
+    // 可见性只作为解析的**门槛**，不进 effect key：解析块是纯 CPU、没有挂起点、取消打不断
+    // （见下），若 isVisible 进 key，切页会取消并重启 effect —— 旧块继续跑完、新 collect 用
+    // 尚未写回的旧进度再喂一次同一段，终端出现重复行。故 effect 只在换色时重启，
+    // 可见性用 rememberUpdatedState 跟随，在 collect 内部判定。
+    //
+    // 离屏时跳过解析（那一步的开销与整个窗口 250k 成正比，用户完全看不到）；可见性变化本身
+    // 会触发 snapshotFlow 重新发射，回到本页时把离屏期间积累的输出一次性追上。
+    val visibleState = rememberUpdatedState(isVisible)
+    LaunchedEffect(terminalDefaultColor) {
         // 仅「换色 / 首次进入」需要清空重建；复用缓存解析器时保留其状态与进度。
         if (parseHolder.state?.parser !== ansiParser) {
             synchronized(ansiParser) {
@@ -243,9 +248,11 @@ fun TerminalPage(
             }
             parseHolder.state = null
         }
-        snapshotFlow { RootService.outputLog }
+        snapshotFlow { RootService.outputLog to visibleState.value }
             .conflate()
-            .collect { log ->
+            .collect { (log, visible) ->
+                // 离屏：只记账不动解析器。可见性变化会让快照流重新发射，回到本页即在此追上。
+                if (!visible) return@collect
                 // 复用缓存时首轮日志常与缓存进度一致，此时无需任何解析。
                 val prev = synchronized(ansiParser) { parseHolder.state?.consumedLog ?: "" }
                 if (log == prev) return@collect

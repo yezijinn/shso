@@ -66,11 +66,21 @@ class TerminalGenerationGuardTest {
         // 命令持续输出时，看不见的那一页会连同滑窗裁剪反复付全量重解析的代价。
         val s = File("src/main/java/com/mixradio/droid/ui/pages/TerminalPage.kt").readText()
         assertTrue("应对外暴露可见性开关", s.contains("isVisible: Boolean = true"))
+        // 可见性只能当门槛，不能进 effect key：进 key 会让切页取消并重启解析，
+        // 旧块（纯 CPU、取消打不断）与新 collect 争用同一解析器 → 重复喂入。
         assertTrue(
-            "解析 effect 的 key 必须包含 isVisible",
-            s.contains("LaunchedEffect(terminalDefaultColor, isVisible)")
+            "可见性必须用 rememberUpdatedState 跟随",
+            s.contains("val visibleState = rememberUpdatedState(isVisible)")
         )
-        assertTrue("不可见时必须直接跳过解析", s.contains("if (!isVisible) return@LaunchedEffect"))
+        assertTrue(
+            "解析 effect 的 key 只能含颜色，不得含 isVisible",
+            s.contains("LaunchedEffect(terminalDefaultColor) {")
+        )
+        assertTrue(
+            "快照流必须同时观察可见性变化以便回到本页时追赶",
+            s.contains("snapshotFlow { RootService.outputLog to visibleState.value }")
+        )
+        assertTrue("不可见时必须跳过解析", s.contains("if (!visible) return@collect"))
     }
 
     @Test

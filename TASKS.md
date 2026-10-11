@@ -16,11 +16,11 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → 见 § A106） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → 见 § A107） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 585 tests / 0 failures / 1 skipped |
+| 单元测试 | 593 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
-| release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
+| release 体积 | 2.78 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
 | 文件名通道 | `find -print0`（NUL 分隔）；元数据通道**自带名称**（`printf "%s\0"` + `stat`），按名称配对 → 列举期间增删/断链不再让大小与类型串位；标记须两侧 NUL 包裹才命中 |
 | 列表一致性 | `listIsStale` + `loadingGenRef` 双护栏：陈旧列表不可操作，重算不越代落盘 |
@@ -67,11 +67,59 @@
 | 已知环境坑 | 本机 toybox `mktemp` 创建失败时把模板前缀打成 `(null)/`（如 `Failed to create directory (null)//data/…`）——`(null)` 不是路径的一部分，真实模板要减去该前缀再看 |
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2893485 字节，双端下载 sha256 与本地一致（`c045f70e…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版发行程序已从双端移除（Release 与 tag 保留） |
+| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`54fc3b56…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版发行程序已从双端移除（Release 与 tag 保留） |
 
 ---
 
 ## 待办
+
+### A107. 审查发现项：读取截断、套件配对、编码降级与可见性竞态（2026-10-11）
+
+清理 `docs/AI-1-BUG.md` 第 105~108 节新增的 6 项。全部是 **6201599 / 1bff0cf 两笔改动自身
+引入的回归或窄窗口** —— 「改完照常编译、单测也全绿」，只在真机时序或大输入下暴露。
+
+- [x] **P1 · 终端输出末尾截断（BUG-EXC-154，6201599 回归）**：执行输出读取循环的判空问底层
+  `stream.available()`、读取用带缓冲的 `InputStreamReader`。首次 read 即把约 8KB 预读进 reader
+  自己的字符缓冲，底层 available() 立刻归零 → 循环误判「无数据」，进程退出后宽限计数到顶即
+  break，缓冲里剩的尾部输出被整段丢弃（AI-1 实证：20000 字节实收 18432，真实子进程丢 5664）。
+  - 修复：判空改 `if (!reader.ready())`（ready 同时反映字符缓冲与底层），补 `count == 0` 的
+    挂起保护（解码器在等多字节后续字节时会 ready 为真却读不出），宽限复位移到成功读取之后。
+- [x] **P3 · 提取去重后缀破坏分包套件配对（BUG-CONSIST-155，6201599 回归）**：后缀被
+  `withSuffix` 加在扩展名前（文件名末尾），而套件 stem 由「去 `-split\d+$` 尾缀」导出 ——
+  split 的 `-split1` 不再处于末尾，`isSplitName` 为假、两 stem 不等，命名聚合失效并退化为
+  单文件安装（受保护目录下 manifest 也读不到 → MISSING_SPLIT）。
+  - 修复：`plannedTargets` 增 `labelSuffix` 参数，后缀拼进**标签段**
+    （`<label><suffix>-<version>[-splitN].APK`）；`extract()` 先用不含后缀的 base 名做归属判定，
+    再把 suffix 交给 plannedTargets；删除 `withSuffix`。
+- [x] **P3 · 无界路径列表撑爆 Bundle（BUG-EDGE-156）**：选中集合与图片列表都是随目录条目数
+  无界增长的路径列表，整表进 `savedInstanceState`（约 1MB binder 上限）后旋转/分屏抛
+  TransactionTooLargeException。
+  - 修复：新增 `MAX_SAVED_LIST_ENTRIES = 400` 与 `savedPathList()`，超限**整表丢弃**
+    （只存前 N 条会让用户误以为「选中了一部分」，比丢失选择更危险）；选中集合与图片列表
+    （`savedPathListSaver`）都经该限量函数。
+- [x] **P2 · GB18030 降级判据量纲错误（BUG-LOGIC-158）**：原判据 `replacements * 100 <= bytes.size`
+  分子是替换符**字符数**、分母是**字节数**，文件越长阈值越松 → 长 UTF-8 文件混入个别坏字节
+  即被判成 GB18030，中文全乱码，保存一次即按 GB18030 全量重写、原始字节不可逆损坏。
+  - 修复：分母改已解码字符数（`utf8Text.length`），阈值定 0.20。实测替换符密度：纯 UTF-8
+    中文混 1 坏字节 = 长 0.001 / 短 0.10；纯 GB18030 = 0.72、ASCII 与 GB18030 混排 = 0.26。
+    0.20 落在两侧之间且留裕度，短样本不再需要「绝对数量」兜底（常量与文档一并删除）；
+    GB18030 候选判据的分母同步改 `gbText.length`。
+- [x] **P3 · 明暗条触摸映射未同步 thumb 扣除（BUG-LOGIC-159）**：色相条早已修「触摸映射与
+  thumb 绘制同源」，明暗条漏改 —— 触摸用整宽、thumb 画在 `progress*(width-thumb)`，
+  右侧点选偏移最多一个 thumb 直径（实测 x=300 偏差 28px）。
+  - 修复：thumb 直径提到外层作用域共用，明暗条 tap 与 drag 两处触摸映射改为
+    `usable = (maxWidthPx - thumbDiameterPx).coerceAtLeast(1f)`；删除条内重复声明。
+- [x] **P3 · 切页重启解析的窄窗口双喂（BUG-CONC-157，1bff0cf 回归）**：把 `isVisible` 加进
+  effect key 后，切页即取消并重启 effect；而 `withContext(Dispatchers.Default)` 里的解析块是
+  纯 CPU、无挂起点、取消打不断 —— 旧块继续推进解析器，新 collect 读到的 prev 仍是旧值，
+  同一段被重复喂入（重复行）。触发频率由「换色才偶发」扩大到「切页即可能」。
+  - 修复：`isVisible` 移出 effect key，改 `rememberUpdatedState` 门控 +
+    `snapshotFlow { RootService.outputLog to visibleState.value }`，collect 内 `if (!visible) return@collect`。
+    离屏仍零解析，回到本页由可见性变化触发重新发射、增量追赶，结构上消除重启竞态。
+- [x] 单测与契约测试：`testDebugUnitTest` 593 tests / 0 failures / 1 skipped。
+- [x] 发版：APK 构建（2909869 字节，sha256 `54fc3b56…`）、root 真机冒烟（安装成功、进程存活、
+  logcat 无 FATAL/ANR）、双端 `main` 与 tag `20261011` 推送、双端 Release 目标提交改指该代码
+  提交并替换资产，双端下载哈希与本地一致。
 
 ### A106. 离屏终端页停解析（2026-10-11）
 

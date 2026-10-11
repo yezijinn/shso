@@ -55,14 +55,29 @@ object CharsetDetector {
         //    于是**整个文件**被按 GB18030 重解释：原本合法的 UTF-8 中文全部变乱码、
         //    非法字节变 U+FFFD。用户看不出异常（只是满屏乱码），改一个字点保存
         //    就按 GB18030 全量重写 → 原始字节被彻底替换，不可逆、不可撤销。
-        //    故先判「这到底是不是 GB18030」：GB18030 覆盖全部 Unicode 码位，
-        //    真正的 GB18030 文本不该含 U+FFFD；含得越多说明越不是它。
+        //
+        //    判别只能看 **UTF-8 视角**：GB18030 覆盖全部 Unicode 码位，几乎能把任意字节串
+        //    解得「干净」，因此「GB18030 解码后 U+FFFD 少」不足以证明它真是 GB18030
+        //    （UTF-8 中文按 GB18030 解得的多是合法但错误的汉字，替换符为 0）。
+        //    反过来，真正的 GB18030 文本按 UTF-8 宽松解码几乎处处是替换符，
+        //    而「基本是 UTF-8」的文件里替换符只占极少数 —— 用这个密度区分。
+        val utf8Text = String(bytes, StandardCharsets.UTF_8)
+        val utf8Replacements = utf8Text.count { it == '\uFFFD' }
+        val utf8Density =
+            if (utf8Text.isEmpty()) 1.0 else utf8Replacements.toDouble() / utf8Text.length
+        if (utf8Density <= GB_FALLBACK_MAX_UTF8_REPL_DENSITY) {
+            // 绝大多数字符仍是合法 UTF-8：判为 UTF-8，保住这些中文，只有个别坏字节变 U+FFFD。
+            return Detection(StandardCharsets.UTF_8, false, utf8Text)
+        }
+        // ④b 确实不像 UTF-8：再看是否是不含替换符的 GB18030。分母取**已解码字符数**
+        //     （此前用字节数，量纲不一致，文件越长阈值越松）。
         try {
             val cs = Charset.forName("GB18030")
             val gbText = String(bytes, cs)
-            val replacements = gbText.count { it == '\uFFFD' }
-            // 阈值 1%：正常 GB18030 文本的 U+FFFD 密度应为 0，给一点量化余量
-            if (replacements * 100 <= bytes.size) {
+            val gbReplacements = gbText.count { it == '\uFFFD' }
+            val gbDensity =
+                if (gbText.isEmpty()) 1.0 else gbReplacements.toDouble() / gbText.length
+            if (gbDensity <= GB_FALLBACK_MAX_REPL_DENSITY) {
                 return Detection(cs, false, gbText)
             }
         } catch (_: Throwable) {
@@ -136,6 +151,23 @@ object CharsetDetector {
 
     /** 某一侧的 NUL 占比达到该值才继续考虑解码。 */
     private const val UTF16_NUL_RATIO = 0.18
+
+    /**
+     * 判「基本是 UTF-8」的上限：按 UTF-8 宽松解码后替换符占**已解码字符数**的比例
+     * 不高于此值，即认定原文是 UTF-8（只混入个别非法字节），不再降级到 GB18030。
+     *
+     * 分母必须取已解码字符数而非字节数：一个非法字节在 UTF-8 视角可能吃掉多个字节
+     * （多字节被截断时），除以字节数会让文件越长阈值越松，短样本反而更易被误降级。
+     *
+     * 取值 0.20 的实测依据（替换符密度）：
+     *   · 纯 UTF-8 中文混 1 个坏字节：长样本 0.001、短样本 0.10 —— 都必须判 UTF-8；
+     *   · 纯 GB18030 中文：0.72；ASCII 与 GB18030 中文混排：0.26 —— 都必须判非 UTF-8。
+     * 0.20 落在两侧之间且留有裕度，短样本不再需要另设「绝对数量」兜底分支。
+     */
+    private const val GB_FALLBACK_MAX_UTF8_REPL_DENSITY = 0.20
+
+    /** GB18030 候选解码自身的替换符占比上限：超过说明这也不是 GB18030（多为二进制）。 */
+    private const val GB_FALLBACK_MAX_REPL_DENSITY = 0.01
 
     /** 嗅探所需最小字节数（太短的样本不足以统计）。 */
     private const val MIN_UTF16_SNIFF_BYTES = 8

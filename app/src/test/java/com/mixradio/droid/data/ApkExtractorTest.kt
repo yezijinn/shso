@@ -94,21 +94,32 @@ class ApkExtractorTest {
     }
 
     @Test
-    fun `同名冲突后缀须插在扩展名之前且整组共用`() {
-        // 后缀为空时原样返回：同一应用重复提取仍是覆盖刷新。
-        assertEquals("示例应用-42.APK", ApkExtractor.withSuffix("示例应用-42.APK", ""))
-        // 有后缀时插在最后一个点之前：扩展名不变，base 与 split 带上同一后缀。
-        assertEquals(
-            "示例应用-42-com.example.dual.APK",
-            ApkExtractor.withSuffix("示例应用-42.APK", "-com.example.dual")
+    fun `同名冲突后缀拼进标签段使 base 与 split 的套件 stem 保持相等`() {
+        val app = InstalledAppInfo(
+            packageName = "com.example.dual",
+            label = "示例应用",
+            versionCode = 42,
+            baseApk = "/data/app/~~x/com.example.dual-y/base.apk",
+            splitApks = listOf("/data/app/~~x/com.example.dual-y/split_config.arm64_v8a.apk")
         )
+        // 后缀为空：常规覆盖刷新，文件名与既有契约一致。
         assertEquals(
-            "示例应用-42-split1-com.example.dual.APK",
-            ApkExtractor.withSuffix("示例应用-42-split1.APK", "-com.example.dual")
+            listOf(
+                "示例应用-42.APK" to app.baseApk,
+                "示例应用-42-split1.APK" to app.splitApks[0]
+            ),
+            ApkExtractor.plannedTargets(app)
         )
-        // 无扩展名时直接追加，不得产生孤立的点。
-        assertEquals("noext-pkg", ApkExtractor.withSuffix("noext", "-pkg"))
-        // 以点开头的隐藏文件视为无扩展名，避免把点当分隔符切出空 stem。
-        assertEquals(".hidden-pkg", ApkExtractor.withSuffix(".hidden", "-pkg"))
+        // 异包同名：后缀拼进标签段，base 与 split 共享同一 stem（末尾追加会破坏配对）。
+        val planned = ApkExtractor.plannedTargets(app, "-com.example.dual")
+        assertEquals("示例应用-com.example.dual-42.APK", planned[0].first)
+        assertEquals("示例应用-com.example.dual-42-split1.APK", planned[1].first)
+        assertEquals(
+            "base 与 split 的套件 stem 必须相等",
+            ApkInstaller.apkSetStem(planned[0].first),
+            ApkInstaller.apkSetStem(planned[1].first)
+        )
+        assertTrue("带后缀的 split 仍须被识别为分包", ApkInstaller.isSplitName(planned[1].first))
+        assertFalse("带后缀的 base 不得被识别为分包", ApkInstaller.isSplitName(planned[0].first))
     }
 }

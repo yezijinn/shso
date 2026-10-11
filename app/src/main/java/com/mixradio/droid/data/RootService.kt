@@ -1007,12 +1007,17 @@ object RootService {
                 // 改为「有数据才读、无数据即挂起等待」后，取消（kill / 覆盖启动）在挂起点立即
                 // 生效，循环随之退出并关闭流。进程退出后的空窗再保留一小段宽限，覆盖
                 // `cmd & ` 这类直接子进程先退、后代稍后补输出的常见写法。
+                //
+                // 判空必须问 **reader**，不能问底层 stream：InputStreamReader 会预读一大块到自己的
+                // 字符缓冲（实测一次 read 后底层 available 已归零，而 reader 里仍留着数千字节），
+                // 进程随即退出 -> 循环误判「无数据」-> 缓冲里剩余的尾部输出被整段丢弃。
+                // reader.ready() 同时反映缓冲与底层，用它判空才不会截断。
                 process.inputStream.use { stream ->
                     InputStreamReader(stream, Charsets.UTF_8).use { reader ->
                         val buffer = CharArray(2048)
                         var idlePollsAfterExit = 0
                         while (true) {
-                            if (stream.available() <= 0) {
+                            if (!reader.ready()) {
                                 if (!process.isAlive) {
                                     if (++idlePollsAfterExit > OUTPUT_IDLE_POLLS_AFTER_EXIT) break
                                 }
@@ -1021,9 +1026,15 @@ object RootService {
                                 delay(OUTPUT_POLL_MS)
                                 continue
                             }
-                            idlePollsAfterExit = 0
                             val count = reader.read(buffer)
                             if (count == -1) break
+                            // 有可读字符却读出 0：解码器在等多字节字符的后续字节，挂起再试，
+                            // 否则会在「ready 为真但读不出」的瞬间原地空转。
+                            if (count == 0) {
+                                delay(OUTPUT_POLL_MS)
+                                continue
+                            }
+                            idlePollsAfterExit = 0
                             // 新任务接管后不得把迟到输出投进新任务的日志；但循环必须继续
                             // 排空管道 —— 提前 break 会让后代进程的写端填满而永久阻塞。
                             // 本协程此时已被取消（cancel 与 Job 赋值同处临界区）。
