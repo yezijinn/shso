@@ -30,6 +30,7 @@ class PerfAndNestingRegressionTest {
 
     private val fileItem = src("data/FileItem.kt")
     private val rootFileManager = src("data/RootFileManager.kt")
+    private val rootService = src("data/RootService.kt")
     private val archiveExtractor = src("data/ArchiveExtractor.kt")
     private val filePage = src("ui/pages/FilePage.kt")
     private val picker = src("ui/components/BuiltInFilePicker.kt")
@@ -233,5 +234,29 @@ class PerfAndNestingRegressionTest {
             body.split("RootService.runCommandSync").size - 1
         )
         assertTrue("存在性语义不得退回「看输出是否为空」", body.contains("exit 3") && body.contains("exit 4"))
+    }
+
+    @Test fun `移动的目标存在性只探测一次`() {
+        val start = rootFileManager.indexOf("suspend fun moveFile(")
+        assertTrue(start > 0)
+        val end = rootFileManager.indexOf("\n    suspend fun ", start + 10)
+        val body = rootFileManager.substring(start, if (end > 0) end else rootFileManager.length)
+        // `destExists()` 内部在 root 场景要 fork 两次 su（local + root 各一次）。
+        // RENAME 流程此前在冲突判定与最终路径两处各调一次，白跑两趟 su 往返。
+        assertTrue("必须以单次探测结果复用", body.contains("val destOccupied = destExists()"))
+        assertEquals("不得重复探测目标存在性", 1, Regex("destExists\\(\\)(?!\\s*:)").findAll(body).count())
+    }
+
+    @Test fun `启动清扫安装临时包必须带时限`() {
+        val start = rootService.indexOf("private fun sweepExecutionTempFiles()")
+        assertTrue(start > 0)
+        val body = rootService.substring(start, start + 1400)
+        assertTrue(
+            "必须兜底清理安装残留",
+            body.contains("_shso_install_*.apk") && body.contains("_shso_split_*.apk")
+        )
+        // `pm install` 超时分支刻意保留临时包（无法确认 su 是否仍在读它），
+        // 故清扫只能按时间兜底：删掉仍在安装的文件会让安装读到被删文件。
+        assertTrue("只能清理超过 1 小时未变动的", body.contains("-mmin +60"))
     }
 }

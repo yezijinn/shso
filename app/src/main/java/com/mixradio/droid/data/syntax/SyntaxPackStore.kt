@@ -379,6 +379,10 @@ object SyntaxPackStore {
                     // 这里的 readEntryBounded 与 download() 的边读边限流同口径。
                     val data = readEntryBounded(zin, MAX_ZIP_BYTES - total)
                     total += data.size
+                    // 单条目上限必须与单文件导入同口径（[ingest] 的 MAX_BYTES）：
+                    // 否则一个 zip 能把 512KB 的「异常语法」上限放宽到整包上限 2MB（4 倍），
+                    // 用压缩包绕过单文件校验。
+                    require(data.size <= MAX_BYTES) { "压缩包内单条目超过体积上限 ${MAX_BYTES / 1024}KB" }
                     when {
                         name.equals(ZIP_INDEX, ignoreCase = true) -> {
                             val arr = JSONArray(String(data, Charsets.UTF_8))

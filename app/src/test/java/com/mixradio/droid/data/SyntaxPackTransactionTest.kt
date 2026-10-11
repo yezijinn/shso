@@ -83,6 +83,19 @@ class SyntaxPackTransactionTest {
         assertTrue("下载侧必须按该上限收口", s.contains("MAX_ZIP_BYTES"))
     }
 
+    @Test fun `zip 单条目必须与单文件同受体积上限约束`() {
+        // zip 分支若只受整包上限（2MB）约束，单条目上限就被放宽到 4 倍，
+        // 用一个压缩包即可绕开单文件导入的 512KB 校验。
+        val s = File("src/main/java/com/mixradio/droid/data/syntax/SyntaxPackStore.kt").readText()
+        val fn = s.indexOf("private fun importZip(")
+        assertTrue("应能找到 importZip", fn > 0)
+        val body = s.substring(fn, fn + 3000)
+        assertTrue(
+            "逐条目读取后必须复核单条目上限",
+            body.contains("require(data.size <= MAX_BYTES)")
+        )
+    }
+
     @Test fun `zip 导入路径必须比对 sha256`() {
         // 回归护栏：importFromUrl 的 zip 分支曾直接把 expectedSha256 丢掉，
         // 而「从仓库下载」预填的正是 zip 直链、弹窗文案写着「填写则校验」。

@@ -74,6 +74,27 @@ class AnsiParserControlSequenceTest {
         assertEquals(listOf("Xb", ""), texts("\u0008\u0008ab\u0008\u0008\u0008X\n"))
     }
 
+    // ---- 冒号式 SGR ----
+
+    @Test
+    fun `冒号式 SGR 不得被当成 reset`() {
+        // `ESC[4:3m`（波浪下划线）这类冒号写法只按 ';' 切分会整串解析失败 →
+        // codes 为空 → 被误当 reset：其后文本连带前面已设的前景色一并丢失。
+        val line = AnsiParser.parseAnsi("\u001B[31mred\u001B[4:3mstill\n", defaultColor)
+            .lines.first()
+        assertEquals("redstill", line.text)
+        val at = line.text.indexOf("still")
+        val covering = line.spanStyles.first { it.start <= at && at < it.end }
+        assertEquals("冒号式 SGR 之后的文本必须保留前景色", red, covering.item.color)
+    }
+
+    @Test
+    fun `冒号式真彩色（38 冒号 2 双冒号 RGB）必须被解析`() {
+        val line = AnsiParser.parseAnsi("\u001B[38:2::1:2:3mX\n", defaultColor).lines.first()
+        assertEquals("X", line.text)
+        assertEquals(Color(1, 2, 3), line.spanStyles.first().item.color)
+    }
+
     // ---- 行内擦除 ----
 
     @Test

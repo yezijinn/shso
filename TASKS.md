@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 539 tests / 0 failures / 1 skipped |
+| 单元测试 | 544 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -72,6 +72,30 @@
 ---
 
 ## 待办
+
+### A98. 语法包上限与终端 SGR 复核（2026-10-11）
+
+对早前几批遗留的 8 条逐条对照当前代码复核：4 条成立并修复，4 条证据载体消失或前提不成立。
+
+- [x] **语法包 zip 单条目绕过体积上限**（`BUG-LOGIC-022`，P2）：压缩包分支逐条目读取只受整包上限
+  `MAX_ZIP_BYTES`（2MB）约束，单文件上限 `MAX_BYTES`（512KB）未复核，同一个对象经 zip 导入可放宽 4 倍，
+  等于用压缩包绕过单文件校验。现于逐条目读取后补 `require(data.size <= MAX_BYTES)`，与单文件导入同口径
+  （仓库内官方包最大条目 8.8KB，不受影响）。
+- [x] **冒号式 SGR 被当成重置**（`BUG-LOGIC-024`，P2）：`applySgr` 只按 `;` 切分，冒号式参数
+  （`ESC[4:3` 波浪下划线、`ESC[38:2::R:G:B` 真彩色）整串 `toIntOrNull` 失败被滤空 → 走 reset 分支，
+  该行其后文本连同已设前景色一并丢失。现入口把 `:` 归一化为 `;` 后再切分，未知码仍忽略（不再当 reset）。
+- [x] **移动文件时目标存在性重复探测**（`BUG-LOGIC-103`，P3）：`moveFile` 在冲突分支对目标存在性探测两次，
+  root 身份下每次探测要往返两次 `su`。现单次探测存 `destOccupied` 复用。
+- [x] **安装超时残留的临时包无兜底清扫**（`BUG-EXC-084`，P3）：安装超时（`INSTALL_TIMEOUT_MS` = 5 分钟）
+  刻意保留的临时 APK 此前没有任何清理入口。启动清扫扩展为同时清 `/data/local/tmp` 下的
+  `_shso_install_*.apk` / `_shso_split_*.apk`，以 `-mmin +60` 兜底（大于安装超时），每进程一次。
+- [x] 判为不成立 4 条：`BUG-LOGIC-020`（升级判定——全库已无「本地版本 ↔ 远端版本」比较代码）、
+  `BUG-PERF-023`（渲染器已改增量解析 + 4000 行硬上限）、`BUG-EDGE-028`（权限编辑全文件无 `pointerInput`，
+  主按钮触摸目标 `min 48dp`）、`BUG-LOGIC-029`（权限编辑无路径选择器，软链只按链接自身操作）。
+- [x] 单测：`PerfAndNestingRegressionTest` 新增源码契约 2 项、`SyntaxPackTransactionTest` 新增 1 项、
+  `AnsiParserControlSequenceTest` 新增 ANSI 行为 2 项。
+- [x] 全量单测通过：`testDebugUnitTest` → 544 tests / 0 failures / 1 skipped。
+- [x] 真机（root）验证：`adb install -r -g` 成功，进程存活，logcat 无 `FATAL`。
 
 ### A97. 更新检查状态与终端渲染取消复核（2026-10-11）
 

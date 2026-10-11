@@ -303,10 +303,15 @@ object RootService {
     private val sweptExecutionTemp = AtomicBoolean(false)
 
     /**
-     * 清扫上一次运行遗留的执行期临时文件（`.exec_attr_*` / `.sh_norm_*`）。
+     * 清扫上一次运行遗留的临时文件：执行期文件（`.exec_attr_*` / `.sh_norm_*`，在应用私有目录）
+     * 与安装临时包（`/data/local/tmp/_shso_install_*.apk` / `_shso_split_*.apk`）。
      *
      * 正常路径在协程 finally 里删除；App 被强杀、OOM，或执行协程卡在 native 管道读上时
      * finally 根本不执行，残留只能在启动时兜底。仅扫一次：运行中扫会误删正在使用的临时文件。
+     *
+     * 安装包残留多一层约束：`pm install` 超时分支**刻意**保留临时包（无法确认 su 是否仍在读它），
+     * 因此这里只删「超过 1 小时未变动」的（`-mmin +60`）。安装超时上限为 5 分钟，
+     * 一小时足以让任何仍在进行的安装读完，不会误删在途文件。
      */
     private fun sweepExecutionTempFiles() {
         if (!sweptExecutionTemp.compareAndSet(false, true)) return
@@ -317,6 +322,15 @@ object RootService {
                     if (name.startsWith(".exec_attr_") || name.startsWith(".sh_norm_")) {
                         runCatching { file.delete() }
                     }
+                }
+                // 该目录属 root，只能经 su 清理；失败（未获 root）不影响启动。
+                runCatching {
+                    runCommandSync(
+                        "find " + escapeShellArg(ROOT_TMP_DIR) + " -maxdepth 1 -type f " +
+                            "\\( -name '_shso_install_*.apk' -o -name '_shso_split_*.apk' \\) " +
+                            "-mmin +60 -exec rm -f {} + 2>/dev/null",
+                        10_000L
+                    )
                 }
             }
         }

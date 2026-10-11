@@ -833,7 +833,8 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
             return if (destinationNormalized == "/") "/$newName" else "$destinationNormalized/$newName"
         }
 
-        if (destExists()) {
+        val destOccupied = destExists()
+        if (destOccupied) {
             when (onConflict) {
                 MoveDestinationConflict.OVERWRITE -> {
                     // 仅当目标是**目录**时才需要先删：`rename(2)` 与 `mv` 本身就会原子覆盖
@@ -865,8 +866,10 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
             }
         }
 
-        // 实际目标路径：OVERWRITE 用原名；RENAME 冲突时用 _new 名
-        val finalPath = if (destExists() && onConflict == MoveDestinationConflict.RENAME) renamedDestPath() else destinationPath
+        // 实际目标路径：OVERWRITE 用原名；RENAME 冲突时用 _new 名。
+        // 复用上面的探测结果：该探测在 root 场景每次要 fork 两次 su
+        // （local + root 各一次），重复调用等于白白多跑两趟 su 往返。
+        val finalPath = if (destOccupied && onConflict == MoveDestinationConflict.RENAME) renamedDestPath() else destinationPath
 
         try {
             val dest = File(finalPath)

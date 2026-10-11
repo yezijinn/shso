@@ -571,7 +571,11 @@ class IncrementalAnsiParser(private val defaultColor: Color) {
     // SGR
 
     private fun applySgr(codeStr: String) {
-        val codes = codeStr.split(";").mapNotNull { it.toIntOrNull() }
+        // ITU T.416 的冒号分隔写法与分号写法在 SGR 里语义等价（`38:2::R:G:B` 真彩色、
+        // `4:3` 波浪下划线）。只按 ';' 切分会让整串 toIntOrNull 失败 → codes 为空 →
+        // 被误当 reset：一行里出现一个冒号式 SGR，其后的文本就统统一并丢了颜色。
+        // 归一化后走同一套解析，未知码仍然忽略（不会像 reset 那样清空既有样式）。
+        val codes = codeStr.replace(':', ';').split(";").mapNotNull { it.toIntOrNull() }
         // 空参数（"\e[m"）等价于单个 0（reset）。
         if (codes.isEmpty()) {
             currentColor = defaultColor
