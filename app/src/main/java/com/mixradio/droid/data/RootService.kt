@@ -278,6 +278,17 @@ object RootService {
     private const val TERMINAL_COMMAND_TIMEOUT_MS = 30 * 60_000L
 
     /**
+     * root 执行环境的临时目录。
+     *
+     * Android 应用进程不提供 `TMPDIR`，`su -c` 也不补。Termux 打包的自解压脚本
+     * （makeself 风格：头部 + gzip 载荷）在 `TMPDIR` 为空时会回退到硬编码的
+     * `/data/data/com.termux/files/usr/tmp`；设备未装 Termux 时该目录不存在，
+     * `mktemp -d` 失败，脚本按 127 退出，且全程只报一行 mktemp 错误，难以归因。
+     * `/data/local/tmp` 各机型恒存在且 root 可写。
+     */
+    private const val ROOT_TMP_DIR = "/data/local/tmp"
+
+    /**
      * 终端命令拉起后台保活服务的延迟：短命令（`ls` / `echo`）不值得闪一条通知，
      * 超过该时长的命令才进前台保活（切后台不被回收 + 通知内可「结束进程」）。
      */
@@ -514,8 +525,11 @@ object RootService {
         // 之后再 clear 会把这段输出丢掉。
         HyperCore.clearBatchQueue()
         val pgidRecorder = runPgidFile?.let { "echo " + "\$\$" + " > " + escapeShellArg(it.absolutePath) + "; " } ?: ""
+        // 终端同样补 TMPDIR：终端里直接跑 Termux 打包的自解压脚本会走到脚本内的
+        // 空值回退分支（硬编码 /data/data/com.termux/…），未装 Termux 时 mktemp 即失败。
         val process = try {
-            ProcessBuilder("su", "-c", pgidRecorder + command).redirectErrorStream(true).start()
+            ProcessBuilder("su", "-c", pgidRecorder + "export TMPDIR=" + ROOT_TMP_DIR + "; " + command)
+                .redirectErrorStream(true).start()
         } catch (e: Exception) {
             withContext(Dispatchers.Main) { appendOutputDirect("[执行失败: ${e.message}]\n") }
             return -1
@@ -839,6 +853,18 @@ object RootService {
                     "( [ -s ${escapeShellArg(it.absolutePath)} ] && chmod \$(cat ${escapeShellArg(it.absolutePath)}) $escapedFile 2>/dev/null ); "
                 } ?: ""
 
+                // 执行环境补 TMPDIR：Android 应用进程没有 TMPDIR，`su -c` 也不会补，
+                // 于是脚本里的 `mktemp -d "${TMPDIR}…"` 拿到空串；Termux 打包的自解压脚本
+                // （makeself 风格：头部 + gzip 载荷）更会把空值回退成硬编码的
+                // /data/data/com.termux/files/usr/tmp，设备未装 Termux 时该目录不存在，
+                // mktemp 失败 → 脚本按 127 退出，且全程只报一行 mktemp 错误，难以归因。
+                // root 侧取 /data/local/tmp（root 可写且各机型恒存在）；
+                // 非 root 侧取应用私有缓存目录（只有应用 uid 可写，与 root 侧互不影响）。
+                val tmpDir = if (useRoot) {
+                    ROOT_TMP_DIR
+                } else {
+                    com.mixradio.droid.ShsoApplication.appContext.cacheDir.absolutePath
+                }
                 val execCmd = if (useRoot) {
                     if (isSh) {
                         // .sh：一律经 sh 运行，不给用户文件加执行位。
@@ -860,7 +886,7 @@ object RootService {
                         //
                         // 原文件保持不动：执行一次就把用户磁盘上的脚本改掉不可接受。
                         "${pgidRecorder}export TERM=xterm-256color && export LANG=en_US.UTF-8 && " +
-                            "cd $escapedParent && $runShCmd"
+                            "export TMPDIR=$tmpDir && cd $escapedParent && $runShCmd"
                     } else {
                         // .so / ELF：直接执行需要 +x。
                         //
@@ -884,7 +910,8 @@ object RootService {
                         // finally 读到的 mode 为 null，**还原被静默跳过**，
                         // 用户的 .so 就永久停留在 a+x 放宽后的权限上（实测 600 → 711 不再回退）。
                         "$pgidRecorder" + saveAttrCmd +
-                            "export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent && " +
+                            "export TERM=xterm-256color && export LANG=en_US.UTF-8 && export TMPDIR=$tmpDir && " +
+                            "cd $escapedParent && " +
                             // 执行前必须确认是 ELF：mksh 对 execve 返回 ENOEXEC 的文件会按 POSIX 传统
                             // **隐式回退为 shell 解释**，把二进制/文本当脚本执行，产出满屏乱码，
                             // 且下方的 126/127 分支永远不可达。这里按魔数 7f454c46 提前拦住，
@@ -902,7 +929,8 @@ object RootService {
                     // 归一化同样适用于该身份：runShCmd 在无需归一化时就是 `sh $escapedFile`，
                     // 需要归一化时改写 app 私有临时文件再执行。旧实现硬编码 `sh $escapedFile`，
                     // 于是 CRLF/BOM 脚本只在 Root 身份下被修正，非 Root 执行时 A75 缺陷原样复现。
-                    "export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent 2>/dev/null; $runShCmd"
+                    "export TERM=xterm-256color && export LANG=en_US.UTF-8 && export TMPDIR=$tmpDir && " +
+                        "cd $escapedParent 2>/dev/null; $runShCmd"
                 }
 
                 if (useRoot) {

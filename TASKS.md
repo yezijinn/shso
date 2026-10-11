@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（`22c5d74`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 493 tests / 0 failures / 1 skipped |
+| 单元测试 | 495 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -43,7 +43,7 @@
 | 列表刷新 | **不再清空列表**（消除刷新期空白）；保留期间由 `enabled = !listIsStale` 真正禁用交互并降透明度；同目录刷新 120ms 节流 |
 | 列表性能 | `FileItem` 类型判定构造期一次算好（不再每帧重算正则）；选中判定走 HashSet；搜索 250ms 防抖；主页行用 derivedStateOf 隔离 |
 | 代码结构 | 无重复分支/无用中间层：`preferRoot` 已扁平、`pathExistsQuiet`/`uniqueFile`/`isExtractable` 已删 |
-| 脚本执行 | `.sh` 归一化改为**字节级保守判定**（`ShNormalization`）：含字节偏移自引用（`$0`/`${0}`/`${BASH_SOURCE`，配 `tail…+N`／含变量形式 `+$skip`、`head -c`、`dd skip=`、`sed -n 'N,'`）或内嵌压缩魔数即直跑原字节，仅普通文本脚本去 BOM/CR（上限 16 MiB，超限直跑）；app 侧不可读时由 `decideAsRoot` 先 `stat` 取大小再按实际长度以 root 读头部判定；`.so` 权限先记录后还原，还原排在执行之后 |
+| 脚本执行 | `.sh` 归一化改为**字节级保守判定**（`ShNormalization`）：含字节偏移自引用（`$0`/`${0}`/`${BASH_SOURCE`，配 `tail…+N`／含变量形式 `+$skip`、`head -c`、`dd skip=`、`sed -n 'N,'`）或内嵌压缩魔数即直跑原字节，仅普通文本脚本去 BOM/CR（上限 16 MiB，超限直跑）；app 侧不可读时由 `decideAsRoot` 先 `stat` 取大小再按实际长度以 root 读头部判定；`.so` 权限先记录后还原，还原排在执行之后；执行环境统一补 `TMPDIR`（root 侧 `/data/local/tmp`，非 Root 侧应用私有 `cacheDir`），终端命令同样注入 |
 | 归档格式 | 14 种：tar 系（`.tar.gz/.tar.xz/.tar.bz2/.tar.lz4/.tar.zst/.tgz/.tzst/.tar`）+ 单文件（`.gz/.xz/.bz2/.lz4/.zst/.zip`）；`.tzst` 为 tar+zstd 别名 |
 | 语法包 | 62 语言 / 187 扩展名，`syntax-packs.zip`(37KB)，永固直链 tag `syntaxpacks-v2` |
 | 执行方式 | 命令与脚本直通执行，无策略判定、无执行记录（守卫/档位/审计已移除） |
@@ -62,12 +62,43 @@
 | 已知环境坑 | 屏幕会自行熄灭导致截图全黑；长时间真机操作前先 `svc power stayon true` + `input keyevent KEYCODE_WAKEUP` |
 | `/data/adb/shso` 是 0777 但 **SELinux 拦住第三方**（目录标签 `adb_data_file`）。实测：`shell` 域与 app 域（`run-as` → `u:r:runas_app`，派生自 `untrusted_app`）对该目录的 list / unlink / symlink / write **全部 Permission denied**，dmesg 有对应 `avc: denied { getattr }`；只有 `su`(magisk 域) 能写 |
 | `/data/local/tmp` 子目录默认 `root:root 755`，adb（shell 身份）**无法写入** → 需 `su -c 'chmod 777'` 后再 push |
+| 已知环境坑 | 应用进程的 environ **不含 `TMPDIR`**（`su -c` 也不补），而 `adb shell` 自带 `TMPDIR=/data/local/tmp` → 依赖 `$TMPDIR` 的脚本「adb 下正常、应用内失败」。执行环境须显式 `export TMPDIR` |
+| 已知环境坑 | 本机 toybox `mktemp` 创建失败时把模板前缀打成 `(null)/`（如 `Failed to create directory (null)//data/…`）——`(null)` 不是路径的一部分，真实模板要减去该前缀再看 |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐）；双端同名 Release，资产 `app-release.apk` 2893369 字节，双端下载 sha256 与本地一致（`fb2be7bd…`）；旧版 APK 已从双端 `20261004` 移除，仅保留 Release 与 tag |
 
 ---
 
 ## 待办
+
+### A87. 脚本执行环境补齐 TMPDIR（2026-10-11）
+
+`/data/adb/shso/Keybox.sh` 在应用内执行失败：横幅为「执行身份: Root」，随后只有一行
+`mktemp: Failed to create directory (null)//data/data/com.termux/files/usr/tmp/gztmpQrUgGA3tA: No such file or directory`，
+退出码 127，用时 116 毫秒。
+
+- [x] **定位为脚本头部的空值回退**：该文件是 makeself 风格自解压包（`skip=50` 头部 + gzip 载荷，
+  载荷为 arm64 ELF）。头部把 `$TMPDIR` 归一化后，空值回退到硬编码的
+  `/data/data/com.termux/files/usr/tmp/`，随后 `mktemp -d "${TMPDIR}gztmpXXXXXXXXX"` 失败并
+  走 `(exit 127); exit 127`。报错里的 `(null)/` 是本机 toybox `mktemp` 失败时的固定前缀，
+  不参与路径拼接，真实模板就是 Termux 那个不存在的目录。
+- [x] **根因是执行环境没有 TMPDIR**：Android 应用进程的 environ 不含 `TMPDIR`（真机读
+  `/proc/<pid>/environ` 确认），`su -c` 也不补；`adb shell` 自带 `TMPDIR=/data/local/tmp`，
+  所以同一个脚本在 adb 下正常、在应用内必失败。设备未装 Termux，`/data/data/com.termux`
+  不存在，回退目录无从创建。
+- [x] **三条执行分支注入 TMPDIR**：root 的 `.sh` 分支、root 的 ELF 分支、非 Root 分支统一在
+  `TERM` / `LANG` 之后补 `export TMPDIR=$tmpDir`。root 侧取 `ROOT_TMP_DIR=/data/local/tmp`
+  （各机型恒在且 root 可写），非 Root 侧取应用私有 `cacheDir`（只有应用 uid 可写，与 root 侧互不影响）。
+- [x] **终端命令一并注入**：`runTerminalCommand` 同样在 `su -c` 前补 `export TMPDIR`，
+  否则在终端里直接敲脚本路径仍会落到同一条回退分支。
+- [x] 契约测试同步：`SecondRoundSecurityAndResourceTest` 增 2 例
+  （三条分支的注入计数与 root 侧常量、终端注入）。
+- [x] 全量单测通过：`testDebugUnitTest` → 495 tests / 0 failures / 1 skipped。
+- [x] 真机（root）复验：以脚本头部的 `TMPDIR` 归一化 + `mktemp` 逻辑做成探针，
+  `su -c 'unset TMPDIR; sh 探针'` 原样复现该错误与退出码 127；
+  加 `export TMPDIR=/data/local/tmp` 后 `MKTEMP_OK`、退出码 0。
+  未整脚本执行——载荷会改写设备 keybox 状态。
+- [x] 发版：APK 2893369 字节，双端同步与 Release 资产更新。
 
 ### A86. 长期挂起缺陷收敛：解压写盘 / 前台服务 / 文件名（2026-10-11）
 

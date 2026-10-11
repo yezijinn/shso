@@ -198,6 +198,41 @@ class SecondRoundSecurityAndResourceTest {
         )
     }
 
+    // ---------- 执行：临时目录环境变量 ----------
+
+    /**
+     * 缺陷链条：Android 应用进程不提供 `TMPDIR`，`su -c` 也不补。Termux 打包的自解压
+     * 脚本（`skip=50` + gzip 载荷）在 `TMPDIR` 为空时按 makeself 逻辑回退到硬编码的
+     * `/data/data/com.termux/files/usr/tmp`；设备未装 Termux 时该目录不存在，
+     * `mktemp -d "${TMPDIR}gztmpXXXXXXXXX"` 失败 → `(exit 127); exit 127`，
+     * 终端只留一行 `mktemp: Failed to create directory …`，退出码 127。
+     * `adb shell` 自带 `TMPDIR=/data/local/tmp`，因此该差异只在应用内复现。
+     */
+    @Test fun `脚本执行环境必须补齐 TMPDIR`() {
+        val injected = rootService.split("export TMPDIR=" + D + "tmpDir").size - 1
+        assertTrue(
+            "root 的 .sh / ELF 与非 root 三条执行分支都要注入 TMPDIR，实际=$injected",
+            injected >= 3
+        )
+        assertTrue(
+            "root 侧临时目录必须落在各机型恒在且 root 可写的 /data/local/tmp",
+            rootService.contains("private const val ROOT_TMP_DIR = \"/data/local/tmp\"")
+        )
+        assertTrue(
+            "非 root 侧必须落在应用私有缓存目录，与 root 侧互不影响",
+            rootService.contains("ShsoApplication.appContext.cacheDir.absolutePath")
+        )
+    }
+
+    @Test fun `终端命令同样必须补齐 TMPDIR`() {
+        val terminal = rootService.substringAfter("private suspend fun runTerminalCommand(")
+            .substringBefore("fun writeBytesAsRoot(")
+        assertTrue(
+            "终端里直接跑 Termux 系脚本会走到同一条空值回退分支，必须一并注入",
+            terminal.contains("export TMPDIR=") && terminal.contains("ROOT_TMP_DIR")
+        )
+    }
+
     @Test fun `心跳与迟到输出必须按代际自检`() {
         assertTrue(
             "旧任务卡在管道读上时协程与 finally 都不执行，心跳挂全局 isTaskRunning " +
