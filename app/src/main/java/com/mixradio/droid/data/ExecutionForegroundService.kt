@@ -50,6 +50,10 @@ class ExecutionForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_KILL) {
             RootService.killCurrentProcess()
+            // START_NOT_STICKY 只表示「进程被杀后不重启」，不等于停掉服务自身。
+            // 该分支经 PendingIntent.getService 拉起时会留下 started 状态的空服务，
+            // 必须显式 stopSelf 完成「结束任务并收摊」的语义。
+            stopSelf()
             return START_NOT_STICKY
         }
         if (!startAsForeground()) {

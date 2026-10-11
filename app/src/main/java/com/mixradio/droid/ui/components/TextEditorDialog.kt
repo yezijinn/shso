@@ -2072,7 +2072,10 @@ private fun EditorSettingsDialog(
                     // 根页
                     else -> {
                         CompactSettingRow("编码", charset.displayName()) { page = "charset" }
-                        CompactSettingRow("换行", lineEnding.displayName()) { page = "lineEnding" }
+                        // 行尾 / BOM 的切换都会置脏，而巨型只读浏览态下 doSave 被 isLargeFile 守卫拦死：
+                        // 允许切换等于把用户引进「改了必被拦、关必弹未保存、只能丢弃」的死路，
+                        // 且先切行尾后编码切换也被 dirty 前置挡住。故只读态下这两项直接禁用。
+                        CompactSettingRow("换行", lineEnding.displayName(), enabled = !chunkedBrowsing) { page = "lineEnding" }
                         CompactSettingRow("语法包", "›") { onSyntaxPacksClick(); onDismiss() }
                         CompactSettingRow("另存为", "›") { onSaveAsClick(); onDismiss() }
                         CompactSettingRow("显示行号", if (showLineNumber) "开" else "关") {
@@ -2083,9 +2086,9 @@ private fun EditorSettingsDialog(
                         CompactSettingRow(
                             "写入 BOM",
                             if (hasBom) "开" else "关",
-                            enabled = charset == Charsets.UTF_8 ||
+                            enabled = !chunkedBrowsing && (charset == Charsets.UTF_8 ||
                                 charset == Charsets.UTF_16LE ||
-                                charset == Charsets.UTF_16BE
+                                charset == Charsets.UTF_16BE)
                         ) {
                             onHasBomChange(!hasBom)
                         }

@@ -301,4 +301,38 @@ class CancellationAndScopeContractTest {
         )
         assertTrue("只读态必须标注只读预览", s.contains("\"全文可浏览 · 只读预览\""))
     }
+
+    @Test fun `只读浏览态下行尾与 BOM 设置项必须禁用`() {
+        // 两项切换都会置 dirty，而只读态 doSave 被 isLargeFile 守卫拦死：
+        // 可切等于把用户引进「改了必被拦、关必弹未保存、只能丢弃」的死路。
+        val s = dialog.readText()
+        assertTrue(
+            "换行设置项必须按只读态禁用",
+            s.contains("CompactSettingRow(\"换行\", lineEnding.displayName(), enabled = !chunkedBrowsing)")
+        )
+        assertTrue(
+            "BOM 设置项必须按只读态禁用",
+            s.contains("enabled = !chunkedBrowsing && (charset == Charsets.UTF_8 ||")
+        )
+    }
+}
+
+/**
+ * 前台保活服务的「结束进程」收摊契约。
+ *
+ * ACTION_KILL 经 PendingIntent.getService 拉起，START_NOT_STICKY 只表示进程被杀后不重启，
+ * 不等于停掉服务自身 —— 不 stopSelf 会留下 started 状态的空服务。
+ */
+class ExecutionForegroundServiceLifecycleTest {
+
+    private val service =
+        File("src/main/java/com/mixradio/droid/data/ExecutionForegroundService.kt")
+
+    @Test fun `结束进程分支必须回收服务自身`() {
+        val s = service.readText()
+        val idx = s.indexOf("if (intent?.action == ACTION_KILL) {")
+        assertTrue("应能找到 ACTION_KILL 分支", idx > 0)
+        val branch = s.substring(idx, idx + 400)
+        assertTrue("ACTION_KILL 分支必须 stopSelf", branch.contains("stopSelf()"))
+    }
 }

@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 535 tests / 0 failures / 1 skipped |
+| 单元测试 | 537 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -75,8 +75,8 @@
 
 ### A96. 协程取消传播与批量守卫作用域复核（2026-10-11）
 
-对协程取消传播、批量操作状态与临时文件命名的后续审查条目逐条对照代码复核：6 条成立并修复，
-4 条经核实判为设计取舍或不可达状态。
+对协程取消传播、批量操作状态、临时文件命名与只读态设置项的后续审查条目逐条对照代码复核：
+8 条成立并修复，1 条维持 `OPEN`（架构性），其余经核实判为设计取舍或不可达状态。
 
 - [x] **大文件稀疏行索引静默吞掉取消**（`BUG-EXC-109`，P2，CONFIRMED）：
   `SparseLineIndex.build` 用 `runCatching { … }.getOrNull()` 包住整个扫描体，
@@ -96,13 +96,24 @@
 - [x] **只读浏览提示条口径不符**（`BUG-COMPAT-111`，P3，CONFIRMED）：
   该提示条只在只读浏览态渲染，却对「大文件但可编辑」分支保留「可编辑」措辞。
   统一为 `全文可浏览 · 只读预览`，HUGE 档附 `HUGE` 标识。
+- [x] **只读浏览态可切行尾/BOM 却永不可存**（P3，CONFIRMED）：
+  两项切换都会置 `dirty`，而只读态 `doSave` 被 `isLargeFile` 守卫拦死，用户被引进
+  「改了必被拦、关必弹未保存、只能丢弃」的死路（且先切行尾会让编码切换也被 `dirty` 前置挡住）。
+  只读态下两项按 `enabled = !chunkedBrowsing` 禁用。
+- [x] **前台服务「结束进程」未回收服务自身**（`BUG-EXC-113`，P3，LIKELY）：
+  `ACTION_KILL` 分支只 `killCurrentProcess()` 后 `return START_NOT_STICKY`，而该分支经
+  `PendingIntent.getService` 拉起时会把服务带入 started 态，`START_NOT_STICKY` 不等于停服务 →
+  留下一个非前台、无工作的空服务。补 `stopSelf()`。
 - [x] **其余四条的处理**：`BUG-CONSIST-110`（删除确认显示层兜底）属防御性显示，
   非缺陷级，判 `BY_DESIGN`；`BUG-COMPAT-093`（tif/tiff 声明与解码能力不符）维持 `BY_DESIGN`
   （走 `BitmapFactory` 优雅失败，移出列表反而更差）；`BUG-EXC-033` / `BUG-EXC-054`
   触发前提为应用私有 `filesDir` 不可写（应用已不可用），不为不可达路径在热路径加告警管路，判 `BY_DESIGN`。
+  旋转丢未保存编辑属需引入内容持久化的架构性改动，Bundle 直存大文本有 `TransactionTooLarge` 风险、
+  进程级持有者又与「关闭/保存后清理」耦合，暂不动，维持 `OPEN` 并如实登记。
 - [x] 单测：`SparseLineIndexTest` +1（扫描途中取消必须抛 `CancellationException`）；
-  `TextEditorAndTerminalGuardTest` 新增 `CancellationAndScopeContractTest` 5 项源码契约。
-- [x] 全量单测通过：`testDebugUnitTest` → 535 tests / 0 failures / 1 skipped。
+  `TextEditorAndTerminalGuardTest` 新增 `CancellationAndScopeContractTest` 5 项源码契约，
+  另加只读态设置项门控与前台服务收摊 2 项契约。
+- [x] 全量单测通过：`testDebugUnitTest` → 537 tests / 0 failures / 1 skipped。
 - [x] 真机（root）验证：`adb install -r -g` 成功，进程存活，logcat 无 `FATAL`，`su -c 'id'` 返回 `uid=0(magisk)`。
 
 ### A95. 拷贝权限与选择器末批复核（2026-10-11）
