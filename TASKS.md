@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A109） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A110） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
 | 单元测试 | 599 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
@@ -72,7 +72,7 @@
 | 已知环境坑 | 本机 toybox `mktemp` 创建失败时把模板前缀打成 `(null)/`（如 `Failed to create directory (null)//data/…`）——`(null)` 不是路径的一部分，真实模板要减去该前缀再看 |
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2893485 字节，双端下载 sha256 与本地一致（`d5abd526…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版发行程序已从双端移除（Release 与 tag 保留） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`ab1729c2…`）；双端 tag 与 Release 的目标提交均已对齐发版代码 `89cde49`；旧版发行程序已从双端移除（Release 与 tag 保留） |
 
 ---
 
@@ -165,7 +165,11 @@ AI-2 §8 的 13 条均**复现成立**，且此前 BUG.md / TASKS.md 零登记�
   建议方案为 `setsid sh $file` 令非 Root 任务自成会话/进程组（应用 uid 自己即可组杀），
   但属**执行模型重构**（涉及 pgid 落盘、kill 通道由 `su` 改走应用 uid、与 Root 方案同构化），
   需专项真机验证后再动，暂不动刀。
-- [ ] 发版：见速览。
+- [x] 发版：APK 构建（2909869 字节，sha256 `ab1729c2…`）、root 真机冒烟（`pm install -r -t` 成功、
+  进程存活、crash 缓冲无本包记录）、终端跑 `sleep 600` 后按 Home 转后台，`dumpsys activity services`
+  显示 `ExecutionForegroundService isForeground=true` 且 `sleep` 仍在运行（保活生效），
+  点「结束进程」后服务停止、`sleep` 无残留；双端 `main` 与 tag `20261012` 推送、双端 Release 目标
+  提交改指 `89cde49` 并替换资产，下载 sha256 双端一致。见速览。
 
 ### A109. 编码判据阈值回归：短 GB18030 样本被误判 UTF-8（2026-10-12）
 
