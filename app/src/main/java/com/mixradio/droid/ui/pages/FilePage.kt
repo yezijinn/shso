@@ -234,6 +234,8 @@ fun FilePage(
     /** 右列的默认落点。取一个与左列（内部存储）不同的常用目录，
      *  使「同步」按钮初始即可用。 */
     val defaultRightPaneDir = "/storage/emulated/0/Android"
+    /** 右列在 [panes] 中的下标。落点记忆按列分流时用它区分左右。 */
+    val RIGHT_PANE_INDEX = 1
     val leftPane = remember { FilePaneState(initialDirectory, leftListState) }
     // 右列默认落在内部存储：与左列同一起点便于对照，
     // 用户切到别处后由下面的 rememberedRightDirectory 记住。
@@ -344,8 +346,9 @@ fun FilePage(
     var showNewFileDialog by remember { mutableStateOf(false) }
     var newFileName by remember { mutableStateOf("") }
     var newFileExt by remember { mutableStateOf("") }
-    // 「提取 APK」弹窗（设置菜单入口）
-    var showExtractApkDialog by remember { mutableStateOf(false) }
+    // 「提取 APK」弹窗（设置菜单入口）。用 rememberSaveable：提取跑在进程级作用域，
+    // 旋转重建后弹窗若被复位关闭，用户既看不到「提取中」，也无从得知结果落在哪里。
+    var showExtractApkDialog by rememberSaveable { mutableStateOf(false) }
     var showPermissionDialog by remember { mutableStateOf(false) }
     var permissionMetadata by remember { mutableStateOf<FilePermissionMetadata?>(null) }
 
@@ -511,7 +514,14 @@ fun FilePage(
                         val skipPersist = pendingExternalDirectory[0]
                         if (skipPersist) pendingExternalDirectory[0] = false
                         if (appSettings.rememberDirectory && !skipPersist) {
-                            RootFileManager.rememberedDirectory = requestedDir
+                            // 双列各记各的落点。此前无条件写左列变量：右列每加载一个目录
+                            // 都会把左列的「上次浏览目录」改写成右列的位置，而
+                            // rememberedRightDirectory 声明后从未被写过 —— 右列记忆形同虚设。
+                            if (paneIndexOf(pane) == RIGHT_PANE_INDEX) {
+                                RootFileManager.rememberedRightDirectory = requestedDir
+                            } else {
+                                RootFileManager.rememberedDirectory = requestedDir
+                            }
                         }
                     }
                 }
@@ -634,8 +644,13 @@ fun FilePage(
             } else {
                 pane.currentDirectory = fallback
                 // 只有聚焦列才落盘记忆目录：外部 Intent 带来的路径不应被永久改写。
-                if (appSettings.rememberDirectory && paneIndexOf(pane) == focusedIndex) {
-                    RootFileManager.rememberedDirectory = fallback
+                val paneIndex = paneIndexOf(pane)
+                if (appSettings.rememberDirectory && paneIndex == focusedIndex) {
+                    if (paneIndex == RIGHT_PANE_INDEX) {
+                        RootFileManager.rememberedRightDirectory = fallback
+                    } else {
+                        RootFileManager.rememberedDirectory = fallback
+                    }
                 }
             }
         }

@@ -99,6 +99,18 @@ object RootFileManager {
     private var shsoDirEnsured = false
 
     /**
+     * 让「shso 目录已建立」标记失效。
+     *
+     * 删除 / 改名 / 移走该目录后必须调用：标记一旦残留，[ensureShsoDir] 会直接返回成功
+     * 而不再 mkdir，本进程内后续「添加文件到 shso」「解压到 shso」等入口全部失败，
+     * 报错却是「目录不存在」，与「已确保存在」的契约自相矛盾。
+     * 操作失败也同样清标记：代价只是下一次多跑一次幂等的 `mkdir -p && chmod`。
+     */
+    private fun invalidateShsoDirIfAffected(path: String) {
+        if (path == DEFAULT_SHSO_DIR) shsoDirEnsured = false
+    }
+
+    /**
      * 是否「优先使用 ROOT」：仅当已确获 ROOT 授权时为 true。
      * 设计原则：普通用户本就能做的操作（浏览/读写/增删自己的存储）不强制依赖 ROOT；
      * 只有在授权了 ROOT 时才优先走 su 以获得更完整的路径访问能力，
@@ -749,6 +761,7 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         if (isUnsafePath(oldPath)) {
             return@withContext Pair(false, "路径包含非法字符")
         }
+        invalidateShsoDirIfAffected(oldPath)
         val sanitized = newName.trim()
         if (sanitized.isEmpty()) {
             return@withContext Pair(false, "文件名不能为空")
@@ -813,6 +826,7 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         if (isUnsafePath(sourcePath) || isUnsafePath(destinationDirectory)) {
             return@withContext Pair(false, "路径包含非法字符")
         }
+        invalidateShsoDirIfAffected(sourcePath)
 
         val source = File(sourcePath)
         val sourceName = source.name
@@ -967,6 +981,7 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
         if (isUnsafePath(path)) {
             return@withContext Pair(false, "路径包含非法字符")
         }
+        invalidateShsoDirIfAffected(path)
         // ROOT 已授权时优先用 su 删除（可操作受保护/系统路径）；
         // 未授权或 su 失败时回退标准 File API（授予「所有文件访问」后可操作 /sdcard）。
         if (preferRoot()) {

@@ -98,4 +98,87 @@ class ConcurrencyAndSessionGuardTest {
         val home = source("ui/pages/HomePage.kt")
         assertFalse("不得残留未接线的执行确认槽位", home.contains("pendingExecutePath"))
     }
+
+    @Test
+    fun `双列落点记忆必须按列分流写入`() {
+        // 落盘点原先无条件写左列变量：右列每加载一个目录，左列的「上次浏览目录」就被
+        // 改写成右列的位置；而 rememberedRightDirectory 声明后从未被写过（死状态），
+        // 右列记忆形同虚设。两处落盘点（列举成功、目录失效回退）都须按列分流。
+        val s = source("ui/pages/FilePage.kt")
+        assertTrue("右列成功列举须写右列记忆", s.contains("RootFileManager.rememberedRightDirectory = requestedDir"))
+        assertTrue("右列回退也须写右列记忆", s.contains("RootFileManager.rememberedRightDirectory = fallback"))
+        assertFalse(
+            "列举成功处不得再无条件写左列记忆",
+            Regex("""rememberDirectory && !skipPersist\) \{\s*\n\s*RootFileManager\.rememberedDirectory = requestedDir""")
+                .containsMatchIn(s)
+        )
+        val at = s.indexOf("if (paneIndexOf(pane) == RIGHT_PANE_INDEX) {")
+        assertTrue("成功落盘点须按列下标分流", at > 0)
+        assertTrue("回退落盘点须按列下标分流", s.contains("if (paneIndex == RIGHT_PANE_INDEX) {"))
+    }
+
+    @Test
+    fun `shso 目录被删除或移走时必须让建立标记失效`() {
+        // 标记残留时 ensureShsoDir 直接返回成功而不再 mkdir：本进程内后续
+        // 「添加文件到 shso」「解压到 shso」全部失败，且报错是「目录不存在」，
+        // 与「已确保存在」的契约矛盾，只能靠重启进程恢复。
+        val s = source("data/RootFileManager.kt")
+        assertTrue(s.contains("private fun invalidateShsoDirIfAffected(path: String)"))
+        assertTrue(s.contains("if (path == DEFAULT_SHSO_DIR) shsoDirEnsured = false"))
+        assertEquals(
+            "删除 / 改名 / 移走三个入口外加声明处，应恰好 4 处",
+            4,
+            Regex("invalidateShsoDirIfAffected\\(").findAll(s).count()
+        )
+    }
+
+    @Test
+    fun `分包安装的结果必须直接返回`() {
+        // 分支尾部只写裸表达式 `outcome` 会被当成语句、值被编译器丢弃（Kotlin 报
+        // 「Expression is unused」）：整套分片装完后继续往下走「单文件安装」，
+        // 把刚装好的分包套件用仅含基础包的安装覆盖，返回值也换成后者的失败。
+        val s = source("data/ApkInstaller.kt")
+        val cleanupAt = s.indexOf("stagedHere.forEach { runCatching { File(it).delete() } }")
+        val returnAt = s.indexOf("return@withContext outcome")
+        assertTrue("分包分支必须显式返回安装结果", returnAt > 0)
+        assertTrue("暂存副本清理须先于返回", cleanupAt in 0 until returnAt)
+    }
+
+    @Test
+    fun `提取 APK 的执行作用域与进行中状态必须不随组合销毁`() {
+        // 提取是逐个 cp 到 Download 的不可撤销副作用。弹窗开关若是普通 remember，旋屏即
+        // 复位、弹窗离开组合、其页面级 scope 被取消 —— 已复制的分片留在 Download、未复制的
+        // 没有，产出装不上的半套（base + 部分 split）；「提取中」标记若也是页面级，
+        // 重建后入口重新可点，再点一次即对同一批目标文件名并发 cp -f。
+        val dialog = source("ui/components/ApkExtractDialog.kt")
+        assertFalse(
+            "提取不得再引入页面级 scope",
+            dialog.contains("import androidx.compose.runtime.rememberCoroutineScope")
+        )
+        assertTrue(
+            "提取须用文件级进程作用域",
+            dialog.contains("private val extractJobScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)")
+        )
+        assertTrue(
+            "提取中状态须提到进程级",
+            dialog.contains("private var extractingPkg by mutableStateOf<String?>(null)")
+        )
+        val page = source("ui/pages/FilePage.kt")
+        assertTrue(
+            "提取弹窗开关须跨重建保留",
+            page.contains("var showExtractApkDialog by rememberSaveable { mutableStateOf(false) }")
+        )
+    }
+
+    @Test
+    fun `APK 套件聚合不得在过滤前截断候选名`() {
+        // listFiles 的顺序是文件系统序，`take(200)` 等于随机砍掉一批候选名：
+        // 同目录 APK 超过 200 个时目标套件可能整组落在截断之外，命名聚合静默失效，
+        // 退到 manifest 分组；而应用不可读的目录（如 /data/adb）manifest 必然解析失败，
+        // 最终降级为单文件安装并以 MISSING_SPLIT 失败。
+        val s = source("data/ApkInstaller.kt")
+        assertFalse("不得在过滤前按固定上限截断候选名", s.contains("take(MAX_SIBLING_SCAN)"))
+        assertFalse("截断上限常量须一并移除", s.contains("MAX_SIBLING_SCAN"))
+        assertTrue("候选名须全量传入聚合函数", s.contains("nameBasedSet(tapped.name, siblings.map { it.name })"))
+    }
 }

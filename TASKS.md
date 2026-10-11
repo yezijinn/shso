@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → 见 § A101） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 568 tests / 0 failures / 1 skipped |
+| 单元测试 | 573 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -72,6 +72,35 @@
 ---
 
 ## 待办
+
+### A103. AI-1 移交项核实与分包安装结果丢弃（2026-10-11）
+
+先按 `docs/AI-1-BUG.md` 第 87/88 轮的交叉核对清单逐条读码核实，再顺带扫编译器警告。
+
+- [x] `BUG-LOGIC-150`（P1，编译警告发现）：`installApk` 分包分支尾部只写裸表达式 `outcome`
+  而**没有 return**。Kotlin 里 `if` 作语句时末尾裸表达式的值被丢弃（编译器给
+  `ApkInstaller.kt:164:13 Expression is unused`），块结束后函数继续执行下面的「单文件安装」——
+  刚用 `installSplitApks` 装好的整套分片，被随后一条仅含 base 的 `pm install -r -d -t` 覆盖
+  （分包应用即 `INSTALL_FAILED_MISSING_SPLIT`），返回值也从成功换成这条失败。改 `return@withContext outcome`。
+- [x] `BUG-CONSIST-144`：两处落盘点无条件写 `rememberedDirectory`，右列每列举一个目录就把左列
+  「上次浏览目录」改写为右列位置；`rememberedRightDirectory` 全库只有默认初值一个读点、无写点。
+  新增 `RIGHT_PANE_INDEX = 1`，两处按 `paneIndexOf(pane)` 分流写对应字段。
+- [x] `BUG-CONSIST-145`：`ensureShsoDir` 以 `if (shsoDirEnsured) return true` 永久短路，
+  `/data/adb/shso` 被删/改名/移走后不再重建。新增 `invalidateShsoDirIfAffected(path)`，
+  在 `delete`/`rename`/`moveFile` 的 `isUnsafePath` 守卫后各调用一次。
+- [x] `BUG-EDGE-147`：`collectApkSet` 在按 stem 过滤前 `take(MAX_SIBLING_SCAN=200)`，
+  `listFiles` 为文件系统序，同目录 >200 个 APK 时目标套件可能整组被截掉。删除该常量与截断，
+  候选名全量传入 `nameBasedSet`（条目上限由下游 `take(MAX_SPLITS)` 兜住）。
+- [x] `BUG-CONSIST-149`：提取 APK 用页面级 `rememberCoroutineScope()`、弹窗开关为普通 `remember`，
+  旋转重建即取消提取，Download 里留下 base + 部分 split 的**半套**。新增文件级 `extractJobScope`
+  与进程级 `extractingPkg`/`extractStatusMessage`，弹窗开关改 `rememberSaveable`。
+  安装 / 批量 / 解压·拷贝·移动都已用文件级作用域防这一类取消，提取是唯一遗漏。
+- [x] `BUG-CONC-148` 判 **WONTFIX**：被位移的持有者自身对 `$lock` 有前后两次 `lockOwned` 校验，
+  锁名一旦被摘走即 fail-closed 中止；D 抢到空出的锁名后目标存在性预检以 ALREADY_EXISTS 退出。
+  「mv 回退」在回退瞬间可能覆盖新持有者的锁，反而放大窗口。根治需 flock/write-lease，收益不抵风险。
+
+验证：单测 573 项通过（1 skip），`ConcurrencyAndSessionGuardTest` 新增 5 条源码契约。
+台账同步：`BUG.md` §1 索引、新增 §2.9 移交项块、§3 新增 A103 记录、§4 新增 148 裁决。
 
 ### A102. 独立复核轮（无代码改动）（2026-10-11）
 

@@ -161,7 +161,10 @@ object ApkInstaller {
                 is InstallResult.Failure -> r
             }
             stagedHere.forEach { runCatching { File(it).delete() } }
-            outcome
+            // 必须显式返回：分支尾部的裸表达式只是语句，值会被丢弃 ——
+            // 整套分片装完后会继续往下走「单文件安装」，把刚装好的分包套件
+            // 用仅含基础包的安装覆盖，且把成功结果换成后者返回的错误。
+            return@withContext outcome
         }
 
         // 统一用规范名（.apk）落到 /data/local/tmp：pm install 对 .1 等非规范后缀可能拒绝
@@ -678,8 +681,6 @@ object ApkInstaller {
         val orderedWrites: List<String> get() = all
     }
 
-    /** 同目录扫描上限：避免在塞满 APK 的目录里付出无谓的 manifest 解析开销。 */
-    private const val MAX_SIBLING_SCAN = 200
     private const val MAX_SPLITS = 64
 
     private val SPLIT_SUFFIX_REGEX = Regex("-split(\\d+)$", RegexOption.IGNORE_CASE)
@@ -740,7 +741,13 @@ object ApkInstaller {
         val byName = siblings.associateBy { it.name }
 
         // A) 命名约定
-        nameBasedSet(tapped.name, siblings.map { it.name }.take(MAX_SIBLING_SCAN))?.let { (baseName, splitNames) ->
+        // 名称全量传入，**不在过滤前截断**：`listFiles` 的返回顺序是文件系统序（任意），
+        // 先前在这里 `take(200)` 等于随机砍掉一批候选名 —— 同目录 APK 超过 200 个时，
+        // 目标套件可能整组落在截断之外，命名聚合静默失效并退到 manifest 分组；
+        // 而 manifest 解析对应用不可读的目录（如 /data/adb）必然失败，最终降级为单文件安装，
+        // 用户看到的是 MISSING_SPLIT 之类的安装失败。条目数的实际代价由后面的
+        // `take(MAX_SPLITS)` 兜住（那才是会 cp 文件的部分）。
+        nameBasedSet(tapped.name, siblings.map { it.name })?.let { (baseName, splitNames) ->
             val base = byName[baseName]
             // 同样受 MAX_SPLITS 约束：命名前缀匹配会把同目录下所有 `<名>-<版本>-splitN`
             // 收进来，而每个都会 cp 一份到 /data/local/tmp，不设上限时一个几百个 APK 的

@@ -24,7 +24,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,7 +41,31 @@ import com.mixradio.droid.data.InstalledAppInfo
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraTokens
 import com.mixradio.droid.ui.theme.auroraSwitchColors
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+
+/**
+ * 「提取 APK」的执行作用域：**不随组合销毁**。
+ *
+ * 提取底层是逐个 `cp` 到 Download 的不可撤销磁盘副作用。页面级
+ * `rememberCoroutineScope()` 在旋屏/分屏重建时被取消，取消只在**下一个挂起点**生效：
+ * 已经复制的分片留在 Download、未复制的没有 —— 用户拿到的是装不上的**半套**
+ * （base + 部分 split），全程无任何提示。
+ * 安装 / 批量 / 解压·拷贝·移动都已提到文件级作用域防这一类取消，提取此前是唯一遗漏。
+ */
+private val extractJobScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+/**
+ * 提取进行中状态：**进程级**，不随组合销毁。
+ *
+ * 页面级 remember 在旋转重建后归零、入口重新可点，而提取仍在进程作用域里跑 ——
+ * 再点一次就对同一批目标文件名叠加一次并发 `cp -f`。两条状态都提到进程级，
+ * 使「提取中」的判定与执行作用域一致。
+ */
+private var extractingPkg by mutableStateOf<String?>(null)
+private var extractStatusMessage by mutableStateOf<String?>(null)
 
 /**
  * 「提取 APK」弹窗：列出已安装应用，点击即把其安装包导出到内部存储 `Download/`。
@@ -59,15 +82,12 @@ internal fun ApkExtractDialog(
     onResult: (ok: Boolean, message: String) -> Unit
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val maxContentHeight = (LocalConfiguration.current.screenHeightDp * 0.7f).dp
 
     var includeSystem by remember { mutableStateOf(false) }
     var apps by remember { mutableStateOf<List<InstalledAppInfo>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var loadError by remember { mutableStateOf<String?>(null) }
-    var extractingPkg by remember { mutableStateOf<String?>(null) }
-    var statusMessage by remember { mutableStateOf<String?>(null) }
 
     // 切换「含系统应用」需重新枚举 → 以 includeSystem 为 key
     LaunchedEffect(includeSystem) {
@@ -132,7 +152,7 @@ internal fun ApkExtractDialog(
                 val infoLine = when {
                     loading -> "正在读取应用列表…"
                     loadError != null -> loadError
-                    statusMessage != null -> statusMessage
+                    extractStatusMessage != null -> extractStatusMessage
                     else -> "共 ${apps.size} 个应用"
                 }
                 Text(
@@ -155,11 +175,11 @@ internal fun ApkExtractDialog(
                                 .clickable(enabled = extractingPkg == null) {
                                     if (extractingPkg != null) return@clickable
                                     extractingPkg = app.packageName
-                                    statusMessage = null
-                                    scope.launch {
+                                    extractStatusMessage = null
+                                    extractJobScope.launch {
                                         val result = ApkExtractor.extract(context, app)
                                         extractingPkg = null
-                                        statusMessage = result.message
+                                        extractStatusMessage = result.message
                                         onResult(result.ok, result.message)
                                     }
                                 }
