@@ -209,8 +209,12 @@ object ExternalOpen {
 
     /** 拷贝体积上限：共享型 FileProvider 无法预知大小，超限直接拒绝而不是 OOM。 */
     const val COPY_LIMIT_BYTES = 512L * 1024 * 1024
-    private const val MAX_INBOX_FILES = 256
-    private const val MAX_INBOX_BYTES = 2L * 1024 * 1024 * 1024
+
+    /** 收件箱文件数上限。判定见顶层 [inboxRejectReason]（纯函数，可 JVM 单测）。 */
+    internal const val MAX_INBOX_FILES = 256
+
+    /** 收件箱总容量上限。 */
+    internal const val MAX_INBOX_BYTES = 2L * 1024 * 1024 * 1024
 
     sealed class Resolved {
         /** 直接拿到真实文件路径。 */
@@ -491,24 +495,32 @@ object ExternalOpen {
     /**
      * 流式拷贝到收件箱。读权限仅在接收 intent 后的短窗口有效，故必须在唤起时立即执行，
      * 不能延后到用户点确认时再读。同名自动追加 `_1`、`_2`…
+     *
+     * 失败必须带**可执行的原因**：收件箱满与读不到文件的处置方式完全不同（前者要用户去清理目录，
+     * 后者是权限或存储问题），统一成「可能未授予读取权限或复制失败」时用户无从下手。
      */
-    private fun copyToInbox(context: Context, uri: Uri, displayName: String, declaredSize: Long): File? {
-        if (declaredSize > COPY_LIMIT_BYTES) return null
+    private fun copyToInbox(context: Context, uri: Uri, displayName: String, declaredSize: Long): InboxCopy {
         val dir = File(INBOX_DIR)
-        if (!dir.exists() && !dir.mkdirs()) return null
+        if (!dir.exists() && !dir.mkdirs()) return InboxCopy.Fail("无法创建收件箱目录 $INBOX_DIR")
         val existing = dir.listFiles() ?: emptyArray()
-        if (existing.size >= MAX_INBOX_FILES) return null
         val existingBytes = existing.sumOf { if (it.isFile) it.length() else 0L }
-        if (existingBytes >= MAX_INBOX_BYTES || (declaredSize > 0L && existingBytes + declaredSize > MAX_INBOX_BYTES)) return null
-        val target = reserveUniqueFile(dir, displayName) ?: return null
+        inboxRejectReason(existing.size, existingBytes, declaredSize)?.let { return InboxCopy.Fail(it) }
+        val target = reserveUniqueFile(dir, displayName)
+            ?: return InboxCopy.Fail("收件箱中同名文件过多，请清理 $INBOX_DIR 后重试")
+
+        /** 失败前先删掉预占的占位文件，避免反复失败把收件箱槽位占满。 */
+        fun fail(reason: String): InboxCopy {
+            runCatching { target.delete() }
+            return InboxCopy.Fail(reason)
+        }
         return try {
-            // 显式判空而不是用 `?.use{} ?: return null`：
-            // `return null` 是**非局部返回**，会直接跳出函数、绕过下面两个 catch，
+            // 显式判空而不是用 `?.use{} ?: return fail(...)`：
+            // `return` 是**非局部返回**，会直接跳出函数、绕过外层 catch，
             // 于是 reserveUniqueFile 预占出来的 0 字节占位文件永远留在收件箱里。
             // 反复分享同一个打不开的 URI 就能把收件箱槽位（MAX_INBOX_FILES）全部占满，
-            // 之后任何分享都被 `existing.size >= MAX_INBOX_FILES` 拒绝。
+            // 之后任何分享都被文件数上限拒绝。故此处统一走 [fail]（先删占位再返回）。
             val input = context.contentResolver.openInputStream(uri)
-                ?: throw IllegalStateException("无法打开传入的文件")
+                ?: return fail("无法打开传入的文件")
             input.use { stream ->
                 FileOutputStream(target).use { output ->
                     val buffer = ByteArray(64 * 1024)
@@ -518,26 +530,31 @@ object ExternalOpen {
                         val read = stream.read(buffer)
                         if (read < 0) break
                         total += read
-                        if (total > COPY_LIMIT_BYTES) throw IllegalStateException("文件超过 ${COPY_LIMIT_BYTES / 1024 / 1024}MB 上限")
+                        if (total > COPY_LIMIT_BYTES) {
+                            return fail("文件超过 ${COPY_LIMIT_BYTES / 1024 / 1024}MB 上限，无法复制到收件箱")
+                        }
                         // 总容量必须**边写边判**：`declaredSize` 来自 Provider，可能是 -1（未知）
                         // 或故意偏小。只在拷贝前检查一次的话，声明为「未知/很小」的大文件
                         // 就能把收件箱撑到远超 MAX_INBOX_BYTES。
                         checkedBytes += read
                         if (checkedBytes > MAX_INBOX_BYTES) {
-                            throw IllegalStateException("收件箱总容量超过 ${MAX_INBOX_BYTES / 1024 / 1024 / 1024}GB 上限")
+                            return fail(
+                                "收件箱容量不足（本次拷贝超过 ${MAX_INBOX_BYTES / 1024 / 1024 / 1024}GB 总上限），" +
+                                    "请清理 $INBOX_DIR 后重试"
+                            )
                         }
                         output.write(buffer, 0, read)
                     }
                     output.flush()
                 }
             }
-            target
+            InboxCopy.Ok(target)
         } catch (e: kotlinx.coroutines.CancellationException) {
             runCatching { target.delete() }
             throw e
         } catch (e: Exception) {
             runCatching { target.delete() }
-            null
+            InboxCopy.Fail("无法读取该文件（可能未授予读取权限，或存储空间不足）")
         }
     }
 
@@ -578,13 +595,43 @@ object ExternalOpen {
         }
         val displayName = displayNameOf(context, uri)
         val size = sizeOf(context, uri)
-        if (size > COPY_LIMIT_BYTES) {
-            return@withContext Resolved.Failed(
-                "文件过大（${size / 1024 / 1024}MB），无法复制到 shso 收件箱"
-            )
+        // 声明大小已超单文件上限时提前拒绝：与 [copyToInbox] 内的判定同源，
+        // 但省掉一次建目录 / 预占文件。fileCount 与 existingBytes 传 0，
+        // 该调用只可能命中声明大小这一条。
+        inboxRejectReason(0, 0L, size)?.let { return@withContext Resolved.Failed(it) }
+        return@withContext when (val copied = copyToInbox(context, uri, displayName, size)) {
+            is InboxCopy.Ok -> Resolved.Copied(copied.file.absolutePath)
+            is InboxCopy.Fail -> Resolved.Failed(copied.reason)
         }
-        val copied = copyToInbox(context, uri, displayName, size)
-            ?: return@withContext Resolved.Failed("无法读取该文件（可能未授予读取权限或复制失败）")
-        Resolved.Copied(copied.absolutePath)
     }
+}
+
+/** 收件箱拷贝结果。失败必须携带可辨识的原因，见 [ExternalOpen.resolve]。 */
+internal sealed interface InboxCopy {
+    data class Ok(val file: File) : InboxCopy
+    data class Fail(val reason: String) : InboxCopy
+}
+
+/**
+ * 收件箱容量判定的纯函数：返回拒绝原因，`null` 表示可继续拷贝（JVM 可直接单测）。
+ *
+ * 与「读不到文件」区分开是必要的：收件箱满要用户去清理目录，权限 / 存储问题则不然。
+ * [declaredBytes] 允许为 -1（Provider 不报大小），此时只按已知的现有占用判定，
+ * 边写边判的总量校验由调用方负责。
+ */
+internal fun inboxRejectReason(fileCount: Int, existingBytes: Long, declaredBytes: Long): String? {
+    if (declaredBytes > ExternalOpen.COPY_LIMIT_BYTES) {
+        return "文件过大（${declaredBytes / 1024 / 1024}MB），无法复制到 shso 收件箱"
+    }
+    if (fileCount >= ExternalOpen.MAX_INBOX_FILES) {
+        return "收件箱文件数已达上限（${ExternalOpen.MAX_INBOX_FILES} 个），" +
+            "请清理 ${ExternalOpen.INBOX_DIR} 后重试"
+    }
+    val overTotal = existingBytes >= ExternalOpen.MAX_INBOX_BYTES ||
+        (declaredBytes > 0L && existingBytes + declaredBytes > ExternalOpen.MAX_INBOX_BYTES)
+    if (overTotal) {
+        return "收件箱容量已达上限（${ExternalOpen.MAX_INBOX_BYTES / 1024 / 1024 / 1024}GB），" +
+            "请清理 ${ExternalOpen.INBOX_DIR} 后重试"
+    }
+    return null
 }
