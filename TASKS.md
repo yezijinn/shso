@@ -109,8 +109,16 @@ DISPROVEN / BY_DESIGN / WONTFIX。`docs/AI-2-BUG.md` 无新增（止于 §8.5 �
   `写入 BOM` 行被面板下沿裁到 2px 高；
   `input swipe 540 1000 540 400` 后 `✕` 与标题 bounds **完全不变**，`写入 BOM` 行由 y≈1156 上移至
   y=402，`编码`/`换行`/`语法包`/`另存为`/`显示行号` 滚出可见区，`草稿快照` 等被裁切行进入可见区；
-  在滚动后位置点击 `✕`（`(901,278)`）→ 面板关闭并回到编辑器。随后 `wm size reset` 复原，
+  在滚动后位置点击 `✕`（`(901,278)`）→ 面板关闭并回到编辑器。滚动区内部行另测（`✕` 在滚动区之外，
+  不能代表内部）：点 `显示行号` 行 `开`→`关`，缩屏并 `input swipe 540 1000 540 500` 后该行由 y=1012 上移至
+  415，再点同一行（`(300,437)`）`关`→`开`，命中判定随滚动偏移正确跟随。随后 `wm size reset` 复原，
   清理设备与本地临时文件。
+- [x] 同类形态全量复核 14 处 `Dialog`/`AlertDialog` 中带滚动容器的形态：`BookmarksDialog`（标题/底栏在
+  滚动区外）、`ApkExtractDialog`（`Surface.height(maxContentHeight)` 定高，仅列表滚动）、
+  `BuiltInFilePicker`（标题在滚动区外）、`ImageViewerDialog`（无滚动容器）均正确；`SyntaxPackDialog` 行内
+  `✕` 是列表项删除动作（列表定高 200dp），非弹窗关闭入口。唯一形似的是共享组件 `AuroraWindowDialog`
+  （标题与摘要同在 `verticalScroll` 内）——该组件不带 `✕`，关闭走外部点击/返回键，标题滚走只影响观感、
+  不阻断操作，判 BY_DESIGN 不改（波及全部 10 余个调用点，收益与风险不成比例）。
 - [x] 构建与发布：APK 2909869 字节，sha256 `eb0145e9…`；tag `20261012` 重指至本次发版提交，
   双端 Release 资产替换并核验三方一致。语法包侧 `syntaxpacks-v2` 未变（APK 不内置语法）。
 
