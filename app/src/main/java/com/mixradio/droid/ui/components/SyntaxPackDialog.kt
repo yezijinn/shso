@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -86,7 +87,7 @@ fun SyntaxPackDialog(
         Column(modifier = Modifier.fillMaxWidth()) {
             if (packs.isEmpty()) {
                 Text(
-                    "暂无外部语法包：编辑器按纯文本处理，可从下方直链或本地 zip 导入。",
+                    "暂无外部语法包：编辑器按纯文本处理，可用下方按钮导入本地 zip 或直接从仓库下载。",
                     style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary,
                     modifier = Modifier.padding(vertical = 8.dp)
                 )
@@ -154,16 +155,23 @@ fun SyntaxPackDialog(
                     colors = ButtonDefaults.buttonColors(containerColor = AuroraTokens.Accent)
                 ) { Text("从仓库下载") }
             }
-            // 备用源：首选直链在个别网络下仍不可达时改走 GitHub，两处是同一 tag 下的同一份文件
-            Text(
-                "Gitee 不可达？改用 GitHub 直链",
-                style = AuroraTextStyles.footnote2, color = AuroraTokens.Accent,
-                modifier = Modifier.padding(top = 6.dp)
+            // 备用源：首选直链在个别网络下仍不可达时改走 GitHub，两处是同一 tag 下的同一份文件。
+            // 整行可点，触控高度按行高约定取 48dp（首选源打不开时这行就是唯一出路，不能做成小字链接）
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
                     .clickable(enabled = !busy) {
                         urlPrefill = SyntaxPackUrls.PACK_ZIP_ALT
                         showUrlInput = true
-                    }
-            )
+                    },
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Text(
+                    "Gitee 不可达？改用 GitHub 直链",
+                    style = AuroraTextStyles.footnote2, color = AuroraTokens.Accent
+                )
+            }
             if (busy) {
                 Text("正在导入…", style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary,
                     modifier = Modifier.padding(top = 6.dp))

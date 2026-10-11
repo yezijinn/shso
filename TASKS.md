@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A113） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A116） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 610 tests / 0 failures / 1 skipped |
+| 单元测试 | 613 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -76,11 +76,38 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`48e5fc51…`）；双端 tag 与 Release 的目标提交均已对齐 A115 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`b18b2991…`）；双端 tag 与 Release 的目标提交均已对齐 A116 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 
 ---
 
 ## 待办
+
+### A116. 语法包弹窗文案与触控复核（BUG-CONSIST-183 / BUG-COMPAT-184）（2026-10-12）
+
+`docs/AI-1-BUG.md` 第一百三十七轮为非缺陷留档：AI-1 实测 Gitee raw 走 302 → `raw.giteeusercontent.com` → 200，
+并核 `SyntaxPackStore.download()` 的 `instanceFollowRedirects = true` 能跟随重定向，A115 的 Gitee 首选源成立。
+`docs/AI-2-BUG.md` 无新增（止于 §8）。台账唯一 OPEN 项仍为 BUG-PERF-030（A109 已裁定维持不修）。
+
+顺着 A115 改过的那一屏再看一遍，发现两个此前没登记的问题，一并处理：
+
+- [x] **P3 · 空态文案悬空（BUG-CONSIST-183）**：空态写「可从下方直链或本地 zip 导入」，而弹窗下方从来
+  没有过直链。早先确有一组「仓库语法包（点击预填直链）」条目 + `SyntaxPackUrls.PRESETS`，在
+  `9c21b99 调整语法包弹窗` 里整组删除、收成「从仓库下载」按钮预填，文案未同步。改为
+  「可用下方按钮导入本地 zip 或直接从仓库下载。」。
+- [x] **P3 · 备用源入口触控面积不足（BUG-COMPAT-184）**：备用源入口是裸 `Text` + `padding(top = 6.dp)`，
+  `clickable` 挂在 `Text` 上，命中区仅文字本身（行高约 16dp），低于项目 48dp 的触控约定
+  （范式见 `AuroraComponents.kt` 的 `fillMaxWidth().heightIn(min = 48.dp).clickable`）。该行在首选源
+  不可达时是唯一换源出口，改 `Box(fillMaxWidth().heightIn(min = 48.dp).clickable(enabled = !busy))`
+  整行可点，文案与行为不变。
+- [x] 单测：`testDebugUnitTest` **613 tests / 0 failures / 1 skipped**（两条均为纯文案与修饰符改动，
+  不新增用例；既有 `SyntaxPackSourceTest` 覆盖的 URL 常量与 `sourceLabel` 未变）。
+- [x] 真机（root，PACM00 / Android 10）：空态确认新文案与三个入口；点备用源行右侧空白区（远离文字）
+  成功拉起 URL 输入框且预填 `raw.githubusercontent.com`，证明整行命中；再导入 62 个包后确认弹窗
+  （列表 200dp + 汇总 + 提示 + 按钮 + 备用源行）在 2280px 屏内不溢出，XML 文件已挂 `XML` 徽标。
+  验证后清理设备侧 `files/syntax` 与 `/sdcard/Download` 一次性文件。
+- [x] 构建与发布：`assembleRelease` + `verifyReleasePayload` 通过（无语法包、无数据表）；APK 2909869 字节，
+  sha256 `b18b2991…`；tag `20261012` 重指至本次发版提交，双端 Release 资产替换并核验三方一致。
+  语法包侧 `syntaxpacks-v2` 未变（APK 不内置语法，本次无语法包重发）。
 
 ### A115. 语法包下载源双源化（BUG-COMPAT-182）（2026-10-12）
 
