@@ -37,20 +37,21 @@ class SyncCommandReclaimTest {
 
         val timeoutAt = body.indexOf("if (!finished)")
         assertTrue("必须存在超时分支", timeoutAt > 0)
-        val timeoutBranch = body.substring(timeoutAt, timeoutAt + 400)
+        val timeoutBranch = body.substring(timeoutAt, timeoutAt + 500)
 
         assertTrue(
             "超时必须调用进程树回收",
-            timeoutBranch.contains("forceKillProcessTree")
+            timeoutBranch.contains("forceKillProcessTree(process, suPid)")
         )
+        // 回收通道自身发起的 kill 命令必须能关闭「超时→回收」再入，否则与 forceKillProcessTree 互递归无界。
         assertTrue(
-            "不得再只靠 destroyForcibly 兜底",
-            !body.contains("process.destroyForcibly()")
+            "超时回收必须可关闭（斩断互递归）",
+            body.contains("reclaimOnTimeout")
         )
     }
 
     @Test fun `进程树回收必须走已有的组校验命令`() {
-        // 复用 buildProcessGroupKillCommand 的三重校验（组长确认、
+        // 复用 buildProcessGroupKillCommand 的三重校验（组成员存活、
         // 不误杀本应用所在进程组）——不能自己拼 `kill -9 -<pgid>`：
         // pid 会被内核回收复用，校验缺失时可能整组杀掉无关进程。
         val text = source.readText()
@@ -196,18 +197,34 @@ class SyncCommandReclaimTest {
     }
 
     @Test fun `组杀命令的三重校验不得被绕过`() {
-        // 这条护栏保护的是「不误杀无关进程组」这一不可逆风险。
+        // 这条护栏保护的是「不误杀无关进程组」与「不漏杀成组孤儿」两个不可逆风险。
         assertTrue(
             "pgid 必须大于 1",
             RootServiceProcessGroupRules.rejectsNonPositivePgid
         )
         assertTrue(
-            "必须校验 /proc/<pgid>/stat 第 5 字段等于 pgid",
-            RootServiceProcessGroupRules.checksGroupLeader
+            "必须校验该进程组仍有存活成员（而非组长存活）",
+            RootServiceProcessGroupRules.checksLiveGroupMember
         )
         assertTrue(
             "必须校验本应用 pgrp 不等于目标 pgid",
             RootServiceProcessGroupRules.checksNotSelfGroup
+        )
+    }
+
+    @Test fun `exec 收尾的权限还原不得阻塞主线程`() {
+        // runCommandSync 是**同步阻塞**函数（ProcessBuilder su + waitFor），放在
+        // Dispatchers.Main 上会让每次 .so 收尾都阻塞主线程，su 停在授权弹窗时最长卡满 10s（ANR 级）。
+        val text = source.readText()
+        val start = text.indexOf("val isCurrentJob = executionJob === myJob")
+        assertTrue("应能找到 executeFile 的 finally", start > 0)
+        val body = text.substring(start, minOf(text.length, start + 1400))
+        val restoreAt = body.indexOf("chmod \$mode")
+        assertTrue("finally 里必须有权限还原", restoreAt > 0)
+        val guard = body.substring(0, restoreAt)
+        assertTrue(
+            "还原必须离开 Main（不能写在 Dispatchers.Main 的 withContext 内）",
+            guard.contains("Dispatchers.IO")
         )
     }
 }
@@ -223,9 +240,18 @@ internal object RootServiceProcessGroupRules {
         get() = buildProcessGroupKillCommand(9, 0, 1234) == null &&
             buildProcessGroupKillCommand(9, 1, 1234) == null
 
-    val checksGroupLeader: Boolean
-        get() = buildProcessGroupKillCommand(9, 4242, 1234)
-            ?.contains("/proc/\$P/stat") == true
+    /**
+     * ② 必须以「该组仍有存活成员」为判据：组长死后组 id 仍有效（成员保留 pgid），
+     * 而组长先退出是常态。不得退回「组长存活」（`/proc/<pgid>/stat` 存在）。
+     */
+    val checksLiveGroupMember: Boolean
+        get() {
+            val cmd = buildProcessGroupKillCommand(9, 4242, 1234) ?: return false
+            return cmd.contains("for d in /proc/[0-9]*") &&
+                cmd.contains("[ \"\$3\" = \"\$P\" ]") &&
+                cmd.contains("[ -n \"\$G\" ]") &&
+                !cmd.contains("/proc/\$P/stat")
+        }
 
     val checksNotSelfGroup: Boolean
         get() = buildProcessGroupKillCommand(9, 4242, 1234)

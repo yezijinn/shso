@@ -404,7 +404,8 @@ object ArchiveExtractor {
                     result
                 }
                 is ExtractResult.Failure -> {
-                    // 目标由本次 resolveTargetPath 新建，失败时整体清理，避免残留半包数据。
+                    // 目标由本次原子预占（reserveTargetDirectory / reserveTargetFile）创建，
+                    // 失败时整体清理，避免残留半包数据；不得伤及既有的同名兄弟目标。
                     finalTarget.deleteRecursively()
                     result
                 }
@@ -414,18 +415,6 @@ object ArchiveExtractor {
         } catch (e: Exception) {
             ExtractResult.Failure("解压失败: ${e.message ?: e.javaClass.simpleName}")
         }
-    }
-
-    /** 目标路径冲突消解：同名存在时自动追加 _1、_2… 数字后缀（文件与目录通用）。 */
-    private fun resolveTargetPath(parent: String, baseName: String): String {
-        val safe = baseName.replace(Regex("[\\\\/:*?\"<>|]"), "_")
-        var candidate = File(parent, safe)
-        var index = 1
-        while (candidate.exists()) {
-            candidate = File(parent, "${safe}_$index")
-            index++
-        }
-        return candidate.absolutePath
     }
 
     /** Reserve a directory atomically so failed extraction cannot delete a rival target. */

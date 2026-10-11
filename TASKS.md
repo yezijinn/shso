@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A109） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 596 tests / 0 failures / 1 skipped |
+| 单元测试 | 599 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -27,6 +27,11 @@
 | 移动/复制 | 冲突探测单次化；覆盖目录先改名让位、失败回滚；拷贝只清 setuid/setgid 与 g/o 写位，保留执行位 |
 | root 探测时序 | `isRootGranted == null`（未探测）先等待探测落定，上限 3s，超时按已知状态处理 |
 | 执行归属 | `stillOwnsExecution` 比对精确槽位令牌；`startExecution` 清槽位兑现契约 → 新脚本不会被旧收尾误清 |
+| 进程回收 | 整组 kill 的校验②由「组长存活」改为**组成员存活扫描**（纯 shell 内建 `/proc` 遍历，不依赖 `ps -o PGID`／`awk`）→ 组长已退的孤儿组仍能整组回收 |
+| 终端保活 | 命令启动即拉起前台服务（不再延迟 5s），避开 `targetSdk 35` 后台禁止启动前台服务的限制 |
+| 超时回收 | `runCommandSync` 新增 `reclaimOnTimeout` 形参：回收通道只 `destroyForcibly`，斩断「超时 → 组杀 → 超时」互递归 |
+| 执行收尾 | `.so` 权限还原改在 `Dispatchers.IO`（不再阻塞主线程）；属性文件写出后 `chmod 644`（`su` 掩码 077 时 app 读不到会导致还原被静默跳过） |
+| 非 Root 执行 | 与 ROOT 同口径的 ELF 魔数预检；非 ELF 报 126 并提示，是 ELF 则 `chmod u+x` 后直接执行（不再交给 `sh` 隐式解释） |
 | 文本读取 | `probeReadableBytes`（`dd \| wc -c`）区分「真空文件」与「procfs 有内容」；`readFailed` 阻止编辑保存 |
 | 条目预算 | 中央目录**零分配结构遍历**取精确条目数（不信自报字段、不按体积折算） |
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
@@ -72,6 +77,95 @@
 ---
 
 ## 待办
+
+### A110. 执行链路与终端回收专项：`docs/AI-1-BUG.md` 第 111/113 轮 + `docs/AI-2-BUG.md` 第 8 节（2026-10-12）
+
+逐条读码核实两份外部审查文档的发现项。AI-1 第 111/113 轮 2 条（死代码、过时注释）与
+AI-2 §8 的 13 条均**复现成立**，且此前 BUG.md / TASKS.md 零登记。共修 14 条，
+暂缓 1 条（023，需方案评审）。
+
+- [x] **P2 · 非 ROOT 执行 `.so` 退化为 `sh <ELF>`（BUG-LOGIC-161）**：Root 侧早已按魔数
+  `7f454c46` 预检 + 126/127 提示，非 Root 分支只拼 `export/cd` 后交给 `runShCmd`
+  （`.so` → `Plan.DIRECT` → 恒为 `sh $escapedFile`）。mksh 对 `execve` 返回 ENOEXEC 的文件
+  隐式回退为 shell 解释 → 满屏 U+FFFD、真实退出码被覆盖，且文档宣称的「给出明确提示」只对
+  Root 成立（`更新日志.md` 失实已同步修正）。现非 Root 分支比照 Root：先 `head -c 4` 取魔数，
+  非 ELF 直接 126 并提示，是 ELF 则 `chmod u+x` 后直接执行（仅应用可写文件可行，`/sdcard`
+  等 noexec 挂载点必然失败，如实报 126/127，不再静默退化），并配套记录/还原执行位。
+- [x] **P2 · 组长存活校验使「组长已死、成员仍活」的整组回收静默失效（BUG-LOGIC-164）**：
+  `buildProcessGroupKillCommand` 的校验②要求 `/proc/<pgid>/stat` 存在且 pgrp==pgid，即
+  **组长存活**；而组杀的用途正是回收「中断后逃逸的子孙」，SIGINT 恰先杀组长
+  （`sleep 600 & exit 0` 即为组长立即退出的常态）→ 校验②恒假 → 整组回收短路成 no-op，
+  root 的 `sleep` 继续跑、UI 报「已结束」。现校验②改为**组成员存活扫描**（遍历
+  `/proc/<pid>/stat` 从最后一个 `)` 之后取 pgrp 比对，命中即置标记），fail-closed 语义与
+  校验③（不误伤本应用所在组）保持不变。经真机实测两个坑：toybox 的 `ps -o PGID` **恒为 0**
+  （不可作判据）、Android 无 `awk`，故采用纯 shell 内建 `/proc` 扫描。
+- [x] **P2 · 终端保活前台服务延迟拉起被系统拒绝且被静默吞掉（BUG-EXC-165）**：
+  `runTerminalCommand` 在 `delay(5_000)` 后才 `runCatching { ExecutionForegroundService.start() }`，
+  而 `targetSdk=35` 下应用退到后台后 `startForegroundService` 抛
+  `ForegroundServiceStartNotAllowedException`，被 `runCatching` 静默吞掉 → 无通知、无保活，
+  进程随即被 LMK 杀（`su` 子进程收 SIGPIPE 暴亡）或被 freezer 冻结（输出协程停调度 →
+  子进程写满 64KB 管道阻塞）。**该功能声称保护的场景恰是它失效的场景**（脚本路径无此问题：
+  `startExecution` 在应用必前台时同步拉起）。现删除延迟常量，命令启动时立即拉起前台服务，
+  通知显眼度后续再升级。
+- [x] **P2 · `executeFile` finally 的权限还原在主线程同步跑 `su` 往返（BUG-EXC-167）**：
+  `runCommandSync` 是非挂起同步函数（ProcessBuilder + waitFor），却写在
+  `withContext(NonCancellable + Dispatchers.Main)` 里，每次 `.so` 收尾（含强杀路径）都阻塞
+  主线程，`su` 停在授权弹窗时最长 10s（ANR 级），点「结束进程」后 UI 反而冻住。现该段改
+  `Dispatchers.IO`（函数本就非挂起，换 dispatcher 零语义损失）。
+- [x] **P3 · 强杀窗口的权限还原依赖 app 可读属性文件，`su` 掩码 077 时静默跳过（BUG-EDGE-171）**：
+  属性文件由 root shell 重定向创建，`su`（Magisk/KernelSU）默认 `umask 077` → 600 root:root，
+  app 侧 `readText()` 抛异常 → `mode=null` → chmod 跳过，被放宽的执行位永久保留。现
+  `saveAttrCmd` 末尾追加 `chmod 644 <attrFile>`（app 私有目录无泄密面）。真机实测：
+  属主可写掩码下写出 `-rw-------`，追加后 `-rw-r--r--`，应用侧可读（755）。
+- [x] **P3 · `killCurrentProcess` 守卫缺存活实体项，stale pgid 可致 PID 复用误杀（BUG-CONC-163）**：
+  守卫为 `!isTaskRunning && targetProcess==null && targetPgid<=1 && targetName==null`，
+  不含 `targetPid`/存活实体项；而 finally 跑完后组长必已回收、组杀校验②恒失败，这条 stale
+  组杀本就是 no-op —— 它唯一真正发出信号的情形恰是 pgid 被复用为无关组组长。现对齐
+  `restartTerminal` 口径：`hasLiveEntity = isTaskRunning || targetProcess != null || targetPid > 0`，
+  保留 `targetName` 通道。
+- [x] **P3 · `startExecution` 作废旧实体漏清 `processWriter` 与 `executionJob`（BUG-CONC-168 / BUG-CONC-170）**：
+  同步段作废清单只含 `runPgid/activeProcess/processPid`，漏 `processWriter` → 归一化窗口内
+  终端输入被受理并写向已关闭的 writer（IOException →「发送失败: Stream closed」，输入被吞）；
+  `executionJob` 的作废完全依赖时序 → 极端停顿下旧收尾按仍为真的归属判定把新任务的
+  `isTaskRunning/currentTaskName` 清掉（脚本在跑、UI「待命中」、终止入口禁用）。现同步段补
+  `processWriter = null` 与 `executionJob?.cancel(); executionJob = null`。
+- [x] **P3 · `sendInput` 退出码行缺归属判定（BUG-CONSIST-166）**：`runTerminalCommand` 自身
+  收尾与读线程投递都有代际/槽位守卫，唯独 `sendInput` 这条出口裸奔 —— 终端命令 A 被脚本 B
+  覆盖启动（A 被杀，退出码 137）时，该行落入 B 刚开始的日志。现写入前加
+  `terminalSlotOwner.get() == slotToken` 比对。
+- [x] **P3 · `.nobom` 后缀错配致 finally 清理恒为空操作（BUG-CONSIST-162）**：创建的是
+  `.sh_norm_*.nobom`，finally 删的是 `it.absolutePath + ".bom"`（从未被创建）。正常路径由
+  prepare 子命令自清，泄漏窗口为「prepare 中途被强杀」；现改为删 `.nobom`。
+- [x] **P3 · 读线程泄漏双现场（BUG-EXC-169）**：① `runTerminalCommand` 整个函数无 finally，
+  正常结束路径（`finished=true`）对流零处理；② `runCommandSync` 的 `readerThread.join(5000)`
+  仍存活时直接 return，不关流不销毁。两处每次触发泄漏一个常驻读线程 + 管道 FD + Process
+  句柄。现两处均在 join 超时后 `forceCloseProcess`（关流迫使 `read` 返回 -1，线程自尽）。
+- [x] **P3 · `runCommandSync` ↔ `forceKillProcessTree` 互递归无深度上限（BUG-EXC-172）**：
+  超时分支调 `forceKillProcessTree`，后者又以 5s 超时调 `runCommandSync(killCmd)`，killCmd
+  经**新的** `su -c` 执行，`su` 停在授权弹窗时再次超时 → 再入 → 每 5s 泄漏一个挂弹窗的 `su`，
+  链长只由用户何时拒绝授权决定。现 `runCommandSync` 增加 `reclaimOnTimeout` 形参，超时分支
+  在回收通道内只 `destroyForcibly`，斩断互递归。
+- [x] **P3 · 解压冲突消解死函数与两条过时注释（BUG-CONSIST-174 / BUG-CONSIST-175）**：
+  `ArchiveExtractor.resolveTargetPath` 全项目无调用者（职责已由原子预占的
+  `reserveTargetDirectory`/`reserveTargetFile` 取代，且后者修掉了前者的 TOCTOU 窗口），
+  连带 L407 注释仍指向该死函数；`AuroraComponents` 的 `AuroraWindowDialog` KDoc 写
+  「20dp 圆角」而实现为 `RoundedCornerShape(0.dp)`，与零圆角形态铁律矛盾。现删除死函数、
+  订正两处注释。
+- [x] 单测：`testDebugUnitTest` **599 tests / 0 failures / 1 skipped**（新增/改写 8 条护栏：
+  组杀命令精确等值 + 组成员存活扫描 + 不得依赖 `ps -o PGID`/`awk`、非 Root 段须含
+  `7f454c46` 预检与直接执行、非 Root 必须复用归一化执行体、`reclaimOnTimeout` 互递归斩断、
+  权限还原须离开 `Dispatchers.Main`）。
+- [x] 真机（root）：013 组杀复现验证 —— 构造「组长（27543）已退、成员（27544）仍活」的孤儿组，
+  新判据 `G=1` 命中并整组回收（`AFTER_REMAIN=0`）；021 属性文件权限实测
+  `-rw-------` → `chmod 644` → `-rw-r--r--` 且应用侧可读；010 魔数预检表达式在 mksh 下实测
+  ELF 得 `7f454c46`、文本得 `3132372e`。
+- [!] **暂缓 · 非 ROOT 任务的中断/结束只达直接子进程（BUG-LOGIC-173，原 AI2-LOGIC-023）**：
+  非 Root 路径无进程组隔离（子进程沿用应用自身进程组，直接组杀会误杀本应用），故 `pgid` 恒 0、
+  中断与结束只杀外层 `sh`，内层脚本真身以应用 uid 继续运行（不写 stdout 的 `sleep` 无尽）。
+  建议方案为 `setsid sh $file` 令非 Root 任务自成会话/进程组（应用 uid 自己即可组杀），
+  但属**执行模型重构**（涉及 pgid 落盘、kill 通道由 `su` 改走应用 uid、与 Root 方案同构化），
+  需专项真机验证后再动，暂不动刀。
+- [ ] 发版：见速览。
 
 ### A109. 编码判据阈值回归：短 GB18030 样本被误判 UTF-8（2026-10-12）
 

@@ -44,7 +44,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 
 /**
- * 原生对话框：深空蓝玻璃底 + 20dp 圆角 + 1dp 发丝描边，
+ * 原生对话框：深空蓝玻璃底 + 零圆角（直角矩形，形态铁律）+ 1dp 发丝描边，
  * 顶部显示标题（可选摘要），内容区可滚动。
  *
  * 调用处保持 `AuroraWindowDialog(show, title, summary?, onDismissRequest) { Column { ... } }` 形态。

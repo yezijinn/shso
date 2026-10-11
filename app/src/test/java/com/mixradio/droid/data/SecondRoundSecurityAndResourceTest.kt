@@ -185,8 +185,27 @@ class SecondRoundSecurityAndResourceTest {
         val nonRoot = rootService.substringAfter("// 非 Root：普通 sh 执行")
             .substringBefore("if (useRoot) {")
         assertTrue(
+            "非 Root 分支必须复用 runShCmd（归一化后的执行体）",
+            nonRoot.contains("nonRootPrefix + runShCmd")
+        )
+        assertTrue(
             "非 Root 分支硬编码 `sh \$escapedFile` 会让 CRLF/BOM 脚本只在这条路径上复现 A75 缺陷",
-            nonRoot.contains("; " + D + "runShCmd")
+            !nonRoot.contains("sh " + D + "escapedFile")
+        )
+    }
+
+    @Test fun `非 Root 执行 ELF 不得喂给 sh`() {
+        // 非 Root 下 isSo 必须走 ELF 魔数预检 + 直接执行分支，
+        // 不能落到 `sh $escapedFile`：mksh 会把 ELF 字节按脚本解释，产出满屏乱码并覆盖退出码。
+        val nonRoot = rootService.substringAfter("// 非 Root：普通 sh 执行")
+            .substringBefore("if (useRoot) {")
+        assertTrue(
+            "非 Root 分支同样必须按魔数拦截非 ELF",
+            nonRoot.contains("!= 7f454c46")
+        )
+        assertTrue(
+            "非 Root 分支的 .so 必须直接执行而非交给 sh",
+            nonRoot.contains("chmod u+x " + D + "escapedFile")
         )
     }
 
