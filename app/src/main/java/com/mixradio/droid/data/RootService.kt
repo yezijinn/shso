@@ -22,6 +22,7 @@ import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.regex.Pattern
 
@@ -284,6 +285,30 @@ object RootService {
 
     fun initSettings(settings: AppSettings) {
         appSettings = settings
+        sweepExecutionTempFiles()
+    }
+
+    /** 启动清扫只在本进程首次初始化时执行一次。 */
+    private val sweptExecutionTemp = AtomicBoolean(false)
+
+    /**
+     * 清扫上一次运行遗留的执行期临时文件（`.exec_attr_*` / `.sh_norm_*`）。
+     *
+     * 正常路径在协程 finally 里删除；App 被强杀、OOM，或执行协程卡在 native 管道读上时
+     * finally 根本不执行，残留只能在启动时兜底。仅扫一次：运行中扫会误删正在使用的临时文件。
+     */
+    private fun sweepExecutionTempFiles() {
+        if (!sweptExecutionTemp.compareAndSet(false, true)) return
+        scope.launch {
+            runCatching {
+                com.mixradio.droid.ShsoApplication.appContext.filesDir.listFiles()?.forEach { file ->
+                    val name = file.name
+                    if (name.startsWith(".exec_attr_") || name.startsWith(".sh_norm_")) {
+                        runCatching { file.delete() }
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -497,6 +522,8 @@ object RootService {
         }
         // 关闭子进程 stdin：本通道只读输出、从不喂输入（交互输入走 processWriter 那条链路）。
         runCatching { process.outputStream.close() }
+        // 先记下 su 的 pid：超时时用它反查进程组并整组回收。
+        val suPid = pidOfProcess(process)
 
         // 槽位归属自检：起进程期间可能已被 kill/新任务抢走，此时不得再写全局句柄，
         // 否则会覆盖别人的 activeProcess/currentTaskName，并 cancel 掉对方的发布循环。
@@ -516,7 +543,7 @@ object RootService {
             lastExitCode = null
             activeProcess = process
             processWriter = null
-            processPid = pidOfProcess(process)
+            processPid = suPid
         }
         // 复用任务用的批量发布通道：它按 isTaskRunning 存活，命令结束即自行退出并 flush 残留。
         // 记下归属令牌：命令可重叠，收尾时只能停自己那个循环。
@@ -544,7 +571,11 @@ object RootService {
                         val buffer = CharArray(1024)
                         var count: Int
                         while (reader.read(buffer).also { count = it } != -1) {
-                            HyperCore.queueLogChunk(String(buffer, 0, count))
+                            // 迟到的输出不得混进已接管的新任务：新命令/新任务会 clearBatchQueue，
+                            // 代际不符时投递的内容会绕过清屏直接追加到新任务的日志里。
+                            if (terminalCommandGeneration.get() == generation) {
+                                HyperCore.queueLogChunk(String(buffer, 0, count))
+                            }
                         }
                     }
                 }
@@ -556,7 +587,9 @@ object RootService {
 
         val finished = runCatching { process.waitFor(TERMINAL_COMMAND_TIMEOUT_MS, TimeUnit.MILLISECONDS) }.getOrDefault(false)
         if (!finished) {
-            process.destroyForcibly()
+            // 只杀 su 会把 `sh -c …` 及其子孙留成 init 名下的 root 孤儿。与 [runCommandSync] 同法，
+            // 用 su 的 pid 反查进程组整组回收（不依赖可能陈旧的 runPgid，故无 pid 复用误杀风险）。
+            forceKillProcessTree(process, suPid)
             forceCloseProcess(process)
         }
         readerThread.join(3000)
@@ -594,17 +627,38 @@ object RootService {
     fun writeBytesAsRoot(targetPath: String, bytes: ByteArray, append: Boolean = false, timeoutSec: Long = 60): Boolean {
         return try {
             val redirect = if (append) ">>" else ">"
-            val process = ProcessBuilder("su", "-c", "cat $redirect ${escapeShellArg(targetPath)}")
-                .redirectErrorStream(true).start()
-            process.outputStream.use { out ->
-                out.write(bytes)
-                out.flush()
+            // 错误通道必须与 stdout 分开：合并后本函数从不读取该管道，
+            // cat 写失败的错误文本会堆到写满并把子进程阻塞在 write 上 ——
+            // 调用方因此干等满 timeoutSec 才收到 false，错误原因也一并丢失。
+            val process = ProcessBuilder("su", "-c", "cat $redirect ${escapeShellArg(targetPath)}").start()
+            // 错误通道单独 drain（只读不展示），避免子进程因 stderr 管道写满而永久阻塞。
+            val errDrain = Thread { runCatching { process.errorStream.use { it.readBytes() } } }
+            errDrain.isDaemon = true
+            errDrain.start()
+            // 写入必须放独立线程：su 若卡在授权弹窗，而内容超过管道缓冲（约 64KB），
+            // 在调用线程直接 write 会永久阻塞，waitFor 的超时形同虚设。
+            val writer = Thread {
+                runCatching {
+                    process.outputStream.use { out ->
+                        out.write(bytes)
+                        out.flush()
+                    }
+                }
             }
+            writer.isDaemon = true
+            writer.start()
             val finished = process.waitFor(timeoutSec, TimeUnit.SECONDS)
             if (!finished) {
+                // destroyForcibly 关闭管道，卡住的写线程随即以 IOException 退出。
                 process.destroyForcibly()
-                false
-            } else process.exitValue() == 0
+                writer.join(1_000)
+                errDrain.join(1_000)
+                return false
+            }
+            writer.join(2_000)
+            val ok = process.exitValue() == 0 && !writer.isAlive
+            process.destroy()
+            ok
         } catch (_: Exception) {
             false
         }
@@ -616,7 +670,7 @@ object RootService {
      * 本函数由点击直接调用（`MainActivity` / `HomePage` / `FilePage`）。
      * 命中格式校验后直接进入启动流程。
      */
-    fun executeFile(filePath: String, runAsRoot: Boolean? = null, riskApproved: Boolean = false) {
+    fun executeFile(filePath: String, runAsRoot: Boolean? = null) {
         val file = File(filePath)
         val fileName = file.name
         val isSh = fileName.endsWith(".sh", ignoreCase = true)
@@ -685,15 +739,27 @@ object RootService {
         // 结果：脚本真在跑，UI 显示「待命中」，「结束进程」被禁用，
         // currentTaskPath 与 pgid 也被清空 → 用户失去唯一的终止出口，进程成 root 孤儿。
         terminalSlotOwner.set(0L)
+        // 同步段必须一并作废上一轮的执行实体：归一化判定在协程体内执行，其间要跨两次 su 往返
+        // （stat 最长 120s + 读头部 5s），窗口内 runPgid / activeProcess / processPid 仍是上一轮的值。
+        // 此时点「结束进程」会拿旧 pgid 整组发信号 —— 该 pid 已被内核复用为无关进程组组长时，
+        // 三重校验只确认「是组长、非本应用组」，会以 root 误杀无关进程组。
+        runPgid = 0
+        activeProcess = null
+        processPid = 0
         executionJob?.cancel()
 
         // 心跳：脚本长时间无输出时，输出区会整段静止，用户无法区分「正在跑」与「已卡死」。
         // 每 10s 追加一行计时；脚本一旦产出内容即停止打扰（满屏心跳会淹没真实日志）。
         // 标志跨线程读写，用 AtomicBoolean 而非局部 @Volatile（后者不能修饰局部变量）。
         val producedAnyOutput = java.util.concurrent.atomic.AtomicBoolean(false)
+        val heartbeatGeneration = terminalCommandGeneration.get()
         val heartbeatJob = scope.launch(Dispatchers.Main) {
             var elapsed = 0L
-            while (isActive && isTaskRunning) {
+            // 代际自检：新任务/新终端命令都会自增该计数。旧任务若因子孙进程持有管道而永远读不到
+            // EOF，它的协程与 finally 都不执行，心跳就挂在下方的全局 isTaskRunning 上继续给
+            // **新任务**追加计时行；比对代际可让它在 1s 内自杀（`executionJob === myJob` 在此处
+            // 取不到 myJob，而代际计数与执行协程在同一处自增，等价且更简单）。
+            while (isActive && isTaskRunning && terminalCommandGeneration.get() == heartbeatGeneration) {
                 delay(1000)
                 elapsed += 1000
                 if (producedAnyOutput.get()) return@launch
@@ -818,16 +884,25 @@ object RootService {
                         // finally 读到的 mode 为 null，**还原被静默跳过**，
                         // 用户的 .so 就永久停留在 a+x 放宽后的权限上（实测 600 → 711 不再回退）。
                         "$pgidRecorder" + saveAttrCmd +
-                            "export TERM=xterm-256color && export LANG=en_US.UTF-8 && " +
-                            "cd $escapedParent && chmod a+x $escapedFile && $escapedFile; C=\$?; " +
+                            "export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent && " +
+                            // 执行前必须确认是 ELF：mksh 对 execve 返回 ENOEXEC 的文件会按 POSIX 传统
+                            // **隐式回退为 shell 解释**，把二进制/文本当脚本执行，产出满屏乱码，
+                            // 且下方的 126/127 分支永远不可达。这里按魔数 7f454c46 提前拦住，
+                            // 同时避免对非 ELF 文件做无谓的 chmod + 还原。
+                            "if [ \"\$(head -c 4 $escapedFile 2>/dev/null | od -An -tx1 | tr -d ' \n')\" != 7f454c46 ]; then " +
+                            "echo \"[shso] \u975e ELF \u53ef\u6267\u884c\u6587\u4ef6\uff0c\u5df2\u8df3\u8fc7\u6267\u884c\"; C=126; else " +
+                            "chmod a+x $escapedFile && $escapedFile; C=\$?; " +
                             restoreAttrCmd +
                             "if [ \$C -eq 126 ] || [ \$C -eq 127 ]; then " +
-                            "echo \"[shso] \u65e0\u6cd5\u76f4\u63a5\u6267\u884c\uff08\u975e\u53ef\u6267\u884c ELF\uff09\"; fi; " +
+                            "echo \"[shso] \u65e0\u6cd5\u76f4\u63a5\u6267\u884c\uff08\u975e\u53ef\u6267\u884c ELF\uff09\"; fi; fi; " +
                             "exit \$C"
                     }
                 } else {
-                    // 非 Root：普通 sh 执行（无 su 包装），改不动系统分区
-                    "export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent 2>/dev/null; sh $escapedFile"
+                    // 非 Root：普通 sh 执行（无 su 包装），改不动系统分区。
+                    // 归一化同样适用于该身份：runShCmd 在无需归一化时就是 `sh $escapedFile`，
+                    // 需要归一化时改写 app 私有临时文件再执行。旧实现硬编码 `sh $escapedFile`，
+                    // 于是 CRLF/BOM 脚本只在 Root 身份下被修正，非 Root 执行时 A75 缺陷原样复现。
+                    "export TERM=xterm-256color && export LANG=en_US.UTF-8 && cd $escapedParent 2>/dev/null; $runShCmd"
                 }
 
                 if (useRoot) {
@@ -865,6 +940,10 @@ object RootService {
                         val buffer = CharArray(2048)
                         var count: Int
                         while (reader.read(buffer).also { count = it } != -1) {
+                            // 安全网：新任务接管后本协程应已被取消，但管道读是 native 阻塞、不响应
+                            // cancel；迟到的输出不得混进新任务的日志（必须 continue 而不是 break，
+                            // 否则管道写端填满会让子孙进程永久阻塞）。
+                            if (executionJob !== myJob) continue
                             if (ExecutionFeedback.hasVisibleOutput(String(buffer, 0, count))) {
                                 producedAnyOutput.set(true)
                             }
@@ -1078,6 +1157,10 @@ object RootService {
                 // 中断后逃逸的子孙进程（`sh -c …`、真正的脚本进程）只有这样才能回收。
                 if (targetPgid > 1) {
                     killProcessGroup(9, targetPgid)
+                    if (targetPid > 0) {
+                        runCommandSync("kill -9 $targetPid 2>/dev/null")
+                    }
+                    targetProcess?.destroyForcibly()
                 } else {
                     // 兜底：进程组不可用时（pgid 未落盘；或非 Root 执行——子进程沿用本应用进程组，
                     // 整组回收会误伤自身）按**完整路径**匹配残留子孙。
@@ -1088,11 +1171,19 @@ object RootService {
                         // 路径里的 `.` `(` `+` 等会被解释而误杀无关进程（且以 root 身份执行）。
                         runCommandSync("pkill -9 -f ${escapeShellArg(escapeEreLiteral(path))} 2>/dev/null")
                     }
+                    if (targetProcess != null && targetPid > 1) {
+                        // 终端命令的 currentTaskPath 恒为 null（pkill 兜底整段跳过），若 pgid 又尚未回填
+                        // ——命令刚发出，回填窗口最长 1.5s——就只剩「杀 su」一条路，`sh -c …` 会留成
+                        // init 名下的 root 孤儿。这里用 su 的 pid 反查进程组整组回收（与超时路径同源）。
+                        // 三重校验 fail-closed：su 未新建会话时组杀被挡下，退化为只杀直接子进程。
+                        forceKillProcessTree(targetProcess, targetPid)
+                    } else {
+                        if (targetPid > 0) {
+                            runCommandSync("kill -9 $targetPid 2>/dev/null")
+                        }
+                        targetProcess?.destroyForcibly()
+                    }
                 }
-                if (targetPid > 0) {
-                    runCommandSync("kill -9 $targetPid 2>/dev/null")
-                }
-                targetProcess?.destroyForcibly()
                 forceCloseProcess(targetProcess)
                 // 当前仍由本 kill 接管时才撤销全局句柄；
                 // 若期间新任务已启动，句柄属于新任务，由新任务线条负责。

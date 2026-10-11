@@ -139,6 +139,62 @@ class SyncCommandReclaimTest {
         )
     }
 
+    @Test fun `终端命令超时同样必须整组回收`() {
+        // 四条终止路径中唯独 runTerminalCommand 的超时分支只 destroyForcibly：
+        // 30 分钟长跑命令超时后，`sh -c …` 会以 root 重挂 init 继续跑，且此后
+        // isTaskRunning 已置 false，「结束进程」被禁用、重启终端又会抹掉 runPgid。
+        val text = source.readText()
+        val start = text.indexOf("private suspend fun runTerminalCommand(")
+        assertTrue("应能找到 runTerminalCommand", start > 0)
+        val end = text.indexOf("fun writeBytesAsRoot(", start)
+        val body = text.substring(start, if (end > 0) end else text.length)
+        assertTrue(
+            "超时分支必须复用 forceKillProcessTree 整组回收",
+            body.contains("forceKillProcessTree(process, suPid)")
+        )
+        assertTrue("必须在起进程后捕获 suPid 供反查", body.contains("val suPid = pidOfProcess(process)"))
+    }
+
+    @Test fun `结束进程在 pgid 未回填时必须按 pid 反查进程组`() {
+        // 终端命令 currentTaskPath 恒为 null，pkill 兜底整段跳过；pgid 未落盘时
+        // （命令刚发出，回填窗口最长 1.5s）就只剩「杀 su」一条路，子孙逃逸为 root 孤儿。
+        val text = source.readText()
+        val start = text.indexOf("fun killCurrentProcess()")
+        assertTrue("应能找到 killCurrentProcess", start > 0)
+        val end = text.indexOf("private fun forceCloseProcess(", start)
+        val body = text.substring(start, if (end > 0) end else text.length)
+        assertTrue(
+            "pgid 不可用且无路径可匹配时，必须用 su 的 pid 反查进程组",
+            body.contains("forceKillProcessTree(targetProcess, targetPid)")
+        )
+    }
+
+    @Test fun `执行期临时文件必须在启动时清扫`() {
+        val text = source.readText()
+        val start = text.indexOf("private fun sweepExecutionTempFiles()")
+        assertTrue("必须存在启动清扫入口", start > 0)
+        val body = text.substring(start, minOf(text.length, start + 600))
+        assertTrue("两类临时文件都要清理", body.contains(".exec_attr_") && body.contains(".sh_norm_"))
+        assertTrue("扫一次即可，避免误删运行中的临时文件", body.contains("compareAndSet(false, true)"))
+    }
+
+    @Test fun `写入 root 文件不得无界阻塞且必须 drain 错误通道`() {
+        val text = source.readText()
+        val start = text.indexOf("fun writeBytesAsRoot(")
+        assertTrue("应能找到 writeBytesAsRoot", start > 0)
+        val end = text.indexOf("fun executeFile(", start)
+        val body = text.substring(start, if (end > 0) end else text.length)
+        assertTrue(
+            "stderr 并入从不读取的 stdout 后，cat 报错会写满管道并把子进程阻塞住",
+            !body.contains("redirectErrorStream(true)")
+        )
+        assertTrue("必须单独 drain 错误通道", body.contains("errorStream"))
+        assertTrue(
+            "写入必须放独立线程并有界等待，否则 su 卡授权弹窗时 waitFor 的超时形同虚设",
+            body.contains("writer.join(")
+        )
+    }
+
     @Test fun `组杀命令的三重校验不得被绕过`() {
         // 这条护栏保护的是「不误杀无关进程组」这一不可逆风险。
         assertTrue(

@@ -69,6 +69,42 @@
 
 ## 待办
 
+### A85. 执行引擎回收与归一化对称性（2026-10-11）
+
+对执行引擎（终端命令、脚本/二进制执行、root 文件写入）做静态审查，9 条发现全部确认并修复；
+另有 3 条建议不予采纳——`hasLiveEntity` 加 `runPgid > 1`（陈旧 pid 会被内核复用，正是下述误杀路径）、
+`appendWithSlidingWindow` 改环形缓冲（无实测卡顿，非缺陷）、终止路径补诊断输出（保持执行输出干净）。
+改动全部落在 `RootService.kt`。
+
+- [x] **终端命令超时不再留 ROOT 孤儿**：30 分钟超时分支原只 `destroyForcibly()` 杀 `su`，
+  `sh -c …` 的后代被重挂到 init 名下继续以 ROOT 运行。改为起进程时记下 `suPid`，
+  超时从 `/proc/<suPid>/stat` 反查实时 pgrp 整组回收（复用 `forceKillProcessTree`，
+  不依赖可能被 pid 复用污染的 `runPgid`）。
+- [x] **「结束进程」在进程组未回填时不再只杀 su**：终端命令的 `currentTaskPath` 恒为 null，
+  `pkill` 兜底整段跳过；命令刚发出（回填窗口最长 1.5s）时 pgid 仍为 0，唯一手段只剩杀 `su`。
+  改为按 `su` 的 pid 反查进程组整组回收，三重校验 fail-closed。
+- [x] **非 ROOT 身份同样走归一化**：非 Root 分支原硬编码 `sh $escapedFile`，
+  绕过 Root 分支才有的归一化链路 —— 同一 CRLF/BOM 脚本换身份即复现 A75。改用 `$runShCmd`。
+- [x] **启动同步段复位执行实体**：`startExecution` 同步段补 `runPgid=0` / `activeProcess=null` /
+  `processPid=0`。归一化判定在协程体内跑，跨两次 su 往返（最长 120s + 5s），
+  窗口内这三个字段仍是上一轮的旧值，点结束会拿旧 pgid 组杀。
+- [x] **心跳与迟到输出按代际自检**：旧任务因子孙进程持有管道而读不到 EOF 时，协程与 finally 都不执行，
+  心跳就挂在下方的全局 `isTaskRunning` 上继续给新任务追加计时行。心跳补代际比对、
+  输出投递补 `executionJob !== myJob` 守卫（必须 `continue` 而非 `break`，否则管道写满会阻塞子孙）。
+- [x] **写 root 文件不再无界阻塞**：`writeBytesAsRoot` 原在调用线程直写管道，
+  超过管道缓冲（约 64KB）即卡死，`waitFor` 超时形同虚设；且错误流并入无人读的 stdout。
+  改为独立写线程 + 有界等待 + 单独 drain 错误通道。
+- [x] **非 ELF 文件不再被当脚本解释**：mksh 对 `execve` 返回 ENOEXEC 的文件会隐式回退为 shell 解释，
+  伪 `.so` 满屏乱码且 126/127 分支不可达。改为执行前按魔数 `7f454c46` 预检，非 ELF 直接提示并退出 126。
+- [x] **执行期临时文件启动即清**：`.exec_attr_*` / `.sh_norm_*` 只在 finally 删除，
+  强杀/OOM/协程卡在 native 读上时不执行。新增本进程首次初始化时的清扫（`AtomicBoolean` 保证只扫一次）。
+- [x] **删除死参数**：`executeFile` 入口签名上悬挂从未被读取的放行参数，形成虚假契约，已删除。
+- [x] 契约测试同步：`SecondRoundSecurityAndResourceTest` 增 4 例、`SyncCommandReclaimTest` 增 4 例。
+- [x] 全量单测通过：`testDebugUnitTest` → 488 tests / 0 failures / 1 skipped。
+- [x] 真机（root）复验：文本伪 `.so` → 明确提示、退出码 126、无乱码；toybox 真 ELF 副本 → 正常执行；
+  非 ROOT 身份 CRLF/BOM 脚本输出长度与 ROOT 身份逐一一致；预置临时文件后冷启 App 复查已清空。
+- [x] 发版：APK 2.76MB，双端同步与 Release 资产更新。
+
 ### A84. 变更复核与边界收敛（2026-10-11）
 
 对 A83 引入的字节级判定与根侧兜底做独立复核，逐条裁决后实施下列修正。

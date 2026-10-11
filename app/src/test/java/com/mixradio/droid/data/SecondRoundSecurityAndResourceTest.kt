@@ -129,6 +129,43 @@ class SecondRoundSecurityAndResourceTest {
         assertTrue("必须写 app 私有临时文件后再 sh 执行", runSh.contains("> "+D+"t"))
     }
 
+    @Test fun `非 Root 身份同样必须走归一化路径`() {
+        val nonRoot = rootService.substringAfter("// 非 Root：普通 sh 执行")
+            .substringBefore("if (useRoot) {")
+        assertTrue(
+            "非 Root 分支硬编码 `sh \$escapedFile` 会让 CRLF/BOM 脚本只在这条路径上复现 A75 缺陷",
+            nonRoot.contains("; " + D + "runShCmd")
+        )
+    }
+
+    @Test fun `非 ELF 文件必须在执行前按魔数拦截`() {
+        assertTrue(
+            "mksh 对 execve 返回 ENOEXEC 的文件会隐式回退为 shell 解释，" +
+                "只移除显式 ( \$f || sh \$f ) 回退并不够，必须按魔数提前拦住",
+            rootService.contains("!= 7f454c46")
+        )
+    }
+
+    @Test fun `心跳与迟到输出必须按代际自检`() {
+        assertTrue(
+            "旧任务卡在管道读上时协程与 finally 都不执行，心跳挂全局 isTaskRunning " +
+                "会继续往新任务日志插计时行",
+            rootService.contains("terminalCommandGeneration.get() == heartbeatGeneration")
+        )
+        assertTrue(
+            "迟到的孤儿输出会绕过 clearBatchQueue 混进新任务日志；必须 continue 而非 break，" +
+                "否则管道写端填满会让子孙进程永久阻塞",
+            rootService.contains("if (executionJob !== myJob) continue")
+        )
+    }
+
+    @Test fun `未实装的执行放行参数不得留在入口签名上`() {
+        assertTrue(
+            "riskApproved 从未被读取，留着会让调用方以为已放行，形成虚假契约",
+            !rootService.contains("riskApproved")
+        )
+    }
+
     @Test fun `归一化产出为空但源非空时必须回落原路径`() {
         val runSh = rootService.substringAfter("val runShCmd: String")
             .substringBefore("val execCmd = if (useRoot)")
