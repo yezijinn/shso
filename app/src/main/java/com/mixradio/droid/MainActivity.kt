@@ -329,7 +329,11 @@ fun MainContainer(
                 )
                 // 终端页对无 ROOT 用户同样开放：ROOT 只影响 DockBar「终端」字样颜色
                 // （无 ROOT 时红色提示），不再拦截页面打开与翻页。
-                1 -> TerminalPage(appSettings = appSettings)
+                // isVisible：4 页常驻组合树，终端页离屏时停掉日志解析（见 TerminalPage 说明）。
+                1 -> TerminalPage(
+                    appSettings = appSettings,
+                    isVisible = pagerState.currentPage == 1
+                )
                 2 -> FilePage(
                     appSettings = appSettings,
                     onExecuteFileAndNavigate = { filePath, runAsRoot ->

@@ -7,6 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 /**
  * 终端解析代次守卫的语义锁定。
@@ -14,6 +15,8 @@ import org.junit.Test
  * 代次用于判别「本次解析结果是否已被新一轮组合作废」。它必须满足：
  * 当前组合的代次与计数器**恒相等**（否则每次解析都判定自己过期，结果永不落地），
  * 且每次重新组合后严格递增（否则旧协程的结果会污染新组合）。
+ *
+ * 另锁定解析的**可见性门控**：4 页常驻组合树，离屏终端页必须停掉解析。
  */
 class TerminalGenerationGuardTest {
 
@@ -55,5 +58,27 @@ class TerminalGenerationGuardTest {
             // 只有最后一次组合的代次仍与计数器相等，先前的均已过期
             assertEquals(index == gens.lastIndex, g == p[0])
         }
+    }
+
+    @Test
+    fun `终端页解析只在可见时进行`() {
+        // 4 页常驻组合树（beyondViewportPageCount = 3），离屏终端页仍在组合树里。
+        // 命令持续输出时，看不见的那一页会连同滑窗裁剪反复付全量重解析的代价。
+        val s = File("src/main/java/com/mixradio/droid/ui/pages/TerminalPage.kt").readText()
+        assertTrue("应对外暴露可见性开关", s.contains("isVisible: Boolean = true"))
+        assertTrue(
+            "解析 effect 的 key 必须包含 isVisible",
+            s.contains("LaunchedEffect(terminalDefaultColor, isVisible)")
+        )
+        assertTrue("不可见时必须直接跳过解析", s.contains("if (!isVisible) return@LaunchedEffect"))
+    }
+
+    @Test
+    fun `主容器按当前页判断终端可见性`() {
+        val s = File("src/main/java/com/mixradio/droid/MainActivity.kt").readText()
+        assertTrue(
+            "终端页（page 1）应传入 currentPage == 1 的可见性",
+            s.contains("isVisible = pagerState.currentPage == 1")
+        )
     }
 }

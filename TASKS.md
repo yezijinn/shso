@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → 见 § A105） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → 见 § A106） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 583 tests / 0 failures / 1 skipped |
+| 单元测试 | 585 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -67,11 +67,36 @@
 | 已知环境坑 | 本机 toybox `mktemp` 创建失败时把模板前缀打成 `(null)/`（如 `Failed to create directory (null)//data/…`）——`(null)` 不是路径的一部分，真实模板要减去该前缀再看 |
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2893485 字节，双端下载 sha256 与本地一致（`5dc39735…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版发行程序已从双端移除（Release 与 tag 保留） |
+| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2893485 字节，双端下载 sha256 与本地一致（`c045f70e…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版发行程序已从双端移除（Release 与 tag 保留） |
 
 ---
 
 ## 待办
+
+### A106. 离屏终端页停解析（2026-10-11）
+
+清理 AI-1 百轮报告 `final_state` 里唯一剩下的 `BUG-PERF-030`（P2）。该条两条子项：解析随页面
+可见性启停、裁剪分支短路。本次做前者，后者改动面大仍待办。
+
+- [x] **P2 · 终端页离屏仍在全额解析**：`MainActivity` 的 `HorizontalPager` 用
+  `beyondViewportPageCount = 3` 常驻全部 4 页（否则切页会丢终端输入框、文件页多选等状态），
+  终端页离屏时仍在组合树里；解析 effect 只以 `terminalDefaultColor` 为 key，与可见性无关。
+  命令持续输出时，用户看不见的那一页会连同滑窗裁剪反复付全量重解析的代价（单次 10~25MB
+  分配量级，见 A74）。A74 当时判为架构取舍未改。
+  - 修复：`TerminalPage` 增加 `isVisible: Boolean = true`，解析 effect 的 key 改为
+    `LaunchedEffect(terminalDefaultColor, isVisible)`，不可见时直接返回；`MainActivity`
+    传入 `isVisible = pagerState.currentPage == 1`。离屏期间的输出合并为回到本页时的一次
+    追赶解析（增量则只喂增量，窗口被裁过一次全量）。顺带订正 `TerminalPage` 中
+    「HorizontalPager 离屏即销毁本页」的过时注释。
+  - 真机实证：`id` 输出正常（uid=0(root)）；`ping -c 10 127.0.0.1` 运行期间切到文件页
+    9 秒再切回，输出区完整显示 10 条回显与统计，无重复行、无丢行。
+- [ ] **待办 · 裁剪后仍走全量重解析分支**（`BUG-PERF-030` 另一子项）：滑窗裁掉头部时
+  `TerminalPage` 回落 `reset() + feed(整段)`，每 flush 一次全量。根治需给解析器加
+  「静默快进」模式（只推进 SGR / 光标状态、不构造行对象），改动面较大。
+- [x] 单测与契约测试：`TerminalGenerationGuardTest` 新增 2 条源码契约；`testDebugUnitTest`
+  585 tests / 0 failures / 1 skipped。
+- [x] 发版：APK 构建（2893485 字节，sha256 `c045f70e…`）、root 真机冒烟、双端 `main` 与
+  tag `20261011` 推送、双端 Release 目标提交改指该代码提交并替换资产，双端下载哈希与本地一致。
 
 ### A105. 权限保存生命周期、字体虚假入口与死设置清理（2026-10-11）
 

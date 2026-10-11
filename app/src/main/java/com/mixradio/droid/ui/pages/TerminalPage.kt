@@ -147,7 +147,16 @@ private object TerminalSession {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TerminalPage(
-    appSettings: AppSettings
+    appSettings: AppSettings,
+    /**
+     * 本页是否为当前可见页。
+     *
+     * `HorizontalPager` 用 `beyondViewportPageCount = 3` 常驻全部 4 页（否则切页会丢终端输入框、
+     * 文件页多选等状态），离屏页仍在组合树里、协程照跑。日志解析的成本与整个窗口（250k 字符）
+     * 成正比，命令持续输出时离屏页会连同滑窗裁剪一起反复付全量重解析的代价。此标志由调用方
+     * 按 `pagerState.currentPage` 传入，用于在不可见时停掉解析。
+     */
+    isVisible: Boolean = true
 ) {
     val context = LocalContext.current
     // 输入框内容与命令历史挂在进程级 [TerminalSession] 上：本工程未锁屏幕方向，
@@ -176,9 +185,10 @@ fun TerminalPage(
     // 因此每次发布只需解析**新增尾部**，不再全量重扫 250k 窗口。
     // 颜色是解析器的构造参数，换色即重建（key 为 terminalDefaultColor）。
     //
-    // HorizontalPager 离屏即销毁本页，重进会重建状态；日志窗口可达 250k 字符，
+    // HorizontalPager 用 beyondViewportPageCount = 3 常驻全部 4 页，本页离屏时**不销毁**；
+    // 真正会重建组合的是旋转 / 分屏重建 Activity。日志窗口可达 250k 字符，
     // 同步全量解析约 200ms+。只缓存快照会丢失解析器的跨行 / SGR 状态，
-    // 因此连解析器实例与进度一并缓存：重进时续用，新日志只走增量，首帧不在主线程解析。
+    // 因此连解析器实例与进度一并缓存：重建后续用，新日志只走增量，首帧不在主线程解析。
     //
     // 进度（已消费的日志快照）与解析器、结果放在**同一个可变持有者**里，且在解析块内
     // （非挂起部分）随 feed 一起更新——旋转屏幕会重建 Activity 并取消本协程，
@@ -220,7 +230,12 @@ fun TerminalPage(
     // ArrayIndexOutOfBounds / StringIndexOutOfBounds 穿出 LaunchedEffect 直接崩进程；
     // 即使不崩，旧协程把 consumedLog 回写成较旧值，下次 startsWith 判错 → 重复行或整段丢行。
     // 故整块同步，并加代次守卫禁止过期协程写回。
-    LaunchedEffect(terminalDefaultColor) {
+    //
+    // isVisible 进 key：离屏时不解析。命令持续输出时，离屏页会被滑窗裁剪反复触发全量重解析，
+    // 而这部分开销用户完全看不到。停掉后，离屏期间的输出合并为回到本页时的一次追赶
+    // （日志仍是本页内容的增量就只喂增量，窗口被裁过一次全量），CPU 只花在该看的时候。
+    LaunchedEffect(terminalDefaultColor, isVisible) {
+        if (!isVisible) return@LaunchedEffect
         // 仅「换色 / 首次进入」需要清空重建；复用缓存解析器时保留其状态与进度。
         if (parseHolder.state?.parser !== ansiParser) {
             synchronized(ansiParser) {
