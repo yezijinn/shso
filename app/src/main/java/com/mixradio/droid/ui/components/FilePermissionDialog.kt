@@ -68,6 +68,16 @@ internal fun octalToPermissionBits(mode: String): List<Boolean> {
     }
 }
 
+/**
+ * 从当前八进制串中取出特殊位前缀。
+ *
+ * 只在串本身是合法四位模式时才保留首位 setuid / setgid / sticky。输入框只挡非数字字符，
+ * `8888` / `9999` 这类四位串能停在框里，首位原样传给 [permissionBitsToOctal] 会命中其 `require`；
+ * `1238` 这类则首位合法、末位越界，放行就会凭空带出一个用户没设过的特殊位。
+ */
+internal fun specialModePrefix(mode: String): String =
+    if (mode.length == 4 && RootFileManager.isValidPermissionMode(mode)) mode.take(1) else ""
+
 /** 9 位开关转八进制串。`specialMode` 为特殊位前缀（单字符 0–7），为空时输出三位。 */
 internal fun permissionBitsToOctal(bits: List<Boolean>, specialMode: String = ""): String {
     require(bits.size == PERMISSION_BIT_COUNT)
@@ -101,11 +111,16 @@ fun FilePermissionDialog(
     var pickerTarget by remember(path) { mutableStateOf<String?>(null) }
     var submitting by remember(path) { mutableStateOf(false) }
 
+    // 即时校验：输入框只挡非数字字符，`8888` / `9999` 这类四位串能进来，owner/group 也没有字符集限制。
+    // 三个值随时可能变成非法，这里标红，不让用户点了保存才知道格式不对。
+    val modeValid = RootFileManager.isValidPermissionMode(mode)
+    val ownerValid = RootFileManager.isValidOwnerOrGroup(owner)
+    val groupValid = RootFileManager.isValidOwnerOrGroup(group)
+
     fun updateBits(index: Int, checked: Boolean) {
         bits = bits.toMutableList().also { it[index] = checked }
-        // 回写时保留特殊位：四位模式的首位是 setuid / setgid / sticky，不来自开关矩阵
-        val prefix = if (mode.length == 4 && mode.first().isDigit()) mode.take(1) else ""
-        mode = permissionBitsToOctal(bits, prefix)
+        // 回写时保留特殊位：四位模式的首位是 setuid / setgid / sticky，不来自开关矩阵。
+        mode = permissionBitsToOctal(bits, specialModePrefix(mode))
         message = null
     }
 
@@ -140,6 +155,7 @@ fun FilePermissionDialog(
             label = { Text("八进制权限") },
             singleLine = true,
             enabled = !submitting,
+            isError = !modeValid,
             colors = auroraTextFieldColors(),
             modifier = Modifier
                 .fillMaxWidth()
@@ -158,6 +174,7 @@ fun FilePermissionDialog(
             label = { Text("Owner") },
             singleLine = true,
             enabled = !submitting,
+            isError = !ownerValid,
             colors = auroraTextFieldColors(),
             modifier = Modifier
                 .fillMaxWidth()
@@ -176,6 +193,7 @@ fun FilePermissionDialog(
             label = { Text("Group") },
             singleLine = true,
             enabled = !submitting,
+            isError = !groupValid,
             colors = auroraTextFieldColors(),
             modifier = Modifier
                 .fillMaxWidth()
@@ -200,22 +218,29 @@ fun FilePermissionDialog(
         ) {
             PresetButton("取消", enabled = !submitting, onClick = onDismiss)
             PresetButton(if (submitting) "正在保存…" else "保存", enabled = !submitting) {
-                if (!RootFileManager.isValidPermissionMode(mode) ||
-                    !RootFileManager.isValidOwnerOrGroup(owner) ||
-                    !RootFileManager.isValidOwnerOrGroup(group)
-                ) {
+                if (!modeValid || !ownerValid || !groupValid) {
                     message = "权限、所有者或用户组格式无效"
                     return@PresetButton
                 }
                 submitting = true
                 scope.launch {
-                    val result = withContext(Dispatchers.IO) { onSubmit(mode, owner, group) }
-                    submitting = false
-                    if (result.first) {
-                        onSubmitSuccess()
-                        onDismiss()
-                    } else {
-                        message = result.second
+                    try {
+                        // onSubmit 要 fork 多次 su，中途还可能回滚权限，任一步抛出异常
+                        // （进程创建失败、IO 异常等）协程都会直接结束；不在这里兜住，
+                        // submitting 就停在 true，保存按钮永久灰掉、返回也被挡，弹窗彻底卡死。
+                        val result = withContext(Dispatchers.IO) { onSubmit(mode, owner, group) }
+                        if (result.first) {
+                            onSubmitSuccess()
+                            onDismiss()
+                        } else {
+                            message = result.second
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        message = "保存失败：${e.message ?: e.javaClass.simpleName}"
+                    } finally {
+                        submitting = false
                     }
                 }
             }

@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（`966c7ac`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 495 tests / 0 failures / 1 skipped |
+| 单元测试 | 499 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -65,11 +65,42 @@
 | 已知环境坑 | 应用进程的 environ **不含 `TMPDIR`**（`su -c` 也不补），而 `adb shell` 自带 `TMPDIR=/data/local/tmp` → 依赖 `$TMPDIR` 的脚本「adb 下正常、应用内失败」。执行环境须显式 `export TMPDIR` |
 | 已知环境坑 | 本机 toybox `mktemp` 创建失败时把模板前缀打成 `(null)/`（如 `Failed to create directory (null)//data/…`）——`(null)` 不是路径的一部分，真实模板要减去该前缀再看 |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐）；双端同名 Release，资产 `app-release.apk` 2893369 字节，双端下载 sha256 与本地一致（`bb2f15b0…`）；旧版 APK 已从双端 `20261004` 移除，仅保留 Release 与 tag |
+| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐）；双端同名 Release，资产 `app-release.apk` 2893369 字节，双端下载 sha256 与本地一致（`e7a8f49b…`）；旧版 APK 已从双端 `20261004` 移除，仅保留 Release 与 tag |
 
 ---
 
 ## 待办
+
+### A88. 权限弹窗崩溃与保存死锁（2026-10-11）
+
+台账里权限编辑区的两条 P2 同源，都在 `FilePermissionDialog` 的输入与提交链路上。
+
+- [x] **非法四位串点开关即崩溃**：回写八进制串时把当前 `mode` 的首位当 setuid/setgid/sticky 前缀，
+  判据只有 `length == 4 && isDigit`。输入框只挡非数字字符，`9999` / `1238` 这类四位串能停在框里，
+  首位原样传给 `permissionBitsToOctal` 会命中它的 `require(specialMode[0] in '0'..'7')`，
+  点任一权限开关就抛 `IllegalArgumentException`。八进制串与 owner / group 此前也没有任何即时校验。
+- [x] **前缀提取收敛为 `specialModePrefix(mode)`**：仅当串本身是合法四位模式时才保留首位，
+  否则返回空串。既挡住 `require` 崩溃，也避免从 `1238` 这类非法串里凭空带出一个用户没设过的特殊位。
+  三个 `TextField` 补 `isError`（`!modeValid` / `!ownerValid` / `!groupValid`），
+  保存分支复用同一组判定，不再各写一遍正则。
+- [x] **保存协程无兜底致死锁**：`submitting = true` 之后没有任何 try/catch。
+  `onSubmit` 要 fork 多次 su（含失败回滚路径），任一步抛异常协程直接结束，`submitting` 停在 true；
+  而 `dismissOnBackPress` / `dismissOnClickOutside` 都被 `!submitting` 挡住 ——
+  弹窗既不能保存也不能取消，只能杀进程。
+- [x] **改为 try/catch/finally**：`catch CancellationException` 原样重抛（保持取消传播），
+  其余 `Exception` 落到弹窗 message，`finally` 复位 `submitting`。
+- [x] 单测与契约测试：`FilePermissionDialogTest` 增 2 例（前缀取值、非法四位串回写不抛），
+  `PickerAndPermissionRegressionTest` 增 2 例（保存协程 try-finally-取消重抛、三输入框 `isError`）。
+- [x] 全量单测通过：`testDebugUnitTest` → 499 tests / 0 failures / 1 skipped。
+- [x] 真机（root）验证：release 包安装成功、冷启动无 `AndroidRuntime` 记录；
+  设备端 `base.apk` 的 sha256 与本地构建一致（`e7a8f49b…`）。
+  弹窗内的非法输入路径需要多级目录导航 + 长按动作菜单才能触达，改由纯函数单测覆盖。
+- [x] **台账订正**：`BUG-LOGIC-017`、`BUG-CONC-018`、`BUG-SEC-015`、`BUG-SEC-034` 置 DISPROVEN
+  —— 它们的取证对象（`PathClassifier` / `AuditVerdict` / `ScriptAuditor` / `SecurityAuditLog` /
+  `GuardModuleInstaller`）已随 A67 的策略与审计子系统整体删除，`git grep` 全域零命中；
+  `BUG-COMPAT-031` 置 BY_DESIGN —— 检查更新早已是「Gitee 优先、GitHub 备选」形态，
+  原条目基于已删除的 `UpdateChecker` 类取证。
+- [x] 发版：APK 2893369 字节，双端同步与 Release 资产更新。
 
 ### A87. 脚本执行环境补齐 TMPDIR（2026-10-11）
 
@@ -515,7 +546,7 @@
 #### 验证
 
 - [x] 新增 `PerfAndNestingRegressionTest` 17 项，覆盖上述全部判断
-- [x] 真机（PACM00 / Android 10 / Magisk）安装 Debug APK 并启动：
+- [x] 真机（Android 10 / Magisk）安装 Debug APK 并启动：
       Activity 已 Resumed、进程存活、logcat 无 FATAL、无 ANR；
       列表通道实测 `/storage/emulated/0` 154 项、`Android` 7 项、`/data/adb/shso` 5 项
 - [x] lint 0 errors；release 2.033 MB
@@ -583,7 +614,7 @@
 
 #### 验证
 
-- [x] 真机（PACM00 / Android 10 / Magisk）端到端实测：
+- [x] 真机（Android 10 / Magisk）端到端实测：
       目录标记识别正确（3 个目录）、空目录零条目、
       **不存在目录 exit 3（不再误报空目录）**、单次 su 87~93ms
 - [x] 新增 `FileListingRefreshRegressionTest` 8 项：
@@ -656,7 +687,7 @@
 
 #### 验证
 
-- [x] 真机（PACM00 / Android 10 / Magisk）逐条实测，见上文各条「真机实证」
+- [x] 真机（Android 10 / Magisk）逐条实测，见上文各条「真机实证」
 - [x] `.so` 权限回退实测：`600 → 执行 → 600`、`640 → 执行 → 640`，退出码保持
 - [x] 归一化实测 6 项：CRLF 变量污染 `len=3`（旧行为 4）、BOM+CRLF 正常、
       `read` 继承 stdin 正常、退出码透传 42、空脚本 0、原脚本字节未被改写
@@ -828,7 +859,7 @@ A71 修完文件管理层后，本次转向**执行与解压链路**
 #### 资源回收：超时留下 root 孤儿（本次最高危）
 
 - [x] **P0 · `runCommandSync` 超时只杀 `su`，子孙进程继续以 root 运行**
-  - [x] 真机实测（PACM00 / Android 10）：
+  - [x] 真机实测（Android 10）：
         `su -c 'sleep 300 & echo $!'` → `CHILD=5361 SHELLPID=5360`；
         `ps -o pid,pgid,args` 显示 `5361 5360 sleep 300`，即 **su 的子 shell 自任组长**
         （pgid == pid），`sleep` 继承该组。`destroyForcibly()` 只对 `su` 的 pid 发信号，
@@ -975,7 +1006,7 @@ A71 修完文件管理层后，本次转向**执行与解压链路**
         一条指向不存在的 `<dir>/x`（幻影），一条是伪造的「目录 y」。
         长按删除幻影 `x` → `rm -rf <dir>/x` → **删掉真实的 x**。
         尾随空格同样被 `trim()` 抹掉后指向同名但不同的文件。
-  - [x] 真机能力探测（PACM00 / Android 10 toybox）：
+  - [x] 真机能力探测（Android 10 toybox）：
         `find -print0` **可用**，`find -printf` **不可用**（`bad arg '-printf'`）。
   - [x] 改为双通道：**名称走 `find -print0`（NUL 分隔，NUL 不可能出现在文件名里）**，
         **元数据走不含文件名的 `%A|%s|%Y`**（只含权限串与两个整数，按 `\n` 切分永远安全），
@@ -2416,7 +2447,7 @@ A54 换视角，不再逐文件重读，改用**跨维度模式横扫** + 补齐
 
 ### A50. 缺陷修复（2026-10-02）
 
-> 全部结论均以真机（PACM00 / Android 10 / Magisk）或 AOSP 源码为准，不采信推测。
+> 全部结论均以真机（Android 10 / Magisk）或 AOSP 源码为准，不采信推测。
 > 单测 371 / 0 failures / 1 skipped，lint 0 error，Release 载荷红线通过。
 
 #### 先证伪一条（避免按错误前提改代码）
@@ -3169,7 +3200,7 @@ adb -s $DEVICE shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.
 
 ## 真机与环境备忘
 
-### 真机操作（$DEVICE，PACM00 / Android 10 / 1080×2280）
+### 真机操作（$DEVICE，Android 10 / 1080×2280）
 
 - 底部导航坐标：`主页 153 / 终端 411 / 文件 669 / 设置 927`，y = `2156`；点击后等 3–5 秒。
 - 文件页默认「内部存储」；目录恒排在文件之前。
@@ -3281,7 +3312,7 @@ adb -s $DEVICE shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.
 
 
 - [x] **验证**：`:app:lintRelease` 0 errors / 31 warnings；Release 2.08 MB；
-      真机 `BIYLBAFQQSS8DA69` 实测脚本执行、终端一次性命令、实时流式回显、
+      真机 `$DEVICE` 实测脚本执行、终端一次性命令、实时流式回显、
       中文与彩色 Emoji、退出码、`whoami`→`root`、`id -u`→`0`、PATH 无守卫目录，
       全程 `FATAL=0` / `ANR=0`
 ---

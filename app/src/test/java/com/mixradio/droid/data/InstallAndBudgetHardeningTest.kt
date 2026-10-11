@@ -17,7 +17,7 @@ import java.util.zip.ZipOutputStream
  *
  * 每条用例都对应一个**已实证的真实缺陷**，不是「为了覆盖率而测」：
  * - 契约类结论（`pm install-write` 的 SPLIT_NAME 语义、FUSE 上的 CAS 原语、
- *   纳秒 mtime 身份）均已在真机 PACM00 / Android 10 上实测，断言按实测结论写死；
+ *   纳秒 mtime 身份）均已在 Android 10 真机上实测，断言按实测结论写死；
  * - 漏判类结论针对的是「一句话绕过规则」的具体命令形态。
  */
 class InstallAndBudgetHardeningTest {

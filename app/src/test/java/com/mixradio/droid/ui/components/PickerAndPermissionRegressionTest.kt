@@ -98,6 +98,35 @@ class PickerAndPermissionRegressionTest {
         )
     }
 
+    @Test fun `保存协程必须兜住异常并复位提交态`() {
+        // 保存要 fork 多次 su，onSubmit 内任一步抛出异常，协程直接结束；不兜住的话
+        // submitting 停在 true，保存按钮永久灰掉、返回也被 dismissOnBackPress = !submitting 挡下，
+        // 弹窗彻底卡死。取消则必须重抛 —— 当成保存失败吞掉会破坏取消传播。
+        val s = src("FilePermissionDialog.kt")
+        val fn = s.indexOf("PresetButton(if (submitting) \"正在保存…\" else \"保存\"")
+        assertTrue("应能找到保存按钮", fn > 0)
+        val body = s.substring(fn, fn + 1400)
+        assertTrue("必须用 try 包住提交", body.contains("try {"))
+        assertTrue(
+            "必须在 finally 里复位 submitting",
+            body.contains("} finally {") && body.contains("submitting = false")
+        )
+        assertTrue(
+            "取消必须重抛，不能被当成保存失败吞掉",
+            body.contains("catch (e: kotlinx.coroutines.CancellationException)") &&
+                body.contains("throw e")
+        )
+        assertTrue("非取消异常要落到提示文案", body.contains("catch (e: Exception)"))
+    }
+
+    @Test fun `三个输入框必须即时校验`() {
+        // 八进制串与 owner / group 此前都要等点了保存才校验，用户改错字后无从判断。
+        val s = src("FilePermissionDialog.kt")
+        assertTrue("八进制权限输入必须标红", s.contains("isError = !modeValid"))
+        assertTrue("所有者输入必须标红", s.contains("isError = !ownerValid"))
+        assertTrue("用户组输入必须标红", s.contains("isError = !groupValid"))
+    }
+
     @Test fun `权限开关的触摸目标不得低于 48dp`() {
         // 工程约定（CONTRIBUTING「UI 形态」）：行高统一 heightIn(min = 48.dp)，
         // 同工程的 AuroraArrowPreference 正是为此。3×3 密集排布下 40dp 的误触代价偏高 ——

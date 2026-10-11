@@ -473,7 +473,7 @@ object ApkInstaller {
     /**
      * OBB 落位的「文件身份」：`inode:size:mtime`，mtime 取 **纳秒**。
      *
-     * 为什么必须是纳秒（真机 PACM00 / Android 10 实测）：`stat -c %Y` 只有秒级精度，
+     * 为什么必须是纳秒（真机 Android 10 真机 实测）：`stat -c %Y` 只有秒级精度，
      * 而 OBB 落位 + APK 安装 + 失败回滚都发生在同一秒内。实测在同一秒内连续替换同一
      * 文件两次，`%i:%s:%Y` 三元组**完全相同**（inode 复用 + 同秒 mtime + 同样大小），
      * 意味着「回滚前校验身份」这条防线在真实时间窗内形同虚设，外部进程可以在事务
@@ -558,7 +558,7 @@ object ApkInstaller {
         // 于是垃圾锁文件的三个字段都变成同一串非数字文本；直接拿去和 now 做
         // `[ a -ge b ]` 整数比较，mksh 会报 "unexpected operator" 并返回非零，
         // 整条判定链就顺势滑到「陈旧锁回收」分支 —— 状态不明被误判成可抢占。
-        // 真机（PACM00 / Android 10，mksh）已实测复现该路径。
+        // 真机（Android 10 真机，mksh）已实测复现该路径。
         append("for _f in \"\$oldPid\" \"\$oldStart\" \"\$oldCreated\" \"\$now\"; do ")
         append("case \"\$_f\" in ''|*[!0-9]*) exit ${ObbLockExit.UNKNOWN};; esac; done; ")
         // pid + 进程启动时间双校验：pid 会被系统复用，只比存活会误判为活锁。
@@ -646,7 +646,7 @@ object ApkInstaller {
          * AOSP 侧并不要求顺序（`PackageInstallerSession.validateApkInstallLocked` 对
          * 包名/版本/签名做的是与顺序无关的一致性断言），但基础包先写有两个实际好处：
          * 一是 `pm install-create -p` 需要包名，基础包的 manifest 才是权威来源；
-         * 二是真机实测（PACM00 / Android 10）基础包写入后才认得出 session 的包名，
+         * 二是真机实测（Android 10 真机）基础包写入后才认得出 session 的包名，
          * 先写分包会让错误信息里缺少包名线索。
          */
         val orderedWrites: List<String> get() = all
@@ -804,7 +804,7 @@ object ApkInstaller {
      * - 真实 split 名在 `commit` 时才由 `PackageParser.parseApkLite` 逐个读出，
      *   据此把草稿文件统一改名为 `base.apk` / `split_<manifestSplitName>.apk`。
      *
-     * 真机（PACM00 / Android 10）实测与之一致：名称传 `split0`、`base.apk`、包名
+     * 真机（Android 10 真机）实测与之一致：名称传 `split0`、`base.apk`、包名
      * 均可成功写入；传绝对路径 `/data/local/tmp/x.apk` 报
      * `IllegalArgumentException: Invalid name`（因为含 `/`）。
      *

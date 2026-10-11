@@ -130,7 +130,7 @@ data class LoadResult(
      * 探测「能否实读到字节」，返回实际读到的字节数（上限 [PROBE_BYTES]）。
      *
      * 这是判定「`stat %s` 为 0 到底是真空文件还是 procfs 节点」的唯一可靠依据。
-     * 真机实测（PACM00 / Android 10）：
+     * 真机实测（Android 10）：
      *   - `stat -L -c %s /proc/cpuinfo`   → 0，但 `wc -c` 为 1517（**有内容**）
      *   - `stat -L -c %s /proc/uptime`    → 0，但 `wc -c` 为 21
      *   - `stat -L -c %s <真空文件>`       → 0，`wc -c` 为 0

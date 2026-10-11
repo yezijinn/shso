@@ -11,7 +11,7 @@ import org.junit.Test
  * 同步命令执行的资源回收护栏。
  *
  * 缺陷链条：`su -c` 会把命令放进**新会话**，`su` 只是其直接子进程。
- * 真机实测（PACM00 / Android 10）：
+ * 真机实测（Android 10）：
  * ```
  * $ su -c 'sleep 300 & echo $!'
  * CHILD=5361 SHELLPID=5360

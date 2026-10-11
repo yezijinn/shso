@@ -13,7 +13,7 @@ import org.junit.Test
  *
  * 手写 `"😀\rX"` 在源码里可能被 IDE/编译器/编码链路悄悄规范化，反而测不出问题；
  * 真机 `printf '\360\237\230\200 building...\rOK  \r'` 产出的字节才是真实输入。
- * 该字节序列取自 PACM00 实测输出。
+ * 该字节序列取自 Android 10 真机实测输出。
  */
 class TerminalEmojiOverwriteDeviceByteTest {
 
