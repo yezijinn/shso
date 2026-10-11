@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A113） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 607 tests / 0 failures / 1 skipped |
+| 单元测试 | 610 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -53,7 +53,7 @@
 | 代码结构 | 无重复分支/无用中间层：`preferRoot` 已扁平、`pathExistsQuiet`/`uniqueFile`/`isExtractable` 已删 |
 | 脚本执行 | `.sh` 归一化改为**字节级保守判定**（`ShNormalization`）：含字节偏移自引用（`$0`/`${0}`/`${BASH_SOURCE`，配 `tail…+N`／含变量形式 `+$skip`、`head -c`、`dd skip=`、`sed -n 'N,'`）或内嵌压缩魔数即直跑原字节，仅普通文本脚本去 BOM/CR（上限 16 MiB，超限直跑）；app 侧不可读时由 `decideAsRoot` 先 `stat` 取大小再按实际长度以 root 读头部判定；`.so` 权限先记录后还原，还原排在执行之后；执行环境统一补 `TMPDIR`（root 侧 `/data/local/tmp`，非 Root 侧应用私有 `cacheDir`），终端命令同样注入 |
 | 归档格式 | 14 种：tar 系（`.tar.gz/.tar.xz/.tar.bz2/.tar.lz4/.tar.zst/.tgz/.tzst/.tar`）+ 单文件（`.gz/.xz/.bz2/.lz4/.zst/.zip`）；`.tzst` 为 tar+zstd 别名 |
-| 语法包 | 62 语言 / 187 扩展名，`syntax-packs.zip`(37KB)，永固直链 tag `syntaxpacks-v2` |
+| 语法包 | 62 语言 / 187 扩展名，`syntax-packs.zip`，永固直链 tag `syntaxpacks-v2`；关键字正则逐项转义、边界只加在词字符一侧、长关键字优先（`as?`/`!in`/`!is`/`defined?`） |
 | 执行方式 | 命令与脚本直通执行，无策略判定、无执行记录（守卫/档位/审计已移除） |
 | OBB 事务锁 | 单文件 `set -C`(O_EXCL) 原子 CAS；真机 8 进程并发恰好 1 成功；**建目录早于取锁**；幂等条目不进回滚表；锁内容四段 `token\|pid\|startTicks\|createdEpoch`，陈旧判定用 `$(( ))` 算术展开（`- ` 写法非 test 合法形式会恒假） |
 | 真机 | `$DEVICE`（Android 10 / 1080×2280 / Magisk root） |
@@ -76,11 +76,38 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`1dae2b07…`）；双端 tag 与 Release 的目标提交均已对齐 A113 发版代码（`05914d1`）；旧版发行程序已从双端移除（Release 与 tag 保留） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`1dae2b07…`）；双端 tag 与 Release 的目标提交均已对齐 A113 发版代码（`05914d1`）；旧版发行程序已从双端移除（Release 与 tag 保留）。A114 只改语法包生成器，APK 未变 → 不动 `20261012`，仅把 `syntaxpacks-v2` 重指到 A114 提交后重发 `syntax-packs.zip` |
 
 ---
 
 ## 待办
+
+### A114. 语法包关键字正则边界（BUG-LOGIC-181 / 原 AI-1-BUG-LOGIC-167）（2026-10-12）
+
+`docs/AI-1-BUG.md` 已收敛为终局（§141 第一百三十三轮，文件末 `TERMINAL` 标记）。其 §133.2 剩余项表里
+`AI-1-BUG-LOGIC-167`（语法包生成器关键字未转义）此前从未落入本台账 —— 167 在本台账中是另一条已修复的
+`BUG-EXC-167`，编号撞号把它盖住了；读码确认成立，登记为 BUG-LOGIC-181。其余三条维持原结论
+（CONSIST-118 / COMPAT-093 / CONC-148），`docs/AI-2-BUG.md` 无新增轮次（止于 §8）。
+
+全量扫描 62 个语法包，只有 4 个关键字带正则元字符或首尾为非词字符：Kotlin `as?`（`?` 被当量词，
+退化成 `as` 或 `a`，于是 `val a = 1` 的 `a` 被染成关键字色）、Kotlin `!in` / `!is`（前置 `\b` 要求
+前一字符是词字符，实际写法前是空格 → 从未高亮）、Ruby `defined?`（同 `as?`）。
+
+- [x] **P3 · 关键字正则未转义与边界错误（BUG-LOGIC-181）**：`tools/gen_syntax_packs.py` 的 `words()`
+  原先一律拼 `\b(kw1|kw2)\b`。现改为：全为纯词字符的列表仍走原路径（产物字节不变），含元字符或
+  首尾非词字符的逐项 `re.escape`、边界 `\b` 只加在词字符一侧、长关键字优先（`as` 与 `as?` 并存时
+  须先匹配 `as?`，否则 `?` 前也是边界，`as?` 只会被高亮到 `as`）。不采用 `(?<!\w)…(?!\w)`：
+  Sora 的 RegexLib 可能是 re2j，re2j 无 lookaround。
+- [x] 产物：62 个语法文件仅 `kotlin.json` / `ruby.json` 有内容差异（`git diff --numstat` 各 1 行），
+  `syntax-packs.zip` 重发，`syntaxpacks-v2` 指向该提交；APK 不内置语法包（`verifyReleasePayload`
+  拒收）且 `SyntaxPackUrls.TAG` 未改 → **无需重编 APK**。
+- [x] 单测：`testDebugUnitTest` **610 tests / 0 failures / 1 skipped**（新增 `SyntaxPackGrammarContractTest`
+  3 条，直读仓库语法产物断言边界：`val a = 1; a + a` 只命中 `val`；`as?` / `!in` / `!is` 整体命中而
+  `asAny` / `inx` 不命中；`defined?` 整体命中而裸 `defined` 不算关键字）。
+- [x] 真机（root）：把新语法包预置进 `filesDir/syntax/grammars`（`chown 10263:10263`、`chmod 644`、
+  目录归应用 uid），`file://` 唤起 `.kt` / `.rb` 各截图核对 —— `val a = 1`、`b = a + a` 的 `a` 为正文色，
+  `as?` / `!in` / `!is` / `defined?` 整体为关键字色；日志 `语法就绪: kotlin cost=18ms` 证明新语法在
+  真实引擎中可编译。验证后已删除预置目录（原本不存在）与 `/sdcard/Download` 下的一次性测试文件。
 
 ### A113. 收件箱拒绝原因可辨识化（BUG-CONSIST-180）（2026-10-12）
 

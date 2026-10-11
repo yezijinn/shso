@@ -10,8 +10,31 @@ C_IDENT = "[A-Za-z_][A-Za-z0-9_]*"
 C_OPS = "[=+\\-*/%<>!&|^~?:]+"
 C_DELIM = "[{}()\\[\\]]"
 
+_WORD_CHAR = re.compile(r"[A-Za-z0-9_]")
+
 def words(items):
-    return "\\b(" + "|".join(items) + ")\\b"
+    """关键字/类型/内建名 → Monarch 正则。
+
+    全部为纯词字符时 `\\b(kw1|kw2)\\b` 与逐项加边界等价，直接沿用（产物字节不变）。
+    含正则元字符或首尾为非词字符的关键字必须逐项生成，统一写 `\\b(...)\\b` 有两处错：
+      1) 元字符被当作语法解释 —— Kotlin 的 `as?` 退化成 `as?`（等价于 `as` 或 `a`），
+         于是代码里任意单独的 `a` 都会被高亮成关键字；Ruby 的 `defined?` 同理。
+      2) 首尾非词字符的关键字永远匹配不上 —— `!in` 前置 `\\b` 要求前一字符是词字符，
+         而实际写法 `x !in y` 前面是空格，`!in` 一次都没高亮过。
+    """
+    if all(_WORD_CHAR.match(s[0]) and _WORD_CHAR.match(s[-1]) for s in items):
+        return "\\b(" + "|".join(re.escape(s) for s in items) + ")\\b"
+    parts = []
+    # 长关键字优先：`as` 与 `as?` 同时存在时，`\bas\b` 先命中会把 `as?` 只高亮到 `as`
+    # （`?` 是词字符边界，`\b` 照样成立）。两组之间只有这种前缀关系，纯词字符之间互不重叠。
+    for s in sorted(items, key=len, reverse=True):
+        pat = re.escape(s)
+        if _WORD_CHAR.match(s[0]):
+            pat = r"\b" + pat
+        if _WORD_CHAR.match(s[-1]):
+            pat = pat + r"\b"
+        parts.append(pat)
+    return "(" + "|".join(parts) + ")"
 
 def build(spec):
     root = [["\\s+", "white"]]

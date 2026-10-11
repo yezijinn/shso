@@ -36,7 +36,7 @@
         "attribute"
       ],
       [
-        "\\b(BEGIN|END|alias|and|begin|break|case|class|def|defined?|do|else|elsif|end|ensure|false|for|if|in|module|next|nil|not|or|redo|rescue|retry|return|self|super|then|true|undef|unless|until|when|while|yield|require|attr_accessor|attr_reader|attr_writer)\\b",
+        "(\\battr_accessor\\b|\\battr_reader\\b|\\battr_writer\\b|\\bdefined\\?|\\brequire\\b|\\bensure\\b|\\bmodule\\b|\\brescue\\b|\\breturn\\b|\\bunless\\b|\\bBEGIN\\b|\\balias\\b|\\bbegin\\b|\\bbreak\\b|\\bclass\\b|\\belsif\\b|\\bfalse\\b|\\bretry\\b|\\bsuper\\b|\\bundef\\b|\\buntil\\b|\\bwhile\\b|\\byield\\b|\\bcase\\b|\\belse\\b|\\bnext\\b|\\bredo\\b|\\bself\\b|\\bthen\\b|\\btrue\\b|\\bwhen\\b|\\bEND\\b|\\band\\b|\\bdef\\b|\\bend\\b|\\bfor\\b|\\bnil\\b|\\bnot\\b|\\bdo\\b|\\bif\\b|\\bin\\b|\\bor\\b)",
         "keyword"
       ],
       [

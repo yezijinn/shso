@@ -31,7 +31,7 @@
         "attribute"
       ],
       [
-        "\\b(as|as?|break|class|continue|do|else|false|for|fun|if|in|!in|interface|is|!is|null|object|package|return|super|this|throw|true|try|typealias|typeof|val|var|when|while|by|catch|finally|import|init|constructor|companion|data|enum|sealed|inner|internal|private|protected|public|open|override|abstract|final|lateinit|suspend|inline|reified|crossinline|noinline|expect|actual)\\b",
+        "(\\bconstructor\\b|\\bcrossinline\\b|\\binterface\\b|\\btypealias\\b|\\bcompanion\\b|\\bprotected\\b|\\bcontinue\\b|\\binternal\\b|\\boverride\\b|\\babstract\\b|\\blateinit\\b|\\bnoinline\\b|\\bpackage\\b|\\bfinally\\b|\\bprivate\\b|\\bsuspend\\b|\\breified\\b|\\bobject\\b|\\breturn\\b|\\btypeof\\b|\\bimport\\b|\\bsealed\\b|\\bpublic\\b|\\binline\\b|\\bexpect\\b|\\bactual\\b|\\bbreak\\b|\\bclass\\b|\\bfalse\\b|\\bsuper\\b|\\bthrow\\b|\\bwhile\\b|\\bcatch\\b|\\binner\\b|\\bfinal\\b|\\belse\\b|\\bnull\\b|\\bthis\\b|\\btrue\\b|\\bwhen\\b|\\binit\\b|\\bdata\\b|\\benum\\b|\\bopen\\b|\\bas\\?|\\bfor\\b|\\bfun\\b|!in\\b|!is\\b|\\btry\\b|\\bval\\b|\\bvar\\b|\\bas\\b|\\bdo\\b|\\bif\\b|\\bin\\b|\\bis\\b|\\bby\\b)",
         "keyword"
       ],
       [
