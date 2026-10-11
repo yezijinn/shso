@@ -102,10 +102,11 @@ DISPROVEN / BY_DESIGN / WONTFIX。`docs/AI-2-BUG.md` 无新增（止于 §8.5 �
   包进新的内层 `Column`，内层只带 `fillMaxWidth()` + `verticalScroll(rememberScrollState())`。
 - [x] 单测：`testDebugUnitTest` **613 tests / 0 failures / 1 skipped**（纯布局结构调整，JVM 单测无法
   覆盖布局滚动行为，不新增用例）。`assembleRelease` + `verifyReleasePayload` 通过。
-- [x] 真机（root，PACM00 / Android 10 / density 480）：正常屏幕下面板不溢出、压不出滚动，故先进入
-  编辑器设置面板（文件页 Download → `aa_test.txt` → 动作菜单「编辑文本」→ 顶栏「设置」）再
-  `wm size 1080x1400`（467dp 高）制造溢出。滚动前 `✕` `[829,206][973,350]`（144×144px = 48dp）、
-  标题 `设置` `[107,250][203,307]`、`编码` 行 y=436~485、`写入 BOM` 行被面板下沿裁到 2px 高；
+- [x] 真机（root，PACM00 / Android 10 / density 480）：正常屏幕下面板不溢出、压不出滚动，故
+  `wm size 1080x1400`（467dp 高）制造溢出后再进入编辑器设置面板（文件页 Download → `aa_test.txt` →
+  动作菜单「编辑文本」→ 顶栏「设置」；屏幕尺寸变更会重建 Activity，面板状态不保留）。滚动前 `✕`
+  `[829,206][973,350]`（144×144px = 48dp）、标题 `设置` `[107,250][203,307]`、`编码` 行 y=436~485、
+  `写入 BOM` 行被面板下沿裁到 2px 高；
   `input swipe 540 1000 540 400` 后 `✕` 与标题 bounds **完全不变**，`写入 BOM` 行由 y≈1156 上移至
   y=402，`编码`/`换行`/`语法包`/`另存为`/`显示行号` 滚出可见区，`草稿快照` 等被裁切行进入可见区；
   在滚动后位置点击 `✕`（`(901,278)`）→ 面板关闭并回到编辑器。随后 `wm size reset` 复原，
