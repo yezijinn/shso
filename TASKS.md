@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A112） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A113） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 606 tests / 0 failures / 1 skipped |
+| 单元测试 | 607 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -75,11 +75,39 @@
 | 已知环境坑 | 本机 toybox `mktemp` 创建失败时把模板前缀打成 `(null)/`（如 `Failed to create directory (null)//data/…`）——`(null)` 不是路径的一部分，真实模板要减去该前缀再看 |
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`972abfa7…`）；双端 tag 与 Release 的目标提交均已对齐 A112 发版代码（`122dd39`）；旧版发行程序已从双端移除（Release 与 tag 保留） |
+| 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`1dae2b07…`）；双端 tag 与 Release 的目标提交均已对齐 A113 发版代码（`05914d1`）；旧版发行程序已从双端移除（Release 与 tag 保留） |
 
 ---
 
 ## 待办
+
+### A113. 收件箱拒绝原因可辨识化（BUG-CONSIST-180）（2026-10-12）
+
+`docs/AI-1-BUG.md` 第 134~136 轮无新增缺陷：第 126 轮提出的 BUG-COMPAT-166（浅色父主题与应用恒暗冲突）
+已由其自行撤回（漏看 `values-v27` / `values-night` / `values-night-v27` 四套主题目录），第 128 轮对 res
+全量核验亦未发现缺陷。余下 3 条均为 P3 且已有结论：CONSIST-118（收件箱去重 / TTL，BY_DESIGN）、
+COMPAT-093（tif 预览，BY_DESIGN）、CONC-148（OBB 锁 quarantine，WONTFIX）。
+`docs/AI-2-BUG.md` 无新增轮次（仍止于 §8，已由 A110/A111 处理）。
+
+复核中另发现一处用户可见缺口：`copyToInbox` 的所有失败路径折叠成同一个 `File?` 空值，调用方只能给出
+同一句「无法读取该文件（可能未授予读取权限或复制失败）」，而其中文件数达 256、总占用达 2GB、
+同名探测耗尽三类都需要用户去清理 `/storage/emulated/0/Download/shso`。
+
+- [x] **P3 · 收件箱拒绝原因不可辨识（BUG-CONSIST-180）**：判定提为顶层纯函数
+  `inboxRejectReason(fileCount, existingBytes, declaredBytes)`，统一产出可执行原因
+  （超单文件上限 / 文件数达 256 / 总容量达 2GB，后两者带目录路径）；`copyToInbox` 返回类型由
+  `File?` 改为 `InboxCopy`（`Ok` / `Fail`），原因逐条透传至 Toast；`resolve` 的声明大小预筛
+  复用同一函数，不再另写一份文案。
+- 不实现收件箱 TTL 自动清理：该目录内容对用户可见，自动删除真实文件的风险高于收益，
+  CONSIST-118 维持 BY_DESIGN。
+- [x] 单测：`testDebugUnitTest` **607 tests / 0 failures / 1 skipped**（新增 1 条覆盖文件数 /
+  总容量 / 声明大小 / 未知大小四类分支，并断言提示含目录路径）。
+- [x] 真机（root）：预置 256 个占位文件后以不可解析的 `content://` 唤起，Toast 为「收件箱文件数
+  已达上限（256 个），请清理 /storage/emulated/0/Download/shso 后重试」；清理后同一 URI 回落为
+  「无法读取该文件（可能未授予读取权限，或存储空间不足）」，目录内无 0 字节残留。
+- [x] 发版：APK 2909869 字节（sha256 `1dae2b07…`）、双端 `main` 与 tag `20261012` 推送
+  （重指至 `05914d1`）、Release 目标提交与资产同步，下载 sha256 三方一致。
 
 ### A112. `docs/AI-1-BUG.md` 第 124~129 轮移交项（2026-10-12）
 
