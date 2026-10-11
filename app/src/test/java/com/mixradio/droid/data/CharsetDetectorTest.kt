@@ -162,6 +162,18 @@ class CharsetDetectorTest {
         assertEquals(text, d.text)
     }
 
+    @Test fun `两字与三字 GB18030 短样本仍判 GB18030`() {
+        // 阈值取 1/2 时，两字 GB18030 有近半数（实测 48%）被判成 UTF-8：非 ASCII 字节只有 4 个，
+        // 替换符 ≤2 即越过判据。这类短文本（配置项、短注释）一旦误判，用户保存就按 UTF-8 重写，
+        // 原始 GB18030 字节不可逆损坏。收紧到 1/4 后替换符须 ≥2 才算非 UTF-8，误判率降到 5% 以下。
+        val cs = java.nio.charset.Charset.forName("GB18030")
+        for (text in listOf("中文", "的一", "测试", "中文字", "编码检测")) {
+            val d = CharsetDetector.detect(text.toByteArray(cs))
+            assertEquals("短 GB18030 样本「$text」不得判为 UTF-8", cs, d.charset)
+            assertEquals(text, d.text)
+        }
+    }
+
     @Test fun `短 UTF-8 中文混入非法字节不得降级为单字节编码`() {
         // 极短样本（两个汉字 + 1 个坏字节）在「按字符总数算密度」的旧判据下密度约 1/3，
         // 越过阈值后既判不成 UTF-8、又不满足 GB18030 的 1% 门槛，落到 ISO-8859-1，
