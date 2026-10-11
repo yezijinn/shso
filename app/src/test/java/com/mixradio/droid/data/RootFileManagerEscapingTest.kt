@@ -221,4 +221,27 @@ class RootFileManagerEscapingTest {
         val s = java.io.File("src/main/java/com/mixradio/droid/data/RootFileManager.kt").readText()
         assertTrue("目录分支必须用 chmod -R", s.contains("\"chmod -R 777\""))
     }
+
+    @Test fun `拷贝文件不得抹掉来源的可执行位`() {
+        // 真实回归：ROOT 路径先 `cp -p`（保留源权限，如 755），紧接着 `chmod 644`
+        // 把权限改成 rw-r--r--，连普通 0755 的执行位也一并抹掉 —— 拷出的 .sh/.so
+        // 立刻失去执行权限；Java 回退路径拷贝后完全没设权限，两条路径产物还不一致。
+        // 现统一为「只减不增」：保留 rwx，只清 setuid/setgid 与 group/other 写位。
+        val s = java.io.File("src/main/java/com/mixradio/droid/data/RootFileManager.kt").readText()
+        val fn = s.indexOf("suspend fun copyFile(")
+        assertTrue("应能找到 copyFile", fn > 0)
+        val end = s.indexOf("suspend fun createEmptyFile(", fn)
+        val body = s.substring(fn, if (end > 0) end else s.length)
+
+        assertTrue("ROOT 路径必须只减不增", body.contains("chmod a-s,go-w"))
+        assertFalse("不得再用 chmod 644 抹掉执行位", body.contains("chmod 644"))
+        assertTrue(
+            "Java 路径必须按来源 mode 补权限",
+            body.contains("Os.chmod(destPath, Os.stat(sourcePath).st_mode and COPY_MODE_MASK)")
+        )
+        assertTrue(
+            "掩码必须是 0755（保留执行位、清 g/o 写与 setuid/setgid）",
+            s.contains("COPY_MODE_MASK = 0b111101101")
+        )
+    }
 }

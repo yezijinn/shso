@@ -406,8 +406,10 @@ var loadError by remember { mutableStateOf<String?>(null) }
                                     // 混入下标会在排序/过滤导致位移时使 key 全变、整表重建。
                                     itemsIndexed(displayFileList, key = { _, item -> item.path }) { _, item ->
                                         val isSelected = !directoryOnly && selectedFile?.path == item.path
-                                        // 注入了 fileFilter 时，可选项以过滤器为准（如对比只允许同后缀文件）
-                                        val isSupported = directoryOnly || (fileFilter?.invoke(item) ?: item.isSupportedExecutable)
+                                        // displayFileList 已用 fileFilter 剔除不匹配的文件，列表中文件必然满足它；
+                                        // 此处只在「未注入过滤器」时才需按扩展名判可选项。若再调一次 fileFilter，
+                                        // 每个可见行每次重组都会多跑一次（对比用的过滤器含 realpath 系统调用）。
+                                        val isSupported = directoryOnly || fileFilter != null || item.isSupportedExecutable
 
                                         Column(modifier = Modifier.fillMaxWidth()) {
                                             Row(
@@ -641,7 +643,12 @@ if (directoryOnly) {
                                 newFileError = "请输入文件名"
                                 return@Button
                             }
-                            val finalName = if (ext.isNotEmpty()) "$name.$ext" else name
+                            val finalName = when {
+                                ext.isEmpty() -> name
+                                // 用户已在文件名里写了扩展名（如 note.txt）时不再追加，避免 note.txt.txt。
+                                name.endsWith(".$ext", ignoreCase = true) -> name
+                                else -> "$name.$ext"
+                            }
                             scope.launch {
                                 // createEmptyFile 有多条失败返回：文件名含 /、同名已存在、
                                 // 目录不可写（/system/app、/data/adb/shso 这类）。

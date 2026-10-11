@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 526 tests / 0 failures / 1 skipped |
+| 单元测试 | 529 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -65,12 +65,49 @@
 | `/data/local/tmp` 子目录默认 `root:root 755`，adb（shell 身份）**无法写入** → 需 `su -c 'chmod 777'` 后再 push |
 | 已知环境坑 | 应用进程的 environ **不含 `TMPDIR`**（`su -c` 也不补），而 `adb shell` 自带 `TMPDIR=/data/local/tmp` → 依赖 `$TMPDIR` 的脚本「adb 下正常、应用内失败」。执行环境须显式 `export TMPDIR` |
 | 已知环境坑 | 本机 toybox `mktemp` 创建失败时把模板前缀打成 `(null)/`（如 `Failed to create directory (null)//data/…`）——`(null)` 不是路径的一部分，真实模板要减去该前缀再看 |
+| 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2893369 字节，双端下载 sha256 与本地一致（`2d21f32a…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版 APK 已从双端 `20261004` 移除，仅保留 Release 与 tag |
+| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2893369 字节，双端下载 sha256 与本地一致（`dd685fa3…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版 APK 已从双端 `20261004` 移除，仅保留 Release 与 tag |
 
 ---
 
 ## 待办
+
+### A95. 拷贝权限与选择器末批复核（2026-10-11）
+
+对文件管理写操作与内置选择器的后续审查条目逐条对照代码复核：3 条成立并修复，
+1 条经核实不成立，3 条暂不修改。
+
+- [x] **拷贝文件抹掉来源可执行位（台账与代码漂移）**（`BUG-LOGIC-102` / `BUG-CONSIST-105`，P2，CONFIRMED）：
+  ROOT 路径先 `cp -p` 保留来源权限（如 755），紧接着 `chmod 644` 改成 `rw-r--r--`，
+  连普通 0755 的执行位一并抹掉 —— 拷出的 `.sh` / `.so` 立刻失去执行权限；Java 回退路径
+  用普通流拷贝后根本没设权限，与台账声称的「两条路径产物一致」不符。
+  且本文件 A 段早已把该项记为 P1 并标 `[x]`，`go-w` 在 git 历史中零出现 —— 属「台账已修、
+  代码未落地」的真实漂移。现两条路径统一「只减不增」：ROOT 侧 `chmod a-s,go-w`
+  （`cp -p` 已保留权限，只清 setuid/setgid 与组/其他写位），Java 侧按来源 mode 掩 0755。
+- [x] **`chmod u-s,g-s` 在设备上不生效**（实现期实测发现）：toybox 0.8.0 的符号模式解析
+  忽略按类别给的 `-s`（`u-s` / `g-s` 均为空操作），只有 `a-s` 真正清除 setuid/setgid。
+  真机逐项实测：`4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留，属越权面），
+  改 `a-s,go-w` 得 `755`。据此定稿 `a-s,go-w`。
+- [x] **内置选择器行内重复调用 fileFilter**（`BUG-PERF-100`，P3，CONFIRMED）：
+  `displayFileList` 生成时已用 fileFilter 剔除不匹配项，行渲染又调一次判可选项；
+  对比入口的过滤器含 `File.canonicalPath`，每个可见行每次重组都多跑一次 realpath。
+  改为「未注入过滤器时才按扩展名判」。
+- [x] **新建文件名重复追加扩展名**（`BUG-EDGE-101`，P3，LIKELY）：
+  用户在「文件名」里已写扩展名且扩展名框非空时，无条件拼接得到 `note.txt.txt`。
+  改为名字已以 `.<ext>` 结尾则不再追加。
+- [x] **`entryCountFromTail` 死代码，不成立**（`BUG-COMPAT-104`，P3）：
+  审查称「全项目无引用」，实际被 `InstallAndBudgetHardeningTest` 8 处调用（共 9 处引用）。
+  与 A91 对 `BUG-COMPAT-066` 的裁决一致，判 DISPROVEN。
+- [x] **暂不修改的三条**：设置页检查更新旋转丢结果需为 sealed class 状态自写 `Saver`；
+  图片查看器声明支持 tif/tiff 与解码能力不符属设计取舍；编辑器检索 0 命中与检索中
+  不可区分（每次未命中等满 3s 超时）属 Sora 检索无完成回调的取舍残留，
+  降档超时会在慢检索下误报「未找到」，不动。`writeBytesAsRoot` 无界写阻塞维持 P3。
+- [x] 单测：`RootFileManagerEscapingTest` +1（拷贝权限口径）、
+  `PickerAndPermissionRegressionTest` +2（行内过滤、扩展名拼接）。
+- [x] 全量单测通过：`testDebugUnitTest` → 529 tests / 0 failures / 1 skipped。
+- [x] 真机（root）验证：`chmod a-s,go-w` 在 4777/6777/777/755/700/644/600 上的输出逐项核对，
+  安装冒烟无崩溃。
 
 ### A94. 编辑器与文件列表末批复核（2026-10-11）
 

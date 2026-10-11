@@ -141,4 +141,26 @@ class PickerAndPermissionRegressionTest {
             body.contains("size(40.dp)")
         )
     }
+
+    @Test fun `选择器不得在每行重复调用 fileFilter`() {
+        // displayFileList 生成时已用 fileFilter 剔除不匹配项，行渲染再调一次属冗余：
+        // 对比用的过滤器含 File.canonicalPath，每个可见行每次重组都多跑一次 realpath。
+        val s = src("BuiltInFilePicker.kt")
+        assertFalse("行内不得再调 fileFilter", s.contains("fileFilter?.invoke(item)"))
+        assertTrue(
+            "可选项判定应改为「未注入过滤器才按扩展名判」",
+            s.contains("val isSupported = directoryOnly || fileFilter != null || item.isSupportedExecutable")
+        )
+    }
+
+    @Test fun `新建文件名不得重复追加扩展名`() {
+        // 用户在「文件名」里已写了扩展名（note.txt）且扩展名框非空时，
+        // 无条件拼接会得到 note.txt.txt。
+        val s = src("BuiltInFilePicker.kt")
+        assertFalse("不得再无条件拼接扩展名", s.contains("if (ext.isNotEmpty())"))
+        assertTrue(
+            "已在文件名里的扩展名不再追加",
+            s.contains("""name.endsWith(".${'$'}ext", ignoreCase = true) -> name""")
+        )
+    }
 }

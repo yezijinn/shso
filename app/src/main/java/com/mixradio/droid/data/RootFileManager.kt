@@ -4,6 +4,7 @@
 package com.mixradio.droid.data
 
 import android.os.SystemClock
+import android.system.Os
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -34,6 +35,12 @@ object RootFileManager {
 
     /** 同名副本探测的次数上限：防止异常目录里 `exists()` 无限循环。 */
     private const val COPY_NAME_PROBE_LIMIT = 1000
+
+    /**
+     * 拷贝落盘后的权限掩码（八进制 0755）：保留 rwx（含执行位），
+     * 清掉 group/other 写位与 setuid/setgid。与 shell 侧的 `chmod a-s,go-w` 同口径。
+     */
+    private const val COPY_MODE_MASK = 0b111101101
     private val OWNER_OR_GROUP_PATTERN = Regex("^[a-zA-Z0-9._-]+$")
 
     /**
@@ -1009,7 +1016,7 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
                 append("while [ \$n -lt $COPY_NAME_PROBE_LIMIT ]; do ")
                 append("d=$escapedParent/$escapedBase" + '"' + "_" + '"' + "\$n$escapedSuffix; ")
                 append("if ( set -C; : > \"\$d\" ) 2>/dev/null; then ")
-                append("if cp -p $escapedSource \"\$d\" && chmod 644 \"\$d\"; then ")
+                append("if cp -p $escapedSource \"\$d\" && chmod a-s,go-w \"\$d\"; then ")
                 append("echo \"OK \$d\"; exit 0; fi; rm -f -- \"\$d\"; exit 1; fi; ")
                 append("n=\$((n+1)); ")
                 append("done; echo NOMATCH; exit 2")
@@ -1042,6 +1049,12 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
             val destFile = File(destPath)
             srcFile.inputStream().use { ins ->
                 destFile.outputStream().use { outs -> ins.copyTo(outs) }
+            }
+            // 与 ROOT 路径的 chmod 口径对齐：按来源 mode「只减不增」——
+            // 保留 rwx（含执行位），只清 setuid/setgid 与 group/other 写位。
+            // cp -p 在 Java 路径不可用，权限要靠这里补；否则拷出的 .sh/.so 一律丢失执行位。
+            runCatching {
+                Os.chmod(destPath, Os.stat(sourcePath).st_mode and COPY_MODE_MASK)
             }
             return@withContext Pair(true, destPath)
         } catch (_: Exception) {
