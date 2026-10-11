@@ -42,3 +42,6 @@ artifacts/
 /*.png
 /ui_*.xml
 ppt/
+
+# 缺陷台账：禁止发布、禁止入库、禁止随发行包分发。
+BUG.md

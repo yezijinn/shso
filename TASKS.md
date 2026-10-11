@@ -12,17 +12,17 @@
 
 ---
 
-## 当前状态速览（2026-10-04）
+## 当前状态速览（2026-10-11）
 
 | 项 | 值 |
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（`c620dc6`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 466 tests / 0 failures / 1 skipped |
+| 单元测试 | 480 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
-| release 体积 | 2.03 MB（移除未使用的 commons-compress ZIP keep，省 48 KiB），`verifyReleasePayload` 红线通过 |
+| release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
-| 文件名通道 | `find -print0`（NUL 分隔），元数据走不含文件名的 `%A\|%s\|%Y` → 文件名含换行/空格不再产出幻影条目 |
+| 文件名通道 | `find -print0`（NUL 分隔）；元数据通道**自带名称**（`printf "%s\0"` + `stat`），按名称配对 → 列举期间增删/断链不再让大小与类型串位；标记须两侧 NUL 包裹才命中 |
 | 列表一致性 | `listIsStale` + `loadingGenRef` 双护栏：陈旧列表不可操作，重算不越代落盘 |
 | 移动/复制 | 冲突探测单次化；覆盖目录先改名让位、失败回滚；拷贝只清 setuid/setgid 与 g/o 写位，保留执行位 |
 | root 探测时序 | `isRootGranted == null`（未探测）先等待探测落定，上限 3s，超时按已知状态处理 |
@@ -43,7 +43,8 @@
 | 列表刷新 | **不再清空列表**（消除刷新期空白）；保留期间由 `enabled = !listIsStale` 真正禁用交互并降透明度；同目录刷新 120ms 节流 |
 | 列表性能 | `FileItem` 类型判定构造期一次算好（不再每帧重算正则）；选中判定走 HashSet；搜索 250ms 防抖；主页行用 derivedStateOf 隔离 |
 | 代码结构 | 无重复分支/无用中间层：`preferRoot` 已扁平、`pathExistsQuiet`/`uniqueFile`/`isExtractable` 已删 |
-| 脚本执行 | `.sh` 执行前归一化 CRLF 与 BOM（写临时文件，不改原文件）；`.so` 权限先记录后还原，还原排在执行之后 |
+| 脚本执行 | `.sh` 归一化改为**字节级保守判定**（`ShNormalization`）：含字节偏移自引用（`$0`/`${0}`/`${BASH_SOURCE`，配 `tail…+N`／含变量形式 `+$skip`、`head -c`、`dd skip=`、`sed -n 'N,'`）或内嵌压缩魔数即直跑原字节，仅普通文本脚本去 BOM/CR（上限 16 MiB，超限直跑）；app 侧不可读时由 `decideAsRoot` 先 `stat` 取大小再按实际长度以 root 读头部判定；`.so` 权限先记录后还原，还原排在执行之后 |
+| 归档格式 | 14 种：tar 系（`.tar.gz/.tar.xz/.tar.bz2/.tar.lz4/.tar.zst/.tgz/.tzst/.tar`）+ 单文件（`.gz/.xz/.bz2/.lz4/.zst/.zip`）；`.tzst` 为 tar+zstd 别名 |
 | 语法包 | 62 语言 / 187 扩展名，`syntax-packs.zip`(37KB)，永固直链 tag `syntaxpacks-v2` |
 | 执行方式 | 命令与脚本直通执行，无策略判定、无执行记录（守卫/档位/审计已移除） |
 | OBB 事务锁 | 单文件 `set -C`(O_EXCL) 原子 CAS；真机 8 进程并发恰好 1 成功；**建目录早于取锁**；幂等条目不进回滚表 |
@@ -67,6 +68,77 @@
 ---
 
 ## 待办
+
+### A84. 变更复核与边界收敛（2026-10-11）
+
+对 A83 引入的字节级判定与根侧兜底做独立复核，逐条裁决后实施下列修正。
+
+- [x] **su 无响应不再永久阻塞**：`readFileHeadAsRoot` 原为裸 `waitFor()` + 阻塞 `readBytes()`，
+  su 停在授权弹窗即永久挂起（UI 停在「运行中」）。改为独立线程读流 + 5s 等待上界，
+  超时 `destroyForcibly()` 并放弃本次 root 判定，转交保守分支。
+- [x] **读取上界与并发变更校验**：`decideAsRoot` 改读 `size + 1` 并要求读取长度严格等于
+  `stat -L -c %s` 的大小；文件在 stat 与读取之间被改写时不再按过期头部判定。
+- [x] **zstd 组件缺失不再闪退**：`openZstd` 捕获 `LinkageError` 并归一为 `IllegalStateException`，
+  原生库在个别 ABI 缺失时由解压失败提示承担，不再整个进程崩溃。
+- [x] **无花括号 `$BASH_SOURCE` 纳入自引用识别**：原只认 `${BASH_SOURCE`，漏掉 `$BASH_SOURCE`，
+  该写法的自解压脚本会被误判为普通文本脚本去 CR。
+- [x] **bzip2 块头按「魔数 + 级别」判定**：`BZh` 仅 3 字节，单列会与普通文本假命中
+  （实测文字里出现 `BZh` 即触发直跑）；改为要求紧随级别数字 `1`~`9`，与其余 ≥4 字节特征一致。
+  移除多余的三字节 bzip2 魔数项。
+- [x] **列举重试判据改为名称集合**：原按 `metas.size != names.size` 判「两趟不一致」，
+  断链符号链接 stat 失败会缺元数据但名称仍在，被误判为不一致而反复重试；
+  改为比较名称集合 `parsed.names != names.toSet()`。
+- [x] **`isNulDelimited` 收紧**：标记位于输出首尾时原用哨兵补边，改为 `markerIndex <= 0`
+  直接判否，避免把「标记恰在起点」误判为合法分隔。
+- [x] 契约测试同步：`DualPaneStateRegressionTest` 重试判据断言、`DirectoryListingTest`
+  固定窗口改按函数边界截取、`ShNormalizationTest` 增 3 例（共 14）。
+- [x] 全量单测通过：`testDebugUnitTest` → 480 tests / 0 failures / 1 skipped。
+- [x] 真机（root）复验：CRLF 脚本经 root 判定执行 `len=3`、退出码 0；`.zst` / `.tar.zst`
+  解压内容逐字节正确；含断链符号链接的目录完整列举且大小/类型无串位。
+
+### A83. 恢复 zstd + 脚本归一化保守化（2026-10-11）
+
+- [x] **恢复 zstd 解压**：`ArchiveExtractor` 接入 `ZstdCompressorInputStream`（`.zst` 单文件 /
+  `.tar.zst` / `.tzst`），`TAR_EXTENSIONS` 增补 `.tzst`；依赖 `zstd-jni 1.5.7-16` 已在
+  `libs.versions.toml` 与 `app/build.gradle.kts` 就位，abiFilters 裁到 arm64-v8a。
+  - [x] 构建脚本与文档同步：`build_apk.py` 移除 zstd 残留检查与返回字段；`README.md`
+    格式数 12→14；`docs/PROJECT.md` 目录树补 `ShNormalization.kt` 并改述为「使用 zstd」。
+  - [x] **原生库变体纠正**：`com.github.luben:zstd-jni` 同 GAV 下有 jar 与 aar 两份制品，
+    jar 内是 `win/ darwin/ linux/ freebsd/ aix/` 桌面原生库，打进 APK 后设备侧没有可加载的
+    `.so`（运行期 `UnsatisfiedLinkError`），还白占约 1.5 MB。改用 aar 变体
+    （`implementation(libs.zstd.jni) { artifact { type = "aar" } }`），APK 由 3.88 MB 回落 2.76 MB，
+    并引入 `lib/arm64-v8a/libzstd-jni-1.5.7-16.so`（475 KB）。
+- [x] **修复内置压缩自解压脚本退出码 127**
+  - [x] 根因：执行前无条件 `tr -d '\r'` 重写整个文件，把自解压脚本尾部内嵌载荷整体移位，
+    压缩流损坏 → `gzip: gzread: invalid distance too far back`、退出码 127。
+  - [x] 新增 `ShNormalization`（`internal object`）：按**字节**判定 `DIRECT` / `NORMALIZE`。
+    只要出现字节偏移自引用（`$0` / `${0}` / `${BASH_SOURCE`，以及 `tail…+N` / `head…-c` /
+    `dd…skip=` / `sed -n 'N,'`）或内嵌压缩魔数（gzip/bzip2/xz/zstd/lz4/zip），一律直跑原字节；
+    仅确认是普通文本脚本才去 BOM 与 CR。扫描上限 16 MiB，超限保守直跑。
+  - [x] 移除 3 字节 LZMA 弱特征 `5d 00 00`（独立 lzma 流本就不支持，且极易与普通文本假命中，
+    会把该归一化的 CRLF 脚本误判成载荷）。
+  - [x] 偏移正则放宽到变量形式：真机样本 clear.sh 写作 `tail $tail_n +$skip <"$0"`（skip=50），
+    原 `\+\s*\d+` 不匹配 `+$skip` → 漏判；改为 `\+\s*[0-9$]`，并补单测。
+- [x] **app 侧不可读时的 root 兜底**：`Decision.appReadable=false` 时改判 root 侧结果；
+  `/data/adb/shso` 这类 0700 父目录下的脚本不再因 `File.isFile` 恒 false 而误走归一化。
+  - [x] 兜底入口 `decideAsRoot`：先 `stat -L -c %s` 取实际大小，超 16 MiB 上限直接判 DIRECT 且**不读文件**
+    （clear.sh 21 MB，原先无条件读 16 MiB 纯属浪费），否则按实际大小读头部。
+- [x] **目录元数据按名称配对**：元数据通道内自带名称（`printf "%s\0" "$f"` + `stat`），
+  `parseStatMeta` 返回名称集合与元数据映射；列举期间增删或断链不再让后续条目串位。
+  `META_SEP` 判定要求两侧均为 NUL（`isNulDelimited`），名字里含该串的文件不再被切开。
+- [x] **外部分享 MIME 补齐 zstd**：两个 alias 的 intent-filter 增 `application/zstd` / `application/x-zstd`，
+  声明官方 zstd 类型的来源不再找不到 shso。
+- [x] 守护单测：`ShNormalizationTest` 14 项（新增自解压 `tail -n`/`head -c`/变量偏移、lzma 假特征、
+  app 不可读标志、无花括号 `$BASH_SOURCE`、`BZh` 字面量、内嵌 bzip2 载荷）；
+  `DirectoryListingTest` 断言改为 `metas[name]`。
+- [x] 全量单测通过：`testDebugUnitTest` → 480 tests / 0 failures / 1 skipped。
+- [x] 真机（root）验证：
+  - [x] CRLF 脚本归一化：`/data/adb/shso` 下探针脚本输出 `shso-crlf ok len=3`、退出码 0（root 侧兜底判定生效）。
+  - [x] 自解压脚本字节偏移：含 0x0D 压缩流的 `tail -n +$skip "$0" | gzip -cd` 夹具经应用执行输出
+    `payload-content-12345`、退出码 0；同文件去 CR 后直接执行报 `gzip: gzread: <fd:0>: incorrect data check`（反证）。
+  - [x] 断链符号链接元数据：`dangling_link` 与撞名 `__SHSO_META_5A1C__fake` 均按自身名称配对到正确大小。
+  - [x] `.zst` / `.tar.zst` / `.tzst` 解压：设备无 zstd 命令，经 UI 解压全部成功、内容逐字节正确
+    （证明 `lib/arm64-v8a/libzstd-jni-1.5.7-16.so` 在设备侧可加载）。
 
 ### A82. 执行入口改为菜单 + 身份选择（2026-10-04）
 

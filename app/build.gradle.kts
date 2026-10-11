@@ -187,14 +187,16 @@ dependencies {
     // ZIP 加密解密（zip4j 支持 ZipCrypto + WinZip AES，char[] 密码天然支持中文）
     implementation(libs.zip4j)
 
+    // Zstandard 解压（commons-compress 的 ZstdCompressorInputStream 通过 JNI 调用）。
+    // 必须取 aar 变体：同 GAV 的 jar 内是 win/ darwin/ linux/ 桌面原生库，
+    // 打进 APK 后既没有 Android 可加载的 .so（运行时 UnsatisfiedLinkError），又白占约 1.5 MB。
+    implementation(libs.zstd.jni) { artifact { type = "aar" } }
+
     // 文本编辑器引擎（MP-Manager 同款 Sora Editor）：自绘 View + 行索引增量 Content，只渲染可视区。
     implementation(platform(libs.sora.editor.bom))
     implementation(libs.sora.editor)
     // 语法高亮：Monarch 引擎（语法定义以本项目内置 JSON 提供，不依赖外部语法包）
     implementation(libs.sora.language.monarch)
-
-    // 不使用 zstd：zstd-jni 的 AAR 为 4 个 ABI 各带一份原生库，合计约 1.9MB。
-    // 受影响的格式只有 .zst / .tar.zst，其余 12 种不受影响。
 
     // JVM 单元测试（JUnit 4，不依赖设备，可在无 ROOT 真机环境下验证纯逻辑路径）
     testImplementation(libs.junit4)

@@ -14,6 +14,7 @@ import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorInputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
+import org.apache.commons.compress.compressors.zstandard.ZstdCompressorInputStream
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
@@ -25,9 +26,8 @@ import java.util.Locale
 /**
  * 压缩包自动解压。
  *
- * 支持格式：归档型 zip / 7z / tar / tgz / tar.gz / tar.xz / tar.bz2 / tar.lz4，
- * 单文件压缩型 gz / xz / bz2 / lz4（直接解压为去后缀原文件名）。
- * rar 为专有商业格式不支持；zstd（.zst）已移除：原生库占 release 包近半体积，与使用场景不匹配。
+ * 支持格式：归档型 zip / 7z / tar / tgz / tar.gz / tar.xz / tar.bz2 / tar.lz4 / tar.zst / tzst，
+ * 单文件压缩型 gz / xz / bz2 / lz4 / zst（直接解压为去后缀原文件名）。rar 不支持。
  *
  * 自动解压：根目录仅 1 个顶层目录（条件 A）→ 直接解压到当前目录（剥离顶层前缀避免嵌套）；
  * 否则（条件 B）→ 在当前目录新建「压缩包名（去后缀）」文件夹解压。重名冲突自动追加 _N。
@@ -99,12 +99,12 @@ object ArchiveExtractor {
 
     /** TAR 归档型扩展（含双后缀，判定优先于单文件压缩型）。 */
     private val TAR_EXTENSIONS = listOf(
-        ".tar.gz", ".tar.xz", ".tar.bz2", ".tar.lz4",
-        ".tgz", ".tar"
+        ".tar.gz", ".tar.xz", ".tar.bz2", ".tar.lz4", ".tar.zst",
+        ".tgz", ".tzst", ".tar"
     )
 
     /** 单文件压缩型扩展。 */
-    private val SINGLE_EXTENSIONS = listOf(".gz", ".xz", ".bz2", ".lz4")
+    private val SINGLE_EXTENSIONS = listOf(".gz", ".xz", ".bz2", ".lz4", ".zst")
 
     /**
      * 是否为已知压缩包。
@@ -257,8 +257,25 @@ object ArchiveExtractor {
             lower.endsWith(".tar.xz") || lower.endsWith(".xz") -> XZCompressorInputStream(base)
             lower.endsWith(".tar.bz2") || lower.endsWith(".bz2") -> BZip2CompressorInputStream(base)
             lower.endsWith(".tar.lz4") || lower.endsWith(".lz4") -> FramedLZ4CompressorInputStream(base)
+            lower.endsWith(".tar.zst") || lower.endsWith(".tzst") || lower.endsWith(".zst") ->
+                openZstd(base)
             else -> base
         }
+    }
+
+    /**
+     * 打开 zstd 压缩流，并把原生库加载失败归一为普通异常。
+     *
+     * zstd-jni 的 native 库在构造流时加载，失败抛 `UnsatisfiedLinkError`（`Error` 子类），
+     * 而调用链上（单文件解压 / tar / peekRoot / 7z）一律只 `catch (Exception)`，
+     * `Error` 会直接穿透到进程边界崩溃。此处转成 `IllegalStateException` 后，
+     * 失败会落到既有的「解压失败」分支，给出可读提示而不是闪退。
+     */
+    private fun openZstd(base: InputStream): InputStream = try {
+        ZstdCompressorInputStream(base)
+    } catch (e: LinkageError) {
+        runCatching { base.close() }
+        throw IllegalStateException("zstd 解压组件不可用：${e.message ?: e.javaClass.simpleName}", e)
     }
 
     /** 打开 tar 归档流（按压缩格式自动包装）。 */

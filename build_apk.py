@@ -21,8 +21,8 @@ shso 一键编译脚本
       比对 APK 内资源名时不要直接与源码 res/ 对号入座。
     ※ 只打包 arm64-v8a（app/build.gradle.kts 的 ndk.abiFilters）：新增带原生库的依赖时
       注意别把 4 个 ABI 一起打进来；脚本的产物校验会检查这一点。
-    ※ 未使用 zstd（.zst / .tar.zst 已于 2026-09-11 移除）：zstd-jni 的 AAR 为 4 个 ABI
-      各带一份原生库，约 1.9MB；脚本的产物校验同样会检查它是否被意外引入。
+    ※ 使用 zstd（2026-10-11 恢复 .zst / .tar.zst / .tzst 解压）：zstd-jni 的 AAR 为 4 个 ABI
+      各带一份原生库，约 1.9MB；abiFilters 会裁到 arm64-v8a，脚本的产物校验会核对 ABI 集合。
 
 可选环境变量：
     JAVA_HOME         # 优先选择的 JDK；未设置时自动发现 JDK 17
@@ -86,6 +86,10 @@ VERSION_NAME: str = "Jinn"
 # 产物内容校验：只允许这些 ABI（与 app/build.gradle.kts 的 ndk.abiFilters 一致）。
 # 新增带原生库的依赖时若把多 ABI 一起打进来，脚本会告警。
 EXPECTED_ABIS: set[str] = {"arm64-v8a"}
+
+# 桌面平台原生库目录名（某些依赖的 jar 变体把它们放在包根，如 zstd-jni 的 win/ darwin/ linux/）。
+# 这些库在 Android 上无法加载，且会白白撑大 APK；出现即视为依赖取错了变体。
+DESKTOP_NATIVE_DIRS: set[str] = {"win", "darwin", "linux", "freebsd", "aix"}
 
 
 def expected_version_code() -> str:
@@ -504,12 +508,13 @@ def verify_payload(apk: Path) -> Optional[dict]:
 
     检查项（与 app/build.gradle.kts 的构建配置保持一致）：
       - ABI 白名单：只应包含 arm64-v8a；出现其他 ABI 说明有新依赖把多 ABI 原生库带进来了。
-      - zstd 残留：zstd-jni 已移除，出现 libzstd 说明被重新引入。
+      - 桌面原生库混入：APK 根目录出现 win/ darwin/ linux/ 等平台目录，说明某个依赖取到了
+        jar 变体（典型：zstd-jni，jar 内是桌面 .dll/.dylib，设备侧没有可加载的 .so）。
     同时输出体积构成，便于判断「还能不能再瘦一点」。
     """
     buckets: dict[str, int] = {}
     abis: set[str] = set()
-    zstd_hits: list[str] = []
+    stray_platforms: set[str] = set()
     total = 0
     with zipfile.ZipFile(apk) as z:
         for info in z.infolist():
@@ -528,8 +533,8 @@ def verify_payload(apk: Path) -> Optional[dict]:
                 buckets["resources.arsc"] = buckets.get("resources.arsc", 0) + info.compress_size
             else:
                 buckets["其他"] = buckets.get("其他", 0) + info.compress_size
-            if "zstd" in name.lower():
-                zstd_hits.append(name)
+                if name.split("/")[0] in DESKTOP_NATIVE_DIRS:
+                    stray_platforms.add(name.split("/")[0])
 
     log(INFO, "体积构成（压缩后，占比按 APK 内条目合计）")
     for key, size in sorted(buckets.items(), key=lambda kv: -kv[1]):
@@ -542,12 +547,13 @@ def verify_payload(apk: Path) -> Optional[dict]:
     else:
         log(OK, f"ABI：{', '.join(sorted(abis)) if abis else '无原生库'} ✓")
 
-    if zstd_hits:
-        log(WARN, f"检测到 zstd 残留（已移除依赖）：{zstd_hits[:3]}")
+    if stray_platforms:
+        log(WARN, f"混入桌面原生库：{', '.join(sorted(stray_platforms))}/ ——设备侧无法加载，"
+                  f"请让该依赖取 aar 变体（如 zstd-jni 需 `artifact {{ type = \"aar\" }}`）")
     else:
-        log(OK, "zstd：无残留 ✓")
+        log(OK, "无桌面原生库混入 ✓")
 
-    return {"total": total, "buckets": buckets, "abis": abis, "zstd": zstd_hits}
+    return {"total": total, "buckets": buckets, "abis": abis, "stray_platforms": stray_platforms}
 
 
 def verify_signature(apk: Path) -> Tuple[bool, Optional[dict]]:
@@ -665,7 +671,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         sig_ok, schemes = verify_signature(apk)
         # 版本规则校验：确认产物匹配「versionName=Jinn，versionCode=构建当日日期」
         version = verify_version(apk)
-        # 产物内容与体积构成校验（ABI 白名单 / zstd 残留 / 各部分占比）
+        # 产物内容与体积构成校验（ABI 白名单 / 各部分占比）
         verify_payload(apk)
 
     # 构建成功但签名校验失败时，同样以非 0 退出码上报

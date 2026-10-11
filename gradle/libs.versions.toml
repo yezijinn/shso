@@ -24,6 +24,7 @@ coroutines = "1.10.1"
 commonsCompress = "1.27.1"
 tukaaniXz = "1.9"
 zip4j = "2.11.1"
+zstdJni = "1.5.7-16"
 # 文本编辑器引擎（MP-Manager 同款）：自绘 CodeEditor View + 行索引增量 Content，源 Maven Central。
 # 许可为 LGPL-2.1：仅作库依赖使用，不改动其源码；分发需随附其许可声明。
 soraEditor = "0.23.6"
@@ -64,6 +65,7 @@ kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutine
 commons-compress = { module = "org.apache.commons:commons-compress", version.ref = "commonsCompress" }
 tukaani-xz = { module = "org.tukaani:xz", version.ref = "tukaaniXz" }
 zip4j = { module = "net.lingala.zip4j:zip4j", version.ref = "zip4j" }
+zstd-jni = { module = "com.github.luben:zstd-jni", version.ref = "zstdJni" }
 junit4 = { module = "junit:junit", version.ref = "junit4" }
 
 # Sora Editor（LGPL-2.1）：文本编辑器引擎

@@ -361,25 +361,64 @@ object RootFileManager {
     private fun joinPath(directory: String, name: String): String =
         if (directory.endsWith("/")) "$directory$name" else "$directory/$name"
 
-    /** 解析 `权限串|字节数|mtime`，跳过畸形行。不做 trim：名称在另一条通道。 */
-    private fun parseStatMeta(output: String): List<StatMeta> {
-        val out = ArrayList<StatMeta>()
-        for (line in output.lineSequence()) {
-            val trimmed = line.trim()
-            if (trimmed.isEmpty()) continue
-            val parts = trimmed.split('|')
-            if (parts.size < 3) continue
-            val perms = parts[0]
-            if (perms.length < 2) continue
-            out.add(
-                StatMeta(
-                    isDirectory = perms[0] == 'd',
+    /**
+     * 标记是否被 NUL 包裹（printf 输出为 `\0标记\0`）。
+     *
+     * 文件名不可能含 NUL，因此「两侧均为 NUL」只可能是 printf 打出的那个真标记，
+     * 可据此把「恰有文件叫同名」的假命中排除掉。
+     */
+    private fun isNulDelimited(text: String, markerIndex: Int): Boolean {
+        // 名称通道恒在标记之前，故标记不可能落在输出首位。真为 0 只能说明输出被截断，
+        // 此时若用哨兵值把「无前驱」当成 NUL，会把截断结果误判成合法通道 →
+        // 名称通道读成空 → 把「读取不完整」报成「目录为空」。
+        if (markerIndex <= 0) return false
+        val before = text[markerIndex - 1]
+        val afterIndex = markerIndex + META_SEP.length
+        val after = if (afterIndex < text.length) text[afterIndex] else '\u0000'
+        return before == '\u0000' && after == '\u0000'
+    }
+
+    /** 元数据通道的解析结果：名称 → 元数据，以及通道里实际出现过的名称集合。 */
+    private data class StatChannel(val metas: Map<String, StatMeta>, val names: Set<String>)
+
+    /**
+     * 解析元数据通道，返回「条目名 → 元数据」映射与通道内的名称集合。
+     *
+     * 通道由 `find -exec sh -c 'printf "%s\0" "$f"; stat -L -c "%A|%s|%Y" "$f"; printf "\0"'`
+     * 产出，形如 `名称\0权限串|字节数|mtime\0名称\0…`，通道本体前面还带着标记的收尾 NUL。
+     *
+     * 按**名称**配对，而不是按下标：条目数不等（目录变动、断链符号链接被 `stat -L` 拒绝）
+     * 时，按下标会让从错位点起的每个条目都拿到别人的大小与时间。`stat` 失败（无输出）的
+     * 条目其元数据段为空，直接跳过 —— 该条目自然退化为「非目录 / 0 字节」。
+     *
+     * 名称集合单独收集且不因 `stat` 失败而缺失：调用方用它判断两趟 find 是否看到同一份
+     * 目录内容，从而把「软链天然缺元数据」与「目录已被改动」区分开。
+     */
+    private fun parseStatMeta(channel: String): StatChannel {
+        // 通道以标记的收尾 NUL 开头，首段恒为空，先剥掉再两两配对。
+        val raw = channel.substringAfter('\u0000').split('\u0000')
+        val metas = HashMap<String, StatMeta>()
+        val names = HashSet<String>()
+        var index = 0
+        while (index + 1 < raw.size) {
+            val name = raw[index].removePrefix("./")
+            val line = raw[index + 1].trim()
+            if (name.isNotEmpty()) names.add(name)
+            if (name.isEmpty() || line.isEmpty()) {
+                index += 2
+                continue
+            }
+            val parts = line.split('|')
+            if (parts.size >= 3 && parts[0].length >= 2) {
+                metas[name] = StatMeta(
+                    isDirectory = parts[0][0] == 'd',
                     size = parts[1].toLongOrNull() ?: 0L,
                     modified = statSecondsToMillis(parts[2].toLongOrNull() ?: 0L)
                 )
-            )
+            }
+            index += 2
         }
-        return out
+        return StatChannel(metas, names)
     }
 
     /**
@@ -408,13 +447,19 @@ object RootFileManager {
             //
             // 两个 find 之间用固定标记分隔：名称通道整体以 NUL 结尾（NUL 不可能出现在
             // 文件名里，是唯一可靠记录边界），标记两侧再补 NUL，于是 split('\0') 后
-            // 标记前全是文件名、标记后全是元数据行，两者互不污染 —— 文件名里的
-            // \n、| 、前后空格都不会错切记录，也不会像旧 `%A|%s|%Y|%n` 那样把
+            // 标记前全是文件名、标记后全是「名称 + 元数据」成对记录，两者互不污染 ——
+            // 文件名里的 \n、| 、前后空格都不会错切记录，也不会像旧 `%A|%s|%Y|%n` 那样把
             // 含 \n 的名字劈成两条记录（一条指向不存在的幻影文件，长按删除即误删真文件）。
+            //
+            // 元数据通道内**自带名称**（`名称\0权限串|字节数|mtime\0`）：两趟 find 之间
+            // 目录若变动、或有断链符号链接被 `stat -L` 拒绝，条目数就会不等 —— 按下标配对
+            // 会让从该点起的**每个**条目拿到别人的大小与时间。按名称配对则天然免疫，
+            // 缺元数据的条目退化为「非目录 / 0 字节」，不再错位到别的文件上。
             val (code, out) = RootService.runCommandSync(
                 "cd $escapedPath 2>/dev/null || exit 3; test -d . || exit 4; " +
                     "find . -maxdepth 1 -mindepth 1 -print0; printf '\\0$META_SEP\\0'; " +
-                    "find . -maxdepth 1 -mindepth 1 -exec stat -L -c \"%A|%s|%Y\" {} + 2>/dev/null"
+                    "find . -maxdepth 1 -mindepth 1 -exec sh -c 'for f ; do printf \"%s\\0\" \"\$f\"; " +
+                    "stat -L -c \"%A|%s|%Y\" \"\$f\" 2>/dev/null; printf \"\\0\"; done' sh {} +"
             )
             if (code == 3 || code == 4) {
                 // ROOT 明确「进不去」或「不是目录」。仍给本地一次机会：
@@ -426,10 +471,15 @@ object RootFileManager {
                 return@withContext listDirectoryLocal(targetPath, rootUnavailable = true)
             }
 
-            val cut = out.indexOf(META_SEP)
+            // 标记由 printf 以 `\0` 包裹。文件名理论上可以是同名字符串，所以不能取第一个
+            // 命中，必须取「两侧均为 NUL」的那一处（NUL 不可能出现在文件名内）。
+            // 找不到这样的位置，说明命令中途被杀或输出被截断。如实报失败，
+            // 绝不能把「只拿到一半输出」当成「目录为空」。
+            var cut = out.indexOf(META_SEP)
+            while (cut >= 0 && !isNulDelimited(out, cut)) {
+                cut = out.indexOf(META_SEP, cut + 1)
+            }
             if (cut < 0) {
-                // 标记缺失说明命令在中途被杀或输出被截断。如实报失败，
-                // 绝不能把「只拿到一半输出」当成「目录为空」。
                 return@withContext DirectoryListing.Failed("目录读取结果不完整")
             }
             val names = out.substring(0, cut)
@@ -438,26 +488,25 @@ object RootFileManager {
                 .map { it.removePrefix("./") }
                 .filter { it.isNotEmpty() && it != "." && it != ".." }
                 .toList()
-            val metas = parseStatMeta(out.substring(cut + META_SEP.length))
+            val parsed = parseStatMeta(out.substring(cut + META_SEP.length))
+            val metas = parsed.metas
 
-            // 名称与元数据取自**两趟独立的 find**，而元数据是按**下标**配对的
-            // （stat 的输出不能带文件名：文件名里的 | 与 \n 会把记录劈开）。
-            // 目录若在两趟之间发生变化，条目数就对不上，此时从第一条起全部错位：
-            // 每个条目拿到的是**别的文件**的类型 / 大小 / 时间。类型错会把文件
-            // 显示成目录（点进去只报「不存在」），大小错更具误导性。
-            //
-            // 路径本身不受影响（它由 names 派生），所以这不会误删误改文件，
-            // 但显示出来的是假信息。重来一次让两个通道落在同一份目录快照上；
-            // 只重试一次 —— 持续变化的目录（日志、下载中）否则会无限递归。
-            if (metas.size != names.size && attempt == 0) {
+            // 名称与元数据取自**两趟独立的 find**。重试判据是「两趟看到的名称集合是否一致」，
+            // 而不是条目数是否相等：断链符号链接会被 `stat -L` 拒绝、天然拿不到元数据，
+            // 这是**正常态**，用条目数判等会让每次进入含断链软链的目录都白跑一整轮列举
+            //（两次 find + 一次 su）。只有两趟真的看到不同的目录内容（两次之间被增删）
+            // 才重来一次，让两个通道落在同一份目录快照上。只重试一次 —— 持续变化的目录
+            //（日志、下载中）否则会无限递归。即便重试后仍不一致，按名称配对也只会让
+            // 缺元数据的那一条退化为「非目录 / 0 字节」，不会把其后每个条目错配到别的文件。
+            if (attempt == 0 && parsed.names != names.toSet()) {
                 return@withContext listDirectory(targetPath, attempt + 1)
             }
 
             // ROOT 已确认可进入：条目列表就是权威结果，零条目即「目录确实为空」。
             // 绝不能回落到本地判定 —— /data/adb/shso 等目录应用侧被 SELinux 拦，
             // 本地 listFiles() 返回 null，据此报「无权限」就是把空目录说成故障。
-            val items = names.mapIndexed { index, name ->
-                val meta = metas.getOrNull(index)
+            val items = names.mapIndexed { _, name ->
+                val meta = metas[name]
                 FileItem(
                     name = name,
                     path = joinPath(targetPath, name),

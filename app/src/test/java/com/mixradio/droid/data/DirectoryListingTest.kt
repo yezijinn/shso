@@ -435,7 +435,13 @@ class DirectoryListingTest {
         val text = source.readText()
         val fn = text.indexOf("private fun parseStatMeta(")
         assertTrue("应能找到 parseStatMeta", fn > 0)
-        val body = text.substring(fn, fn + 800)
+        // 按下一个函数声明截取，而不是固定字符窗口：函数一旦变长，
+        // 固定窗口会把尾部判定切出去，测试随之给出误导性失败。
+        val end = listOf("\n    private fun ", "\n    private data class ", "\n    suspend fun ")
+            .map { text.indexOf(it, fn + 1) }
+            .filter { it > 0 }
+            .minOrNull() ?: text.length
+        val body = text.substring(fn, end)
 
         assertTrue("必须跳过空行", body.contains("isEmpty") || body.contains("isBlank"))
         assertTrue(
@@ -448,13 +454,14 @@ class DirectoryListingTest {
         )
     }
 
-    @Test fun `名称与元数据按序配对且缺失项不得越界`() {
+    @Test fun `名称与元数据按名称配对且缺失项不得越界`() {
         // 两个通道是两次 find：数量可能不等（断链符号链接 stat -L 失败、
-        // 或两次调用之间目录被改动）。必须按索引安全取值，不能抛异常。
+        // 或两次调用之间目录被改动）。必须按名称取元数据，不能按下标 ——
+        // 按下标会让从错位点起的每个条目拿到别人的大小与时间。
         val body = listDirectoryBody()
         assertTrue(
-            "必须用 getOrNull 安全配对",
-            body.contains("metas.getOrNull(index)")
+            "必须按名称配对元数据",
+            body.contains("metas[name]")
         )
         assertTrue(
             "配对缺失时按非目录处理",

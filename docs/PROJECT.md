@@ -44,6 +44,7 @@ shso-main/
     └── java/com/mixradio/droid/
         ├── data/                 # 核心逻辑层
         │   ├── RootService.kt        # ROOT 执行引擎（单例，进程组回收 + 终端命令通道）
+        │   ├── ShNormalization.kt    # .sh 执行前的归一化判定（BOM/CRLF vs 内嵌载荷，保守 DIRECT）
         │   ├── RootFileManager.kt    # 全盘文件操作（危险操作统一门禁）
         │   ├── ApkInstaller.kt       # APK / XAPK 安装（单文件 + 分包会话 + OBB 事务锁）
         │   ├── ApkExtractor.kt       # 提取已安装应用安装包（纯函数可测）
@@ -262,8 +263,8 @@ python build_apk.py             # Windows 脚本（含 --skip-check）
 - 只打包 `arm64-v8a`（`defaultConfig.ndk.abiFilters`）。不要用 `splits.abi`：
   产物名会变成 `app-arm64-v8a-release.apk`，`build_apk.py` 按 `app-release*.apk`
   定位产物会失败。
-- 不使用 zstd（`.zst` / `.tar.zst` 已移除）：zstd-jni 的 AAR 为 4 个 ABI 各带一份
-  原生库，约 1.9MB。当前支持 12 种格式，见 `ArchiveExtractor`。
+- 使用 zstd（2026-10-11 恢复）：zstd-jni 的 AAR 为 4 个 ABI 各带一份原生库，
+  约 1.9MB，经 `abiFilters` 裁到 arm64-v8a。当前支持 14 种格式，见 `ArchiveExtractor`。
 - Release 开启 R8（`isMinifyEnabled` + `shrinkResources`）：资源会被重命名为随机短名，
   不要按 APK 内资源名反查源码资源。
 - 签名：仓库外 keystore（V2+V3，alias `com.mixradio.droid`），debug 复用 release 签名。
@@ -271,7 +272,7 @@ python build_apk.py             # Windows 脚本（含 --skip-check）
   并排除 `org/apache/commons/codec/language/bm/**`（约 96KB 语音词典，本应用不使用）。
 - 产物体积参考（20260922，2.14MB）：dex 1.84MB（87%）/ `resources.arsc` 109KB /
   `res/` 86KB / `assets/` 72KB / `lib/` 10KB。继续瘦身只能从 dex 入手。
-  `build_apk.py` 每次构建后打印该构成，并校验 ABI 白名单与 zstd 残留。
+  `build_apk.py` 每次构建后打印该构成，并校验 ABI 白名单。
 
 ## 许可证
 

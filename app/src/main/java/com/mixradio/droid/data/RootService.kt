@@ -39,6 +39,9 @@ object RootService {
      */
     private val SAFE_ARG = Pattern.compile("^[a-zA-Z0-9_./\\-:]+$")
 
+    /** root 侧读脚本头部的等待上界：超出即认为 su 卡住，放弃本次判定。 */
+    private const val ROOT_HEAD_TIMEOUT_MS = 5_000L
+
     /** 生成可安全拼入 shell 命令的参数（防注入）。 */
     fun escapeShellArg(arg: String): String {
         if (arg.isEmpty()) return "''"
@@ -57,6 +60,84 @@ object RootService {
      */
     internal fun escapeEreLiteral(literal: String): String =
         com.mixradio.droid.data.security.ShellEscapes.escapeEreLiteral(literal)
+
+    /**
+     * 以 root 读取文件头部字节（最多 [limit] 字节），供归一化判定使用。
+     *
+     * 用途单一：app 域被 SELinux 拦、`java.io.File` 读不到脚本时（典型 `/data/adb/shso`），
+     * 归一化决策必须看到**真实字节**才能判断是否含内嵌载荷；否则只能保守地不改写，
+     * CRLF/BOM 脚本会因此执行失败（A75 的原始缺陷）。
+     *
+     * 读回长度由调用方与 `stat` 结果比对（多读 1 字节以识别追加）：一致即整份文件到手，
+     * 不一致说明两次 su 之间文件被改动，调用方保守判 DIRECT。
+     * 读取失败（含超时）返回 null，由调用方沿用 app 侧结论。
+     */
+    private fun readFileHeadAsRoot(path: String, limit: Int): ByteArray? {
+        val process = try {
+            ProcessBuilder("su", "-c", "head -c $limit ${escapeShellArg(path)} 2>/dev/null")
+                .redirectErrorStream(false)
+                .start()
+        } catch (_: Exception) {
+            return null
+        }
+        // 本函数只读输出、从不喂输入；不关 stdin 时 head 不会阻塞，但统一保持与 runCommandSync 一致。
+        runCatching { process.outputStream.close() }
+        // 读取放到独立线程并设上界：su 若卡在授权弹窗（管理器无响应）会既不出数据也不关管道，
+        // 直接 readBytes() 将永久阻塞，把 executeFile 的协程连同「运行中」状态一起挂死。
+        // 超时后强制销毁进程 → 管道断开 → 读线程退出；本次判定以失败收场，
+        // 由调用方沿用 app 侧结论（保守 DIRECT，脚本照旧按原字节执行）。
+        var head: ByteArray? = null
+        val reader = Thread {
+            head = runCatching { process.inputStream.use { it.readBytes() } }.getOrNull()
+        }
+        reader.isDaemon = true
+        reader.start()
+        return try {
+            reader.join(ROOT_HEAD_TIMEOUT_MS)
+            if (reader.isAlive) {
+                process.destroyForcibly()
+                reader.join(1_000)
+                null
+            } else {
+                process.waitFor(1_000, TimeUnit.MILLISECONDS)
+                head
+            }
+        } catch (_: InterruptedException) {
+            process.destroyForcibly()
+            Thread.currentThread().interrupt()
+            null
+        }
+    }
+
+    /**
+     * app 域读不到脚本（典型 `/data/adb/shso`，父目录 0700 且被 SELinux 拦）时的 root 侧判定。
+     *
+     * 先用 `stat -L -c %s` 取大小：超过完整扫描上限直接判 DIRECT，**不读文件**。
+     * 否则按实际大小读取（而不是无条件读 16MB）——真机样本 clear.sh 有 21MB，
+     * 每次执行都搬 16MB 进内存只是白花开销。取不到大小时退回读扫描上限字节。
+     *
+     * 读取上界刻意比 stat 结果多 1 字节，并要求读回长度与 stat 结果**严格相等**：
+     * 两次 su 之间文件被追加时，尾部新增的内嵌载荷会落在上界之外，据此判 DIRECT 而非
+     * 拿截断的字节去做归一化判定 —— 后者会把自解压脚本的载荷改坏，与 A75 同级。
+     */
+    private fun decideAsRoot(path: String, fallback: ShNormalization.Decision): ShNormalization.Decision {
+        val (code, out) = runCommandSync("stat -L -c %s ${escapeShellArg(path)} 2>/dev/null")
+        val size = if (code == 0) out.trim().toLongOrNull() else null
+        if (size != null && size > ShNormalization.MAX_SCAN_BYTES) {
+            return ShNormalization.Decision(ShNormalization.Plan.DIRECT, "超过完整扫描上限，保留原字节")
+        }
+        val limit = ((size ?: ShNormalization.MAX_SCAN_BYTES) + 1)
+            .coerceAtMost(ShNormalization.MAX_SCAN_BYTES + 1).toInt()
+        val head = readFileHeadAsRoot(path, limit) ?: return fallback
+        // 判定必须建立在「整份文件都读到了」之上：
+        //   head.size > MAX_SCAN_BYTES → 文件比扫描上限还大（或 stat 不可用而读满上界），
+        //   size != null 且 head.size != size → stat 与 head 两次看到的不是同一份内容。
+        // 两种情况都可能把尾部的内嵌载荷读漏，据此判 NORMALIZE 会把载荷改坏。
+        if (head.size > ShNormalization.MAX_SCAN_BYTES || (size != null && head.size.toLong() != size)) {
+            return ShNormalization.Decision(ShNormalization.Plan.DIRECT, "文件超出扫描上限或读取期间发生变化，保留原字节")
+        }
+        return ShNormalization.decideBytes(head)
+    }
 
     var isRootGranted by mutableStateOf<Boolean?>(null)
         private set
@@ -639,7 +720,26 @@ object RootService {
             val escapedParent = escapeShellArg(parentDir)
             val escapedFile = escapeShellArg(filePath)
             // 归一化：去 BOM（仅首 3 字节）+ 去全部 CR。临时文件建不出来时退化为直读原文件。
-            val runShCmd: String = normalizedShFile?.let { tmp ->
+            //
+            // 但不是每次都该归一化 —— 见 [ShNormalization]：无 CR 无 BOM 时重写没有收益，
+            // 而脚本若按字节偏移寻址内嵌载荷，重写会整体移位载荷、必然打乱压缩流
+            // （真机实测 `gzip: gzread: invalid distance too far back`，退出码 127）。
+            val normalizationPlan = if (isSh) {
+                val appSide = runCatching { ShNormalization.decide(File(filePath)) }
+                    .getOrElse { ShNormalization.Decision(ShNormalization.Plan.DIRECT, "判定失败，按原样执行") }
+                // app 域读不到时（/data/adb/shso 等被 SELinux 拦，File.isFile 恒 false），
+                // 用 root 读同一份字节再判定 —— 否则归一化被静默跳过，CRLF/BOM 脚本退回 A75 缺陷。
+                if (!appSide.appReadable && useRoot) {
+                    decideAsRoot(filePath, appSide)
+                } else {
+                    appSide
+                }
+            } else {
+                ShNormalization.Decision(ShNormalization.Plan.DIRECT, "非 .sh")
+            }
+            val needsNormalize = normalizationPlan.plan == ShNormalization.Plan.NORMALIZE
+            val runShCmd: String = if (needsNormalize && normalizedShFile != null) {
+                val tmp = normalizedShFile
                 val t = escapeShellArg(tmp.absolutePath)
                 val probe = escapeShellArg(tmp.absolutePath + ".bom")
                 val prepare = "( head -c 3 $escapedFile 2>/dev/null | od -An -tx1 | tr -d ' \n' > $probe 2>/dev/null; " +
@@ -651,7 +751,7 @@ object RootService {
                 // 不能拿空脚本假装执行成功。原文件本就为空则保留「空脚本 = 空操作」的旧语义。
                 "$prepare" +
                     "if [ -s $t ] || [ ! -s $escapedFile ]; then sh $t; else sh $escapedFile; fi"
-            } ?: "sh $escapedFile"
+            } else "sh $escapedFile"
             try {
                 // 开跑前清掉上一轮的记录并作废内存值，确保随后读到的 pgid 一定来自本次执行。
                 runCatching { runPgidFile?.delete() }
@@ -841,7 +941,7 @@ object RootService {
                     // 若权限未还原，用户的 .so 会永久停留在被放宽后的权限上。
                     if (execAttrFile != null) {
                         if (isSo) {
-                            val mode = runCatching { execAttrFile.readText()?.trim() }.getOrNull()
+                            val mode = runCatching { execAttrFile.readText().trim() }.getOrNull()
                             runCatching {
                                 if (!mode.isNullOrEmpty()) {
                                     RootService.runCommandSync(

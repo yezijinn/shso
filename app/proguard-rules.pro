@@ -5,29 +5,17 @@
 #
 # 原则：只保留会被反射 / SPI / native 调用的类，其余交由 R8 混淆与删除。
 
-# ─── commons-compress ────────────────────────────────────────────────────
-# 只保留实际使用的归档与压缩实现（ar / cpio / dump / jar / brotli / pack200 /
-# zstandard 等均未使用，规则中不出现）。
-# SPI 工厂（ArchiveStreamFactory / CompressorStreamFactory）未使用，均为直接构造。
-#
-# 刻意**不**保留 archivers.zip：本项目的 ZIP 一律走 zip4j（见 ArchiveExtractor 的
-# Kind.ZIP 分支），commons-compress 的 ZipArchiveInputStream 从未被引用。
-# 该 keep 会连带留下 62 个 zip 类 + deflate64 支持，而它们全是死重量。
--keep class org.apache.commons.compress.archivers.tar.** { *; }
--keep class org.apache.commons.compress.archivers.sevenz.** { *; }
--keep class org.apache.commons.compress.compressors.gzip.** { *; }
--keep class org.apache.commons.compress.compressors.xz.** { *; }
--keep class org.apache.commons.compress.compressors.bzip2.** { *; }
--keep class org.apache.commons.compress.compressors.lz4.** { *; }
--keep class org.apache.commons.compress.utils.** { *; }
+# ─── commons-compress：保留完整归档与压缩实现 ─────────────────────────────
+# 脚本和用户归档可能使用本应用当前未直接调用的格式；不要按现有 UI 入口裁剪解压实现。
+# SPI/反射注册、ZIP extra fields 与 deflate64 等路径统一保留，优先保证格式兼容。
+-keep class org.apache.commons.compress.** { *; }
 
 # commons-compress 的可选传递依赖（未调用，但 R8 严格模式会报 missing class）。
 #  - brotli：格式识别器之一，不调 BrotliCompressorInputStream。
 #  - asm(objectweb)：pack200 支持，与解压场景无关。
-#  - zstd(com.github.luben)：依赖已移除，上面的 keep 仍会保留 ZstdCompressorInputStream。
+# zstd-jni 已恢复，供 .zst 与 .tar.zst 解压使用。
 -dontwarn org.brotli.dec.**
 -dontwarn org.objectweb.asm.**
--dontwarn com.github.luben.zstd.**
 
 # ─── org.tukaani.xz（XZ 解压，被 XZCompressorInputStream 引用）────────────
 -keep class org.tukaani.xz.** { *; }
@@ -35,6 +23,9 @@
 # ─── net.lingala.zip4j（ZIP 加密解密）────────────────────────────────────
 # 内部为 Factory + Provider 注册，混淆会破坏 AES 提供者查找。
 -keep class net.lingala.zip4j.** { *; }
+
+# ─── zstd-jni：JNI 名称与 native 注册绑定，禁止混淆 ────────────────────────
+-keep class com.github.luben.zstd.** { *; }
 
 # ─── 不添加宽泛 Kotlin / Compose keep ─────────────────────────────────────
 # 源码未使用 kotlin.reflect、Kotlin 序列化或按名称反射应用类；

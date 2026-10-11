@@ -74,6 +74,8 @@
                 <data android:mimeType="application/x-xz" />
                 <data android:mimeType="application/x-bzip2" />
                 <data android:mimeType="application/x-lz4" />
+                <data android:mimeType="application/zstd" />
+                <data android:mimeType="application/x-zstd" />
                 <data android:mimeType="application/json" />
                 <data android:mimeType="application/xml" />
                 <data android:mimeType="application/x-sh" />
@@ -103,6 +105,8 @@
                 <data android:mimeType="application/x-xz" />
                 <data android:mimeType="application/x-bzip2" />
                 <data android:mimeType="application/x-lz4" />
+                <data android:mimeType="application/zstd" />
+                <data android:mimeType="application/x-zstd" />
                 <data android:mimeType="application/json" />
                 <data android:mimeType="application/xml" />
                 <data android:mimeType="application/x-sh" />

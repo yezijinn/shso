@@ -133,11 +133,11 @@ class DualPaneStateRegressionTest {
         )
     }
 
-    @Test fun `元数据条目数对不上时重试一次`() {
+    @Test fun `两趟 find 名称不一致时重试一次`() {
         val src = File("src/main/java/com/mixradio/droid/data/RootFileManager.kt").readText()
         assertTrue(
-            "名称与元数据取自两趟 find，按下标配对；数量对不上必须重来一次",
-            src.contains("metas.size != names.size && attempt == 0")
+            "重试必须按「两趟 find 的名称集合」判定：断链软链天然缺元数据，按条目数判等会白跑一整轮",
+            src.contains("parsed.names != names.toSet()") && src.contains("attempt == 0")
         )
         assertTrue(
             "重试必须带 attempt 递增，否则持续变化的目录上无限递归",

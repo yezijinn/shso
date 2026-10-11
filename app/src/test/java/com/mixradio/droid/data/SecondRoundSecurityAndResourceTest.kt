@@ -40,6 +40,7 @@ class SecondRoundSecurityAndResourceTest {
     }
 
     private val rootService = source("data/RootService.kt")
+    private val shNormalization = source("data/ShNormalization.kt")
     private val apkInstaller = source("data/ApkInstaller.kt")
     private val sparseLineIndex = source("data/SparseLineIndex.kt")
     private val editHistory = source("data/EditHistoryManager.kt")
@@ -103,24 +104,24 @@ class SecondRoundSecurityAndResourceTest {
 
     // ---------- 执行：CRLF / BOM 归一化 ----------
 
-    @Test fun `sh 执行前必须归一化 CRLF 与 BOM`() {
+    @Test fun `sh 归一化前必须经过字节偏移安全判定`() {
         assertTrue(
-            "CRLF 会污染变量值（实测 export V=abc 后 \${#V}=4），必须去 CR",
-            rootService.contains("""tr -d '\r'""")
+            "含自解压载荷时必须保留原始字节，避免 tail 偏移错位破坏压缩流",
+            rootService.contains("ShNormalization.decide(File(filePath))")
         )
         assertTrue(
-            "UTF-8 BOM 必须剥离",
-            rootService.contains("efbbbf")
+            "超出检测能力或判定失败必须直跑原文件，不得冒险改写",
+            rootService.contains("ShNormalization.Plan.DIRECT")
         )
         assertTrue(
-            "BOM 判定必须用 od 比对首 3 字节：toybox sed 不支持 \\xNN 转义",
-            rootService.contains("od -An -tx1")
+            "普通 CRLF/BOM 文本脚本仍须保留临时副本归一化路径",
+            shNormalization.contains("Plan.NORMALIZE") && rootService.contains("tr -d '\\r'")
         )
     }
 
     @Test fun `归一化不得用管道喂 sh`() {
         val runSh = rootService.substringAfter("val runShCmd: String")
-            .substringBefore("} ?: \"sh \$escapedFile\"")
+            .substringBefore("val execCmd = if (useRoot)")
         assertTrue(
             "cat x.sh | sh 会让脚本里的 read 吞掉后续脚本文本（实测无输出），必须走临时文件",
             !runSh.contains("| sh")
@@ -130,7 +131,7 @@ class SecondRoundSecurityAndResourceTest {
 
     @Test fun `归一化产出为空但源非空时必须回落原路径`() {
         val runSh = rootService.substringAfter("val runShCmd: String")
-            .substringBefore("} ?: \"sh \$escapedFile\"")
+            .substringBefore("val execCmd = if (useRoot)")
         assertTrue(
             "读取失败时不能拿空脚本假装执行成功，必须让真实报错浮现",
             runSh.contains("[ -s "+D+"t ] || [ ! -s "+D+"escapedFile ]")
