@@ -53,7 +53,7 @@
 | 代码结构 | 无重复分支/无用中间层：`preferRoot` 已扁平、`pathExistsQuiet`/`uniqueFile`/`isExtractable` 已删 |
 | 脚本执行 | `.sh` 归一化改为**字节级保守判定**（`ShNormalization`）：含字节偏移自引用（`$0`/`${0}`/`${BASH_SOURCE`，配 `tail…+N`／含变量形式 `+$skip`、`head -c`、`dd skip=`、`sed -n 'N,'`）或内嵌压缩魔数即直跑原字节，仅普通文本脚本去 BOM/CR（上限 16 MiB，超限直跑）；app 侧不可读时由 `decideAsRoot` 先 `stat` 取大小再按实际长度以 root 读头部判定；`.so` 权限先记录后还原，还原排在执行之后；执行环境统一补 `TMPDIR`（root 侧 `/data/local/tmp`，非 Root 侧应用私有 `cacheDir`），终端命令同样注入 |
 | 归档格式 | 14 种：tar 系（`.tar.gz/.tar.xz/.tar.bz2/.tar.lz4/.tar.zst/.tgz/.tzst/.tar`）+ 单文件（`.gz/.xz/.bz2/.lz4/.zst/.zip`）；`.tzst` 为 tar+zstd 别名 |
-| 语法包 | 62 语言 / 187 扩展名，`syntax-packs.zip`，永固直链 tag `syntaxpacks-v2`；关键字正则逐项转义、边界只加在词字符一侧、长关键字优先（`as?`/`!in`/`!is`/`defined?`） |
+| 语法包 | 62 语言 / 187 扩展名，`syntax-packs.zip`，永固直链 tag `syntaxpacks-v2`；下载**双源（Gitee 优先、GitHub 备用，同 tag 同文件）**，弹窗内可切备用直链；关键字正则逐项转义、边界只加在词字符一侧、长关键字优先（`as?`/`!in`/`!is`/`defined?`） |
 | 执行方式 | 命令与脚本直通执行，无策略判定、无执行记录（守卫/档位/审计已移除） |
 | OBB 事务锁 | 单文件 `set -C`(O_EXCL) 原子 CAS；真机 8 进程并发恰好 1 成功；**建目录早于取锁**；幂等条目不进回滚表；锁内容四段 `token\|pid\|startTicks\|createdEpoch`，陈旧判定用 `$(( ))` 算术展开（`- ` 写法非 test 合法形式会恒假） |
 | 真机 | `$DEVICE`（Android 10 / 1080×2280 / Magisk root） |
@@ -76,11 +76,38 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`1dae2b07…`）；双端 tag 与 Release 的目标提交均已对齐 A113 发版代码（`05914d1`）；旧版发行程序已从双端移除（Release 与 tag 保留）。A114 只改语法包生成器，APK 未变 → 不动 `20261012`，仅把 `syntaxpacks-v2` 重指到 A114 提交后重发 `syntax-packs.zip` |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`48e5fc51…`）；双端 tag 与 Release 的目标提交均已对齐 A115 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 
 ---
 
 ## 待办
+
+### A115. 语法包下载源双源化（BUG-COMPAT-182）（2026-10-12）
+
+`docs/AI-1-BUG.md` 第 135 / 136 轮均为非缺陷留档：135 轮核验 `syntax-packs.zip` 内 63 个 json 与仓库一致、
+`git status` 里 52 个 `syntax-packs/*.json` 的 `M` 仅为行尾差异（`git diff --numstat` 为空）；136 轮核验
+FilePage 单文件删除用页面级 scope、批量删除用进程级 scope + `NonCancellable` 的不对称判定合理。
+`docs/AI-2-BUG.md` 无新增（止于 §8）。台账唯一 OPEN 项仍为 BUG-PERF-030（A109 已裁定维持）。
+
+复核发现的缺陷不在上述两份记录里：语法包弹窗的「从仓库下载」只给 `raw.githubusercontent.com` 一条直链，
+而本项目在「检查更新」处已按 Gitee 优先进处理同类问题 —— 国内网络访问 GitHub 常超时或被重置，该按钮
+直接失败且没有替代入口；语法包又是取得语法着色的唯一途径（APK 不内置），等于该功能在目标网络环境下不可用。
+
+- [x] **P2 · 下载源单一（BUG-COMPAT-182）**：`SyntaxPackDialog.kt` 的 `SyntaxPackUrls` 由单一直链改为
+  `SOURCES` 列表（gitee 优先、github 备用，两源为同一 tag `syntaxpacks-v2` 下的同一份文件），`PACK_ZIP`
+  取首选、`PACK_ZIP_ALT` 取备用，新增 `sourceLabel()` 按直链归一来源名（本地文件路径原样返回）；
+  按钮下方补「Gitee 不可达？改用 GitHub 直链」入口，已导入条目的来源标签据此显示 `gitee` / `github`。
+  不引入网络探测自动切换：一次探测的成本高于让用户点一下。
+- [x] 单测：`testDebugUnitTest` **613 tests / 0 failures / 1 skipped**（新增 `SyntaxPackSourceTest` 3 条：
+  首选源必须是 Gitee 且被预填；两条直链去参、去尾斜杠后须同以 `/syntax-packs.zip` 结尾且 tag 去重后只有 1 个；
+  备用直链为 GitHub、`sourceLabel` 对两条直链分别归一为 `gitee` / `github` 且对本地路径原样返回）。
+- [x] 真机（root）：装新 APK，`file://` 唤起 `.kt` → 设置 → 语法包 → 「从仓库下载」预填框显示 Gitee 直链 →
+  导入成功「已导入 62 个 · 启用 62 个」，条目来源标签 `gitee`，设备侧 `files/syntax/index.tsv` 的 source 列为
+  `https://gitee.com/yezijinn/shso/raw/syntaxpacks-v2/syntax-packs.zip`；点备用入口后预填框切为
+  `raw.githubusercontent.com`。验证后清理设备侧语法目录与一次性测试文件。
+- [x] 构建与发布：`assembleRelease` + `verifyReleasePayload` 通过（无语法包、无数据表）；APK 2909869 字节，
+  sha256 `48e5fc51…`；tag `20261012` 重指至本次发版提交，双端 Release 资产替换并核验三方一致。
+  语法包侧 `syntaxpacks-v2` 未变（APK 不内置语法，故本次无语法包重发）。
 
 ### A114. 语法包关键字正则边界（BUG-LOGIC-181 / 原 AI-1-BUG-LOGIC-167）（2026-10-12）
 

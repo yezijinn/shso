@@ -50,7 +50,7 @@ private val SYNTAX_PACK_FILE_FILTER: (FileItem) -> Boolean = { item ->
  * 语法包管理：导入（本地文件 / https URL）、启用、删除。
  *
  * 导入在 IO 线程执行并做体积、SHA-256、JSON 结构校验；失败只在弹窗内提示，不影响内置语法。
- * 内置语法的仓库目录为 `syntax-packs/`，URL 导入默认指向其 GitHub raw 直链。
+ * 内置语法的仓库目录为 `syntax-packs/`，URL 导入默认指向其 Gitee raw 直链（GitHub 为备用源）。
  */
 @Composable
 fun SyntaxPackDialog(
@@ -154,6 +154,16 @@ fun SyntaxPackDialog(
                     colors = ButtonDefaults.buttonColors(containerColor = AuroraTokens.Accent)
                 ) { Text("从仓库下载") }
             }
+            // 备用源：首选直链在个别网络下仍不可达时改走 GitHub，两处是同一 tag 下的同一份文件
+            Text(
+                "Gitee 不可达？改用 GitHub 直链",
+                style = AuroraTextStyles.footnote2, color = AuroraTokens.Accent,
+                modifier = Modifier.padding(top = 6.dp)
+                    .clickable(enabled = !busy) {
+                        urlPrefill = SyntaxPackUrls.PACK_ZIP_ALT
+                        showUrlInput = true
+                    }
+            )
             if (busy) {
                 Text("正在导入…", style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary,
                     modifier = Modifier.padding(top = 6.dp))
@@ -232,7 +242,7 @@ private fun PackRow(pack: SyntaxPack, onToggle: () -> Unit, onRemove: () -> Unit
                 maxLines = 2, overflow = TextOverflow.Ellipsis
             )
             Text(
-                "${pack.sizeBytes} B  ·  ${if (pack.source == SyntaxPackUrls.PACK_ZIP) "github" else pack.source}",
+                "${pack.sizeBytes} B  ·  ${SyntaxPackUrls.sourceLabel(pack.source)}",
                 style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary,
                 maxLines = 1, overflow = TextOverflow.Ellipsis
             )
@@ -256,7 +266,7 @@ private fun UrlImportDialog(prefillUrl: String, onDismiss: () -> Unit, onConfirm
     AuroraWindowDialog(
         show = true,
         title = "从仓库下载",
-        summary = "支持 https（含 GitHub raw）。建议填写 SHA-256 以校验完整性",
+        summary = "支持 https 直链（Gitee / GitHub raw）。建议填写 SHA-256 以校验完整性",
         onDismissRequest = onDismiss
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -318,14 +328,31 @@ private fun ConfirmRemoveDialog(pack: SyntaxPack, onDismiss: () -> Unit, onConfi
 
 /**
  * 语法包压缩档的**永固直链**：指向仓库 `syntax-packs.zip`（整包：index.json + 全部语法）。
- * 直链通过 git tag 固定（`refs/tags/<tag>/...`），仓库后续更新不影响已发布的链接。
+ * 直链通过 git tag 固定（`refs/tags/<tag>/…`、Gitee `/raw/<tag>/…`），仓库后续更新不影响已发布的链接。
  *
- * **更新语法包时**：重新生成 zip → 打新 tag（v2/v3…）→ 只改这里的 [TAG]，旧链接继续可用。
+ * **两源同物、Gitee 优先**：国内网络访问 `raw.githubusercontent.com` 常超时或被重置，只给 GitHub
+ * 一个入口会让「从仓库下载」在多数用户处直接落到网络异常（取舍与「检查更新」一致）。两端点是同一
+ * tag 下的同一份文件，字节一致，可互相顶替。
+ *
+ * **更新语法包时**：重新生成 zip → 把 tag 重指到新提交 → 只改这里的 [TAG]，旧链接继续可用。
  */
 object SyntaxPackUrls {
     private const val REPO = "yezijinn/shso"
     private const val TAG = "syntaxpacks-v2"
 
-    /** 整包 zip（62 种语言 / 187 个扩展名 + 无扩展名文件名匹配）。 */
-    const val PACK_ZIP = "https://raw.githubusercontent.com/$REPO/refs/tags/$TAG/syntax-packs.zip"
+    /** (源名, 直链)，列表顺序即优先级。 */
+    val SOURCES: List<Pair<String, String>> = listOf(
+        "gitee" to "https://gitee.com/$REPO/raw/$TAG/syntax-packs.zip",
+        "github" to "https://raw.githubusercontent.com/$REPO/refs/tags/$TAG/syntax-packs.zip",
+    )
+
+    /** 首选直链（Gitee）：整包 zip（62 种语言 / 187 个扩展名 + 无扩展名文件名匹配）。 */
+    val PACK_ZIP: String get() = SOURCES.first().second
+
+    /** 备用直链（GitHub）。 */
+    val PACK_ZIP_ALT: String get() = SOURCES.last().second
+
+    /** 已导入包的来源标签：命中已知直链显示源名，本地文件路径原样显示。 */
+    fun sourceLabel(source: String): String =
+        SOURCES.firstOrNull { it.second == source }?.first ?: source
 }
