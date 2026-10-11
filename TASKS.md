@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → 见 § A103） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → 见 § A104） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
 | 单元测试 | 579 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
@@ -67,7 +67,7 @@
 | 已知环境坑 | 本机 toybox `mktemp` 创建失败时把模板前缀打成 `(null)/`（如 `Failed to create directory (null)//data/…`）——`(null)` 不是路径的一部分，真实模板要减去该前缀再看 |
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐，**指向当次发版代码** `16691ec`）；双端同名 Release，资产 `app-release.apk` 2893485 字节，双端下载 sha256 与本地一致（`189457ce…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版发行程序已从双端移除（Release 与 tag 保留） |
+| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐，**指向当次发版代码** `6201599`）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`819fb081…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版发行程序已从双端移除（Release 与 tag 保留） |
 
 ---
 
@@ -104,7 +104,9 @@
   `ExternalOpenTest` 3 例改造（List 形态 + 保序去重）；`testDebugUnitTest`
   579 tests / 0 failures / 1 skipped。
 - [x] 文档：`BUG.md`（§1 索引、§2 明细、§3 A104、§4 WONTFIX、§5 矩阵）、`更新日志.md`、`TASKS.md`。
-- [ ] 发版：APK 构建、root 真机冒烟、双端同步与 Release 资产更新（待执行）。
+- [x] 发版：APK 构建（2909869 字节，sha256 `819fb081…`）、root 真机冒烟（`pm install -r -t`
+  成功后进程存活、logcat 无 FATAL/ANR）、双端 `main` 与 tag `20261011` 推送、双端 Release
+  目标提交改指 `6201599` 并替换资产，双端下载哈希与本地一致。
 
 ### A103. AI-1 移交项核实与分包安装结果丢弃（2026-10-11）
 
