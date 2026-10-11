@@ -419,7 +419,6 @@ add(id="solidity", exts=["sol"], line="//", block=("/*","*/"), strings=['"', "'"
 def main():
     repo = os.path.dirname(os.path.abspath(__file__))          # tools/
     repo_root = os.path.dirname(repo)
-    app_assets = os.path.join(repo_root, "app", "src", "main", "assets", "sora-grammars")
     os.makedirs(OUT, exist_ok=True)
 
     written, index = [], []

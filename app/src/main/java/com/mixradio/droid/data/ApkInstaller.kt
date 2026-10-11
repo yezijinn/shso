@@ -581,7 +581,10 @@ object ApkInstaller {
         append("case \"\$_f\" in ''|*[!0-9]*) exit ${ObbLockExit.UNKNOWN};; esac; done; ")
         // pid + 进程启动时间双校验：pid 会被系统复用，只比存活会误判为活锁。
         // liveStart 为空/非数字表示进程已不存在（/proc 读不到），此时按「非活锁」继续走陈旧判定。
-        append("liveStart=\$(cat /proc/\$oldPid/stat 2>/dev/null | awk '{print \$22}'); ")
+        // 取 starttime 前必须先剥离 comm：`awk '{print $22}'` 按空格数固定字段，comm 含空格时
+        // 整体错位，取到的不是 starttime，与锁里记录的 oldStart 永不相等 -> 活锁被误判陈旧抢占。
+        // 与 [processStartTicks] 的 Kotlin 侧口径统一：跳到最后一个右括号之后取 `state` 起第 20 个字段。
+        append("liveStart=\$(sed 's/.*) //' /proc/\$oldPid/stat 2>/dev/null | cut -d' ' -f20); ")
         append("case \"\$liveStart\" in ''|*[!0-9]*) ;; *) if [ \"\$liveStart\" = \"\$oldStart\" ]; then exit ${ObbLockExit.BUSY}; fi;; esac; ")
         // 未过 TTL 也算忙。差值必须写成 `$(( ))` 算术展开：`[ "$now" - "$oldCreated" -lt N ]`
         // 不是 test 的合法形式（test 没有算术运算），mksh 直接报

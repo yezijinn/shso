@@ -255,8 +255,9 @@ private fun TextEditorDialogContent(
     val statsEmpty = TextStatistics.Stats(0, 0, 0, 0, 0, 0, 0, 0)
     var stats by remember { mutableStateOf(statsEmpty) }
     LaunchedEffect(Unit) {
-        // 触发源是 textRevision（只递增计数），文本按需从 Sora 读取 —— 不再逐键把整串折进 Compose State。
-        snapshotFlow { textRevision }.collectLatest {
+        // 触发源是 textRevision（只递增计数）与 currentCharset（字节数取决于写盘编码），
+        // 文本按需从 Sora 读取 —— 不再逐键把整串折进 Compose State。
+        snapshotFlow { textRevision to currentCharset }.collectLatest {
             if (textRevision == 0) { stats = statsEmpty; return@collectLatest }
             // 防抖：连按结束后再取一次文本统计。
             delay(600L)
@@ -264,7 +265,9 @@ private fun TextEditorDialogContent(
             if (t.isEmpty()) { stats = statsEmpty; return@collectLatest }
             // 超大文本放弃统计：compute 单遍全字段扫描 + toByteArray，大文本每次输入都跑会拖慢输入。
             if (t.length > LARGE_EDIT_STATS_SKIP_CHARS) return@collectLatest
-            stats = withContext(Dispatchers.Default) { TextStatistics.compute(t) }
+            // 编码在主线程取出（resolveCharset 读 Compose 状态），再进后台算。
+            val cs = resolveCharset()
+            stats = withContext(Dispatchers.Default) { TextStatistics.compute(t, cs) }
         }
     }
 
@@ -2005,15 +2008,16 @@ private fun EditorSettingsDialog(
         }
     }
 
-    // 打开设置面板时统计一次（点击「设置」即触发），此后不随文本变化重算
-    LaunchedEffect(Unit) {
+    // 打开设置面板时统计一次（点击「设置」即触发），此后不随文本变化重算；
+    // 但切换编码后字节数必须重算（统计面板的「字节数」按写盘编码计）。
+    LaunchedEffect(charset) {
         // 分段浏览时 text 为空串，统计既没意义也白跑一遍全量扫描。
         if (chunkedBrowsing) {
             statBusy = false
             return@LaunchedEffect
         }
         statBusy = true
-        val result = withContext(Dispatchers.Default) { TextStatistics.compute(text) }
+        val result = withContext(Dispatchers.Default) { TextStatistics.compute(text, charset) }
         statResult = result
         statBusy = false
     }

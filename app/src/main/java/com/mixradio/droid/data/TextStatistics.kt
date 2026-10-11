@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package com.mixradio.droid.data
 
+import java.nio.charset.Charset
+
 /**
  * 文本统计工具。
  *  - 行数：以 \n / \r\n / \r 切分；末尾无换行算最后一行
@@ -9,6 +11,7 @@ package com.mixradio.droid.data
  *  - 纯中文数：仅 Unicode CJK 统一表意文字（基本区 + 扩展 A-F + 兼容象形文字）
  *  - 纯数字数：仅 0-9（ASCII 半角数字），全角数字、小数点、正负号都不算
  *  - 其余字符（空白、标点、其他语种）归为 symbols，界面不展示，仅用于内部归类
+ *  - 字节数：按调用方给定的 [Charset] 编码后的字节数（默认 UTF-8），须与写盘编码一致
  *  分类在一次码点遍历中完成，四类之和 = 码点总数。
  */
 object TextStatistics {
@@ -24,7 +27,7 @@ object TextStatistics {
         val bytes: Int
     )
 
-    fun compute(text: String): Stats {
+    fun compute(text: String, charset: Charset = Charsets.UTF_8): Stats {
         if (text.isEmpty()) return Stats(0, 0, 0, 0, 0, 0, 0, 0)
         val lines = countLines(text)
         // 最长行（columns）：与分类遍历合并到同一个 while 循环，避免 split 分配整行列表。
@@ -80,7 +83,10 @@ object TextStatistics {
             digits = digits,
             symbols = symbols,
             columns = maxLine,
-            bytes = text.toByteArray(Charsets.UTF_8).size
+            // 字节数按**写盘编码**计：编辑器支持 GBK/UTF-16 等非 UTF-8 编码，
+            // 固定 UTF-8 会让统计面板的「字节数」与保存后的真实文件大小对不上
+            // （GBK 下同文本更小、UTF-16 下更大），误导用户判断文件体积。
+            bytes = text.toByteArray(charset).size
         )
     }
 

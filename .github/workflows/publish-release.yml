@@ -87,6 +87,11 @@ jobs:
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
           chmod 600 "$RUNNER_TEMP/release.jks"
 
+      - name: 运行单元测试
+        # 单测含大量源码契约断言（专门防回归删分支，如权限矩阵、fail-closed 校验），
+        # 发布路径必须跑，失败即中止，避免编译通过但破坏契约的改动进入 Release。
+        run: ./gradlew testDebugUnitTest --no-configuration-cache
+
       # 不带 -PoverridePackage → applicationId 保持作者原包名 com.mixradio.droid
       - name: 编译 Release APK（作者原包名）
         env:

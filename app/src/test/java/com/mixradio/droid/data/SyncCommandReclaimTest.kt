@@ -229,5 +229,6 @@ internal object RootServiceProcessGroupRules {
 
     val checksNotSelfGroup: Boolean
         get() = buildProcessGroupKillCommand(9, 4242, 1234)
-            ?.contains("-f5 /proc/\$M/stat") == true
+            // 读本应用 /proc/$M/stat 的 pgrp（先剥离 comm），并断言与目标 pgid 不等
+            ?.contains("sed 's/.*) //' /proc/\$M/stat | cut -d' ' -f3)\" != \"\$P\"") == true
 }

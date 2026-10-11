@@ -110,6 +110,18 @@ class RootFileManagerEscapingTest {
         assertFalse(RootFileManager.isValidOwnerOrGroup("root user"))
         assertFalse(RootFileManager.isValidOwnerOrGroup("root|id"))
         assertFalse(RootFileManager.isValidOwnerOrGroup(""))
+        // 前导连字符会被 chown 当选项（argument injection），必须拒绝
+        assertFalse(RootFileManager.isValidOwnerOrGroup("-R"))
+        assertFalse(RootFileManager.isValidOwnerOrGroup("--help"))
+        assertTrue(RootFileManager.isValidOwnerOrGroup("u0_a216"))
+    }
+
+    @Test fun `chown 命令必须带选项终止符`() {
+        // 纵深防御：owner/group 可含连字符且 escapeShellArg 不为其加引号，
+        // 没有 `--` 时 `chown -R <path>` 会被当成递归选项执行。
+        val body = java.io.File("src/main/java/com/mixradio/droid/data/RootFileManager.kt").readText()
+        assertTrue(body.contains("\"chown -- "))
+        assertTrue(body.contains("\"chown -- :"))
     }
 
     @Test fun `permission string converts to octal mode`() {

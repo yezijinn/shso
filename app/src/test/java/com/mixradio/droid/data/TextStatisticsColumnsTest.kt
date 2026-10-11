@@ -4,6 +4,7 @@ package com.mixradio.droid.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.nio.charset.Charset
 
 /**
  * TextStatistics.compute 的回归锁：覆盖最长行（columns）与既有 lines/分类字段。
@@ -82,5 +83,20 @@ class TextStatisticsColumnsTest {
         assertEquals(2, s.english)    // a、b
         assertEquals(1, s.symbols)    // emoji 归符号
         assertEquals(s.chars, s.english + s.chinese + s.digits + s.symbols)
+    }
+
+    @Test
+    fun `字节数按写盘编码计算而非固定 UTF-8`() {
+        // 编辑器支持 GBK/UTF-16 等编码保存，统计面板的「字节数」必须与写盘编码一致，
+        // 否则用户看到的是「按 UTF-8 算的值」，与保存后的真实文件大小对不上。
+        val text = "汉字"
+        assertEquals(6, TextStatistics.compute(text, Charsets.UTF_8).bytes)
+        assertEquals(4, TextStatistics.compute(text, Charset.forName("GBK")).bytes)
+        assertEquals(4, TextStatistics.compute(text, Charsets.UTF_16LE).bytes)
+        // 缺省参数保持 UTF-8，既有调用方行为不变。
+        assertEquals(
+            TextStatistics.compute(text, Charsets.UTF_8).bytes,
+            TextStatistics.compute(text).bytes
+        )
     }
 }

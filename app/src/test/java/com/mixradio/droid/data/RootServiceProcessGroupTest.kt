@@ -5,6 +5,7 @@ package com.mixradio.droid.data
 
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -29,11 +30,13 @@ class RootServiceProcessGroupTest {
         val cmd = buildProcessGroupKillCommand(2, 10700, 1234)
         val expected = "P=10700; M=1234; " +
             "[ -r /proc/\$P/stat ] && " +
-            "[ \"\$(cut -d' ' -f5 /proc/\$P/stat)\" = \"\$P\" ] && " +
-            "[ \"\$(cut -d' ' -f5 /proc/\$M/stat)\" != \"\$P\" ] && " +
+            "[ \"\$(sed 's/.*) //' /proc/\$P/stat | cut -d' ' -f3)\" = \"\$P\" ] && " +
+            "[ \"\$(sed 's/.*) //' /proc/\$M/stat | cut -d' ' -f3)\" != \"\$P\" ] && " +
             "kill -2 -- -\$P"
         // 精确等值：既锁定三重校验（组长校验 / 不误伤自身组 / pgid>1），也锁定必须用负 pid 打整组
         assertEquals(expected, cmd)
+        // comm 含空格/右括号时不能按固定字段号取 pgrp（否则字段错位，把 state 当 pgrp）
+        assertFalse("不得按空格固定取第 5 字段", cmd?.contains("cut -d' ' -f5") == true)
     }
 
     @Test

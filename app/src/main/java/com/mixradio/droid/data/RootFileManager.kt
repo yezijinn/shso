@@ -41,7 +41,9 @@ object RootFileManager {
      * 清掉 group/other 写位与 setuid/setgid。与 shell 侧的 `chmod a-s,go-w` 同口径。
      */
     private const val COPY_MODE_MASK = 0b111101101
-    private val OWNER_OR_GROUP_PATTERN = Regex("^[a-zA-Z0-9._-]+$")
+    // 首字符不得为连字符：owner/group 会原样进入 `chown` 的操作数位，
+    // 前导 `-` 会被当选项（`-R` 递归、`--help` 提前退出），属 argument injection。
+    private val OWNER_OR_GROUP_PATTERN = Regex("^[a-zA-Z0-9._][a-zA-Z0-9._-]*$")
 
     /**
      * 改权限 / 改属主 / 改用户组在无 ROOT 时的统一提示。
@@ -276,7 +278,9 @@ object RootFileManager {
         if (target == null) return@withContext Pair(false, problem)
         val escapedOwner = RootService.escapeShellArg(owner)
         val escapedPath = RootService.escapeShellArg(target)
-        val (code, output) = RootService.runCommandSync("chown $escapedOwner $escapedPath")
+        // `--` 选项终止符：owner 可含连字符，escapeShellArg 不为其加引号，
+        // 没有终止符时 `chown -R path` 会被当作递归选项而非所有者。
+        val (code, output) = RootService.runCommandSync("chown -- $escapedOwner $escapedPath")
         if (code == 0) Pair(true, "所有者修改成功") else Pair(false, "所有者修改失败: $output")
     }
 
@@ -293,7 +297,7 @@ object RootFileManager {
         if (target == null) return@withContext Pair(false, problem)
         val escapedGroup = RootService.escapeShellArg(group)
         val escapedPath = RootService.escapeShellArg(target)
-        val (code, output) = RootService.runCommandSync("chown :$escapedGroup $escapedPath")
+        val (code, output) = RootService.runCommandSync("chown -- :$escapedGroup $escapedPath")
         if (code == 0) Pair(true, "用户组修改成功") else Pair(false, "用户组修改失败: $output")
     }
 

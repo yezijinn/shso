@@ -303,15 +303,16 @@ object RootService {
     private val sweptExecutionTemp = AtomicBoolean(false)
 
     /**
-     * 清扫上一次运行遗留的临时文件：执行期文件（`.exec_attr_*` / `.sh_norm_*`，在应用私有目录）
-     * 与安装临时包（`/data/local/tmp/_shso_install_*.apk` / `_shso_split_*.apk`）。
+     * 清扫上一次运行遗留的临时文件：执行期文件（`.exec_attr_*` / `.sh_norm_*`，在应用私有目录）、
+     * 安装临时包（`/data/local/tmp/_shso_install_*.apk` / `_shso_split_*.apk`）与安装确认弹窗的
+     * 暂存副本（`cacheDir` 下 `install-confirm` 目录里的暂存 apk）。
      *
      * 正常路径在协程 finally 里删除；App 被强杀、OOM，或执行协程卡在 native 管道读上时
      * finally 根本不执行，残留只能在启动时兜底。仅扫一次：运行中扫会误删正在使用的临时文件。
      *
-     * 安装包残留多一层约束：`pm install` 超时分支**刻意**保留临时包（无法确认 su 是否仍在读它），
-     * 因此这里只删「超过 1 小时未变动」的（`-mmin +60`）。安装超时上限为 5 分钟，
-     * 一小时足以让任何仍在进行的安装读完，不会误删在途文件。
+     * 安装包与暂存副本多一层约束：`pm install` 超时分支**刻意**保留临时包（无法确认 su 是否仍在读它），
+     * 暂存副本也可能正被并行安装使用，因此只删「超过 1 小时未变动」的（`-mmin +60` / mtime 阈值）。
+     * 安装超时上限为 5 分钟，一小时足以让任何仍在进行的安装读完，不会误删在途文件。
      */
     private fun sweepExecutionTempFiles() {
         if (!sweptExecutionTemp.compareAndSet(false, true)) return
@@ -321,6 +322,15 @@ object RootService {
                     val name = file.name
                     if (name.startsWith(".exec_attr_") || name.startsWith(".sh_norm_")) {
                         runCatching { file.delete() }
+                    }
+                }
+                // 安装确认弹窗的暂存副本：确认弹窗打开期间进程被强杀时，删除代码不执行，
+                // 只能靠启动清扫兜底；否则每次安装残留一份（XAPK 整套可达数十 MB）。
+                runCatching {
+                    val stagedDir = File(com.mixradio.droid.ShsoApplication.appContext.cacheDir, "install-confirm")
+                    val cutoff = System.currentTimeMillis() - 60 * 60 * 1000L
+                    stagedDir.listFiles()?.forEach { f ->
+                        if (f.isFile && f.lastModified() < cutoff) runCatching { f.delete() }
                     }
                 }
                 // 该目录属 root，只能经 su 清理；失败（未获 root）不影响启动。
@@ -1479,8 +1489,13 @@ object RootService {
  *
  * 三重安全校验（fail-closed，任一不满足即不杀，靠 `&&` 短路保证）：
  * ① `pgid > 1`；
- * ② `/proc/<pgid>/stat` 第 5 字段 == pgid —— 确认它确实是**进程组组长**；
+ * ② `/proc/<pgid>/stat` 的 pgrp == pgid —— 确认它确实是**进程组组长**；
  * ③ 本应用自己的 pgrp != 该 pgid —— 防止某些 `su` 实现不新建会话时，误杀应用自身所在的进程组。
+ *
+ * `/proc/<pid>/stat` 不能按空格直接取第 N 字段：comm（进程名）可含空格与右括号
+ * （prctl 改名，如 `sh -c x`），字段会整体错位，把 state 当成 pgrp。先跳到**最后一个**
+ * 右括号之后，再取 `state ppid pgrp …` 的第 3 个字段 —— 与 [forceKillProcessTree]
+ * Kotlin 侧 `substringAfterLast(')')` 的口径一致。
  *
  * 返回 `null` 表示不安全，调用方必须放弃 kill。
  */
@@ -1488,8 +1503,8 @@ internal fun buildProcessGroupKillCommand(signal: Int, pgid: Int, myPid: Int): S
     if (pgid <= 1) return null
     return "P=$pgid; M=$myPid; " +
         "[ -r /proc/\$P/stat ] && " +
-        "[ \"\$(cut -d' ' -f5 /proc/\$P/stat)\" = \"\$P\" ] && " +
-        "[ \"\$(cut -d' ' -f5 /proc/\$M/stat)\" != \"\$P\" ] && " +
+        "[ \"\$(sed 's/.*) //' /proc/\$P/stat | cut -d' ' -f3)\" = \"\$P\" ] && " +
+        "[ \"\$(sed 's/.*) //' /proc/\$M/stat | cut -d' ' -f3)\" != \"\$P\" ] && " +
         "kill -$signal -- -\$P"
 }
 

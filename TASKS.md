@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → `d70165d`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 555 tests / 0 failures / 1 skipped |
+| 单元测试 | 560 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -72,6 +72,34 @@
 ---
 
 ## 待办
+
+### A100. 编码统计、进程字段解析与安装锁复核（2026-10-11）
+
+对近期只读复核提出的 8 条逐条对照当前代码：7 条成立并修复，1 条涉及既有命名约定，需人工确认后再改。
+
+- [x] **文本统计「字节数」固定按 UTF-8 计**（`BUG-CONSIST-129`，P2）：编辑器支持 GBK / UTF-16 / ISO-8859-1 等编码保存，
+  统计面板却一律按 UTF-8 折算，非 UTF-8 文件的显示值与保存后的真实大小对不上（GBK 偏大、UTF-16 偏小）。
+  现 `TextStatistics.compute` 增加编码参数，统计面板与设置面板均传入当前写盘编码，切换编码即重算。
+- [x] **进程组终止前的组长校验字段错位**（`BUG-LOGIC-131`，P2）：`/proc/<pid>/stat` 不能按空格取第 5 字段，
+  `comm` 含空格或右括号（`prctl` 改名，如 `sh -c x`）时字段整体右移，把 `state` 当成 `pgrp`，组长校验与
+  「非本应用所在组」校验双双失真。现先剥到**最后一个**右括号之后，再取 `state ppid pgrp` 的第 3 字段，
+  与 Kotlin 侧 `substringAfterLast(')')` 同口径。
+- [x] **OBB 安装锁的进程启动时间解析错位**（`BUG-LOGIC-132`，P2）：锁脚本用 `awk '{print $22}'` 取 starttime，
+  同样受 `comm` 含空格影响而取错字段，与锁内记录的启动时间永不相等 → 存活锁被误判为陈旧并抢占，两个安装
+  并发改写同一份 OBB。现改 `sed 's/.*) //' | cut -d' ' -f20`，与 Kotlin 侧 `processStartTicks` 对齐。
+- [x] **安装确认弹窗的暂存副本缺启动清扫**（`BUG-CONSIST-130`，P3）：确认弹窗打开期间进程被强杀时清理代码不执行，
+  残留只在缓存目录累积；现随启动清扫一次（仅清超过 1 小时未变动的），与安装临时包同口径。
+- [x] **`chown` / `chgrp` 缺选项终止符**（`BUG-SEC-135`，P2）：属主 / 组名可含连字符，`escapeShellArg` 不为
+  无特殊字符的参数加引号，`chown -R <path>` 会被当作递归选项而非所有者执行。现属主 / 组名首字符禁止连字符，
+  并统一加 `--` 终止符；`chmod` 的 mode 已有 `[0-7]{3,4}` 白名单、路径为绝对路径且转义，无注入面，不动。
+- [x] **Release 发布路径跳过单元测试**（`BUG-COMPAT-134`，P2）：两条发布工作流在编译前不跑单测，编译通过但破坏
+  源码契约（权限矩阵、fail-closed 校验等）的改动会直接进 Release；现均在编译前执行 `testDebugUnitTest`，失败即中止。
+- [x] **构建脚本残留未使用变量**（`BUG-COMPAT-133`，P3）：`gen_syntax_packs.py` 的 `app_assets` 已无任何引用，删除。
+- [!] **提取 APK 命名未纳入包名**（`BUG-CONSIST-128`，P3）：标签与 `versionCode` 均相同的两个应用（应用分身、
+  同名双开）会提取到同一文件名而静默覆盖。命名规则是既有约定，改动属用户可见契约，需确认后再改，暂挂（见 `BUG.md`）。
+- [x] 单测：`TextStatisticsColumnsTest` 补编码口径断言，`ReleaseGateRegressionTest` 新增发布护栏 3 项；
+  全量 `testDebugUnitTest` → 560 tests / 0 failures / 1 skipped。
+- [x] 真机（root）验证：`adb install -r -g` 成功，`su -c id` 为 `uid=0`，进程存活，logcat 无 `FATAL` / `ANR`。
 
 ### A99. 添加文件嵌套、执行标志与主题背景复核（2026-10-11）
 
