@@ -34,6 +34,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -347,6 +348,7 @@ fun SettingsPage(
                     Box(
                         modifier = Modifier
                             .clickable { showAboutDialog = true }
+                            .minimumInteractiveComponentSize()
                             .padding(horizontal = 14.dp, vertical = 10.dp)
                     ) {
                         Text(
