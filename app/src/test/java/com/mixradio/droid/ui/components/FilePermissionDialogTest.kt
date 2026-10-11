@@ -65,4 +65,45 @@ class FilePermissionDialogTest {
             assertEquals("755", permissionBitsToOctal(bits, specialModePrefix(input)))
         }
     }
+
+    @Test fun `matrix index must follow group-major bit layout`() {
+        // bits 组优先：bits[0..2]=用户、[3..5]=用户组、[6..8]=其他。
+        // 矩阵行为权限（读/写/执行）、列为组（用户/用户组/其他），下标 = 列*3 + 行。
+        // 若写成 行*3 + 列，矩阵整体转置，(读,用户组) 会落到 bits[1]（用户写位）。
+        assertEquals(0, permissionMatrixIndex(0, 0))  // 读 · 用户
+        assertEquals(3, permissionMatrixIndex(0, 1))  // 读 · 用户组
+        assertEquals(6, permissionMatrixIndex(0, 2))  // 读 · 其他
+        assertEquals(1, permissionMatrixIndex(1, 0))  // 写 · 用户
+        assertEquals(4, permissionMatrixIndex(1, 1))  // 写 · 用户组
+        assertEquals(7, permissionMatrixIndex(1, 2))  // 写 · 其他
+        assertEquals(2, permissionMatrixIndex(2, 0))  // 执行 · 用户
+        assertEquals(5, permissionMatrixIndex(2, 1))  // 执行 · 用户组
+        assertEquals(8, permissionMatrixIndex(2, 2))  // 执行 · 其他
+    }
+
+    @Test fun `asymmetric mode reads back correctly through matrix indexing`() {
+        // 750 的权限分布不对称（用户 rwx / 用户组 r-x / 其他 ---），
+        // 755 这类多位取值巧合相同，无法暴露转置错误，必须用非对称 mode 锁定。
+        val bits = octalToPermissionBits("750")
+        fun at(row: Int, column: Int) = bits[permissionMatrixIndex(row, column)]
+        // 读：用户 ✓、用户组 ✓、其他 ✗
+        assertEquals(true, at(0, 0))
+        assertEquals(true, at(0, 1))
+        assertEquals(false, at(0, 2))
+        // 写：仅用户 ✓
+        assertEquals(true, at(1, 0))
+        assertEquals(false, at(1, 1))
+        assertEquals(false, at(1, 2))
+        // 执行：用户 ✓、用户组 ✓、其他 ✗
+        assertEquals(true, at(2, 0))
+        assertEquals(true, at(2, 1))
+        assertEquals(false, at(2, 2))
+    }
+
+    @Test fun `matrix toggle writes back to the intended group`() {
+        // 从 750 起步，点「写 · 用户组」→ 用户组应带上写位 → 770。
+        val bits = octalToPermissionBits("750").toMutableList()
+        bits[permissionMatrixIndex(1, 1)] = true
+        assertEquals("770", permissionBitsToOctal(bits))
+    }
 }

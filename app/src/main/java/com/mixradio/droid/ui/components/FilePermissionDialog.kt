@@ -88,6 +88,16 @@ internal fun permissionBitsToOctal(bits: List<Boolean>, specialMode: String = ""
     return specialMode + mode
 }
 
+/**
+ * 3×3 权限矩阵中 (行, 列) 到 [octalToPermissionBits] 位下标的映射。
+ *
+ * [octalToPermissionBits] / [permissionBitsToOctal] 用**组优先**布局：每组按 r/w/x 产三个 bit，
+ * 即 bits[0..2] 用户、[3..5] 用户组、[6..8] 其他。矩阵的行是权限（读/写/执行）、列是组
+ * （用户/用户组/其他），因此下标为 `列 * 3 + 行`。写成 `行 * 3 + 列` 会把矩阵整体转置，
+ * 在权限分布不对称的 mode（如 750）上显示与写入都错到别的组。
+ */
+internal fun permissionMatrixIndex(row: Int, column: Int): Int = column * 3 + row
+
 @Composable
 fun FilePermissionDialog(
     show: Boolean,
@@ -276,8 +286,12 @@ private fun PermissionMatrix(bits: List<Boolean>, onToggle: (Int, Boolean) -> Un
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(permission, style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary, modifier = Modifier.weight(1f))
                 repeat(3) { column ->
-                    // 行 = 读 / 写 / 执行，列 = 用户 / 用户组 / 其他，与 octalToPermissionBits 的位序一致
-                    val index = row * 3 + column
+                    // 行 = 读 / 写 / 执行，列 = 用户 / 用户组 / 其他。
+                    // bits 是**组优先**布局（octalToPermissionBits 每组产 r/w/x 三个 bit）：
+                    // bits[0..2] 用户、[3..5] 用户组、[6..8] 其他，故 index = 列*3 + 行。
+                    // 写成 row*3 + column 会把矩阵整体转置：以 750 为例，「读/其他」会取到
+                    // bits[2]（用户执行位）而误显示为勾选，点击也会写到别的组。
+                    val index = permissionMatrixIndex(row, column)
                     Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
                         PermissionToggle(bits[index], { onToggle(index, it) })
                     }

@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 518 tests / 0 failures / 1 skipped |
+| 单元测试 | 521 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -71,6 +71,24 @@
 ---
 
 ## 待办
+
+### A93. 权限矩阵位序复核（2026-10-11）
+
+补齐只读审查第九轮新增条目（17:24 追加，此前未入台账）。
+
+- [x] **3×3 权限矩阵索引与 bits 布局互为转置**（`BUG-LOGIC-089`，P2，CONFIRMED）：
+  `octalToPermissionBits` / `permissionBitsToOctal` 是**组优先**布局（bits[0..2]=用户、
+  [3..5]=用户组、[6..8]=其他，index = group*3 + perm），而 `PermissionMatrix` 用
+  `row*3 + column`（row=读/写/执行，column=用户/组/其他）—— 两者互为转置，
+  且行注释误称「位序一致」。以 750 为例，「读·其他」会取到 bits[2]（用户执行位）显示为勾选，
+  点任一开关写的是另一个组的位：界面看着对，实际设成另一组权限。
+  755 这类各组合取值巧合相同，看不出异常；750/744/705 等非对称分布才暴露。
+  改权限是唯一带越权后果的操作，故按 P2 处理。
+- [x] **修复**：抽出纯函数 `permissionMatrixIndex(row, column) = column * 3 + row`，
+  矩阵改用它；修正注释。不动两个转换函数（其 group-major 位序与文件系统一致，改动面更大）。
+- [x] 单测：`FilePermissionDialogTest` +3（9 个下标逐点、750 逐格断言、点「写·用户组」得 770）。
+- [x] 全量单测通过：`testDebugUnitTest` → 521 tests / 0 failures / 1 skipped。
+- [x] 真机（root）验证。
 
 ### A92. 终端解析代次与安装生命周期复核（2026-10-11）
 
