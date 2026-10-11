@@ -12,15 +12,15 @@
 
 ---
 
-## 当前状态速览（2026-10-11）
+## 当前状态速览（2026-10-12）
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → 见 § A107） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A108） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 593 tests / 0 failures / 1 skipped |
+| 单元测试 | 595 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
-| release 体积 | 2.78 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
+| release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
 | 文件名通道 | `find -print0`（NUL 分隔）；元数据通道**自带名称**（`printf "%s\0"` + `stat`），按名称配对 → 列举期间增删/断链不再让大小与类型串位；标记须两侧 NUL 包裹才命中 |
 | 列表一致性 | `listIsStale` + `loadingGenRef` 双护栏：陈旧列表不可操作，重算不越代落盘 |
@@ -67,11 +67,33 @@
 | 已知环境坑 | 本机 toybox `mktemp` 创建失败时把模板前缀打成 `(null)/`（如 `Failed to create directory (null)//data/…`）——`(null)` 不是路径的一部分，真实模板要减去该前缀再看 |
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`54fc3b56…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版发行程序已从双端移除（Release 与 tag 保留） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2893485 字节，双端下载 sha256 与本地一致（`412c7a39…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版发行程序已从双端移除（Release 与 tag 保留） |
 
 ---
 
 ## 待办
+
+### A108. 复核编码判据残留：ASCII 主导的 GB18030 被误判 UTF-8（2026-10-12）
+
+复核 `docs/AI-1-BUG.md` 第 109 节（§117）对 158 残余边界的定级。原文判「P3、仅显示层、字节无损」，
+建议只记作已知限制。核对保存链路后不采信。
+
+- [x] **P2 · ASCII 主导的 GB18030 文件被误判 UTF-8，保存即损坏（BUG-LOGIC-160）**：158 的判据是
+  「UTF-8 宽松解码的替换符 ÷ 已解码字符数 ≤ 0.20」。分母含 ASCII，而 ASCII 在 UTF-8 与
+  GB18030 下同形、不产生替换符 —— ASCII 占比越高，比例被稀释得越低。一份 60 行 ASCII 加一行
+  中文注释的 GB18030 文件密度仅 0.004，被判 UTF-8；编辑器保存按检测出的编码写回
+  （`resolveCharset()` → `TextEncoder.encode`），误判后中文以 U+FFFD 呈现，保存即按 UTF-8
+  全量重写，原 GB18030 字节被 `EF BF BD` 永久替换（临时文件 + 原子替换，无备份）——
+  不可逆数据损坏，不是显示降级。该形态在修复前的旧判据下判 GB18030，属 158 引入的回归。
+  - 修复：判据分母改**非 ASCII 字节数**（`utf8Replacements * 2 <= nonAsciiBytes` 即判 UTF-8），
+    与 ASCII 体量无关；常量 `GB_FALLBACK_MAX_UTF8_REPL_DENSITY` 由
+    `UTF8_REPLACEMENT_RATIO_LIMIT = 2` 取代；GB18030 候选分支（`gbDensity ≤ 0.01`）不变。
+    顺带消掉「两汉字 + 1 坏字节」短样本降到 ISO-8859-1 的乱码边界。
+- [x] 单测与契约测试：`testDebugUnitTest` 595 tests / 0 failures / 1 skipped（新增 2 条，
+  均在修复前源码上实测失败，对照有效）。
+- [x] 发版：APK 构建（2893485 字节，sha256 `412c7a39…`）、root 真机冒烟（安装成功、进程存活、
+  crash 缓冲无本包记录）、双端 `main` 与 tag `20261012` 推送、双端 Release 目标提交改指该代码
+  提交并替换资产。
 
 ### A107. 审查发现项：读取截断、套件配对、编码降级与可见性竞态（2026-10-11）
 
