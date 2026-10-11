@@ -72,6 +72,51 @@
 
 ## 待办
 
+### A91. 只读审查余下条目的代码级复核（2026-10-11）
+
+此前只读审查留下、尚未裁决的一批条目逐条对照当前代码复核：12 条成立并已修复，
+3 条判为设计取舍或不成立。
+
+- [x] **归一化 prepare 的 TOCTOU**（055）：`prepare` 脚本先 `head -c 3 原文件` 探 BOM、
+  再整读原文件去 CR，两次读的是两份可能不同的数据；od 读空时还把「探测失败」当成「无 BOM」。
+  改为只读一次原文件、去 CR 写出副本，再在**副本**上探 BOM 并 `tail -c +4` 剥除。
+- [x] **prefix 物化的无谓拷贝**（056）：`decideBytes` 对每个含 CR/BOM 的脚本都做
+  `copyOfRange(0, 1MB).toString(ISO_8859_1)`。加窗口内 `$` 字节预筛，无 `$` 时自引用不可能，
+  直接跳过物化（判定语义不变）。
+- [x] **构建脚本桌面原生库检测的位置**（060）：检测嵌在「未识别前缀」的 `else` 分支里，
+  落在 `lib/` 等已识别前缀下的同名平台目录被漏检，与注释声明的意图相反。移到 `if/elif` 链之前，
+  对每个条目独立判定。
+- [x] **zstd 缺失被误报为文件损坏**（061）：`openZstd` 在设备缺 native 时抛 `LinkageError`，
+  被 `peekRoot` 的宽 catch 吞成 `parseFailed` → TAR+zstd 报「压缩包已损坏」，
+  与 SINGLE 分支给出的「组件不可用」自相矛盾。新增 `ZstdUnavailableException` 并在 `peekRoot` 透传。
+- [x] **SD 卡路径被白名单拒**（062）：`isExternalPathAllowed` 末尾无条件 `return false`，
+  `/storage/<卷名>/…` 一律不接纳。新增 `isRemovableVolumePath` 放行合法可移除卷；
+  排除 `emulated` / `self` 别名，保住「`/storage/emulated/01` 必须为 false」的既有断言。
+- [x] **`.数字` 尾缀脚本判为不可执行**（063）：`isExecutableScript/Binary` 用 `extension`（不剥尾缀），
+  而同类的 `isInstallable` / `isArchive` 用 `realExtension`。改用 `realExtension`；
+  `RootService.executeFile` 的字面 `endsWith(".sh")` 同步改为剥尾缀后判定，否则会出现
+  「文件页有执行入口、点击却报不支持格式」。
+- [x] **大小格式化的 locale 口径**（064）：`formattedSize` 用 `Locale.getDefault()`，
+  部分区域把小数点渲染成本地化数字形状，与 `formattedDate` 已在用的 `Locale.ROOT` 不一致。三处改 ROOT。
+- [x] **CRLF 行尾 CR 混入行文本**（076）：`IndexedLineProvider.load` 只按 `'\n'` 切分，
+  CRLF 的 CR 留在行文本里。加 `removeSuffix("\r")`。
+- [x] **对比收尾的 `System.gc()`**（077）：全局 STW 提示，对比跑在 `Dispatchers.IO` 却停顿整个进程。删除。
+- [x] **flush 循环替换时的残留**（078）：旧循环的 `finally` 只比 `epoch`，而 `epoch` 不随「循环替换」
+  变化，旧循环局部 `pending` 的残留会被刷进新会话。新增 `@Volatile batchFlushGeneration` 代次令牌，
+  `finally` 同时校验 `epoch` 与 `generation`。
+- [x] **CRLF 文件最长行偏大 1**（080）：`columns` 按 `'\n'` 结算时把行尾 CR 计入长度。LF 处剔除紧邻 CR。
+- [x] **`chars` 与四类之和不等**（081）：`chars` 取码元数，四类分类按码点累加，含 emoji /
+  扩展 B 区汉字时「四类之和 ≠ 总字符数」。改 `codePointCount(0, n)`。
+- [x] **判为取舍或不成立的三条**：`BUG-LOGIC-065`（1MB 探测窗口）——窗口未命中即保守 DIRECT
+  会让所有 >1MB 普通脚本退回不归一化，等于撤销 A75 修复，保留窗口；
+  `BUG-COMPAT-066`（`entryCountFromTail` 死代码）——实测被 `InstallAndBudgetHardeningTest`
+  8 处引用，原判前提不成立；`BUG-LOGIC-075`（无 BOM UTF-16 嗅探）——去掉 NUL 信号会让
+  纯 ASCII 的 UTF-8 倒向误判，两难，保留现状。
+- [x] 单测：`TextStatisticsColumnsTest` +2（CRLF 行宽、emoji 码点）、`FileItemTypeTest` +1、
+  `ExternalOpenTest` +1、`SparseLineIndexTest` +2。
+- [x] 全量单测通过：`testDebugUnitTest` → 516 tests / 0 failures / 1 skipped。
+- [x] 真机（root）验证。
+
 ### A90. 归一化判定与文本对比行切分（2026-10-11）
 
 本批四条取自此前只读审查留下、尚未复核的条目清单，逐条实测后确认为真。
@@ -126,10 +171,10 @@ OBB 事务锁的判定链全在 shell 里跑，JVM 单测只能断言生成的�
 - [x] 真机（root）验证：脚本语义 7/7 通过（空闲 / 活锁 / 新锁未过 TTL / 陈旧锁已过 TTL /
   三段旧锁新老 `mtime` 各一 / 无分隔符垃圾锁）；陈旧锁回收后锁已换新且无 quarantine 残留；
   8 进程并发恰好 1 成功、其余 7 个均为 `17`。设备端 `base.apk` 的 sha256 与本地一致（`635fc748…`）。
-- [x] **不改项**：AI-1 建议「`exit 21` 前删掉 quarantine」经复核对既有害——mismatch 分支里
+- [x] **不改项**：审查建议「`exit 21` 前删掉 quarantine」经复核确认有害——mismatch 分支里
   隔离出的可能是他方活锁的元数据（读与 `mv` 之间被抢锁），删掉会诱发双持锁；改判 BY_DESIGN。
-- [x] **台账补录**：`docs/AI-1-BUG.md` 第 2–6 轮的 21 条建议此前完全未进台账
-  （含本轮 P1），已按 §2.5 汇总清单登记，避免单一视角漏判。
+- [x] **台账补录**：此前只读审查的 21 条建议完全未进台账（含一条 P1），已汇总清单登记，
+  避免单一视角漏判。
 - [x] **发版一致性订正**：Release 资产替换为新构建后，核对发现 tag `20261011` 仍停在 `85e320d`
   —— 早于 A87/A88/A89 三次修复，意味着按 tag 取源码构建出的包与已发布 APK 不是同一份代码。
   已把双端 tag 同步到当次发版代码，使 tag / 资产 / 源码三者一致。
