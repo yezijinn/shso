@@ -76,11 +76,42 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`fa3ccc51…`）；双端 tag 与 Release 的目标提交均已对齐 A118 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`eb0145e9…`）；双端 tag 与 Release 的目标提交均已对齐 A119 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 
 ---
 
 ## 待办
+
+### A119. 编辑器设置面板滚动范围收窄（BUG-COMPAT-188）（2026-10-12）
+
+`docs/AI-1-BUG.md` 报告 #156~#159（末轮标注 FINAL）逐处核验 38 处
+`minimumInteractiveComponentSize` 与 `clickable` 的相对顺序，全部正确；确认 COMPAT-187 的 9 处补齐与
+COMPAT-168 完全闭环，并自行纠正对 `BookmarksDialog` 书签导航行的误判（漏看行内已补 48dp 的 `✕`
+子节点会撑高整行）。报告剩余 3 条（收件箱去重 / TTL、tif/tiff 预览、OBB 锁窄窗口）此前已记为
+DISPROVEN / BY_DESIGN / WONTFIX。`docs/AI-2-BUG.md` 无新增（止于 §8.5 轮次总结）。台账唯一 OPEN 项
+仍为 BUG-PERF-030（A109 已裁定维持不修）。
+
+按「同一现象被多处同报」的清单复核，发现 A118 在补齐过程中自己引入的残留（BUG-COMPAT-188）：
+
+- [x] **P3 · 面板滚动容器套住标题行（BUG-COMPAT-188）**：A118 把 `verticalScroll` 挂在面板**根**
+  `Column` 上，标题行（含 `✕` 关闭入口）与 `HorizontalDivider` 同处滚动区内。正常屏幕下面板内容约
+  556dp、不溢出，看不出问题；一旦溢出（小屏、分屏、系统大字号），滚动即把标题与关闭入口一并卷走，
+  关闭按钮既看不见也点不到，只能退回系统返回键。改为把滚动范围收窄到内容区：外层 `Column` 去掉
+  `verticalScroll`（只留 `padding(horizontal = 14.dp, vertical = 10.dp)`），标题 `Row` 与
+  `HorizontalDivider` 直接挂在外层 `Column` 下，原 `when (page) { ... }` 整块（含尾部 `Spacer(6.dp)`）
+  包进新的内层 `Column`，内层只带 `fillMaxWidth()` + `verticalScroll(rememberScrollState())`。
+- [x] 单测：`testDebugUnitTest` **613 tests / 0 failures / 1 skipped**（纯布局结构调整，JVM 单测无法
+  覆盖布局滚动行为，不新增用例）。`assembleRelease` + `verifyReleasePayload` 通过。
+- [x] 真机（root，PACM00 / Android 10 / density 480）：正常屏幕下面板不溢出、压不出滚动，故先进入
+  编辑器设置面板（文件页 Download → `aa_test.txt` → 动作菜单「编辑文本」→ 顶栏「设置」）再
+  `wm size 1080x1400`（467dp 高）制造溢出。滚动前 `✕` `[829,206][973,350]`（144×144px = 48dp）、
+  标题 `设置` `[107,250][203,307]`、`编码` 行 y=436~485、`写入 BOM` 行被面板下沿裁到 2px 高；
+  `input swipe 540 1000 540 400` 后 `✕` 与标题 bounds **完全不变**，`写入 BOM` 行由 y≈1156 上移至
+  y=402，`编码`/`换行`/`语法包`/`另存为`/`显示行号` 滚出可见区，`草稿快照` 等被裁切行进入可见区；
+  在滚动后位置点击 `✕`（`(901,278)`）→ 面板关闭并回到编辑器。随后 `wm size reset` 复原，
+  清理设备与本地临时文件。
+- [x] 构建与发布：APK 2909869 字节，sha256 `eb0145e9…`；tag `20261012` 重指至本次发版提交，
+  双端 Release 资产替换并核验三方一致。语法包侧 `syntaxpacks-v2` 未变（APK 不内置语法）。
 
 ### A118. 文本级可点目标触控尺寸兜底（BUG-COMPAT-187）（2026-10-12）
 
@@ -104,7 +135,8 @@ A117 修的是「补尺寸这个动作**写错了顺序**」，覆盖范围只�
   复选框行与语法包备用直链入口（均已有 `heightIn(min = 48.dp)`）。
 - [x] **连带风险处置**：编辑器设置面板行高 35 → 48dp 后根页内容约 500 → 630dp，小屏/系统大字号下会
   超出对话框高度，而该面板原先**无滚动容器**（超出部分既画不出也点不到）→ 同步补
-  `Modifier.verticalScroll(rememberScrollState())` 兜底。
+  `Modifier.verticalScroll(rememberScrollState())` 兜底。滚动范围后由 A119 收窄到内容区（标题行
+  与 `✕` 留在滚动区外）。
 - [x] 单测：`testDebugUnitTest` **613 tests / 0 failures / 1 skipped**（纯 UI 尺寸与修饰符，
   JVM 单测无法覆盖指针命中区，不新增用例）。`assembleRelease` + `verifyReleasePayload` 通过。
 - [x] 真机（root，PACM00 / Android 10 / 1080×2280 / density 480）：首页「从文件管理器选择」
