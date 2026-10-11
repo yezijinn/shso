@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A110） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A111） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 599 tests / 0 failures / 1 skipped |
+| 单元测试 | 603 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -28,6 +28,7 @@
 | root 探测时序 | `isRootGranted == null`（未探测）先等待探测落定，上限 3s，超时按已知状态处理 |
 | 执行归属 | `stillOwnsExecution` 比对精确槽位令牌；`startExecution` 清槽位兑现契约 → 新脚本不会被旧收尾误清 |
 | 进程回收 | 整组 kill 的校验②由「组长存活」改为**组成员存活扫描**（纯 shell 内建 `/proc` 遍历，不依赖 `ps -o PGID`／`awk`）→ 组长已退的孤儿组仍能整组回收 |
+| 非 Root 回收 | 经 `/system/bin/setsid` 自成会话/进程组（`pgid == 组长 pid == 直接子进程 pid`，同步段直接回填）；kill 通道按 `execUsesRoot` 分流：非 Root 走应用自身 uid 的 `sh`，不弹 `su` |
 | 终端保活 | 命令启动即拉起前台服务（不再延迟 5s），避开 `targetSdk 35` 后台禁止启动前台服务的限制 |
 | 超时回收 | `runCommandSync` 新增 `reclaimOnTimeout` 形参：回收通道只 `destroyForcibly`，斩断「超时 → 组杀 → 超时」互递归 |
 | 执行收尾 | `.so` 权限还原改在 `Dispatchers.IO`（不再阻塞主线程）；属性文件写出后 `chmod 644`（`su` 掩码 077 时 app 读不到会导致还原被静默跳过） |
@@ -72,17 +73,49 @@
 | 已知环境坑 | 本机 toybox `mktemp` 创建失败时把模板前缀打成 `(null)/`（如 `Failed to create directory (null)//data/…`）——`(null)` 不是路径的一部分，真实模板要减去该前缀再看 |
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`ab1729c2…`）；双端 tag 与 Release 的目标提交均已对齐发版代码 `89cde49`；旧版发行程序已从双端移除（Release 与 tag 保留） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2893485 字节，双端下载 sha256 与本地一致（`9e64e87f…`）；双端 tag 与 Release 的目标提交均已对齐 A111 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留） |
 
 ---
 
 ## 待办
 
+### A111. 非 ROOT 任务进程组隔离专项：`setsid` + 身份感知 kill 通道（BUG-LOGIC-173 / 原 AI2-LOGIC-023）（2026-10-12）
+
+A110 暂缓项的专项落地。此前非 Root 任务沿用应用自身进程组，按进程组终止会连带杀掉本应用，
+故 `runPgid` 恒 0、组杀整条跳过，中断/结束实际只杀了外层 `sh`，内层脚本真身以应用 uid
+继续运行（不写 stdout 的 `sleep` 没有 SIGPIPE 自愈路径，永远留在后台），而界面显示已结束。
+A110 用 A110 版 APK 复现：脚本内 `sleep 600` 与应用同 `PGRP=1167`，点「结束进程」后
+被重挂到 PID 1 继续存活。属执行模型改造 + 真机端到端取证。
+
+- [x] **P3 · 非 Root 任务经 `setsid` 自成会话/进程组（BUG-LOGIC-173）**：非 Root 分支改经
+  `/system/bin/setsid sh -c <cmd>` 启动。toybox `setsid(2)` 只在调用者自身是进程组组长时
+  才 fork，而 ProcessBuilder 起的子进程 `pid != pgid` 恒成立 → 必不 fork、退出码原样透传
+  （uid 2000 侧实测 `EXIT_RELAY=7`）；`sh` 自任组长，`pgid == 组长 pid == 直接子进程 pid`，
+  在 `withContext(Main)` 同步段随 `processPid` 一并回填，非 Root 侧不再需要探 `pgid`；
+  `setsid` 不可执行时回退普通 `sh -c`（此时 `runPgid` 保持 0，组杀按原语义不触发）。
+- [x] **P3 · kill 通道按执行身份分流（同条）**：新增 `execUsesRoot` 记录当前任务身份
+  （`startExecution` 同步段、`runTerminalCommand`、`restartTerminal` 收尾均复位为 `true`）；
+  `runCommandSync` 增 `asRoot` 形参，spawn 与超时分支同样按身份选择 `su -c` /
+  `sh -c`；`killProcessGroup` 与新增的 `runKillSync` 按身份下发 kill。非 Root 任务本就
+  允许同 uid 互发信号，走 `su` 只会平白弹授权框，且授权框无人回应时 kill 停在超时窗口里
+  （表现为「点了结束进程但脚本还在跑」）。`runKillSync` 一律 `reclaimOnTimeout = false`，
+  与 `forceKillProcessTree` 的互递归斩断保持一致。
+- [x] 单测：`testDebugUnitTest` **603 tests / 0 failures / 1 skipped**（新增 4 条护栏：
+  非 Root 必须经 setsid 自成进程组、非 Root 的进程组由其自身 pid 直接确定且 `awaitRunPgid`
+  只在 Root 分支、非 Root 的 kill 不得经 `su`、终端命令必须复位执行身份）。
+- [x] 真机（root）端到端：同一脚本（`echo marker; sleep 600`）置于应用可读的
+  `/data/data/com.mixradio.droid/cache/`，应用内「执行 → 无 ROOT」两条路径对照 ——
+  修复前三者 `PGRP=1167`（与应用同组），结束进程后 `sleep` 仍活（重挂 PID 1）；
+  修复后三者 `PGRP=14379`（= 组长 pid），结束进程后 `/proc` 扫描零残留，全程无 `su` 弹窗，
+  终端输出 `执行身份: 非 Root` + `A111 non-root marker` + `用户已手动结束进程`。
+- [x] 发版：APK 构建（2893485 字节，sha256 `9e64e87f…`）、root 真机安装冒烟；双端 `main` 与
+  tag `20261012` 推送、Release 目标提交改指 A111 代码提交并替换资产，下载 sha256 双端一致。
+
 ### A110. 执行链路与终端回收专项：`docs/AI-1-BUG.md` 第 111/113 轮 + `docs/AI-2-BUG.md` 第 8 节（2026-10-12）
 
 逐条读码核实两份外部审查文档的发现项。AI-1 第 111/113 轮 2 条（死代码、过时注释）与
-AI-2 §8 的 13 条均**复现成立**，且此前 BUG.md / TASKS.md 零登记。共修 14 条，
-暂缓 1 条（023，需方案评审）。
+AI-2 §8 的 13 条均**复现成立**，且此前 BUG.md / TASKS.md 零登记。共 15 条：
+A110 修 14 条，余 1 条（023）经 A111 专项落地。
 
 - [x] **P2 · 非 ROOT 执行 `.so` 退化为 `sh <ELF>`（BUG-LOGIC-161）**：Root 侧早已按魔数
   `7f454c46` 预检 + 126/127 提示，非 Root 分支只拼 `export/cd` 后交给 `runShCmd`
@@ -159,12 +192,9 @@ AI-2 §8 的 13 条均**复现成立**，且此前 BUG.md / TASKS.md 零登记�
   新判据 `G=1` 命中并整组回收（`AFTER_REMAIN=0`）；021 属性文件权限实测
   `-rw-------` → `chmod 644` → `-rw-r--r--` 且应用侧可读；010 魔数预检表达式在 mksh 下实测
   ELF 得 `7f454c46`、文本得 `3132372e`。
-- [!] **暂缓 · 非 ROOT 任务的中断/结束只达直接子进程（BUG-LOGIC-173，原 AI2-LOGIC-023）**：
-  非 Root 路径无进程组隔离（子进程沿用应用自身进程组，直接组杀会误杀本应用），故 `pgid` 恒 0、
-  中断与结束只杀外层 `sh`，内层脚本真身以应用 uid 继续运行（不写 stdout 的 `sleep` 无尽）。
-  建议方案为 `setsid sh $file` 令非 Root 任务自成会话/进程组（应用 uid 自己即可组杀），
-  但属**执行模型重构**（涉及 pgid 落盘、kill 通道由 `su` 改走应用 uid、与 Root 方案同构化），
-  需专项真机验证后再动，暂不动刀。
+- [x] **P3 · 非 ROOT 任务的中断/结束只达直接子进程（BUG-LOGIC-173，原 AI2-LOGIC-023）**：
+  A110 当时判定为执行模型重构而暂缓，已由 A111 专项落地（`setsid` 自成进程组 +
+  kill 通道按执行身份分流），详见 § A111。
 - [x] 发版：APK 构建（2909869 字节，sha256 `ab1729c2…`）、root 真机冒烟（`pm install -r -t` 成功、
   进程存活、crash 缓冲无本包记录）、终端跑 `sleep 600` 后按 Home 转后台，`dumpsys activity services`
   显示 `ExecutionForegroundService isForeground=true` 且 `sleep` 仍在运行（保活生效），
