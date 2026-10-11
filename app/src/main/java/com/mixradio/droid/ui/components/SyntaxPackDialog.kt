@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
+import com.mixradio.droid.data.FileItem
 import com.mixradio.droid.data.syntax.SyntaxPack
 import com.mixradio.droid.data.syntax.SyntaxPackStore
 import com.mixradio.droid.ui.theme.AuroraTextStyles
@@ -37,6 +38,13 @@ import com.mixradio.droid.ui.theme.AuroraWindowDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+// BuiltInFilePicker 把 fileFilter 当 remember 的 key：内联 lambda 每次重组都是新实例，
+// 缓存会逐帧失效并重跑过滤 + 排序。提到顶层做常量，身份跨重组稳定。
+private val SYNTAX_PACK_FILE_FILTER: (FileItem) -> Boolean = { item ->
+    val name = item.name.lowercase()
+    name.endsWith(".zip") || name.endsWith(".json")
+}
 
 /**
  * 语法包管理：导入（本地文件 / https URL）、启用、删除。
@@ -172,7 +180,7 @@ fun SyntaxPackDialog(
             show = true,
             titleText = "选择语法包",
             subtitleText = "支持语法包压缩档（.zip）或单个 Monarch 语法（.json）",
-            fileFilter = { it.name.lowercase().endsWith(".zip") || it.name.lowercase().endsWith(".json") },
+            fileFilter = SYNTAX_PACK_FILE_FILTER,
             onDismissRequest = { showFilePicker = false },
             onFileSelected = { path ->
                 showFilePicker = false

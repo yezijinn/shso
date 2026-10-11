@@ -57,8 +57,11 @@ internal fun applyFileViewSettings(
     val byHidden = if (showHiddenFiles) list else list.filterNot { it.name.startsWith(".") }
     // 名称过滤与排序合并为一次 O(N) 后台遍历（大小写不敏感、子串匹配）；
     // 单独再跑一趟 filter 会让大目录（数千项）多一次全量分配。
-    val query = nameQuery.trim().lowercase(Locale.getDefault())
-    val filtered = if (query.isEmpty()) byHidden else byHidden.filter { it.name.lowercase(Locale.getDefault()).contains(query) }
+    // 折叠一律用区域无关的 Locale.ROOT：土耳其语下 'I'.lowercase() 得到 'ı'，搜索「i」
+    // 就命中不了名为 'Ixxx' 的文件。项目其它处（FileItem.extension、ArchiveExtractor
+    // 后缀比对）已按此约定，此处此前遗漏。
+    val query = nameQuery.trim().lowercase(Locale.ROOT)
+    val filtered = if (query.isEmpty()) byHidden else byHidden.filter { it.name.lowercase(Locale.ROOT).contains(query) }
     val directories = filtered.filter { it.isDirectory }
     val files = filtered.filterNot { it.isDirectory }
 
@@ -76,8 +79,8 @@ private fun sortedForView(items: List<FileItem>, sortMode: Int): List<FileItem> 
             items.sortedWith(if (descending) byTime.reversed() else byTime)
         }
         else -> {
-            val locale = Locale.getDefault()
-            val decorated = items.map { it.name.lowercase(locale) to it }
+            // 同上：区域无关折叠，避免土耳其语 I/i 的排序错位。
+            val decorated = items.map { it.name.lowercase(Locale.ROOT) to it }
             val ordered = if (descending) {
                 decorated.sortedWith(compareByDescending { it.first })
             } else {

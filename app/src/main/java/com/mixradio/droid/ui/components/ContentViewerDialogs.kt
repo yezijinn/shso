@@ -62,7 +62,9 @@ fun ImageViewerDialog(
     onDismiss: () -> Unit
 ) {
     // 状态
-    var currentIndex by remember { mutableIntStateOf(initialIndex.coerceIn(0, images.lastIndex)) }
+    // 空列表时 images.lastIndex == -1，coerceIn(0, -1) 的 min > max 会抛
+    // IllegalArgumentException（组合期即崩）。下限兜到 0，空列表由后续 getOrNull 兜底。
+    var currentIndex by remember { mutableIntStateOf(initialIndex.coerceIn(0, maxOf(0, images.lastIndex))) }
     var bitmap by remember(images.getOrNull(currentIndex) ?: "") { mutableStateOf<android.graphics.Bitmap?>(null) }
     var decodeError by remember(images.getOrNull(currentIndex) ?: "") { mutableStateOf<String?>(null) }
     var rotation by remember { mutableFloatStateOf(0f) }           // 累计旋转角度

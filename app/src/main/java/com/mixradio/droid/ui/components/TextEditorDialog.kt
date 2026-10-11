@@ -274,7 +274,10 @@ private fun TextEditorDialogContent(
     // 加载文件
     LaunchedEffect(initialFilePath, isNewFile, overrideCharset) {
         if (isNewFile) { isLoading = false; return@LaunchedEffect }
-        val path = initialFilePath ?: return@LaunchedEffect
+        // 加载源取「当前路径」而非构造参数：另存为后 currentFilePath 已切到新文件，它又是
+        // rememberSaveable（跨重建保留）。若仍按 initialFilePath 加载，旋转重建会把另存为前的
+        // 文件内容读回编辑器，而保存仍写向 currentFilePath —— 用旧文件内容整体覆盖新文件。
+        val path = currentFilePath ?: return@LaunchedEffect
         isLoading = true
         loadError = null
         val openStartMs = System.currentTimeMillis()
@@ -2438,7 +2441,10 @@ private fun HistoryDialog(
                 }
             } else {
                 LazyColumn(modifier = Modifier.height(320.dp)) {
-                itemsIndexed(history, key = { _, entry -> entry.timestamp }) { index, entry ->
+                // key 不能用 timestamp：它取自 System.currentTimeMillis()，同一毫秒内的两条
+                // 记录（连续保存、迁移的旧数据）会撞 key，LazyColumn 直接抛
+                // 「Key ... was already used」崩溃。列表顺序稳定，用下标即可。
+                itemsIndexed(history, key = { index, _ -> index }) { index, entry ->
                         Column(
                             modifier = Modifier.fillMaxWidth().clickable { onRestore(entry) }.padding(vertical = 8.dp, horizontal = 8.dp)
                         ) {
@@ -2473,6 +2479,14 @@ private fun HistoryDialog(
                                 text = RelativeTime.label(entry.timestamp),
                                 style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary
                             )
+                            if (entry.truncated) {
+                                // 截断条目只存了末尾 MAX_CONTENT_CHARS 字符，恢复会丢掉文件开头，
+                                // 不标出来用户看不出版本是不完整的。
+                                Text(
+                                    text = "已截断：只保留末尾内容，恢复会丢失文件开头",
+                                    style = AuroraTextStyles.footnote2, color = AuroraTokens.Error
+                                )
+                            }
                             Text(
                                 text = remember(entry) { entry.content.take(80).replace("\n", " ") },
                                 style = AuroraTextStyles.body2, color = AuroraTokens.Text, maxLines = 2

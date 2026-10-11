@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 521 tests / 0 failures / 1 skipped |
+| 单元测试 | 526 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -66,11 +66,52 @@
 | 已知环境坑 | 应用进程的 environ **不含 `TMPDIR`**（`su -c` 也不补），而 `adb shell` 自带 `TMPDIR=/data/local/tmp` → 依赖 `$TMPDIR` 的脚本「adb 下正常、应用内失败」。执行环境须显式 `export TMPDIR` |
 | 已知环境坑 | 本机 toybox `mktemp` 创建失败时把模板前缀打成 `(null)/`（如 `Failed to create directory (null)//data/…`）——`(null)` 不是路径的一部分，真实模板要减去该前缀再看 |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2893369 字节，双端下载 sha256 与本地一致（`2c8f5c3c…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版 APK 已从双端 `20261004` 移除，仅保留 Release 与 tag |
+| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2893369 字节，双端下载 sha256 与本地一致（`2d21f32a…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版 APK 已从双端 `20261004` 移除，仅保留 Release 与 tag |
 
 ---
 
 ## 待办
+
+### A94. 编辑器与文件列表末批复核（2026-10-11）
+
+对编辑器与文件列表的近期审查条目逐条对照代码复核：7 条成立并修复，6 条判为设计取舍、不成立或待架构调整。
+
+- [x] **另存为后旋转会把旧文件内容覆盖新文件**（P1，CONFIRMED）：
+  加载源取构造参数 `initialFilePath`，而保存目标 `currentFilePath` 是 `rememberSaveable`
+  且另存为后已切到新文件。旋转重建后 effect 按旧路径重载，把「另存为前的文件内容」读回
+  编辑器，而保存仍写向 `currentFilePath` —— 用旧内容整体覆盖新文件，新文件原内容不可恢复。
+  改为按 `currentFilePath` 加载（与保存目标同源）；effect key 不变。
+- [x] **历史列表 LazyColumn 撞 key 崩溃**（`BUG-LOGIC-090`，P2，CONFIRMED）：
+  key 取 `entry.timestamp`（`System.currentTimeMillis()` 毫秒），同一毫秒内的两条记录
+  （连续保存、迁移的旧数据）会撞 key，LazyColumn 抛 `Key ... was already used` 直接崩。
+  改 `itemsIndexed(history, key = { index, _ -> index })`，顺序稳定即下标稳定。
+- [x] **图片查看器空列表组合期崩溃**（`BUG-EDGE-092`，P2，CONFIRMED）：
+  `initialIndex.coerceIn(0, images.lastIndex)` 在空列表时 `coerceIn(0, -1)`，min > max 抛
+  `IllegalArgumentException`，组合期即崩。下限兜底 `maxOf(0, images.lastIndex)`，空列表由后续
+  `getOrNull` 兜。
+- [x] **Sora 字号守卫混比 sp 与 px 致每键全量重排**（`BUG-LOGIC-098`，P2，CONFIRMED）：
+  `ed.textSizePx`（px）与 `fontSize.value`（sp）直接判等，density≠1 时恒不相等，守卫失效 ——
+  每次敲字都触发 `setTextSize` 内部无条件重建 Layout（不换行分支还分配 `float[65536]`）。
+  改为与「上次下发的字号」`appliedTextSize` 判等，绕开单位换算，保持幂等。
+- [x] **文件列表搜索/排序走系统区域**（`BUG-COMPAT-094`，P3，CONFIRMED）：
+  `lowercase(Locale.getDefault())` 在土耳其语下把 `'I'` 折成 `'ı'`，搜索「i」命中不了
+  `Ixxx` 文件、排序也错位。改 `Locale.ROOT`（与 `FileItem.extension`、`ArchiveExtractor` 同口径）。
+- [x] **内置文件选择器 fileFilter 身份逐帧失效**（`BUG-PERF-095`，P3，CONFIRMED）：
+  `BuiltInFilePicker` 把 `fileFilter` 当 `remember` 的 key，内联 lambda 每次重组都是新实例，
+  缓存逐帧失效并重跑过滤 + 排序。提到顶层做常量 `SYNTAX_PACK_FILE_FILTER`，身份稳定。
+- [x] **历史截断条目恢复会丢文件开头**（`BUG-CONSIST-091`，P3，CONFIRMED）：
+  截断条目只存末尾 `MAX_CONTENT_CHARS` 字符，恢复即丢开头，界面无任何提示。
+  列表项补一行「已截断：只保留末尾内容，恢复会丢失文件开头」。
+- [x] **其余六条的处理**：`BUG-COMPAT-093`（tif/tiff 声明与解码能力不符）属设计取舍；
+  `BUG-COMPAT-099`（CodeHighlighter 无参 `lowercase()` 即 ROOT）经核实不成立——无参折叠本就用区域无关规则；
+  `BUG-CONSIST-096`（设置页检查更新旋转丢结果）因 `updateState` 是 sealed class，跨重建保留需自写
+  `Saver`，改动面大且非正确性问题，暂不动；`BUG-EDGE-097`（浏览器包名启发式）无法可靠判定；
+  编辑器内容不跨重建保留一项，大文本塞 Bundle 有 `TransactionTooLarge` 风险，需另设计草稿落盘；
+  巨型只读模式的 BOM / 行尾可切换却不可保存，同样留待架构调整。
+- [x] 单测：`RoundSixteenGuardTest` +4（历史 key、加载源、字号守卫、空列表索引）、
+  `FileListViewSettingsTest` +1（tr-TR 区域下的搜索折叠）。
+- [x] 全量单测通过：`testDebugUnitTest` → 526 tests / 0 failures / 1 skipped。
+- [x] 真机（root）验证。
 
 ### A93. 权限矩阵位序复核（2026-10-11）
 

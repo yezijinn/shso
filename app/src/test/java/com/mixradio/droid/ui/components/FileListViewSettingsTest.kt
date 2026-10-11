@@ -90,4 +90,21 @@ class FileListViewSettingsTest {
             names(applyFileViewSettings(emptyList(), true, AppSettings.FILE_SORT_NAME_ASC))
         )
     }
+
+    @Test
+    fun `search folds case independent of system locale`() {
+        // 折叠若走 Locale.getDefault()，土耳其语下 'I'.lowercase() 得到 'ı'（点无 i），
+        // 搜索「i」就匹配不到名为 'Ixxx' 的文件；此处把默认区域切到 tr-TR 复现该环境。
+        val original = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale.forLanguageTag("tr-TR"))
+            val list = listOf(file("IX.txt"), file("other.txt"))
+            assertEquals(
+                listOf("IX.txt"),
+                names(applyFileViewSettings(list, true, AppSettings.FILE_SORT_NAME_ASC, "i"))
+            )
+        } finally {
+            java.util.Locale.setDefault(original)
+        }
+    }
 }

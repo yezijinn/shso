@@ -185,6 +185,10 @@ fun SoraTextEditor(
     }
     // 写入内容（setText）也会派发 ContentChangeEvent；用抑制标志避免把「加载/重置」误判为用户编辑而置脏。
     val suppress = remember { androidx.compose.runtime.mutableStateOf(false) }
+    // 已下发的字号（sp 数值）。Sora 的 setTextSize 内部无条件重建 Layout，而 textSizePx 是 px、
+    // fontSize.value 是 sp，直接比较在 density≠1 时恒不相等 —— 守卫形同虚设，每敲一个字就全量重排。
+    // 改为与「上次下发的字号」判等，绕开单位换算歧义，同时保持幂等。
+    val appliedTextSize = remember { androidx.compose.runtime.mutableStateOf(fontSize.value) }
     AndroidView(
         modifier = modifier.fillMaxSize().background(AuroraTokens.DialogBg),
         factory = { ctx ->
@@ -221,8 +225,10 @@ fun SoraTextEditor(
             //     其构造器分配 `new float[65536]`（256KB）+ SparseArray
             //   · 换行分支：WordwrapLayout 全量重排所有可见行
             // 下面 setWordwrap 早已加了同样的门闩，这里补齐 —— 字号是同一类问题。
-            val targetPx = fontSize.value
-            if (ed.textSizePx != targetPx) ed.setTextSize(targetPx)
+            if (appliedTextSize.value != fontSize.value) {
+                ed.setTextSize(fontSize.value)
+                appliedTextSize.value = fontSize.value
+            }
             // 换行开关幂等：仅在状态变化时下发，避免每帧重复触发布局重建。
             if (ed.isWordwrap != wordWrap) ed.setWordwrap(wordWrap)
             // 扩展名变化（另存为其它类型）或语法包被删除时切换语法。

@@ -200,3 +200,44 @@ class TerminalParseGenerationScopeTest {
         )
     }
 }
+
+/**
+ * 第十六轮审查修复项的源码契约护栏：把「改回旧写法就回归」的四处钉住。
+ */
+class RoundSixteenGuardTest {
+
+    private val dialog = File("src/main/java/com/mixradio/droid/ui/components/TextEditorDialog.kt")
+    private val sora = File("src/main/java/com/mixradio/droid/ui/components/SoraTextEditor.kt")
+    private val viewer = File("src/main/java/com/mixradio/droid/ui/components/ContentViewerDialogs.kt")
+
+    @Test fun `历史列表的 LazyColumn key 不得用毫秒时间戳`() {
+        // 同一毫秒的两条历史会撞 key，LazyColumn 抛「Key ... was already used」直接崩。
+        val s = dialog.readText()
+        assertTrue("不得再以 timestamp 作 key", !s.contains("key = { _, entry -> entry.timestamp }"))
+        assertTrue("应以稳定下标作 key", s.contains("itemsIndexed(history, key = { index, _ -> index })"))
+    }
+
+    @Test fun `编辑器重载必须取当前路径而非初始路径`() {
+        // 另存为后旋转：按 initialFilePath 重载会把旧文件内容读回编辑器，而保存仍写向
+        // currentFilePath —— 用旧文件内容整体覆盖新文件。
+        val s = dialog.readText()
+        assertTrue("加载源应为 currentFilePath", s.contains("val path = currentFilePath ?: return@LaunchedEffect"))
+        assertTrue("不得再按 initialFilePath 加载", !s.contains("val path = initialFilePath ?: return@LaunchedEffect"))
+    }
+
+    @Test fun `Sora 字号守卫不得混比 sp 与 px`() {
+        // fontSize 是 sp、textSizePx 是 px，density≠1 时恒不相等，守卫失效 → 每键全量重排。
+        val s = sora.readText()
+        assertTrue("不得再用 px 与 sp 值直接比较", !s.contains("if (ed.textSizePx != targetPx)"))
+        assertTrue("应以已下发字号判等", s.contains("appliedTextSize.value != fontSize.value"))
+    }
+
+    @Test fun `图片查看器初始索引对空列表安全`() {
+        // 空列表时 images.lastIndex == -1，coerceIn(0, -1) 在组合期抛异常。
+        val s = viewer.readText()
+        assertTrue(
+            "空列表必须兜底下限",
+            s.contains("coerceIn(0, maxOf(0, images.lastIndex))")
+        )
+    }
+}
