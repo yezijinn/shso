@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（`20f09d9`） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（`453a86b`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 503 tests / 0 failures / 1 skipped |
+| 单元测试 | 511 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -71,6 +71,35 @@
 ---
 
 ## 待办
+
+### A90. 归一化判定与文本对比行切分（2026-10-11）
+
+本批四条来自 `docs/AI-1-BUG.md` 第 2–6 轮的未复核清单，逐条实测后确认为真。
+
+- [x] **gzip 特征只写两字节**：`ShNormalization.magics` 里 gzip 只取 `1F 8B`，与紧邻注释
+  「只收 >=4 字节特征」自相矛盾。两字节特征在二进制噪声里更易命中，一旦命中就把本应去 CR
+  的 CRLF 脚本判为 DIRECT（跳过归一化）。改为 `1F 8B 08`（CM 位在 gzip 规范里恒为 deflate），
+  并把注释改成准确表述：收录标准是「该特征在合法文本中不可能出现」，而非固定字节数。
+- [x] **判定与读取之间的长度窗口**：`decide` 先按 `file.length()` 分配再 `readFully`，
+  读取期间文件被追加时尾部载荷落在本次扫描之外，「未发现内嵌载荷」的结论不可信 → 去 CR 破坏载荷。
+  root 侧 `decideAsRoot` 已有同类复查，app 侧缺对称保护。改为：长度以本次打开后的 `raf.length()`
+  为准，读完再比对一次，不等即判 DIRECT「读取期间文件发生变化」。
+- [x] **UTF-16 文本对比错位**：`TextCompare` 行扫描按单字节 `0x0A` 定位边界、只剔 1 字节 `\r`。
+  UTF-16 的换行是 2 字节码元，从第二行起码元对齐丢失：行文本错位成乱码、行尾 `\r` 判错。
+  `MappedFile.bomOffset` 也只跳 UTF-8 BOM，UTF-16 BOM 被当成数据。改为：`LineScanner` 按码元宽度
+  推进并按 `0A 00`/`00 0A`、`0D 00`/`00 0D` 匹配；`countLines` 同步宽度感知；`bomOffset` 识别
+  `FF FE`/`FE FF` 并跳过 2 字节；`detectedCharset` 探测改从文件头取样，避免 `dataStart` 漏掉
+  UTF-16 BOM 这条最强判据。UTF-8 路径保持逐字节等价。
+- [x] **无换行的单行文件被判 CRLF**：`LineEnding.detect` 在 lf/crlf/cr 三计数同为 0 时，
+  `max == crlf` 成立 → 单行文件判成 CRLF，与空文本分支（LF）不一致，编辑出换行后会按 CRLF 落盘。
+  改为 `max == 0` 直接返回 LF。
+- [x] **同批复核**：`BUG-EXC-054` 与既有 `BUG-EXC-033` 同因（归一化失败静默回退），合并；
+  `BUG-EXC-058` 证伪——`readFileHeadAsRoot` 超时分支已是 `destroyForcibly()` + `join(1000)`，
+  无 su 子进程泄漏。
+- [x] 单测与契约测试：`ShNormalizationTest` +3、`LineEndingTest` +1、新增
+  `TextCompareUnicodeBoundaryTest` 4 例（UTF-16LE/BE 带 BOM、无 BOM 逐行命中；UTF-8 回归）。
+- [x] 全量单测通过：`testDebugUnitTest` → 511 tests / 0 failures / 1 skipped。
+- [x] 真机（root）验证：安装 release APK 后启动无崩溃，进程常驻、logcat 无 E 级异常。
 
 ### A89. OBB 锁元数据字段数与 TTL 判定（2026-10-11）
 
