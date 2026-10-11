@@ -358,13 +358,66 @@ class InstallAndBudgetHardeningTest {
         assertTrue("成功必须是 0", ApkInstaller.ObbLockExit.BUSY != 0)
     }
 
+    @Test fun `OBB 锁元数据必须写满四段且创建时刻为纯数字`() {
+        // 真实缺陷：写入方只拼了 token|pid|startTicks 三段，而获取脚本与注释都按四段设计
+        // （`cut -d'|' -f4` 读 createdEpoch）。三段行取 f4 得空串 → 数字校验判「状态不明」
+        // → 立即 UNKNOWN，于是并发退避（期望 BUSY）与陈旧锁 TTL 回收两条路径全部不可达。
+        val meta = ApkInstaller.buildObbLockMeta(
+            token = "tok", pid = 4242, startTicks = "123456", createdEpoch = 1760000000L
+        )
+        val fields = meta.split("|")
+        assertEquals("元数据必须是四段", 4, fields.size)
+        assertEquals("tok", fields[0])
+        assertEquals("4242", fields[1])
+        assertEquals("123456", fields[2])
+        assertTrue("第 4 段必须是纯数字创建时刻", fields[3].all(Char::isDigit))
+        assertEquals("1760000000", fields[3])
+    }
+
+    @Test fun `OBB 取锁必须用四段元数据构造器`() {
+        // 防止写侧退回三段：脚本读 f4 是既有契约，两侧字段数必须由同一个函数保证一致。
+        val src = File("src/main/java/com/mixradio/droid/data/ApkInstaller.kt").readText()
+        assertTrue(
+            "acquireObbLock 必须经 buildObbLockMeta 生成锁内容",
+            src.contains("buildObbLockMeta(token, Process.myPid(), startTicks")
+        )
+        assertTrue(
+            "不得再出现只有三段的手工拼接",
+            !src.contains("escapeShellArg(\"\$token|\${Process.myPid()}|\$startTicks\")")
+        )
+    }
+
+    @Test fun `OBB 锁获取脚本对三段历史锁用 mtime 兜底`() {
+        // 修复前写入的锁只有三段，f4 恒为空串。若直接进数字校验，这类残留锁永远回收不掉，
+        // 用户只能手动删隐藏文件才能再装。缺失时退回锁文件 mtime（锁只在创建时写一次）。
+        val s = ApkInstaller.buildObbLockAcquireScript("'L'", "'T|1|2|3'", "'Q'")
+        assertTrue(
+            "f4 为空或非数字时必须退回锁文件 mtime",
+            s.contains("''|*[!0-9]*) oldCreated=\$(stat -c %Y 'L' 2>/dev/null || true);; esac;")
+        )
+        // 兜底之后仍要走同一套数字校验：整行无分隔符的垃圾锁依旧 fail-closed
+        val fallbackAt = s.indexOf("oldCreated=\$(stat -c %Y")
+        val guardAt = s.indexOf("case \"\$_f\" in ''|*[!0-9]*) exit ${ApkInstaller.ObbLockExit.UNKNOWN}")
+        assertTrue("兜底必须早于数字校验", fallbackAt in 0 until guardAt)
+    }
+
+    @Test fun `OBB 锁 TTL 判定必须用算术展开`() {
+        // 真机（Android 10 / mksh）实测：`[ "$now" - "$oldCreated" -lt 900 ]` 报
+        // `[: -: unexpected operator/operand` 并返回非零 —— test 内建没有算术运算，
+        // 于是「未过 TTL 也算忙」这道保护恒定失效，连刚写下 1 秒的锁也会被立刻回收，
+        // 持有者存活探测出现瞬时读不到 /proc 时就会造成双持锁。
+        val s = ApkInstaller.buildObbLockAcquireScript("'L'", "'T|1|2|3'", "'Q'")
+        assertTrue("TTL 差值必须写成 \$(( )) 算术展开", s.contains("[ \$((now - oldCreated)) -lt "))
+        assertTrue("不得再用 test 的伪算术写法", !s.contains("- \"\$oldCreated\" -lt"))
+    }
+
     @Test fun `OBB 锁获取脚本以 O_EXCL 原子创建收尾`() {
         // 互斥点必须是 `set -C`（O_CREAT|O_EXCL）。
         // 反例：旧实现用 `mv $tempLock $lock`，而 `mv dir1 dir2` 在 dir2 已存在且是目录时
         // 会把 dir1 移进 dir2 内部并返回 0 —— 并发双方都认为持锁（真机已实测复现）。
-        val s = ApkInstaller.buildObbLockAcquireScript("'L'", "'T|1|2'", "'Q'")
+        val s = ApkInstaller.buildObbLockAcquireScript("'L'", "'T|1|2|3'", "'Q'")
         assertTrue("必须用 set -C 做 O_EXCL 创建", s.contains("set -C"))
-        assertTrue(s.contains("printf '%s' 'T|1|2' > 'L'"))
+        assertTrue(s.contains("printf '%s' 'T|1|2|3' > 'L'"))
         assertTrue("成功路径必须以 exit 0 收尾", s.trimEnd().endsWith("exit ${ApkInstaller.ObbLockExit.BUSY}"))
         assertTrue("不能出现把临时目录 mv 到锁位置的非原子发布", !s.contains("tempLock"))
     }
@@ -373,7 +426,7 @@ class InstallAndBudgetHardeningTest {
         // 真实缺陷：`cut -d'|' -f2` 对「无分隔符」的行整行返回，垃圾锁的三个字段都变成
         // 同一串非数字文本；直接 `[ a -ge b ]` 在 mksh 下报 unexpected operator 并返回非零，
         // 判定链顺势滑到「陈旧锁回收」—— 状态不明被误判成可抢占（真机已实测复现）。
-        val s = ApkInstaller.buildObbLockAcquireScript("'L'", "'T|1|2'", "'Q'")
+        val s = ApkInstaller.buildObbLockAcquireScript("'L'", "'T|1|2|3'", "'Q'")
         assertTrue(
             "必须对 oldPid/oldStart/oldCreated/now 做纯数字校验",
             s.contains("case \"\$_f\" in ''|*[!0-9]*) exit ${ApkInstaller.ObbLockExit.UNKNOWN}")
@@ -398,7 +451,7 @@ class InstallAndBudgetHardeningTest {
     }
 
     @Test fun `OBB 锁获取脚本对陈旧锁先隔离再核对身份`() {
-        val s = ApkInstaller.buildObbLockAcquireScript("'L'", "'T|1|2'", "'Q'")
+        val s = ApkInstaller.buildObbLockAcquireScript("'L'", "'T|1|2|3'", "'Q'")
         assertTrue("陈旧锁必须先原子改名摘掉锁名", s.contains("mv 'L' 'Q'"))
         assertTrue(
             "隔离后必须核对内容一致，不一致不得删除",
@@ -411,7 +464,7 @@ class InstallAndBudgetHardeningTest {
     }
 
     @Test fun `OBB 锁获取脚本对活跃持有者返回 BUSY 且不删除锁`() {
-        val s = ApkInstaller.buildObbLockAcquireScript("'L'", "'T|1|2'", "'Q'")
+        val s = ApkInstaller.buildObbLockAcquireScript("'L'", "'T|1|2|3'", "'Q'")
         // pid + 进程启动时间双校验
         assertTrue(s.contains("/proc/\$oldPid/stat"))
         assertTrue(s.contains("if [ \"\$liveStart\" = \"\$oldStart\" ]; then exit ${ApkInstaller.ObbLockExit.BUSY}"))

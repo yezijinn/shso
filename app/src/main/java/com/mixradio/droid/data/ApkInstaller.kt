@@ -528,7 +528,9 @@ object ApkInstaller {
      */
     private fun acquireObbLock(lockPath: String, token: String): Pair<Int, String> {
         val startTicks = processStartTicks() ?: return ObbLockExit.UNKNOWN to "无法读取当前进程启动时间"
-        val meta = RootService.escapeShellArg("$token|${Process.myPid()}|$startTicks")
+        val meta = RootService.escapeShellArg(
+            buildObbLockMeta(token, Process.myPid(), startTicks, System.currentTimeMillis() / 1000)
+        )
         val quarantine = RootService.escapeShellArg("$lockPath.shso.quarantine.${UUID.randomUUID()}")
         val script = buildObbLockAcquireScript(
             lock = RootService.escapeShellArg(lockPath),
@@ -537,6 +539,17 @@ object ApkInstaller {
         )
         return RootService.runCommandSync(script, INSTALL_TIMEOUT_MS)
     }
+
+    /**
+     * 生成锁元数据 `token|pid|startTicks|createdEpoch`，与 [buildObbLockAcquireScript] 里
+     * `cut -d'|' -f4` 的读取严格对应。
+     *
+     * 第 4 段不能省：三段元数据经 `cut -f4` 得到空串，会被获取脚本的数字校验判为「状态不明」
+     * 而直接以 UNKNOWN 失败 —— 并发退避（期望 BUSY）与陈旧锁 TTL 回收两条路径全部不可达，
+     * 锁一旦残留就永久拒绝该游戏的 OBB 安装。
+     */
+    internal fun buildObbLockMeta(token: String, pid: Int, startTicks: String, createdEpoch: Long): String =
+        "$token|$pid|$startTicks|$createdEpoch"
 
     /**
      * 生成 OBB 事务锁的获取脚本。抽成独立函数是为了能在 JVM 单测里对**生成的脚本文本**
@@ -553,6 +566,11 @@ object ApkInstaller {
         append("oldPid=\$(echo \"\$old\" | cut -d'|' -f2); ")
         append("oldStart=\$(echo \"\$old\" | cut -d'|' -f3); ")
         append("oldCreated=\$(echo \"\$old\" | cut -d'|' -f4); ")
+        // 历史残留锁只有三段（旧版本写入），f4 为空会让下面的数字校验直接判「状态不明」，
+        // 这类锁就永远回收不掉。f4 缺失/非数字时退回锁文件 mtime：锁只在创建时写一次，
+        // mtime 即创建时刻，语义等价。整行没有分隔符的垃圾锁仍被 oldPid / oldStart 挡下，
+        // fail-closed 性质不变。
+        append("case \"\$oldCreated\" in ''|*[!0-9]*) oldCreated=\$(stat -c %Y $lock 2>/dev/null || true);; esac; ")
         // 元数据不完整或**非纯数字** = 状态不明：fail-closed。
         // 数字校验是必需的，不只是防御性写法：`cut` 对「无分隔符」的行会整行返回，
         // 于是垃圾锁文件的三个字段都变成同一串非数字文本；直接拿去和 now 做
@@ -565,7 +583,12 @@ object ApkInstaller {
         // liveStart 为空/非数字表示进程已不存在（/proc 读不到），此时按「非活锁」继续走陈旧判定。
         append("liveStart=\$(cat /proc/\$oldPid/stat 2>/dev/null | awk '{print \$22}'); ")
         append("case \"\$liveStart\" in ''|*[!0-9]*) ;; *) if [ \"\$liveStart\" = \"\$oldStart\" ]; then exit ${ObbLockExit.BUSY}; fi;; esac; ")
-        append("if [ \"\$oldCreated\" -ge \"\$now\" ] || [ \"\$now\" - \"\$oldCreated\" -lt $OBB_LOCK_TTL_SECONDS ]; then exit ${ObbLockExit.BUSY}; fi; ")
+        // 未过 TTL 也算忙。差值必须写成 `$(( ))` 算术展开：`[ "$now" - "$oldCreated" -lt N ]`
+        // 不是 test 的合法形式（test 没有算术运算），mksh 直接报
+        // `[: -: unexpected operator/operand` 并以非零返回，于是这道 TTL 保护恒定失效 ——
+        // 只要持有者被判定为不存活就立刻回收，连刚写下 1 秒的锁也不例外。
+        // 真机（Android 10 / mksh）已实测：`- ` 写法报错返回假，`$(( ))` 写法正常。
+        append("if [ \"\$oldCreated\" -ge \"\$now\" ] || [ \$((now - oldCreated)) -lt $OBB_LOCK_TTL_SECONDS ]; then exit ${ObbLockExit.BUSY}; fi; ")
         // 陈旧：原子改名摘掉锁名，再核对内容确实是刚判定的那把
         append("if mv $lock $quarantine 2>/dev/null; then ")
         append("got=\$(cat $quarantine 2>/dev/null || true); ")

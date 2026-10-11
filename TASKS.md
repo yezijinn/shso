@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（`7ec25ea`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 499 tests / 0 failures / 1 skipped |
+| 单元测试 | 503 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -47,10 +47,11 @@
 | 归档格式 | 14 种：tar 系（`.tar.gz/.tar.xz/.tar.bz2/.tar.lz4/.tar.zst/.tgz/.tzst/.tar`）+ 单文件（`.gz/.xz/.bz2/.lz4/.zst/.zip`）；`.tzst` 为 tar+zstd 别名 |
 | 语法包 | 62 语言 / 187 扩展名，`syntax-packs.zip`(37KB)，永固直链 tag `syntaxpacks-v2` |
 | 执行方式 | 命令与脚本直通执行，无策略判定、无执行记录（守卫/档位/审计已移除） |
-| OBB 事务锁 | 单文件 `set -C`(O_EXCL) 原子 CAS；真机 8 进程并发恰好 1 成功；**建目录早于取锁**；幂等条目不进回滚表 |
+| OBB 事务锁 | 单文件 `set -C`(O_EXCL) 原子 CAS；真机 8 进程并发恰好 1 成功；**建目录早于取锁**；幂等条目不进回滚表；锁内容四段 `token\|pid\|startTicks\|createdEpoch`，陈旧判定用 `$(( ))` 算术展开（`- ` 写法非 test 合法形式会恒假） |
 | 真机 | `$DEVICE`（Android 10 / 1080×2280 / Magisk root） |
 | 已知环境坑 | `adb shell su -c "a; b"` 的 `;` 会让后半段以 shell 用户执行 → 必须 `su -c 'sh script.sh'` |
 | 已知环境坑 | Android 的 mksh **不支持**算术展开里的位运算符（`$(( 0600 & 022 ))` 真机实测返回非 0）。判权限位只能用 `find -perm /022` 或 `stat -c %A` 逐位取，别写位与 |
+| 已知环境坑 | mksh 的 `test` 内建**没有算术运算**：`[ "$now" - "$oldCreated" -lt 900 ]` 报 `[: -: unexpected operator/operand` 并非零返回（即恒假），差值必须写成 `[ $((now - oldCreated)) -lt 900 ]` |
 | 已知环境坑 | 本机 toybox `find -print0` 可用，但 **`find -printf` 不可用**（`bad arg '-printf'`）；`stat -L -c %s` 正常 |
 | 已知环境坑 | `test -f /proc/cpuinfo` 返回**真**（procfs 项类型就是普通文件）→ 判断「真空 vs 有内容」不能用文件类型，只能实读（`dd \| wc -c`） |
 | 已知环境坑 | `stat -L -c %s` 对 `/proc/*`、`/sys/*`、FIFO **恒为 0** 但内容非空（三者与真空文件的 `stat %s` 完全相同） |
@@ -65,11 +66,41 @@
 | 已知环境坑 | 应用进程的 environ **不含 `TMPDIR`**（`su -c` 也不补），而 `adb shell` 自带 `TMPDIR=/data/local/tmp` → 依赖 `$TMPDIR` 的脚本「adb 下正常、应用内失败」。执行环境须显式 `export TMPDIR` |
 | 已知环境坑 | 本机 toybox `mktemp` 创建失败时把模板前缀打成 `(null)/`（如 `Failed to create directory (null)//data/…`）——`(null)` 不是路径的一部分，真实模板要减去该前缀再看 |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐）；双端同名 Release，资产 `app-release.apk` 2893369 字节，双端下载 sha256 与本地一致（`e7a8f49b…`）；旧版 APK 已从双端 `20261004` 移除，仅保留 Release 与 tag |
+| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐）；双端同名 Release，资产 `app-release.apk` 2893369 字节，双端下载 sha256 与本地一致（`635fc748…`）；旧版 APK 已从双端 `20261004` 移除，仅保留 Release 与 tag |
 
 ---
 
 ## 待办
+
+### A89. OBB 锁元数据字段数与 TTL 判定（2026-10-11）
+
+OBB 事务锁的判定链全在 shell 里跑，JVM 单测只能断言生成的脚本文本，
+所以这两条只能靠真机（root，Android 10 / mksh）复现。
+
+- [x] **锁元数据少写第四段，锁一旦残留就永久拒绝安装**：锁内容契约为
+  `token|pid|startTicks|createdEpoch`，脚本按 `cut -d'|' -f4` 读创建时刻，
+  而写入侧只写了三段。三段行取 `f4` 得空串，随即被脚本的数字校验判为「状态不明」，
+  于是并发退避（期望 `17` BUSY）与陈旧锁 TTL 回收两条路径全部不可达：
+  前者让后到的并发安装看到误导性的「锁文件可能已损坏」（`21` UNKNOWN，调用方只对 `17` 退避），
+  后者让一次崩溃留下的锁把该游戏的 OBB 安装永久锁死且无自愈路径。
+- [x] **抽出 `buildObbLockMeta` 写满四段**，并让调用点直接走该构造器；
+  对历史残留的三段锁用锁文件 `mtime` 兜底（`stat -c %Y`）：锁只在创建时写一次，
+  `mtime` 即创建时刻，语义等价。无分隔符的垃圾锁仍被 `oldPid` / `oldStart` 挡下，fail-closed 性质不变。
+- [x] **TTL 判定写法非法致该保护恒定失效**：`[ "$now" - "$oldCreated" -lt 900 ]`
+  不是 `test` 的合法形式（`test` 内建没有算术运算），mksh 报
+  `[: -: unexpected operator/operand` 并以非零返回，于是「未过 TTL 也算忙」整条失效 ——
+  只要持有者被判定为不存活就立刻回收，连刚写下 1 秒的锁也不例外。
+  改为 `[ $((now - oldCreated)) -lt $OBB_LOCK_TTL_SECONDS ]`。
+- [x] 单测与契约测试：`InstallAndBudgetHardeningTest` 增 4 例（四段元数据构造、
+  取锁必须走构造器、三段锁 `mtime` 兜底位置先于数字校验、TTL 必须用 `$(( ))` 算术展开）。
+- [x] 全量单测通过：`testDebugUnitTest` → 503 tests / 0 failures / 1 skipped。
+- [x] 真机（root）验证：脚本语义 7/7 通过（空闲 / 活锁 / 新锁未过 TTL / 陈旧锁已过 TTL /
+  三段旧锁新老 `mtime` 各一 / 无分隔符垃圾锁）；陈旧锁回收后锁已换新且无 quarantine 残留；
+  8 进程并发恰好 1 成功、其余 7 个均为 `17`。设备端 `base.apk` 的 sha256 与本地一致（`635fc748…`）。
+- [x] **不改项**：AI-1 建议「`exit 21` 前删掉 quarantine」经复核对既有害——mismatch 分支里
+  隔离出的可能是他方活锁的元数据（读与 `mv` 之间被抢锁），删掉会诱发双持锁；改判 BY_DESIGN。
+- [x] **台账补录**：`docs/AI-1-BUG.md` 第 2–6 轮的 21 条建议此前完全未进台账
+  （含本轮 P1），已按 §2.5 汇总清单登记，避免单一视角漏判。
 
 ### A88. 权限弹窗崩溃与保存死锁（2026-10-11）
 
