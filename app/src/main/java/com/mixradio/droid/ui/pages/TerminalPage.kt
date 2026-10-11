@@ -80,6 +80,7 @@ import com.mixradio.droid.ui.theme.AuroraThinSlider
 import com.mixradio.droid.ui.theme.AuroraTokens
 import com.mixradio.droid.ui.theme.AuroraWindowDialog
 import com.mixradio.droid.ui.theme.auroraTextFieldColors
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
@@ -200,7 +201,7 @@ fun TerminalPage(
     // → 终端出现最多一批（≤ 一个 flush 间隔）的重复行。
     //
     // 放在与解析器同生命周期的文件级对象里，才能真正跨 Activity 生效。
-    val myGen = remember(terminalDefaultColor) { ++TerminalParseGeneration.ref[0] }
+    val myGen = remember(terminalDefaultColor) { TerminalParseGeneration.ref.incrementAndGet() }
     var parsedOutput by remember(terminalDefaultColor) {
         mutableStateOf(cachedParse?.result ?: ParsedAnsiResult(emptyList()))
     }
@@ -244,14 +245,14 @@ fun TerminalPage(
                         // 出现「解析器已前进、进度没记」——否则重进会把同一段再喂一次，日志出现重复行。
                         // 代次守卫：解析期间若发生了新一轮（换色 / 组件离组合重建），
                         // 本结果已过期，写回会让新组合按错误的进度重喂。
-                        if (TerminalParseGeneration.ref[0] == myGen) {
+                        if (TerminalParseGeneration.ref.get() == myGen) {
                             parseHolder.state?.let { it.consumedLog = log; it.result = r }
                         }
                         r
                     }
                     result
                 }
-                if (TerminalParseGeneration.ref[0] != myGen) return@collect
+                if (TerminalParseGeneration.ref.get() != myGen) return@collect
                 if (parseHolder.state == null) {
                     parseHolder.state = TerminalParseState(terminalDefaultColor, ansiParser, log, snap)
                         .also { TerminalParseCache.state = it }
@@ -774,6 +775,11 @@ private object TerminalParseCache {
  * 「本结果是否过期」的判据在跨 Activity 场景下恒为真 —— 守卫形同虚设。
  */
 internal object TerminalParseGeneration {
-    /** 单调递增；仅在主线程读写（`remember` 的计算与解析块的守卫都在主线程）。 */
-    val ref = intArrayOf(0)
+    /**
+     * 单调递增。自增在主线程（`remember` 的计算），但读取发生在 `withContext(Dispatchers.Default)`
+     * 的解析块里（Default worker）——跨 Activity 重建时，新 Activity 主线程的自增与旧 worker
+     * 的读之间没有 happens-before，普通 `intArrayOf` 会读到过期值使守卫恒成立。
+     * 用原子量承担跨线程可见性。
+     */
+    val ref = AtomicInteger(0)
 }

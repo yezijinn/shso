@@ -139,6 +139,24 @@ import java.util.Locale
  */
 private val batchJobScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+/**
+ * 安装的执行 scope：同样**不随组合销毁**。
+ *
+ * `pm install`（ROOT 静默安装）是正在落地的系统副作用，一次旋屏不该把它连同收尾一起取消：
+ * 页面级 scope 被取消后抛出的 `CancellationException` 会跳过 `startInstall` 尾部的
+ * 暂存副本清理（`stagedPath?.let { File(it).delete() }` 不在 `finally` 里），
+ * 副本就此变成孤儿；安装本身的结论与提示也一并丢失。
+ */
+private val installJobScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+/**
+ * 安装进行中标志：**进程级**，不随组合销毁。
+ *
+ * 页面级 remember 会在旋屏/Activity 重建后归零，安装入口重新可点，而 `pm install`
+ * 可能仍在进行 —— 用户可再次发起安装，两次安装交叠。
+ */
+private var installInFlight by mutableStateOf(false)
+
 @Composable
 fun FilePage(
     appSettings: AppSettings,
@@ -240,7 +258,9 @@ fun FilePage(
     var permissionTargetItem by remember { mutableStateOf<FileItem?>(null) }
     var modeTargetItem by remember { mutableStateOf<FileItem?>(null) }
     var showActionDialog by remember { mutableStateOf(false) }
-    var isInstalling by remember { mutableStateOf(false) }
+    // 安装进行中标志由文件级的进程状态承担（见文件末尾 [installInFlight]）：
+    // 旋屏/Activity 重建不重置，安装期间入口持续禁用，不会二次发起。
+    val isInstalling = installInFlight
     // 图片浏览弹窗的宿主开关与目标项必须 rememberSaveable：
     // 旋转/分屏时 Activity 重建会让普通 remember 回到初值，弹窗被静默关掉。
     // 对文本编辑器而言这是**数据丢失**：编辑器内部的 rememberSaveable 状态随
@@ -636,8 +656,8 @@ fun FilePage(
         confirmedSha256: String? = null,
         stagedPath: String? = null
     ) {
-        scope.launch {
-            isInstalling = true
+        installJobScope.launch {
+            installInFlight = true
             installAlertMessage = null
             installStatusMessage = "正在安装 ${item.name}，请勿重复操作"
             val installMode = if (installAsRootOverride == true) "root" else "system"
@@ -673,7 +693,7 @@ fun FilePage(
             } catch (e: Exception) {
                 ApkInstaller.InstallResult.Failure("安装失败: ${e.message ?: "未知错误"}")
             }
-            isInstalling = false
+            installInFlight = false
             val resultMessage = when (result) {
                 is ApkInstaller.InstallResult.Success -> result.message
                 is ApkInstaller.InstallResult.Failure -> result.message

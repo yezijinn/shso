@@ -14,10 +14,12 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,7 +73,8 @@ fun InstallConfirmDialog(
     // 本 LaunchedEffect 重启后走 else 分支把副本删掉，而 startInstall 的协程
     // 还要用它算 sha256、再喂给 ApkInstaller —— 两条 Main 派发谁先跑取决于帧时序，
     // 表现为「安装时好时坏 / 报安装包在确认后发生变化」。
-    var stagedConsumed by remember { mutableStateOf(false) }
+    // 用 rememberSaveable：旋转/分屏后仍记得副本已交出，不会把在用的副本当孤儿删掉。
+    var stagedConsumed by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(show, fileItem?.path) {
         info = if (show && fileItem != null) {
@@ -92,6 +95,17 @@ fun InstallConfirmDialog(
             stagedPath = null
             confirmedSha256 = null
             null
+        }
+    }
+
+    // 组合被销毁（旋转 / 分屏 / 离开页面）时清理未被交出的暂存副本。
+    // 上面的 LaunchedEffect 只在 show / 目标路径变化时清理；而旋转会让 stagedPath 这个普通
+    // remember 归零、旧副本的路径随之丢失，没有任何分支再去删它 —— 每旋转一次就多一份孤儿
+    // 副本（XAPK 整套分片各一份，量级可达数十 MB，且落在 cacheDir 只能等系统回收）。
+    // 已交出（stagedConsumed）的副本不在此列：它在 startInstall 手里。
+    DisposableEffect(fileItem?.path) {
+        onDispose {
+            if (!stagedConsumed) stagedPath?.let { java.io.File(it).delete() }
         }
     }
 

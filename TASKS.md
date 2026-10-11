@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 516 tests / 0 failures / 1 skipped |
+| 单元测试 | 518 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -71,6 +71,38 @@
 ---
 
 ## 待办
+
+### A92. 终端解析代次与安装生命周期复核（2026-10-11）
+
+补齐 A91 遗漏：只读审查末批新增的 4 条从未进入台账（`BUG.md` 全域零命中）。
+逐条对照当前代码复核，3 条成立并修复，1 条判设计取舍。
+
+- [x] **终端解析代次计数器跨线程不可见**（087，P2）：`parseGenRef` 是 `remember` 的
+  `intArrayOf`，自增在主线程、读取在 `withContext(Dispatchers.Default)` 的解析块里。
+  旋转屏幕重建 Activity 后新旧各持一份全新数组，`myGen` 都等于 1，`ref[0] == myGen`
+  两侧同时成立 → 守卫形同虚设，旧 Activity 的 in-flight 解析块（纯 CPU、无挂起点、取消打不断）
+  与新 Activity 首个 collect 串行进入 `synchronized(ansiParser)`，后进入者按旧 `prev`
+  把同一段再喂一次 → 终端出现重复行。改为文件级 `internal object TerminalParseGeneration`
+  持有 `AtomicInteger`，承担跨线程可见性；既有前置自增语义保留。
+- [x] **安装确认弹窗暂存副本随旋转泄漏**（085，P3）：旋转让 `stagedPath` 这个普通 `remember`
+  归零，旧副本路径丢失，`LaunchedEffect` 只在 show / 目标路径变化时清理 → 每旋转一次多一份
+  孤儿副本（XAPK 整套分片可达数十 MB，落在 `cacheDir` 只能等系统回收）。
+  新增 `DisposableEffect(fileItem?.path) { onDispose { if (!stagedConsumed) …delete() } }`
+  清理未交出的副本；`stagedConsumed` 改 `rememberSaveable`，已交给 `startInstall` 的副本不受影响。
+- [x] **安装中状态与执行作用域跨配置变更重置**（086，P3）：`isInstalling` 是页面级 `remember`，
+  旋转后归零 → 顶栏安装入口重新可用，安装尚未结束时即可二次发起，两次 `pm install` 交叠。
+  且 `startInstall` 的清理不在 `finally` 内（取消从 try 内重抛会跳过尾部），
+  直接对 `isInstalling` 用 `rememberSaveable` 会造成「取消后入口永久禁用」。
+  改为文件级进程状态 `installInFlight`（`mutableStateOf`）+ 文件级 `installJobScope`
+  （`SupervisorJob() + Dispatchers.Main.immediate`），沿用既有 `batchJobScope` 模式：
+  重建不重置、取消仍能收尾。
+- [x] **判为设计取舍的一条**：`BUG-CONSIST-088`（首页以布尔 key 驱动重列举）——授权状态翻转
+  由用户操作封顶，非自激；列举结果有 `shsoGenRef` 代次守卫，无非正确性问题；
+  改「仅 false→true 边沿」会让用户主动刷新失效，加节流又致授权后列表延迟出现。判 BY_DESIGN。
+- [x] 单测：改写 `TextEditorAndTerminalGuardTest` 的两条代次断言（原子化）、
+  新增 `InstallLifecycleGuardTest` 2 例（暂存清理 + 安装状态跨配置变更）。
+- [x] 全量单测通过：`testDebugUnitTest` → 518 tests / 0 failures / 1 skipped。
+- [x] 真机（root）验证。
 
 ### A91. 只读审查余下条目的代码级复核（2026-10-11）
 

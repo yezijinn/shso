@@ -144,7 +144,7 @@ class TerminalParseGenerationScopeTest {
 
     private val page = File("src/main/java/com/mixradio/droid/ui/pages/TerminalPage.kt")
 
-    @Test fun `解析代次计数器必须是文件级而非组合级`() {
+    @Test fun `解析代次计数器必须是文件级且跨线程可见`() {
         val s = page.readText()
         assertTrue(
             "代次计数器必须定义在文件级对象上",
@@ -156,21 +156,32 @@ class TerminalParseGenerationScopeTest {
         )
         assertTrue(
             "取代次必须走文件级对象",
-            s.contains("TerminalParseGeneration.ref[0]")
+            s.contains("TerminalParseGeneration.ref.get()") ||
+                s.contains("TerminalParseGeneration.ref.incrementAndGet()")
+        )
+        // 读取发生在 withContext(Dispatchers.Default) 的解析块里，写发生在主线程；
+        // 跨 Activity 重建时两者无 happens-before，普通数组容器会读到过期值使守卫恒成立。
+        assertTrue(
+            "代次计数器必须是原子类型",
+            s.contains("val ref = AtomicInteger(0)")
+        )
+        assertTrue(
+            "不得再用无可见性保证的数组容器",
+            !s.contains("val ref = intArrayOf")
         )
     }
 
     @Test fun `代次递增仍必须是前置自增`() {
-        // 后置自增会使 myGen 恒等于 ref[0] - 1，两处守卫恒为假，
+        // 后置自增会使 myGen 恒等于 ref 的旧值，两处守卫恒为假，
         // 每次 collect 都在解析完的结果上直接 return，终端输出区永远空白。
         val s = page.readText()
         assertTrue(
             "必须前置自增",
-            Regex("\\+\\+TerminalParseGeneration\\.ref\\[0\\]").containsMatchIn(s)
+            Regex("TerminalParseGeneration\\.ref\\.incrementAndGet\\(\\)").containsMatchIn(s)
         )
         assertTrue(
             "不得回退为后置自增",
-            !Regex("TerminalParseGeneration\\.ref\\[0\\]\\+\\+").containsMatchIn(s)
+            !Regex("TerminalParseGeneration\\.ref\\.getAndIncrement\\(\\)").containsMatchIn(s)
         )
     }
 
