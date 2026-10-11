@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（`966c7ac`） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（`7ec25ea`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
 | 单元测试 | 499 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
