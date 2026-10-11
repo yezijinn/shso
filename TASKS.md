@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 537 tests / 0 failures / 1 skipped |
+| 单元测试 | 539 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -72,6 +72,23 @@
 ---
 
 ## 待办
+
+### A97. 更新检查状态与终端渲染取消复核（2026-10-11）
+
+继续对同类条目做资产面复核：一条真缺陷、一条失效。
+
+- [x] **「检查更新」进行态与结果不跨配置变更**（`BUG-CONSIST-096`，P3，CONFIRMED）：
+  `updateState`/`updateChecking` 是页面级 `remember`、检查作业跑在 `rememberCoroutineScope` 上，
+  旋转（或深色模式 / 字号变化）重建整个组合 → 作业被取消、状态归零，「检查中」熄灭、结果弹窗永不出现；
+  且 `catch (Exception)` 把取消折成 `NetworkError`。状态与作业作用域提为文件级
+  （`updateJobScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)`），
+  try/catch 首行补 `CancellationException` 重抛。
+- [x] **终端渲染 `runCatching` 吞取消**（`BUG-EXC-025`，P2）判 `DISPROVEN`：
+  唯一渲染器文件 `TerminalPage.kt` 全文件已无 `runCatching`，输出 collect 内 `withContext` 之后
+  不再套宽 catch，取消经 `snapshotFlow` 自然传播（另有代次守卫）；原证据来自更早的渲染器实现。
+- [x] 单测：新增 `SettingsUpdateStateGuardTest` 2 项源码契约。
+- [x] 全量单测通过：`testDebugUnitTest` → 539 tests / 0 failures / 1 skipped。
+- [x] 真机（root）验证：`adb install -r -g` 成功，进程存活，logcat 无 `FATAL`。
 
 ### A96. 协程取消传播与批量守卫作用域复核（2026-10-11）
 

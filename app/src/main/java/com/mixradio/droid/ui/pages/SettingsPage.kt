@@ -68,7 +68,10 @@ import com.mixradio.droid.ui.theme.AuroraTokens
 import com.mixradio.droid.ui.theme.AuroraWindowDialog
 import com.mixradio.droid.ui.theme.auroraFilledButton
 import com.mixradio.droid.ui.theme.auroraPrimaryButtonColors
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
@@ -92,6 +95,14 @@ private sealed interface UpdateUiState {
     data class Available(val tag: Int, val source: String) : UpdateUiState
     data object NetworkError : UpdateUiState
 }
+
+// 检查更新的进行态与结果必须跨配置变更存活：原先是 remember + rememberCoroutineScope，
+// 旋转（或深色模式/字号变化）会重建整个组合 —— 作业被取消、状态归零，
+// 于是「检查中」消失、结果弹窗永不出现，用户只看到点过的按钮又暗了下去。
+// 与安装/批量任务的守卫同模式：状态与作业作用域都提到文件级（进程级）。
+private var updateState by mutableStateOf<UpdateUiState>(UpdateUiState.Idle)
+private var updateChecking by mutableStateOf(false)
+private val updateJobScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
 /** 「去更新」跳转：GitHub 走 releases 列表，Gitee 直达该 tag（发布 tag 为纯数字才能命中）。 */
 private fun releasesUrl(source: String, latest: Int): String =
@@ -242,15 +253,12 @@ fun SettingsPage(
     }
     var showAboutDialog by remember { mutableStateOf(false) }
 
-    // 检查更新状态
-    var updateState by remember { mutableStateOf<UpdateUiState>(UpdateUiState.Idle) }
-    // 胶囊视觉开关：点击「检查更新」后置为 true（亮起），3 秒后自动回关
-    var updateChecking by remember { mutableStateOf(false) }
+    // 检查更新状态（updateState / updateChecking / updateJobScope 均为文件级，见上）
 
     fun checkForUpdate() {
         if (updateState == UpdateUiState.Checking) return
         updateState = UpdateUiState.Checking
-        scope.launch {
+        updateJobScope.launch {
             try {
                 val (latest, source) = fetchLatestDateTag()
                 val local = BuildConfig.VERSION_CODE
@@ -260,6 +268,9 @@ fun SettingsPage(
                 } else {
                     UpdateUiState.UpToDate(latest, source)
                 }
+            } catch (e: CancellationException) {
+                // 取消不是「网络错误」，必须原样抛出，否则会把取消记成失败结果。
+                throw e
             } catch (_: Exception) {
                 updateState = UpdateUiState.NetworkError
             } finally {
