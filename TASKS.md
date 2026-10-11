@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → `284090f`） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → `d70165d`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
 | 单元测试 | 555 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
@@ -67,7 +67,7 @@
 | 已知环境坑 | 本机 toybox `mktemp` 创建失败时把模板前缀打成 `(null)/`（如 `Failed to create directory (null)//data/…`）——`(null)` 不是路径的一部分，真实模板要减去该前缀再看 |
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐，**指向当次发版代码** `284090f`）；双端同名 Release，资产 `app-release.apk` 2893369 字节，双端下载 sha256 与本地一致（`bd6ab447…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版 APK 已从双端 `20261004` 移除，仅保留 Release 与 tag |
+| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐，**指向当次发版代码** `d70165d`）；双端同名 Release，资产 `app-release.apk` 2893485 字节，双端下载 sha256 与本地一致（`2ffa1cb0…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版 APK 已从双端 `20261004` 移除，仅保留 Release 与 tag |
 
 ---
 
