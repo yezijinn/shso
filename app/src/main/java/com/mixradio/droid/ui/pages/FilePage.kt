@@ -2436,26 +2436,6 @@ fun FilePage(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Button(
-                        onClick = {
-                            try {
-                                val destFile = File(context.filesDir, "custom_app_font.ttf")
-                                File(targetItem.path).copyTo(destFile, overwrite = true)
-                                appSettings.setCustomFont(destFile.absolutePath, targetItem.name)
-                                Toast.makeText(context, "已成功应用为软件字体: ${targetItem.name}", Toast.LENGTH_LONG).show()
-                                showFontPreviewDialog = false
-                            } catch (e: Exception) {
-                                Toast.makeText(context, "应用字体失败: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = AuroraTokens.Accent,
-                            contentColor = AuroraTokens.OnAccent
-                        )
-                    ) {
-                        Text("应用为软件字体", fontSize = 12.sp)
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Button(
                         onClick = { showFontPreviewDialog = false },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = AuroraTokens.SurfaceHover,

@@ -27,7 +27,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,11 +46,23 @@ import com.mixradio.droid.ui.theme.AuroraTokens
 import com.mixradio.droid.ui.theme.AuroraWindowDialog
 import com.mixradio.droid.ui.theme.auroraFilledButton
 import com.mixradio.droid.ui.theme.auroraTextFieldColors
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private const val PERMISSION_BIT_COUNT = 9
+
+/**
+ * 权限保存的进程级作用域。
+ *
+ * 提交要连跑 chmod / chown / chgrp（含软链解析，Magisk 慢时数秒）。原先用页面级
+ * `rememberCoroutineScope()`，旋转 / 分屏重建页面即取消，取消点若落在三步之间，
+ * 文件会停在「权限已改、属主未改」的半套状态且无任何提示 —— 这是本项目唯一带越权
+ * 后果的操作，不能半途而废。改用与安装 / 批量一致的文件级作用域，旋转不中断。
+ */
+private val permissionSubmitScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
 /**
  * 八进制权限串转 9 位开关：每组按 rwx 顺序对应 4 / 2 / 1 位。
@@ -111,7 +122,6 @@ fun FilePermissionDialog(
 ) {
     if (!show) return
 
-    val scope = rememberCoroutineScope()
     var mode by remember(path, initialMode) { mutableStateOf(initialMode) }
     var owner by remember(path, initialOwner) { mutableStateOf(initialOwner) }
     var group by remember(path, initialGroup) { mutableStateOf(initialGroup) }
@@ -139,10 +149,8 @@ fun FilePermissionDialog(
         title = "文件权限与所有者",
         summary = path,
         // 提交期间禁止返回/点外部关闭。保存要 fork 6 次 su（三步各含软链解析），
-        // Magisk 慢时按钮灰掉数秒而界面无任何「保存中」提示，用户按返回 →
-        // 组件离组合 → rememberCoroutineScope 取消协程 → withContext 在 IO 块
-        // 跑完后于续体处抛 CancellationException，于是 onSubmitSuccess() 被整段跳过：
-        // 权限已全部落盘，列表权限副行仍显示旧串。
+        // Magisk 慢时按钮灰掉数秒而界面无任何「保存中」提示，用户按返回会关掉弹窗、
+        // 看不到成功/失败结论。提交本身跑在文件级 permissionSubmitScope 上，旋转不取消。
         onDismissRequest = { if (!submitting) onDismiss() },
         properties = DialogProperties(
             dismissOnBackPress = !submitting,
@@ -233,7 +241,7 @@ fun FilePermissionDialog(
                     return@PresetButton
                 }
                 submitting = true
-                scope.launch {
+                permissionSubmitScope.launch {
                     try {
                         // onSubmit 要 fork 多次 su，中途还可能回滚权限，任一步抛出异常
                         // （进程创建失败、IO 异常等）协程都会直接结束；不在这里兜住，

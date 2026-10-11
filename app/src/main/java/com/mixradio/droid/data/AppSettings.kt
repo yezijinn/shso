@@ -39,18 +39,6 @@ class AppSettings private constructor(context: Context) {
     var terminalTextColor by mutableLongStateOf(prefs.getLong(KEY_TERMINAL_TEXT_COLOR, DEFAULT_TERMINAL_COLOR))
         private set
 
-    var darkModeOption by mutableIntStateOf(prefs.getInt(KEY_DARK_MODE, 0))
-        private set
-
-    var useCustomFont by mutableStateOf(prefs.getBoolean(KEY_CUSTOM_FONT_ENABLED, true))
-        private set
-
-    var customFontPath by mutableStateOf(prefs.getString(KEY_CUSTOM_FONT_PATH, "") ?: "")
-        private set
-
-    var customFontName by mutableStateOf(prefs.getString(KEY_CUSTOM_FONT_NAME, "") ?: "")
-        private set
-
     var showShsoBanner by mutableStateOf(prefs.getBoolean(KEY_SHOW_SHSO_BANNER, true))
         private set
 
@@ -146,49 +134,6 @@ class AppSettings private constructor(context: Context) {
         val argb = color.toArgb().toLong() and 0xFFFFFFFFL
         terminalTextColor = argb
         prefs.edit { putLong(KEY_TERMINAL_TEXT_COLOR, argb) }
-    }
-
-    fun setDarkMode(option: Int) {
-        darkModeOption = option
-        prefs.edit { putInt(KEY_DARK_MODE, option) }
-    }
-
-    fun setCustomFontEnabled(enable: Boolean) {
-        useCustomFont = enable
-        prefs.edit { putBoolean(KEY_CUSTOM_FONT_ENABLED, enable) }
-    }
-
-    fun setCustomFont(path: String, name: String) {
-        customFontPath = path
-        customFontName = name
-        useCustomFont = true
-        prefs.edit {
-            putString(KEY_CUSTOM_FONT_PATH, path)
-            putString(KEY_CUSTOM_FONT_NAME, name)
-            putBoolean(KEY_CUSTOM_FONT_ENABLED, true)
-        }
-    }
-
-    fun useBuiltInFont() {
-        customFontPath = ""
-        customFontName = "内置字体"
-        useCustomFont = true
-        prefs.edit {
-            remove(KEY_CUSTOM_FONT_PATH)
-            putString(KEY_CUSTOM_FONT_NAME, "内置字体")
-            putBoolean(KEY_CUSTOM_FONT_ENABLED, true)
-        }
-    }
-
-    fun resetCustomFont() {
-        customFontPath = ""
-        customFontName = ""
-        useCustomFont = true
-        prefs.edit {
-            remove(KEY_CUSTOM_FONT_PATH)
-            remove(KEY_CUSTOM_FONT_NAME)
-            putBoolean(KEY_CUSTOM_FONT_ENABLED, true)
-        }
     }
 
     fun setShsoBanner(enable: Boolean) {
@@ -292,13 +237,9 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_AUTO_EXECUTE_AFTER_ADDING = "auto_execute_after_adding"
         private const val KEY_TERMINAL_TEXT_COLOR = "terminal_text_color"
         private const val KEY_TERMINAL_FONT_SIZE = "terminal_font_size"
-        private const val KEY_DARK_MODE = "dark_mode_option"
         private const val KEY_FILE_LIST_FONT_SIZE = "file_list_font_size"
         private const val KEY_SHOW_HIDDEN_FILES = "show_hidden_files"
         private const val KEY_FILE_SORT_MODE = "file_sort_mode"
-        private const val KEY_CUSTOM_FONT_ENABLED = "custom_font_enabled"
-        private const val KEY_CUSTOM_FONT_PATH = "custom_font_path"
-        private const val KEY_CUSTOM_FONT_NAME = "custom_font_name"
         private const val KEY_SHOW_SHSO_BANNER = "show_shso_banner"
         private const val KEY_REMEMBER_DIRECTORY = "remember_directory"
         /** 旧键（无序 StringSet）：仅用于首次迁移，迁移后删除。 */

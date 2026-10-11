@@ -519,11 +519,16 @@ private fun TextEditorDialogContent(
                 // （Compose 快照非线程安全），而且写出去的必须是「点击保存那一刻」的内容。
                 val snapshotText = contentValue.text
                 val snapshotRevision = textRevision
+                // 编码 / 行尾 / BOM 与文本同批取：这三项也是 Compose state，
+                // 跨到 Dispatchers.IO 上读不保证可见顺序（与 performSaveAs 一致）。
+                val snapshotCharset = resolveCharset()
+                val snapshotLineEnding = currentLineEnding
+                val snapshotBom = hasBom
                 scope.launch {
                     val path = currentFilePath!!
                     // 成功: Triple(写盘结果, 错误信息, 最新历史)；历史读写一并放入 IO 线程
                     val outcome = withContext(Dispatchers.IO) {
-                        val writeResult = writeTextFile(path, snapshotText, resolveCharset(), currentLineEnding, hasBom)
+                        val writeResult = writeTextFile(path, snapshotText, snapshotCharset, snapshotLineEnding, snapshotBom)
                         if (writeResult.first) {
                             EditHistoryManager.addHistory(path, snapshotText, EditHistoryManager.HistorySource.SAVE)
                             Triple(true, null as String?, EditHistoryManager.getHistory(path))

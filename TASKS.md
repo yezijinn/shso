@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → 见 § A104） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → 见 § A105） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 579 tests / 0 failures / 1 skipped |
+| 单元测试 | 583 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -67,11 +67,35 @@
 | 已知环境坑 | 本机 toybox `mktemp` 创建失败时把模板前缀打成 `(null)/`（如 `Failed to create directory (null)//data/…`）——`(null)` 不是路径的一部分，真实模板要减去该前缀再看 |
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐，**指向当次发版代码** `6201599`）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`819fb081…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版发行程序已从双端移除（Release 与 tag 保留） |
+| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2893485 字节，双端下载 sha256 与本地一致（`5dc39735…`）；双端 tag 与 Release 的目标提交均已对齐发版代码；旧版发行程序已从双端移除（Release 与 tag 保留） |
 
 ---
 
 ## 待办
+
+### A105. 权限保存生命周期、字体虚假入口与死设置清理（2026-10-11）
+
+- [x] `BUG-CONSIST-150`（P3，越权面）：`FilePermissionDialog` 的保存协程挂页面级
+  `rememberCoroutineScope()`，弹窗开关与元数据为普通 `remember`。提交要连跑 chmod / chown / chgrp
+  （含软链解析，Magisk 慢时数秒），旋转 / 分屏重建即取消，`catch (CancellationException) { throw e }`
+  又不回滚 —— 取消点落在三步之间时文件停在「权限已改、属主未改」的半套且无任何提示。
+  新增文件级 `permissionSubmitScope`（`SupervisorJob` + `Main.immediate`，与安装 / 批量同法），保存改走它。
+- [x] `BUG-CONSIST-151`（P2）：字体预览弹窗「应用为软件字体」复制字体到 filesDir、写
+  `appSettings.setCustomFont(...)` 并弹「已成功应用」，而渲染层从不读该设置
+  （`AuroraFontFamily` 硬编码 `FontFamily.Monospace`，222 处 `AuroraTextStyles` 引用）。写入侧齐全、
+  读取侧缺失，属虚假成功。动态化字体需大范围重构且与「APP 一律 Monospace」的硬约束冲突，
+  故移除该入口、字体复制与成功 Toast，保留真实可用的预览本体。
+- [x] `BUG-CONSIST-152`（P3）：`darkModeOption` / `setDarkMode` / `KEY_DARK_MODE` 无 UI 入口、
+  无消费（主题固定暗色），随字体死设置一并删除（共 4 字段 / 5 方法 / 4 常量）。
+- [x] `BUG-CONSIST-153`（P3）：`doSave` 的编码 / 行尾 / BOM 原在 `withContext(Dispatchers.IO)` 块内读，
+  与同文件另两条保存路径口径不一；改为 `scope.launch` 前（主线程）取快照。
+- [x] 单测与契约测试：新增 `ConsistencyCleanupRegressionTest` 4 条源码契约；
+  `testDebugUnitTest` 583 tests / 0 failures / 1 skipped。
+- [x] 文档：`BUG.md`（§1 索引、§3 A105、§2.6 排除项勘误）、`README.md`（字体预览措辞）、
+  `更新日志.md`、`TASKS.md`。
+- [x] 发版：APK 构建（2893485 字节，sha256 `5dc39735…`）、root 真机冒烟（`pm install -r -t`
+  成功后进程存活、logcat 无 FATAL/ANR）、双端 `main` 与 tag `20261011` 推送、双端 Release
+  目标提交改指该代码提交并替换资产，双端下载哈希与本地一致。
 
 ### A104. 分享多目标、文件页浏览态与输出读取取消（2026-10-11）
 
@@ -153,7 +177,7 @@ Release 资产（沿用 `df00088` 构建，APK sha256 `f8e34739…` 不变），
 - [x] 语法包 `syntax/SyntaxPackStore.kt` 全文：单文件 512KB / 整包 2MB / 单条目 512KB /
   边读边限流 / 写入回滚 / TSV 转义 / 大小写无关 `substringBeforeLast`；**无发现**。
 - [x] 设置持久化 `AppSettings.kt` 全文：读侧未钳制只在外改 prefs/降级安装场景可达（不可能场景，
-  不加载荷）；`darkModeOption`/`setDarkMode` 无读取方（死设置，无行为影响）；**均不作缺陷**。
+  不加载荷）；`darkModeOption`/`setDarkMode` 无读取方（死设置，无行为影响，A105 已随字体死设置删除）；**均不作缺陷**。
 - [x] 文本编辑器检索与只读态：`AI2-UI-004` 判 **BY_DESIGN**（缩短超时会把「较慢但有命中」
   误报为未找到，属正确性回退）、`AI2-UI-005` 判 **DISPROVEN**（`ensureActive()` 在循环体首部，
   取消后最多再读 1 块即抛；`getChunk` 为 `@Synchronized`，并发 load 串行化）。
