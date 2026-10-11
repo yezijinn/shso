@@ -2068,15 +2068,12 @@ private fun EditorSettingsDialog(
             border = BorderStroke(1.dp, AuroraTokens.Stroke),
             modifier = Modifier.fillMaxWidth(0.88f)
         ) {
-            // 面板行统一按最小触控尺寸 48dp 排布后，根页十余行在小屏或系统大字号下会超出对话框高度。
-            // 这里补竖向滚动兜底：原先无滚动容器，超出部分既画不出也点不到。
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             ) {
-                // 标题行
+                // 标题行写在滚动区之外：面板内容超高时滚动不会把「✕」带出视野。
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -2099,150 +2096,158 @@ private fun EditorSettingsDialog(
                 }
                 HorizontalDivider(color = AuroraTokens.Stroke, thickness = 0.5.dp, modifier = Modifier.padding(vertical = 6.dp))
 
-                when (page) {
-                    // 编码：二级列表
-                    "charset" -> {
-                        EDITOR_CHARSETS.forEach { (cs, name) ->
-                            CompactOptionRow(
-                                text = name, selected = cs == charset,
-                                onClick = { onCharsetChange(cs); page = "root" }
-                            )
-                        }
-                        CompactBackRow { page = "root" }
-                    }
-                    // 换行：二级列表
-                    "lineEnding" -> {
-                        LineEnding.entries.forEach { le ->
-                            CompactOptionRow(
-                                text = "${le.displayName()}  ${le.desc()}", selected = le == lineEnding,
-                                onClick = { onLineEndingChange(le); page = "root" }
-                            )
-                        }
-                        CompactBackRow { page = "root" }
-                    }
-                    // 根页
-                    else -> {
-                        CompactSettingRow("编码", charset.displayName()) { page = "charset" }
-                        // 行尾 / BOM 的切换都会置脏，而巨型只读浏览态下 doSave 被 isLargeFile 守卫拦死：
-                        // 允许切换等于把用户引进「改了必被拦、关必弹未保存、只能丢弃」的死路，
-                        // 且先切行尾后编码切换也被 dirty 前置挡住。故只读态下这两项直接禁用。
-                        CompactSettingRow("换行", lineEnding.displayName(), enabled = !chunkedBrowsing) { page = "lineEnding" }
-                        CompactSettingRow("语法包", "›") { onSyntaxPacksClick(); onDismiss() }
-                        CompactSettingRow("另存为", "›") { onSaveAsClick(); onDismiss() }
-                        CompactSettingRow("显示行号", if (showLineNumber) "开" else "关") {
-                            onShowLineNumberChange(!showLineNumber)
-                        }
-                        // BOM 开关：读取时按文件实际状态置位，用户可以显式增删 BOM 再保存。
-                        // 只在 UTF-8 / UTF-16 下有意义（其他编码不做 BOM 处理，见 writeTextFile）。
-                        CompactSettingRow(
-                            "写入 BOM",
-                            if (hasBom) "开" else "关",
-                            enabled = !chunkedBrowsing && (charset == Charsets.UTF_8 ||
-                                charset == Charsets.UTF_16LE ||
-                                charset == Charsets.UTF_16BE)
-                        ) {
-                            onHasBomChange(!hasBom)
-                        }
-                        CompactSettingRow("删除所有空行", if (isTransforming) "处理中…" else "执行", enabled = !isTransforming && !chunkedBrowsing) {
-                            runTextTransform("删除所有空行", ::removeEmptyLines)
-                        }
-                        CompactSettingRow("整体缩进两格", if (isTransforming) "处理中…" else "执行", enabled = !isTransforming && !chunkedBrowsing) {
-                            runTextTransform("整体缩进两格") { indentAllLines(it, 2) }
-                        }
-                        CompactSettingRow("删除所有换行", if (isTransforming) "处理中…" else "执行", enabled = !isTransforming && !chunkedBrowsing) {
-                            runTextTransform("删除所有换行", ::removeAllLineBreaks)
-                        }
-                        // 字号：纯文本档位
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("字号", style = AuroraTextStyles.body2, color = AuroraTokens.Text)
-                            Spacer(Modifier.width(12.dp))
-                            // 档位命中区取 48dp 高；7 档各占 48dp 宽会超出行宽，故用等分列给出宽度
-                            Row(modifier = Modifier.weight(1f)) {
-                                listOf(10, 12, 14, 16, 18, 20, 24).forEach { sz ->
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .heightIn(min = 48.dp)
-                                            .clickable { onFontSizeChange(sz.toFloat()) },
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            text = "$sz",
-                                            style = AuroraTextStyles.footnote1,
-                                            color = if (sz == fontSize.toInt()) AuroraTokens.Accent else AuroraTokens.TextSecondary
-                                        )
-                                    }
-                                }
+                // 内容区单独滚动：面板行统一抬到 48dp 后，根页十余行在小屏或系统大字号下会超出
+                // 对话框高度，而原先没有滚动容器，超出部分既画不出也点不到。
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    when (page) {
+                        // 编码：二级列表
+                        "charset" -> {
+                            EDITOR_CHARSETS.forEach { (cs, name) ->
+                                CompactOptionRow(
+                                    text = name, selected = cs == charset,
+                                    onClick = { onCharsetChange(cs); page = "root" }
+                                )
                             }
+                            CompactBackRow { page = "root" }
                         }
-                        // 自动保存：纯文本档位
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("草稿快照", style = AuroraTextStyles.body2, color = AuroraTokens.Text)
-                            Spacer(Modifier.width(12.dp))
-                            Row(modifier = Modifier.weight(1f)) {
-                                listOf(0, 30, 60, 120, 300).forEach { sec ->
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .heightIn(min = 48.dp)
-                                            .clickable { onAutoSaveChange(sec) },
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            text = "${sec}s",
-                                            style = AuroraTextStyles.footnote1,
-                                            color = if (sec == autoSaveSeconds) AuroraTokens.Accent else AuroraTokens.TextSecondary
-                                        )
-                                    }
-                                }
+                        // 换行：二级列表
+                        "lineEnding" -> {
+                            LineEnding.entries.forEach { le ->
+                                CompactOptionRow(
+                                    text = "${le.displayName()}  ${le.desc()}", selected = le == lineEnding,
+                                    onClick = { onLineEndingChange(le); page = "root" }
+                                )
                             }
+                            CompactBackRow { page = "root" }
                         }
-                        Text(
-                            "按间隔把当前内容存入「历史」，用于误改后回退；**不写入原文件**（保存仍需点顶部「保存」）。",
-                            style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary
-                        )
-                        HorizontalDivider(color = AuroraTokens.Stroke, thickness = 0.5.dp, modifier = Modifier.padding(vertical = 6.dp))
-                        // 全文统计：打开设置面板时已统计一次，此处只展示
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("全文统计", style = AuroraTextStyles.body2, color = AuroraTokens.Text)
-                        }
-                        val result = statResult
-                        if (chunkedBrowsing) {
-                            // contentValue 为空，统计出的 0 会让用户误以为文件是空的，直接说明原因。
-                            Text(
-                                "分段浏览模式未载入全文，无法统计",
-                                style = AuroraTextStyles.footnote2,
-                                color = AuroraTokens.TextSecondary,
-                                modifier = Modifier.padding(vertical = 2.dp)
-                            )
-                        } else if (result != null) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        // 根页
+                        else -> {
+                            CompactSettingRow("编码", charset.displayName()) { page = "charset" }
+                            // 行尾 / BOM 的切换都会置脏，而巨型只读浏览态下 doSave 被 isLargeFile 守卫拦死：
+                            // 允许切换等于把用户引进「改了必被拦、关必弹未保存、只能丢弃」的死路，
+                            // 且先切行尾后编码切换也被 dirty 前置挡住。故只读态下这两项直接禁用。
+                            CompactSettingRow("换行", lineEnding.displayName(), enabled = !chunkedBrowsing) { page = "lineEnding" }
+                            CompactSettingRow("语法包", "›") { onSyntaxPacksClick(); onDismiss() }
+                            CompactSettingRow("另存为", "›") { onSaveAsClick(); onDismiss() }
+                            CompactSettingRow("显示行号", if (showLineNumber) "开" else "关") {
+                                onShowLineNumberChange(!showLineNumber)
+                            }
+                            // BOM 开关：读取时按文件实际状态置位，用户可以显式增删 BOM 再保存。
+                            // 只在 UTF-8 / UTF-16 下有意义（其他编码不做 BOM 处理，见 writeTextFile）。
+                            CompactSettingRow(
+                                "写入 BOM",
+                                if (hasBom) "开" else "关",
+                                enabled = !chunkedBrowsing && (charset == Charsets.UTF_8 ||
+                                    charset == Charsets.UTF_16LE ||
+                                    charset == Charsets.UTF_16BE)
                             ) {
-                                StatItem("英文", "${result.english}")
-                                StatItem("中文", "${result.chinese}")
-                                StatItem("数字", "${result.digits}")
+                                onHasBomChange(!hasBom)
                             }
-                        } else if (statBusy) {
+                            CompactSettingRow("删除所有空行", if (isTransforming) "处理中…" else "执行", enabled = !isTransforming && !chunkedBrowsing) {
+                                runTextTransform("删除所有空行", ::removeEmptyLines)
+                            }
+                            CompactSettingRow("整体缩进两格", if (isTransforming) "处理中…" else "执行", enabled = !isTransforming && !chunkedBrowsing) {
+                                runTextTransform("整体缩进两格") { indentAllLines(it, 2) }
+                            }
+                            CompactSettingRow("删除所有换行", if (isTransforming) "处理中…" else "执行", enabled = !isTransforming && !chunkedBrowsing) {
+                                runTextTransform("删除所有换行", ::removeAllLineBreaks)
+                            }
+                            // 字号：纯文本档位
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("字号", style = AuroraTextStyles.body2, color = AuroraTokens.Text)
+                                Spacer(Modifier.width(12.dp))
+                                // 档位命中区取 48dp 高；7 档各占 48dp 宽会超出行宽，故用等分列给出宽度
+                                Row(modifier = Modifier.weight(1f)) {
+                                    listOf(10, 12, 14, 16, 18, 20, 24).forEach { sz ->
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .heightIn(min = 48.dp)
+                                                .clickable { onFontSizeChange(sz.toFloat()) },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = "$sz",
+                                                style = AuroraTextStyles.footnote1,
+                                                color = if (sz == fontSize.toInt()) AuroraTokens.Accent else AuroraTokens.TextSecondary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            // 自动保存：纯文本档位
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("草稿快照", style = AuroraTextStyles.body2, color = AuroraTokens.Text)
+                                Spacer(Modifier.width(12.dp))
+                                Row(modifier = Modifier.weight(1f)) {
+                                    listOf(0, 30, 60, 120, 300).forEach { sec ->
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .heightIn(min = 48.dp)
+                                                .clickable { onAutoSaveChange(sec) },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = "${sec}s",
+                                                style = AuroraTextStyles.footnote1,
+                                                color = if (sec == autoSaveSeconds) AuroraTokens.Accent else AuroraTokens.TextSecondary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                             Text(
-                                "统计中…", style = AuroraTextStyles.footnote2,
-                                color = AuroraTokens.TextSecondary,
-                                modifier = Modifier.padding(vertical = 2.dp)
+                                "按间隔把当前内容存入「历史」，用于误改后回退；**不写入原文件**（保存仍需点顶部「保存」）。",
+                                style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary
                             )
+                            HorizontalDivider(color = AuroraTokens.Stroke, thickness = 0.5.dp, modifier = Modifier.padding(vertical = 6.dp))
+                            // 全文统计：打开设置面板时已统计一次，此处只展示
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("全文统计", style = AuroraTextStyles.body2, color = AuroraTokens.Text)
+                            }
+                            val result = statResult
+                            if (chunkedBrowsing) {
+                                // contentValue 为空，统计出的 0 会让用户误以为文件是空的，直接说明原因。
+                                Text(
+                                    "分段浏览模式未载入全文，无法统计",
+                                    style = AuroraTextStyles.footnote2,
+                                    color = AuroraTokens.TextSecondary,
+                                    modifier = Modifier.padding(vertical = 2.dp)
+                                )
+                            } else if (result != null) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    StatItem("英文", "${result.english}")
+                                    StatItem("中文", "${result.chinese}")
+                                    StatItem("数字", "${result.digits}")
+                                }
+                            } else if (statBusy) {
+                                Text(
+                                    "统计中…", style = AuroraTextStyles.footnote2,
+                                    color = AuroraTokens.TextSecondary,
+                                    modifier = Modifier.padding(vertical = 2.dp)
+                                )
+                            }
                         }
                     }
+                    Spacer(Modifier.height(6.dp))
                 }
-                Spacer(Modifier.height(6.dp))
             }
         }
     }
