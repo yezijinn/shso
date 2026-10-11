@@ -36,6 +36,8 @@ data class InstalledAppInfo(
  * 命名规则（用户指定，后缀必须是大写 `APK`）：
  * - 基础包：`<应用名>-<versionCode>.APK`
  * - 分包：`<应用名>-<versionCode>-split1.APK`、`-split2.APK` …
+ * - 目标已存在且属于**另一个**包（标签与版本码相同的分身/双开应用）时，整组追加
+ *   `-<packageName>`：`<应用名>-<versionCode>-<包名>.APK`，避免静默覆盖。
  *
  * 读取 `/data/app/...` 下的安装包需要 ROOT；无 ROOT 时仅系统应用（其 APK 位于
  * 全局可读的 `/system` 等分区）能直接读取。
@@ -116,6 +118,28 @@ object ApkExtractor {
     private const val ILLEGAL_FILENAME_CHARS = "/\\:*?\"<>|"
 
     /**
+     * 目标已存在时为整组文件名追加的区分后缀；无冲突、同包或无法判定归属时返回空串。
+     *
+     * 归属判定读取既有 APK 自身的包名（`getPackageArchiveInfo`）：解析不出时**保持既有
+     * 覆盖语义**，不擅自改名——改名会让「重复提取刷新」从期望行为变成产生第二份副本。
+     */
+    @Suppress("DEPRECATION")
+    private fun collisionSuffix(context: Context, baseTarget: File, packageName: String): String {
+        if (!baseTarget.exists()) return ""
+        val existing = runCatching {
+            context.packageManager.getPackageArchiveInfo(baseTarget.absolutePath, 0)?.packageName
+        }.getOrNull() ?: return ""
+        return if (existing == packageName) "" else "-${sanitizeFileName(packageName)}"
+    }
+
+    /** 在扩展名前插入后缀；后缀为空则原样返回。 */
+    internal fun withSuffix(name: String, suffix: String): String {
+        if (suffix.isEmpty()) return name
+        val dot = name.lastIndexOf('.')
+        return if (dot > 0) name.substring(0, dot) + suffix + name.substring(dot) else name + suffix
+    }
+
+    /**
      * 提取 [app] 的全部安装包到 [DOWNLOAD_DIR]。
      * 单包应用产出 1 个文件；分包应用产出 base + 每个 split 各一个文件。
      */
@@ -130,9 +154,16 @@ object ApkExtractor {
 
         val planned = plannedTargets(app)
 
+        // 同名去重：`<应用名>-<versionCode>` 无法区分标签与版本码**同时相同**的不同应用
+        // （典型为应用分身 / 同一 APK 双开），第二次提取会静默覆盖第一次的产物。
+        // 仅当目标已存在且确认属于**另一个**包时才追加 `-<packageName>`：同一应用重复提取
+        // 仍是覆盖刷新，常规场景的文件名与既有契约完全一致。
+        // 分包套件必须整组共用同一后缀，否则 base 与 split 的 stem 不再配对。
+        val suffix = collisionSuffix(context, File(dir, planned.first().first), app.packageName)
+
         val written = ArrayList<String>(planned.size)
         for ((name, src) in planned) {
-            val dst = File(dir, name)
+            val dst = File(dir, withSuffix(name, suffix))
             val one = copyOne(src, dst, rootGranted, myId)
             if (!one.ok) return@withContext Result(false, one.message)
             written += dst.absolutePath

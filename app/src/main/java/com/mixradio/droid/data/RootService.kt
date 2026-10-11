@@ -43,6 +43,12 @@ object RootService {
     /** root 侧读脚本头部的等待上界：超出即认为 su 卡住，放弃本次判定。 */
     private const val ROOT_HEAD_TIMEOUT_MS = 5_000L
 
+    /** 任务输出为空时的轮询间隔。用于把阻塞读换成可被协程取消打断的挂起等待。 */
+    private const val OUTPUT_POLL_MS = 50L
+
+    /** 直接子进程退出后，继续等待后代补输出的宽限轮数（约 300ms）。 */
+    private const val OUTPUT_IDLE_POLLS_AFTER_EXIT = 6
+
     /** 生成可安全拼入 shell 命令的参数（防注入）。 */
     fun escapeShellArg(arg: String): String {
         if (arg.isEmpty()) return "''"
@@ -993,14 +999,34 @@ object RootService {
 
                 // 脚本是否产出过内容：静默脚本（只做 rm/touch、无任何 echo）在终端里
                 // 除横幅与退出码外一片空白，用户会以为没执行。收尾时据此补一句说明。
+                //
+                // 读取循环**不做无条件的阻塞读**。native 阻塞读不响应协程取消：当脚本把
+                // stdout 交给后台后代、而该后代逃逸到 init 名下长期持有写端时，read 永不返回
+                // EOF —— 旧协程、它的 IO 线程与该 Process 句柄一同常驻；任务每被 kill / 覆盖
+                // 启动一次就泄漏一份，重复触发会占满 IO 线程池，拖住后续所有文件与网络 IO。
+                // 改为「有数据才读、无数据即挂起等待」后，取消（kill / 覆盖启动）在挂起点立即
+                // 生效，循环随之退出并关闭流。进程退出后的空窗再保留一小段宽限，覆盖
+                // `cmd & ` 这类直接子进程先退、后代稍后补输出的常见写法。
                 process.inputStream.use { stream ->
                     InputStreamReader(stream, Charsets.UTF_8).use { reader ->
                         val buffer = CharArray(2048)
-                        var count: Int
-                        while (reader.read(buffer).also { count = it } != -1) {
-                            // 安全网：新任务接管后本协程应已被取消，但管道读是 native 阻塞、不响应
-                            // cancel；迟到的输出不得混进新任务的日志（必须 continue 而不是 break，
-                            // 否则管道写端填满会让子孙进程永久阻塞）。
+                        var idlePollsAfterExit = 0
+                        while (true) {
+                            if (stream.available() <= 0) {
+                                if (!process.isAlive) {
+                                    if (++idlePollsAfterExit > OUTPUT_IDLE_POLLS_AFTER_EXIT) break
+                                }
+                                // 挂起等待：协程被取消（kill / 覆盖启动）时在此挂起点立即生效，
+                                // 循环退出并关闭流，不再像阻塞读那样把 IO 线程与句柄一起留下。
+                                delay(OUTPUT_POLL_MS)
+                                continue
+                            }
+                            idlePollsAfterExit = 0
+                            val count = reader.read(buffer)
+                            if (count == -1) break
+                            // 新任务接管后不得把迟到输出投进新任务的日志；但循环必须继续
+                            // 排空管道 —— 提前 break 会让后代进程的写端填满而永久阻塞。
+                            // 本协程此时已被取消（cancel 与 Job 赋值同处临界区）。
                             if (executionJob !== myJob) continue
                             if (ExecutionFeedback.hasVisibleOutput(String(buffer, 0, count))) {
                                 producedAnyOutput.set(true)

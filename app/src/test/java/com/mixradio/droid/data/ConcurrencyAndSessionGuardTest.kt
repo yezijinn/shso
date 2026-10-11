@@ -181,4 +181,77 @@ class ConcurrencyAndSessionGuardTest {
         assertFalse("截断上限常量须一并移除", s.contains("MAX_SIBLING_SCAN"))
         assertTrue("候选名须全量传入聚合函数", s.contains("nameBasedSet(tapped.name, siblings.map { it.name })"))
     }
+
+    @Test
+    fun `任务输出读取不得依赖不可中断的阻塞读`() {
+        // 阻塞读不响应协程取消：脚本把 stdout 交给逃逸到 init 下的后代后，read 永不返回
+        // EOF，旧协程 + IO 线程 + Process 句柄一并常驻，任务每被 kill / 覆盖启动一次泄漏一份。
+        // 必须改成「无数据即挂起等待」，让取消在挂起点立即生效。
+        val s = source("data/RootService.kt")
+        val start = s.indexOf("val buffer = CharArray(2048)")
+        assertTrue("应能找到主执行读取循环", start > 0)
+        val loop = s.substring(start, minOf(s.length, start + 1_400))
+        assertTrue("无数据时必须挂起等待", loop.contains("if (stream.available() <= 0) {"))
+        assertTrue("挂起等待须用 delay", loop.contains("delay(OUTPUT_POLL_MS)"))
+        // 新任务接管后继续排空管道而不是停止读取：提前退出会让后代进程的写端填满而永久阻塞。
+        assertTrue("新任务接管后须继续排空管道", loop.contains("if (executionJob !== myJob) continue"))
+        assertFalse(
+            "主执行读取循环不得保留无条件阻塞读",
+            loop.contains("reader.read(buffer).also { count = it } != -1")
+        )
+    }
+
+    @Test
+    fun `文件页浏览态必须跨配置变更保留且还原时不得被清理`() {
+        // 目录 / 过滤词 / 多选集合 / 搜索栏此前一律 remember，旋转即清空。
+        // 改为 rememberSaveable 后，切目录清理必须只在**目录真的变了**时执行，
+        // 否则还原出来的多选与过滤词会被 LaunchedEffect 立刻抹掉。
+        val page = source("ui/pages/FilePage.kt")
+        assertTrue(
+            "两列状态须跨重建保留",
+            page.contains("val leftPane = rememberSaveable(saver = FilePaneState.saver(leftListState))") &&
+                page.contains("val rightPane = rememberSaveable(saver = FilePaneState.saver(rightListState))")
+        )
+        assertTrue("聚焦列须跨重建保留", page.contains("var focusedIndex by rememberSaveable { mutableIntStateOf(0) }"))
+        assertTrue("切目录清理须以已应用目录为闸", page.contains("val previousDir = pane.appliedDirRef[0]"))
+        assertTrue("目录未变时不得清理", page.contains("if (previousDir != null && previousDir != pane.currentDirectory) {"))
+
+        val pane = source("ui/pages/FilePaneState.kt")
+        assertTrue("浏览态须有存档器", pane.contains("fun saver(listState: LazyListState): Saver<FilePaneState, Any>"))
+        assertTrue("须记录已应用清理的目录", pane.contains("val appliedDirRef = arrayOfNulls<String>(1)"))
+    }
+
+    @Test
+    fun `浏览器挑选不得使用子串启发式`() {
+        // `!pkg.contains("github")` 会误伤包名恰好含该词的无关应用，也漏掉包名不含该词的
+        // 链接拦截类应用。改为精确包名集合。
+        val s = source("ui/pages/SettingsPage.kt")
+        assertFalse("不得用子串启发式排除应用", s.contains("""!pkg.contains("github")"""))
+        assertTrue("须按精确包名排除", s.contains("private val NON_BROWSER_HANDLERS = setOf(\"com.github.android\")"))
+        assertTrue(s.contains(".filterNot { it in NON_BROWSER_HANDLERS }"))
+    }
+
+    @Test
+    fun `多文件分享不得静默只取首项`() {
+        // ACTION_SEND_MULTIPLE 的多项此前被压缩成首项，其余文件静默丢弃。
+        // 采集侧须完整展开，并在只处理首个时明确告出数量。
+        val activity = source("MainActivity.kt")
+        assertTrue("须采集全部 URI", activity.contains("private fun resolveIncomingUris(intent: Intent): List<String>"))
+        assertTrue("clipData 须逐条展开", activity.contains("for (i in 0 until clip.itemCount)"))
+        assertTrue("须传递其余文件数量", activity.contains("additionalCount = additional"))
+
+        val open = source("data/ExternalOpen.kt")
+        assertTrue("解析请求须携带全部 URI", open.contains("val uris: List<String>"))
+        assertTrue("须有计数告知", open.contains("val additionalCount: Int = 0"))
+    }
+
+    @Test
+    fun `提取 APK 的同名冲突须按包名区分`() {
+        // `<应用名>-<versionCode>` 无法区分标签与版本码同时相同的不同应用（分身 / 双开），
+        // 第二次提取静默覆盖第一次的产物。
+        val s = source("data/ApkExtractor.kt")
+        assertTrue("须有归属判定", s.contains("private fun collisionSuffix(context: Context, baseTarget: File, packageName: String): String"))
+        assertTrue("解析不出归属时保持覆盖语义", s.contains("}.getOrNull() ?: return \"\""))
+        assertTrue("整组须共用同一后缀", s.contains("val suffix = collisionSuffix(context, File(dir, planned.first().first), app.packageName)"))
+    }
 }

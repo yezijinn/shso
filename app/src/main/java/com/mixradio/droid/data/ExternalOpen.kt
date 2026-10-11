@@ -42,12 +42,20 @@ data class PendingExternalOpen(
     /** 是否来自不透明 URI 的收件箱副本（用于提示用户实际位置与来源不同）。 */
     val copiedFromExternal: Boolean,
     /** 请求代数：旧 effect 取消收尾时不得清掉后来者。 */
-    val token: Long
+    val token: Long,
+    /** 本次分享中除 [path] 外还有几个文件。>0 时明确告知用户其余未处理。 */
+    val additionalCount: Int = 0
 )
 
-/** Activity 层解析出的原始请求；只含字符串，便于 JVM 单测（不触碰 Uri / Context）。 */
+/**
+ * Activity 层解析出的原始请求；只含字符串，便于 JVM 单测（不触碰 Uri / Context）。
+ *
+ * [uris] 按接收顺序保存本次唤起的全部目标（`data` / `EXTRA_STREAM` / `clipData` 展开去重）。
+ * 多文件分享（`ACTION_SEND_MULTIPLE`）会带多项；下游的定位与动作分派按单目标设计，
+ * 故取首个处理，其余由 [PendingExternalOpen.additionalCount] 计数告知用户。
+ */
 data class ExternalRequest(
-    val uri: String,
+    val uris: List<String>,
     val mode: ExternalMode,
     val mimeType: String?
 )
@@ -72,41 +80,43 @@ object ExternalRequestParser {
         if (className?.endsWith("ExternalLocateActivity") == true) ExternalMode.LOCATE else ExternalMode.OPEN
 
     /**
-     * @param uriString 已由 Activity 层从 data / EXTRA_STREAM / clipData 采集到的目标 URI
-     * @param mimeType  Intent 声明的 MIME（`Intent.type`），用于扩展名无法判定时兜底
+     * @param uriStrings 已由 Activity 层从 data / EXTRA_STREAM / clipData 采集到的全部目标 URI（按接收顺序，已去重）
+     * @param mimeType   Intent 声明的 MIME（`Intent.type`），用于扩展名无法判定时兜底
      * @return 非受支持动作、非外部组件或缺少 URI 时返回 null
      */
     fun build(
         action: String?,
         componentClassName: String?,
-        uriString: String?,
+        uriStrings: List<String>,
         mimeType: String? = null
     ): ExternalRequest? {
         if (action !in SUPPORTED_ACTIONS) return null
-        val uri = uriString?.takeIf { it.isNotEmpty() } ?: return null
-        return ExternalRequest(uri, modeForComponent(componentClassName), mimeType)
+        val uris = uriStrings.mapNotNull { it.takeIf { s -> s.isNotEmpty() } }
+            .distinct()
+        if (uris.isEmpty()) return null
+        return ExternalRequest(uris, modeForComponent(componentClassName), mimeType)
     }
 }
 
 /**
- * 把 `Intent.EXTRA_STREAM` 的值归一为 URI 字符串。
+ * 把 `Intent.EXTRA_STREAM` 的值归一为 URI 字符串**列表**（按接收顺序）。
  *
  * 类型不统一：真实分享应用多传 `Uri`（Parcelable），`am start --eu` 等传 `String`，
  * 而 `SEND_MULTIPLE` 与部分实现传 `ArrayList<Uri>` —— 早期实现直接 `value.toString()`，
- * 对列表会得到 `[uri1, uri2]`（带方括号）导致解析失败、静默降级为主页。
- * 列表取首个元素（与当前单文件限制一致）。
+ * 对列表会得到 `[uri1, uri2]`（带方括号）导致解析失败、静默降级为主页；后续又只取首个，
+ * 多文件分享的其余项被静默丢弃。此处完整展开列表与数组，交由上层计数并提示。
  *
  * 顶层纯函数：不依赖 Activity，可 JVM 单测。
  */
-internal fun streamExtraToUri(value: Any?): String? = when (value) {
-    null -> null
-    is Uri -> value.toString()
-    // SEND_MULTIPLE 常见形态是 ArrayList（ParcelableArrayList），取首个
-    is List<*> -> value.firstNotNullOfOrNull { streamExtraToUri(it) }
+internal fun streamExtraToUris(value: Any?): List<String> = when (value) {
+    null -> emptyList()
+    is Uri -> listOf(value.toString())
+    // SEND_MULTIPLE 常见形态是 ArrayList（ParcelableArrayList），逐项展开
+    is List<*> -> value.flatMap { streamExtraToUris(it) }
     // 也有实现传数组（如 putExtra(String, String[])），Kotlin 里数组不是 List，需单独处理
-    is Array<*> -> value.firstNotNullOfOrNull { streamExtraToUri(it) }
-    is CharSequence -> value.toString().takeIf { it.isNotEmpty() }
-    else -> null
+    is Array<*> -> value.flatMap { streamExtraToUris(it) }
+    is CharSequence -> listOf(value.toString()).filter { it.isNotEmpty() }
+    else -> emptyList()
 }
 
 /** 跨层投递单槽位：MainActivity 写入，FilePage 消费后清空。 */
@@ -117,9 +127,15 @@ object ExternalOpenHub {
 
     private var sequence = 0L
 
-    fun post(path: String, mode: ExternalMode, mimeType: String?, copied: Boolean) {
+    fun post(
+        path: String,
+        mode: ExternalMode,
+        mimeType: String?,
+        copied: Boolean,
+        additionalCount: Int = 0
+    ) {
         sequence += 1L
-        pending = PendingExternalOpen(path, mode, mimeType, copied, sequence)
+        pending = PendingExternalOpen(path, mode, mimeType, copied, sequence, additionalCount)
     }
 
     fun consume() {

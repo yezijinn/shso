@@ -92,4 +92,23 @@ class ApkExtractorTest {
         // 所有产出文件都必须是大写 .APK 后缀
         assertTrue(ApkExtractor.plannedTargets(app).all { it.first.endsWith(".APK") })
     }
+
+    @Test
+    fun `同名冲突后缀须插在扩展名之前且整组共用`() {
+        // 后缀为空时原样返回：同一应用重复提取仍是覆盖刷新。
+        assertEquals("示例应用-42.APK", ApkExtractor.withSuffix("示例应用-42.APK", ""))
+        // 有后缀时插在最后一个点之前：扩展名不变，base 与 split 带上同一后缀。
+        assertEquals(
+            "示例应用-42-com.example.dual.APK",
+            ApkExtractor.withSuffix("示例应用-42.APK", "-com.example.dual")
+        )
+        assertEquals(
+            "示例应用-42-split1-com.example.dual.APK",
+            ApkExtractor.withSuffix("示例应用-42-split1.APK", "-com.example.dual")
+        )
+        // 无扩展名时直接追加，不得产生孤立的点。
+        assertEquals("noext-pkg", ApkExtractor.withSuffix("noext", "-pkg"))
+        // 以点开头的隐藏文件视为无扩展名，避免把点当分隔符切出空 stem。
+        assertEquals(".hidden-pkg", ApkExtractor.withSuffix(".hidden", "-pkg"))
+    }
 }

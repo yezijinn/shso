@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → 见 § A103） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 573 tests / 0 failures / 1 skipped |
+| 单元测试 | 579 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -72,6 +72,39 @@
 ---
 
 ## 待办
+
+### A104. 分享多目标、文件页浏览态与输出读取取消（2026-10-11）
+
+- [x] `BUG-LOGIC-012`（P2）：多文件分享只处理首项，其余静默丢弃。`ExternalRequestParser.build`
+  改收 `uriStrings: List<String>`（空串过滤 + distinct 保序）；`streamExtraToUris` 覆盖
+  Uri / CharSequence / List / Array 四种 `EXTRA_STREAM` 形态；`resolveIncomingUris` 归并
+  data、`EXTRA_STREAM`、`clipData`，`getParcelableExtra` 与 `getParcelableArrayListExtra`
+  各自 `runCatching`（避免互相 ClassCastException）；新增 `PendingExternalOpen.additionalCount`，
+  UI 提示「本次分享共 N 个文件，仅打开第一个」。
+- [x] `BUG-CONSIST-013`（P2）：文件页浏览态（当前目录 / 搜索词 / 多选集合 / 选中集 / 聚焦列）
+  用 `remember`，旋转即丢。`FilePaneState` 增 `Saver`（listSaver），两列与 `focusedIndex` 改
+  `rememberSaveable`；新增 `appliedDirRef` 区分「还原」与「真实切目录」，否则
+  `LaunchedEffect(pane.currentDirectory)` 会在首帧把刚还原的状态抹掉。
+- [x] `BUG-CONC-052`（P3，AI2-CONC-004 residual）：主执行输出读取用无条件阻塞读 —— 脚本把
+  stdout 交给逃逸到 init 下的后代后 `read` 永不返回 EOF，旧协程 + IO 线程 + Process 句柄一并常驻，
+  任务每被 kill / 覆盖启动一次泄漏一份。改为 `available()` 轮询 + `delay(OUTPUT_POLL_MS)` 的
+  可取消挂起读；代际不符仍 `continue`（继续排空管道，**不提前 break**，否则后代写端填满会永久阻塞）；
+  新增退出后 6 轮（约 300ms）宽限，覆盖 `cmd &` 后代稍后补输出。
+- [x] `BUG-EDGE-097`（P3）：`openInBrowserOnly` 用 `!pkg.contains("github")` 子串启发式排除浏览器，
+  误伤/漏判并存。改为精确包名集合 `NON_BROWSER_HANDLERS`。
+- [x] `BUG-CONSIST-128`（P3，原 `BLOCKED_HUMAN` 解除）：提取产物名 `<label>-<versionCode>`，
+  标签与版本码同时相同的分身/双开应用二次提取静默覆盖。采用「保留现状命名 + 跨应用同名时追加
+  `-<packageName>`」：新增 `collisionSuffix`（目标存在且 `getPackageArchiveInfo` 确认属另一包才追加）
+  与 `withSuffix`；整组 base + split 共用同一后缀，避免配对破坏被安装器判 `MISSING_SPLIT`。
+- [x] `AI2-UI-002` / `BUG-CONSIST-115` 判 **WONTFIX**：正文驻留 Sora 原生控件、刻意不回折 Compose
+  State；镜像进 Bundle 会重新引入逐键 O(n) 拷贝，大文本还会触发 `TransactionTooLargeException`；
+  正确修复需磁盘草稿（属功能，且有未保存内容落盘的隐私影响）。缓解：`dirty` / `currentFilePath`
+  跨重建保留（关闭仍提示未保存）、草稿快照功能可留存部分内容。
+- [x] 单测与契约测试：`ConcurrencyAndSessionGuardTest` +5、`ApkExtractorTest` +1、
+  `ExternalOpenTest` 3 例改造（List 形态 + 保序去重）；`testDebugUnitTest`
+  579 tests / 0 failures / 1 skipped。
+- [x] 文档：`BUG.md`（§1 索引、§2 明细、§3 A104、§4 WONTFIX、§5 矩阵）、`更新日志.md`、`TASKS.md`。
+- [ ] 发版：APK 构建、root 真机冒烟、双端同步与 Release 资产更新（待执行）。
 
 ### A103. AI-1 移交项核实与分包安装结果丢弃（2026-10-11）
 

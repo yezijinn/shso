@@ -9,6 +9,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.mixradio.droid.data.FileItem
 import kotlin.reflect.KProperty
@@ -117,4 +119,43 @@ class FilePaneState(
 
     /** 上次重算所依据的搜索词，用于判断本次重算是否由搜索词变化触发（决定要不要防抖）。 */
     val lastRecomputedQueryRef = arrayOfNulls<String>(1)
+
+    /**
+     * 已应用过「切目录清理」的目录；null = 尚未应用（首帧或配置重建还原）。
+     *
+     * 配置重建后本类实例由 [saver] 还原，该引用随之归零 —— 这正是把「还原」与
+     * 「用户真的切了目录」区分开的依据：前者不得清空刚还原的多选与过滤词。
+     */
+    val appliedDirRef = arrayOfNulls<String>(1)
+
+    companion object {
+        /**
+         * 跨配置变更（旋转 / 分屏 / 深色模式 / 字号）保留浏览态：目录、过滤词、多选集合、
+         * 搜索栏开合与聚焦的条目。此前只有高危确认框用 `rememberSaveable`，普通导航态一律
+         * `remember`，一次旋转就把用户的多选与搜索清空。
+         *
+         * 只保存**用户可见的浏览态**：列表内容由目录变化重新列举，代次记账等运行时字段
+         * 重建后本就该归零（保留反而会与新的刷新代次错配）。
+         */
+        fun saver(listState: LazyListState): Saver<FilePaneState, Any> = listSaver(
+            save = { pane ->
+                listOf(
+                    pane.currentDirectory,
+                    pane.showSearch,
+                    pane.nameQuery,
+                    pane.multiSelectMode,
+                    ArrayList(pane.selectedPaths)
+                )
+            },
+            restore = { saved ->
+                FilePaneState(saved[0] as String, listState).apply {
+                    showSearch = saved[1] as Boolean
+                    nameQuery = saved[2] as String
+                    multiSelectMode = saved[3] as Boolean
+                    @Suppress("UNCHECKED_CAST")
+                    selectedPaths.addAll(saved[4] as List<String>)
+                }
+            }
+        )
+    }
 }

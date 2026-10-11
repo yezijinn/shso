@@ -132,6 +132,12 @@ private val UPDATE_SOURCES = listOf(
 )
 
 /**
+ * 会声明处理 `http/https` 但并非浏览器的应用（精确包名）。用于「去更新 / 访问 Github」
+ * 挑选浏览器时排除——例如 GitHub 客户端接管 github.com 后走应用内 WebView。
+ */
+private val NON_BROWSER_HANDLERS = setOf("com.github.android")
+
+/**
  * 抓取远端最大的发布日标签，返回 (最新日期, 成功源)；**Gitee 优先、GitHub 备选**。
  *
  * 归一化规则两源一致：**只认 6..8 位纯数字**，且**不剥离 `v` 前缀** ——
@@ -287,8 +293,11 @@ fun SettingsPage(
                 addCategory(Intent.CATEGORY_BROWSABLE)
             }
             val resolveInfos = context.packageManager.queryIntentActivities(browserIntent, 0)
+            // 只按**精确包名**排除已知的链接拦截类应用（GitHub 客户端会接管 github.com，
+            // 但它是应用内浏览器，不是浏览器）。不能用 `contains("github")` 之类的子串启发式：
+            // 它会连 `com.github.android` 之外的无关包一并排除，也会漏掉包名不含该词的拦截类应用。
             val browserPackages = resolveInfos.map { it.activityInfo.packageName }
-                .filter { pkg -> pkg != "com.github.android" && !pkg.contains("github") }
+                .filterNot { it in NON_BROWSER_HANDLERS }
 
             val targetIntent = Intent(Intent.ACTION_VIEW, uri).apply {
                 addCategory(Intent.CATEGORY_BROWSABLE)

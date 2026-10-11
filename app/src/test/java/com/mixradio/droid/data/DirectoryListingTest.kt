@@ -334,8 +334,8 @@ class DirectoryListingTest {
         )
         assertTrue(
             "两份列表状态也必须各自独立，否则两列会互相覆盖",
-            page.contains("val leftPane = remember { FilePaneState(") &&
-                page.contains("val rightPane = remember {")
+            page.contains("val leftPane = rememberSaveable(saver = FilePaneState.saver(leftListState))") &&
+                page.contains("val rightPane = rememberSaveable(saver = FilePaneState.saver(rightListState))")
         )
     }
 

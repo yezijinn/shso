@@ -236,13 +236,17 @@ fun FilePage(
     val defaultRightPaneDir = "/storage/emulated/0/Android"
     /** 右列在 [panes] 中的下标。落点记忆按列分流时用它区分左右。 */
     val RIGHT_PANE_INDEX = 1
-    val leftPane = remember { FilePaneState(initialDirectory, leftListState) }
+    // 两列浏览态跨配置变更保留（目录、过滤词、多选集合、搜索栏开合）。
+    // 列表内容不随保存走：目录还原后由各自的 LaunchedEffect(pane.currentDirectory) 重新列举。
+    val leftPane = rememberSaveable(saver = FilePaneState.saver(leftListState)) {
+        FilePaneState(initialDirectory, leftListState)
+    }
     // 右列默认落在内部存储：与左列同一起点便于对照，
     // 用户切到别处后由下面的 rememberedRightDirectory 记住。
     // 右列**刻意不与左列同起点**：两列都停在同一目录时，「同步」无事可做、
     // 一打开就是禁用态，用户会以为功能坏了。默认给右列一个不同的落点，
     // 让同步按钮从一开始就有意义（参考 MPManager：两列各自记忆 home1 / home2）。
-    val rightPane = remember {
+    val rightPane = rememberSaveable(saver = FilePaneState.saver(rightListState)) {
         FilePaneState(
             RootFileManager.rememberedRightDirectory ?: defaultRightPaneDir,
             rightListState
@@ -250,7 +254,8 @@ fun FilePage(
     }
     val panes = listOf(leftPane, rightPane)
     fun paneIndexOf(pane: FilePaneState): Int = panes.indexOf(pane)
-    var focusedIndex by remember { mutableStateOf(0) }
+    // 聚焦列同样跨配置变更保留，否则旋转后操作目标会跳回左列
+    var focusedIndex by rememberSaveable { mutableIntStateOf(0) }
     val activePane = panes[focusedIndex]
 
     var currentDirectory by PaneProp({ activePane.currentDirectory }, { activePane.currentDirectory = it })
@@ -799,6 +804,11 @@ fun FilePage(
         if (target.copiedFromExternal) {
             feedbackMessage = "已将文件复制到 ${ExternalOpen.INBOX_DIR}"
         }
+        // 多文件分享：明确告知只处理了第一个。此前其余文件被静默丢弃，用户以为全部已打开。
+        if (target.additionalCount > 0) {
+            val note = "本次分享共 ${target.additionalCount + 1} 个文件，仅打开第一个"
+            feedbackMessage = listOfNotNull(feedbackMessage, note).joinToString("；")
+        }
         val parent = File(target.path).parent ?: INTERNAL_STORAGE_PATH
         highlightPath = target.path
         // 关闭任何停留的旧弹窗，避免遮挡定位结果。
@@ -854,14 +864,22 @@ fun FilePage(
     // 就不会触发任何加载 —— 右列的路径栏变了而列表仍是旧目录的内容。
     panes.forEach { pane ->
         LaunchedEffect(pane.currentDirectory) {
-            // 切目录：退出多选、清空选中。
-            // 多选态下若保留旧的 selectedPaths，批量删除/拷贝会作用到旧目录里同名路径（用户还看不见）。
-            pane.multiSelectMode = false
-            pane.selectedPaths.clear()
-            // 过滤词必须**按列**清。原实现是页面级的 `LaunchedEffect(currentDirectory)`，
-            // 经委托只看得见聚焦列：右列带着上一个目录的 keyword 切进新目录后，
-            // 列表按旧词过滤，用户看到的是「无匹配项」而不是新目录的内容。
-            pane.nameQuery = ""
+            // 「切目录清理」只在**目录真的变了**时执行。首帧与配置重建还原时
+            // appliedDirRef 为 null（重建后由 Saver 造出全新实例），此时不得清空 ——
+            // 否则 rememberSaveable 刚还原的多选集合与过滤词会被本特效立刻抹掉，
+            // 恢复等于没做。此前的实现无条件清理，正是「旋转后搜索词与多选消失」的直接原因。
+            val previousDir = pane.appliedDirRef[0]
+            pane.appliedDirRef[0] = pane.currentDirectory
+            if (previousDir != null && previousDir != pane.currentDirectory) {
+                // 切目录：退出多选、清空选中。
+                // 多选态下若保留旧的 selectedPaths，批量删除/拷贝会作用到旧目录里同名路径（用户还看不见）。
+                pane.multiSelectMode = false
+                pane.selectedPaths.clear()
+                // 过滤词必须**按列**清。原实现是页面级的 `LaunchedEffect(currentDirectory)`，
+                // 经委托只看得见聚焦列：右列带着上一个目录的 keyword 切进新目录后，
+                // 列表按旧词过滤，用户看到的是「无匹配项」而不是新目录的内容。
+                pane.nameQuery = ""
+            }
             // 自愈重试的「每列一次」是**每个目录一次**。只在进程启动时置位的话，
             // 冷启动那一次用掉之后，后续任何目录的静默空列表都不再重试。
             pane.retriedForEmptyOnce = false

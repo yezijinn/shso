@@ -39,9 +39,9 @@ import com.mixradio.droid.data.ExternalOpen
 import com.mixradio.droid.data.ExternalOpenHub
 import com.mixradio.droid.data.ExternalRequest
 import com.mixradio.droid.data.ExternalRequestParser
-import com.mixradio.droid.data.streamExtraToUri
 import com.mixradio.droid.data.PermissionChecker
 import com.mixradio.droid.data.RootService
+import com.mixradio.droid.data.streamExtraToUris
 import com.mixradio.droid.ui.components.DockBar
 import com.mixradio.droid.ui.pages.FilePage
 import com.mixradio.droid.ui.pages.HomePage
@@ -128,45 +128,61 @@ class MainActivity : ComponentActivity() {
         intent ?: return null
         // 仅当确实由两个 external alias 唤起时才处理，避免与普通启动混淆
         if (!ExternalRequestParser.isExternalComponent(intent.component?.className)) return null
-        val uri = resolveIncomingUri(intent) ?: return null
+        val uris = resolveIncomingUris(intent)
+        if (uris.isEmpty()) return null
         return ExternalRequestParser.build(
             action = intent.action,
             componentClassName = intent.component?.className,
-            uriString = uri,
+            uriStrings = uris,
             // 发送方声明的 MIME：无扩展名文件（相册临时文件）靠它区分图片/文本
             mimeType = intent.type
         )
     }
 
     /**
-     * 采集传入的目标 URI。顺序：`data`（VIEW）→ `EXTRA_STREAM`（SEND）→ `clipData`。
-     * 后两者都要覆盖：真实分享应用对 stream 的类型不统一（Uri / String / ArrayList<Uri>），
-     * 而 Google Photos / Chrome 这类只设 `clipData`、完全不设 `EXTRA_STREAM`。
+     * 采集传入的全部目标 URI，按接收顺序去重。顺序：`data`（VIEW）→ `EXTRA_STREAM`（SEND）→ `clipData`。
+     * 三者都要覆盖：真实分享应用对 stream 的类型不统一（Uri / String / ArrayList<Uri>），
+     * 而 Google Photos / Chrome 这类只设 `clipData`、完全不设 `EXTRA_STREAM`；
+     * `ACTION_SEND_MULTIPLE` 的多文件同时散落在 EXTRA_STREAM 列表与多条 clipData 中。
      */
-    private fun resolveIncomingUri(intent: Intent): String? {
+    private fun resolveIncomingUris(intent: Intent): List<String> {
         // 整段包 runCatching：这是一条**对外**的入口，发送方完全不可信。
         // 任何一步抛出都不该让 shso 崩在 onCreate/onNewIntent 里
         // （singleTask 下每次外部唤起都崩，表现为「分享到 shso 直接闪退」）。
         return runCatching {
-            intent.dataString?.takeIf { it.isNotEmpty() }?.let { return@runCatching it }
+            val uris = LinkedHashSet<String>()
+            intent.dataString?.takeIf { it.isNotEmpty() }?.let { uris.add(it) }
             // 按类型取，而不是 `extras.get(key)`：后者会先 unparcel 整个 Bundle，
             // 发送方塞入只有它自己 APK 才有定义的自定义 Parcelable 时，
             // 本进程 Class.forName 失败 → BadParcelableException。
             // 类型化取值为 null 而不是抛异常，正是这里要的语义。
-            @Suppress("DEPRECATION")
-            val single = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-            streamExtraToUri(single)?.let { return@runCatching it }
+            //
+            // 单值与列表分两次取：`getParcelableExtra<Uri>` 对 ArrayList 会在强制转换处抛
+            // ClassCastException，`getParcelableArrayListExtra` 对单 Uri 同理；各自包一层
+            // runCatching，任一形态都不影响另一种被采集到。
+            runCatching {
+                @Suppress("DEPRECATION")
+                val single: Uri? = intent.getParcelableExtra(Intent.EXTRA_STREAM)
+                uris.addAll(streamExtraToUris(single))
+            }
+            runCatching {
+                @Suppress("DEPRECATION")
+                val many: ArrayList<Uri>? = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
+                uris.addAll(streamExtraToUris(many))
+            }
             // 兼容把 stream 塞成字符串的发送方
             @Suppress("DEPRECATION")
             intent.getStringExtra(Intent.EXTRA_STREAM)
                 ?.takeIf { it.isNotEmpty() }
-                ?.let { return@runCatching it }
-            // clipData 可能含多项（SEND_MULTIPLE），当前只处理第一项
+                ?.let { uris.add(it) }
+            // clipData 可能含多项（SEND_MULTIPLE），全部展开
             intent.clipData?.let { clip ->
-                if (clip.itemCount > 0) return@runCatching clip.getItemAt(0).uri?.toString()
+                for (i in 0 until clip.itemCount) {
+                    clip.getItemAt(i).uri?.toString()?.takeIf { it.isNotEmpty() }?.let { uris.add(it) }
+                }
             }
-            null
-        }.getOrNull()
+            uris.toList()
+        }.getOrDefault(emptyList())
     }
 
     private companion object {
@@ -246,12 +262,20 @@ fun MainContainer(
     val appContext = LocalContext.current.applicationContext
     LaunchedEffect(externalRequest) {
         val request = externalRequest ?: return@LaunchedEffect
-        val resolved = try {
-            ExternalOpen.resolve(appContext, Uri.parse(request.uri))
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            ExternalOpen.Resolved.Failed("打开失败：${e.message ?: "未知错误"}")
+        // 多文件分享（SEND_MULTIPLE）只处理首个：下游的定位与动作分派都是单目标设计，
+        // 逐个弹安装/编辑确认框也无从合并。其余文件计数后由文件页明确告知，不再静默丢弃。
+        val first = request.uris.firstOrNull()
+        val additional = (request.uris.size - 1).coerceAtLeast(0)
+        val resolved = if (first == null) {
+            ExternalOpen.Resolved.Failed("未收到可打开的文件")
+        } else {
+            try {
+                ExternalOpen.resolve(appContext, Uri.parse(first))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                ExternalOpen.Resolved.Failed("打开失败：${e.message ?: "未知错误"}")
+            }
         }
         when (resolved) {
             is ExternalOpen.Resolved.Real -> {
@@ -259,7 +283,8 @@ fun MainContainer(
                     path = resolved.path,
                     mode = request.mode,
                     mimeType = request.mimeType,
-                    copied = false
+                    copied = false,
+                    additionalCount = additional
                 )
                 coroutineScope.launch { pagerState.animateScrollToPage(2) }
             }
@@ -268,7 +293,8 @@ fun MainContainer(
                     path = resolved.path,
                     mode = request.mode,
                     mimeType = request.mimeType,
-                    copied = true
+                    copied = true,
+                    additionalCount = additional
                 )
                 coroutineScope.launch { pagerState.animateScrollToPage(2) }
             }
