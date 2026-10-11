@@ -55,6 +55,7 @@ import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.FileItem
 import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootService
+import com.mixradio.droid.data.realExtensionOf
 import com.mixradio.droid.ui.components.BuiltInFilePicker
 import com.mixradio.droid.ui.theme.AuroraAccentBar
 import com.mixradio.droid.ui.theme.AuroraSectionTitle
@@ -84,9 +85,6 @@ fun HomePage(
     var shsoFiles by remember { mutableStateOf<List<FileItem>>(emptyList()) }
     var isScanningShso by remember { mutableStateOf(false) }
     var shsoDirError by remember { mutableStateOf<String?>(null) }
-
-    // 执行确认：点击「立即执行」先暂存路径，弹窗确认后再真正执行
-    var pendingExecutePath by rememberSaveable { mutableStateOf<String?>(null) }
 
     // shso 目录文件列表：字号跟随全局文件列表字号设置（与「文件」页一致）
     val listFontSize = appSettings.fileListFontSize.sp
@@ -156,8 +154,11 @@ fun HomePage(
             return
         }
 
-        val isSh = trimmed.endsWith(".sh", ignoreCase = true)
-        val isSo = trimmed.endsWith(".so", ignoreCase = true)
+        // 与 FileItem / RootService.executeFile 同口径：剥掉下载器追加的「.数字」尾缀再判格式，
+        // 否则同一路径在文件页可执行、从首页输入却报「格式不支持」。
+        val realExtension = realExtensionOf(trimmed)
+        val isSh = realExtension == "sh"
+        val isSo = realExtension == "so"
 
         if (!isSh && !isSo) {
             validationError = "格式不支持！shso 仅允许执行 .sh 脚本和 .so 二进制程序"

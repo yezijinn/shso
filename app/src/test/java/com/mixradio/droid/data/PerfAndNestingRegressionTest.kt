@@ -63,7 +63,10 @@ class PerfAndNestingRegressionTest {
         )
         assertTrue("顶层应存在预编译常量 NUMERIC_SUFFIX", fileItem.contains("private val NUMERIC_SUFFIX"))
         assertTrue("realExtension 必须复用该常量", fileItem.contains("NUMERIC_SUFFIX.find(name)"))
-        assertTrue("realArchiveName 必须复用该常量", fileItem.contains("NUMERIC_SUFFIX.matches(name)"))
+        assertTrue(
+            "realArchiveName 必须走同一份剥尾缀实现，不得各自拼正则",
+            fileItem.contains("private val realArchiveName: String = stripNumericSuffix(name)")
+        )
     }
 
     @Test fun `FileItem 的类型判定必须只依赖构造入参`() {

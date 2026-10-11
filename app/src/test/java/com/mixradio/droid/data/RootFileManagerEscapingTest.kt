@@ -227,6 +227,46 @@ class RootFileManagerEscapingTest {
         )
     }
 
+    @Test fun `祖先目录为符号链接的正常路径不得被误拒`() {
+        // path 的最终分量不是链接、但祖先目录是：readlink -f 给出的解析结果与 path 不同，
+        // 只拿 path 做前缀比对会把这种正常选择判成越界。
+        val selected = "/data/local/tmp/lnk/foo.sh"
+        assertTrue(isResolvedInsideSelected("/data/adb/shso/foo.sh", selected, "/data/adb/shso"))
+        // 文件本身就是链接且指向自身子树 → 原放行语义必须保留
+        assertTrue(
+            isResolvedInsideSelected(
+                "/data/local/tmp/lnk/foo.sh/sub",
+                selected,
+                "/data/adb/shso"
+            )
+        )
+        // 同名链接（/data/local/tmp/modules → /data/adb/modules）恰是「文件名相同」的越界写法，
+        // 不能用基名相等放行
+        assertFalse(
+            isResolvedInsideSelected(
+                "/data/adb/modules",
+                "/data/local/tmp/modules",
+                "/data/local/tmp"
+            )
+        )
+        // 真实目标完全落在别处 → 仍须拦下
+        assertFalse(isResolvedInsideSelected("/data/adb/modules", selected, "/data/local/tmp/lnk"))
+    }
+
+    @Test fun `越界检查须复用父目录解析结果`() {
+        val s = java.io.File("src/main/java/com/mixradio/droid/data/RootFileManager.kt").readText()
+        assertTrue(
+            "resolveWritableTarget 必须调用可单测的比对函数，而不是就地拼前缀",
+            s.contains("isResolvedInsideSelected(resolved, path, parentResolved)")
+        )
+        val fn = s.indexOf("suspend fun resolveWritableTarget")
+        val body = s.substring(fn, fn + 2000)
+        assertTrue(
+            "取完整解析的同时必须取父目录解析，否则祖先为链接的正常路径会被误拒",
+            body.contains("readlink -f \$escapedParent")
+        )
+    }
+
     @Test fun `复制目录必须递归改权限`() {
         // 只 chmod 顶层的话子文件仍是源权限（如 0700），第三方文件管理器读不到，
         // 与「让其他应用也能自由读写其中的文件」的设计目的相悖。

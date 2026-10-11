@@ -66,6 +66,19 @@ val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "bmp", "gif", "webp", "ico", 
  */
 private val NUMERIC_SUFFIX = Regex("\\.\\d+$")
 
+/**
+ * 剥除「.数字」尾缀（腾讯系下载器追加，如 qq.sh.1）。
+ *
+ * 顶层可见：文件页谓词、[RootService.executeFile]、首页路径输入三处入口必须用同一口径，
+ * 否则同一条路径在「列表里显示可执行」与「执行时报不支持格式」之间自相矛盾。
+ */
+internal fun stripNumericSuffix(name: String): String =
+    NUMERIC_SUFFIX.find(name)?.let { name.substring(0, it.range.first) } ?: name
+
+/** 剥除「.数字」尾缀后取真实扩展名（小写，不含点）。 */
+internal fun realExtensionOf(name: String): String =
+    stripNumericSuffix(name).substringAfterLast('.', "").lowercase(Locale.ROOT)
+
 data class FileItem(
     val name: String,
     val path: String,
@@ -89,14 +102,10 @@ data class FileItem(
         if (isDirectory) "" else name.substringAfterLast('.', "").lowercase(Locale.ROOT)
 
     /** 剥除「.数字」尾缀后的真实扩展名（兼容腾讯产品下载后追加 .1 的情况，如 qq.apk.1）。 */
-    val realExtension: String = run {
-        val stripped = NUMERIC_SUFFIX.find(name)?.let { name.substring(0, it.range.first) } ?: name
-        if (isDirectory) "" else stripped.substringAfterLast('.', "").lowercase(Locale.ROOT)
-    }
+    val realExtension: String = if (isDirectory) "" else realExtensionOf(name)
 
     /** 剥除「.数字」尾缀后的文件名（供压缩包类型判定用）。 */
-    private val realArchiveName: String =
-        if (NUMERIC_SUFFIX.matches(name)) name.substringBeforeLast('.') else name
+    private val realArchiveName: String = stripNumericSuffix(name)
 
     // 与 isInstallable / isViewableImage / isEditableText 同口径：一律用 realExtension，
     // 否则下载器追加「.数字」尾缀（qq.sh.1）的脚本会被判成不可执行，而其余类型判定却承认它。

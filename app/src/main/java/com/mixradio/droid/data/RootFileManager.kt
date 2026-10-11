@@ -27,6 +27,28 @@ data class FilePermissionMetadata(
     val group: String,
 )
 
+/**
+ * 判定 `readlink -f` 的完整解析结果 [resolved] 是否仍落在用户点选的 [path] 之内。
+ *
+ * 「之内」有两种正当形态，只看 [path] 会把第二种误判为越界：
+ *  1. 最终分量本身是链接，指向自身子树（`p`、`p/x`），解析结果以 [path] 为前缀；
+ *  2. 祖先目录含链接，例如 `/data/local/tmp/lnk/foo.sh` 中 `lnk → /data/adb/shso`，
+ *     解析结果是 `/data/adb/shso/foo.sh`。用户选的仍是 /data 下的一个文件，属正常操作。
+ *
+ * [parentResolved] 为 [path] 父目录的解析结果，用于重建第 2 种形态的期望路径；
+ * 不能改用「文件名相同」来放行——`/data/local/tmp/modules → /data/adb/modules`
+ * 这类链接的文件名恰好相同，正是要拦的越界写法。
+ */
+internal fun isResolvedInsideSelected(resolved: String, path: String, parentResolved: String): Boolean {
+    val selfBase = path.trimEnd('/')
+    if (resolved == selfBase || resolved.startsWith("$selfBase/")) return true
+    val baseName = selfBase.substringAfterLast('/')
+    val parentBase = parentResolved.trimEnd('/')
+    if (baseName.isEmpty()) return resolved == parentBase
+    val expected = "$parentBase/$baseName"
+    return resolved == expected || resolved.startsWith("$expected/")
+}
+
 object RootFileManager {
 
     const val DEFAULT_SHSO_DIR = "/data/adb/shso"
@@ -226,10 +248,18 @@ object RootFileManager {
      * 读不到真实路径（非链接时 readlink -f 仍返回同一路径）时按原路径处理。
      */
     private suspend fun resolveWritableTarget(path: String): Pair<String?, String> {
-        val (code, out) = RootService.runCommandSync(
-            "readlink -f ${RootService.escapeShellArg(path)} 2>/dev/null", 10_000L
+        val escapedPath = RootService.escapeShellArg(path)
+        val parentDir = File(path).parent.orEmpty()
+        val escapedParent = RootService.escapeShellArg(parentDir.ifEmpty { "/" })
+        // 一次 su 调用同时取「完整解析」与「父目录解析」：后者用于辨认祖先目录为链接的正常路径，
+        // 两项分开取会把 root 进程调用翻倍。
+        val (_, out) = RootService.runCommandSync(
+            "readlink -f $escapedPath 2>/dev/null; echo ---; readlink -f $escapedParent 2>/dev/null",
+            10_000L
         )
-        val resolved = if (code == 0 && out.isNotBlank()) out.trim() else path
+        val segments = out.split("---", limit = 2)
+        val resolved = segments.getOrNull(0)?.trim().orEmpty().ifEmpty { path }
+        val parentResolved = segments.getOrNull(1)?.trim().orEmpty().ifEmpty { parentDir }
         if (!isAllowedDataPath(resolved)) {
             return null to "该路径是符号链接，真实目标（$resolved）不在 /data 下，已拒绝"
         }
@@ -239,12 +269,8 @@ object RootFileManager {
         // 只能证明「解析后仍在 /data 下」，于是 `/data/local/tmp/m → /data/adb/modules`
         // 这类链接会被放行，root 随后把 modules 目录 chmod/改属主，而确认弹窗显示的
         // 只是链接自身的路径。链接指向自己或子目录（`p`、`p/x`）是正常用法，必须放行。
-        if (resolved != path) {
-            val selfBase = path.trimEnd('/')
-            val insideSelf = resolved == selfBase || resolved.startsWith("$selfBase/")
-            if (!insideSelf) {
-                return resolved to "路径不安全：真实目标（$resolved）不在你选择的路径（$path）之内"
-            }
+        if (resolved != path && !isResolvedInsideSelected(resolved, path, parentResolved)) {
+            return resolved to "路径不安全：真实目标（$resolved）不在你选择的路径（$path）之内"
         }
         return resolved to ""
     }

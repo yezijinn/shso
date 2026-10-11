@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → `8aa7301`） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → 见 § A101） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 560 tests / 0 failures / 1 skipped |
+| 单元测试 | 568 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -72,6 +72,38 @@
 ---
 
 ## 待办
+
+### A101. 时序竞态、执行入口口径与会话状态复核（2026-10-11）
+
+对只读复核提出的 8 条逐条对照当前代码：全部成立并修复。
+
+- [x] **文件页选中集裁剪的时序竞态**（`BUG-CONSIST-139`，P2）：裁剪挂在独立的 `LaunchedEffect(pane.nameQuery)`，
+  而重算 effect 因搜索防抖会在 delay 处挂起让出，裁剪 effect 无延迟先跑、读到的是**过滤前**的列表，
+  全部选中项都「可见」→ 裁剪直接返回；250ms 后重算才落盘，其 key 不再变化也不会重跑。结果是列表已显示
+  「无匹配项」，长按批量删除的确认框仍报「选中的 N 个项目」，删的是屏幕上不存在的文件且不可撤销。
+  现删除独立 effect，裁剪并入重算 effect 末尾、基于刚算出的 `computed` 求可见集，按列收敛并如实反馈被裁数量。
+- [x] **发布循环代次非原子自增**（`BUG-CONC-140`，P3）：`++batchFlushGeneration` 是读-改-写，而调用点分处
+  Main（`startExecution`）与 IO（`runTerminalCommand`）；并发启动时两条循环可能拿到同一代次，旧循环 finally
+  的判据恒成立，把旧任务尾部输出灌进新会话。现改 `AtomicInteger` + `incrementAndGet()`，并把 cancel、
+  代次自增与 Job 赋值收进同一 `synchronized(this)` 临界区。
+- [x] **首页执行入口未剥 `.数字` 尾缀**（`BUG-CONSIST-141`，P3）：首页按字面后缀判定，而 `FileItem` 与
+  `RootService.executeFile` 都先剥尾缀，同一路径出现「文件页可执行、首页报格式不支持」。现 `FileItem.kt`
+  提供顶层 `realExtensionOf` / `stripNumericSuffix`，三处统一复用，删掉 RootService 私有的尾缀正则。
+- [x] **祖先目录为符号链接时越界检查误拒**（`BUG-CONSIST-138`，P3）：`resolveWritableTarget` 只拿 `path`
+  自身做前缀比对，祖先含链接时解析结果必然不等于 path，正常路径被拒绝。现一次 su 同时取「完整解析」与
+  「父目录解析」，新增可单测的 `isResolvedInsideSelected`：放行「链接自身或子目录」与「祖先链接 +
+  父目录解析后同名」；文件名恰好相同的越界链接（`/data/local/tmp/modules → /data/adb/modules`）仍拦下。
+- [x] **终端命令输入与历史会进 savedInstanceState**（`BUG-SEC-142`，P3）：两项用 `rememberSaveable`，
+  内容进入 savedInstanceState 并可能被系统落盘，而命令常含密码 / token，与「仅本次会话内存保留」矛盾。
+  现改用文件级 `TerminalSession`（进程级 Compose State）：旋转仍保留，但不进 Bundle，进程回收即消失。
+- [x] **首页未接线的执行确认槽位**（`BUG-CONSIST-143`，P3）：`pendingExecutePath` 声明后从未读写，注释却称
+  「弹窗确认后再真正执行」。按钮文案是「立即执行」、用户手工输入路径即明确意图，身份选择在文件页的
+  ExecuteConfirmDialog，故删除该死状态而不是补弹窗。
+- [x] **残留违规 tag**（`BUG-COMPAT-136`，P3）：`v20260904` 非纯数字日期，违反统一更新检查约定；本地与双远端标签均已删除。
+- [x] **chown/chmod 缺选项终止符**（`BUG-SEC-137`，P2）：与 A100 的 `BUG-SEC-135` 同源，两轮独立发现同一处，已修。
+- [x] 单测：新增 `ConcurrencyAndSessionGuardTest` 5 项源码契约（代次原子性与同锁、裁剪不得独立挂 effect、
+  终端页不得引用 saveable、三处入口共用 `realExtensionOf`、首页不得残留死状态），`FileItemTypeTest` 补尾缀口径
+  1 项，`RootFileManagerEscapingTest` 补越界比对 2 项；全量 `testDebugUnitTest` → 568 tests / 0 failures / 1 skipped。
 
 ### A100. 编码统计、进程字段解析与安装锁复核（2026-10-11）
 

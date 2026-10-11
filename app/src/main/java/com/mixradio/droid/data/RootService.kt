@@ -702,9 +702,6 @@ object RootService {
         }
     }
 
-    /** 下载器（腾讯系等）给重名文件追加的「.数字」尾缀，如 qq.sh.1。 */
-    private val NUMERIC_SUFFIX = Regex("\\.\\d+$")
-
     /**
      * 执行脚本/二进制文件。
      *
@@ -714,11 +711,11 @@ object RootService {
     fun executeFile(filePath: String, runAsRoot: Boolean? = null) {
         val file = File(filePath)
         val fileName = file.name
-        // 与 FileItem.isExecutableScript/Binary 同口径：剥掉「.数字」尾缀再判格式。
+        // 与 FileItem.isExecutableScript/Binary 同口径：复用 realExtensionOf 剥掉「.数字」尾缀再判格式。
         // 只放宽文件页谓词而这里按字面后缀判定，会让带尾缀的脚本出现「有执行入口却报不支持格式」。
-        val effectiveName = NUMERIC_SUFFIX.replace(fileName, "")
-        val isSh = effectiveName.endsWith(".sh", ignoreCase = true)
-        val isSo = effectiveName.endsWith(".so", ignoreCase = true)
+        val realExtension = realExtensionOf(fileName)
+        val isSh = realExtension == "sh"
+        val isSo = realExtension == "so"
 
         if (!isSh && !isSo) {
             appendOutputDirect("\n[!] 错误: 不支持的文件格式，仅支持执行 .sh 和 .so 文件\n")

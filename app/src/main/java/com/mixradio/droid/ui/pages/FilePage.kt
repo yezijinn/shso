@@ -928,39 +928,41 @@ fun FilePage(
         // 否则会把「读取失败」状态覆盖成「目录为空」。
         if (pane.listIsStale) return@LaunchedEffect
         pane.displayFileList = computed
+
+        // 选中集必须始终是**当前可见列表**的子集，且按列各自收敛。
+        //
+        // 裁剪不能另挂一个「读 pane.displayFileList」的 LaunchedEffect：本 effect 因搜索防抖
+        // 会在 delay 上挂起让出，那个 effect 无延迟先跑，读到的仍是**过滤前**的旧列表 ——
+        // 5 个选中项全部「可见」，dropped = 0，裁剪直接返回；250ms 后本 effect 才落盘过滤结果，
+        // 而它的 key 不再变化，不会重跑。裁剪形同虚设：列表已显示「无匹配项」，
+        // 长按批量删除的确认框仍报「选中的 5 个项目」，删的却是屏幕上不存在的文件，
+        // 且批量删除不可撤销 —— 正是注释想修的场景。
+        // 故裁剪并入本 effect 末尾，基于**刚算出的 computed** 判定。
+        //
+        // 另一侧：「全选文件」取的是筛选后的子集，清掉筛选词后按钮文案又变回「全选」，
+        // 再点一次不是取消而是把全量并入选择集，口径随筛选词漂移。
+        // 这里在筛选词非空时把选中集裁剪到可见范围，并如实告知被裁掉的数量 ——
+        // 「静默删掉用户的选择」也比「静默删掉用户的文件」可接受，但两者都不该静默。
+        if (query.isNotEmpty()) {
+            val visible = computed.mapTo(HashSet()) { it.path }
+            val dropped = pane.selectedPaths.count { it !in visible }
+            if (dropped > 0) {
+                val kept = pane.selectedPaths.filter { it in visible }
+                pane.selectedPaths.clear()
+                pane.selectedPaths.addAll(kept)
+                feedbackMessage = if (kept.isEmpty()) {
+                    "筛选后无匹配项，已清空 $dropped 个选择"
+                } else {
+                    "筛选后移除了 $dropped 个不可见项，剩余 ${kept.size} 个"
+                }
+            }
+        }
     }
     }
 
 
     // 切目录清空过滤词已并入上面按列的 `LaunchedEffect(pane.currentDirectory)`：
     // 那一处按列清，才能覆盖非聚焦列；这里再挂一个页面级的就只会清聚焦列。
-
-    // 选中集必须始终是**当前可见列表**的子集，且按列各自收敛。
-    //
-    // 此前选中集不随名称筛选收敛：多选 5 个文件 → 用搜索把它们全筛掉（列表显示
-    // 「无匹配项」，可见 0 个）→ 长按任意文件批量删除，确认框只报「选中的 5 个项目」，
-    // 逐项删的却是那 5 个屏幕上根本不存在的文件，且批量删除不可撤销。
-    // 另一侧：「全选文件」取的是筛选后的子集，清掉筛选词后按钮文案又变回「全选」，
-    // 再点一次不是取消而是把全量并入选择集，口径随筛选词漂移。
-    //
-    // 这里在筛选词变化后把选中集裁剪到可见范围，并如实告知被裁掉的数量 ——
-    // 「静默删掉用户的选择」也比「静默删掉用户的文件」可接受，但两者都不该静默。
-    panes.forEach { pane ->
-    LaunchedEffect(pane.nameQuery) {
-        if (pane.nameQuery.isEmpty()) return@LaunchedEffect
-        val visible = pane.displayFileList.mapTo(HashSet()) { it.path }
-        val dropped = pane.selectedPaths.count { it !in visible }
-        if (dropped <= 0) return@LaunchedEffect
-        val kept = pane.selectedPaths.filter { it in visible }
-        pane.selectedPaths.clear()
-        pane.selectedPaths.addAll(kept)
-        feedbackMessage = if (kept.isEmpty()) {
-            "筛选后无匹配项，已清空 $dropped 个选择"
-        } else {
-            "筛选后移除了 $dropped 个不可见项，剩余 ${kept.size} 个"
-        }
-    }
-    }
 
     val listFontSize = appSettings.fileListFontSize.sp
     val listSecondaryFontSize = (appSettings.fileListFontSize - 5f).coerceAtLeast(8f).sp

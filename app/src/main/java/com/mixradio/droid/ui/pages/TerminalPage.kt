@@ -48,9 +48,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.Saver
-import androidx.compose.runtime.saveable.listSaver
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -131,13 +128,21 @@ internal fun renderableLine(
 }
 
 /**
- * 「命令历史」的存档器：`List<String>` 不是 Bundle 原生类型，直接交给 `rememberSaveable`
- * 会在保存（旋转屏幕）时抛异常，故显式转成可保存的列表形态。
+ * 终端输入草稿与命令历史的**进程级**持有者。
+ *
+ * 这两项此前用 `rememberSaveable`：内容会进入 Activity 的 savedInstanceState，
+ * 系统在进程被回收前会把它落盘（`/data/system/users/<id>/` 下的 task 快照），
+ * 崩溃报告与备份流程也可能带出——而命令常含密码、token，
+ * 「仅本次会话内存保留、不落盘」的承诺并不成立。
+ *
+ * 换成文件级 Compose State：旋转 / 分屏重建组合后内容仍在，但从不进入 Bundle；
+ * 进程真正被回收时随之丢失，与「仅本次会话」的语义一致。
+ * 同一时刻只有终端页在用，无需更细的生命周期管理。
  */
-private val historySaver: Saver<List<String>, Any> = listSaver(
-    save = { it.toList() },
-    restore = { it.toList() }
-)
+private object TerminalSession {
+    val inputText = mutableStateOf("")
+    val cmdHistory = mutableStateOf(emptyList<String>())
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -145,13 +150,12 @@ fun TerminalPage(
     appSettings: AppSettings
 ) {
     val context = LocalContext.current
-    // 输入框内容与待确认命令用 rememberSaveable：本工程未锁屏幕方向，旋转会重建 Activity，
-    // 用普通 remember 会把「刚敲进去的命令」和「刚弹出/刚确认过的高危确认框」一起丢掉——
-    // 与「切页丢确认弹窗」是同一类问题（高风险命令无声作废）。
-    var inputText by rememberSaveable { mutableStateOf("") }
-    // 命令历史：仅本次会话内存保留，不落盘 —— 命令常含密码/token 等敏感参数，
-    // 写入 SharedPreferences 会以明文长期留在设备上。
-    var cmdHistory by rememberSaveable(stateSaver = historySaver) { mutableStateOf(emptyList<String>()) }
+    // 输入框内容与命令历史挂在进程级 [TerminalSession] 上：本工程未锁屏幕方向，
+    // 旋转会重建 Activity，用普通 remember 会把「刚敲进去的命令」一起丢掉；
+    // 又不能走 rememberSaveable —— 其内容会进 savedInstanceState 并被系统落盘，
+    // 与「命令仅内存、不落盘」的承诺冲突（见 [TerminalSession] 说明）。
+    var inputText by TerminalSession.inputText
+    var cmdHistory by TerminalSession.cmdHistory
     var showCmdHistory by remember { mutableStateOf(false) }
     // 「跟随尾部」意图：只在用户手动滚动（拖动/惯性）时更新，不受新日志追加影响。
     // 注意不可直接用 `!canScrollForward` 判定「是否在底部」——新内容一追加 canScrollForward 立刻变 true，
