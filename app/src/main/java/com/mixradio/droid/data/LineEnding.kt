@@ -24,6 +24,9 @@ enum class LineEnding(val literal: String) {
             }
             // 主导判定（优先 CRLF > LF > CR；混合时取最大）
             val max = maxOf(lf, crlf, cr)
+            // 全文无换行符时三个计数全为 0，若直接比 `max == crlf` 会把单行文件判成 CRLF；
+            // 缺省应为 LF，与空文本分支一致。
+            if (max == 0) return LF
             return when {
                 max == crlf -> CRLF
                 max == cr -> CR

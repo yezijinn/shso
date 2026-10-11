@@ -21,6 +21,13 @@ class LineEndingTest {
     }
 
     @Test
+    fun `detect 对无换行的单行文本缺省为 LF`() {
+        // 三计数全为 0 时若直接比 `max == crlf` 会判成 CRLF，导致单行文件保存时按 CRLF 生成行尾。
+        assertEquals(LineEnding.LF, LineEnding.detect("单行内容"))
+        assertEquals(LineEnding.LF, LineEnding.detect("#!/bin/sh"))
+    }
+
+    @Test
     fun `apply 到 LF 会把 CRLF 与 CR 归一`() {
         assertEquals("a\nb\nc", LineEnding.apply("a\r\nb\r\nc", LineEnding.LF))
         assertEquals("a\nb\nc", LineEnding.apply("a\rb\rc", LineEnding.LF))

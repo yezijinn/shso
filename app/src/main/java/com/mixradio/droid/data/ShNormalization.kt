@@ -25,13 +25,16 @@ internal object ShNormalization {
     /**
      * 内嵌压缩载荷的强特征字节。
      *
-     * 只收 **>=4 字节**的特征：3 字节短特征（如 LZMA 独立流的 `5D 00 00`）
-     * 在纯文本脚本里也会偶发命中，会把「本应归一化的 CRLF 脚本」误判为 DIRECT，
-     * 使 A75 的修复失效。LZMA 独立流本就不在本应用的解压格式内，去掉不损失识别能力。
-     * bzip2 块头 `BZh` 同样只有 3 字节，故把级别数字一并纳入特征（见 [hasBzip2Header]）。
+     * 收录标准是「该特征在合法文本里不可能出现」，而非固定的字节数：
+     * 纯可打印 ASCII 的短特征（如 LZMA 独立流的 `5D 00 00`、裸 `BZh`）在注释或字符串
+     * 常量里会偶发命中，把「本应归一化的 CRLF 脚本」误判为 DIRECT，使 A75 的修复失效。
+     * 含非文本字节的特征即使不到 4 字节也不会有假命中，故 gzip 取到 `1F 8B 08`——
+     * 其 CM 位在 gzip 规范里恒为 8（deflate），第 3 字节同样是强约束，比只取 `1F 8B`
+     * 更能排除二进制噪声。LZMA 独立流本就不在本应用的解压格式内，去掉不损失识别能力；
+     * bzip2 块头 `BZh` 全为可打印 ASCII，故把级别数字一并纳入特征（见 [hasBzip2Header]）。
      */
     private val magics = listOf(
-        byteArrayOf(0x1f, 0x8b.toByte()),                        // gzip
+        byteArrayOf(0x1f, 0x8b.toByte(), 0x08),                  // gzip: 1F 8B + CM=8(deflate)
         byteArrayOf(0xfd.toByte(), 0x37, 0x7a, 0x58, 0x5a, 0x00), // xz
         byteArrayOf(0x28, 0xb5.toByte(), 0x2f, 0xfd.toByte()),    // zstd
         byteArrayOf(0x04, 0x22, 0x4d, 0x18),                      // lz4
@@ -71,12 +74,20 @@ internal object ShNormalization {
             // 交给调用方以 root 读取后再判定。
             return Decision(Plan.DIRECT, "app 侧不可读，需 root 侧判定", appReadable = false)
         }
-        val length = file.length()
-        // 载荷可能在文件任意位置。无法完整扫描时不冒险改写。
-        if (length > MAX_SCAN_BYTES) return Decision(Plan.DIRECT, "超过完整扫描上限，保留原字节")
         val bytes = try {
             RandomAccessFile(file, "r").use { raf ->
-                ByteArray(length.toInt()).also(raf::readFully)
+                // 长度以本次打开后的 `raf.length()` 为准：先前 `file.length()` 与实际读到的
+                // 内容可能已不是同一份（判定与读取之间存在时间差）。
+                val declared = raf.length()
+                // 载荷可能在文件任意位置。无法完整扫描时不冒险改写。
+                if (declared > MAX_SCAN_BYTES) return Decision(Plan.DIRECT, "超过完整扫描上限，保留原字节")
+                val buf = ByteArray(declared.toInt()).also(raf::readFully)
+                // 读取期间文件被追加时，尾部载荷落在本次扫描之外，「未发现载荷」的结论不可信，
+                // 据此去 CR 会把载荷改坏（与 root 侧 decideAsRoot 的复查对称）。
+                if (raf.length() != declared) {
+                    return Decision(Plan.DIRECT, "读取期间文件发生变化，保留原字节")
+                }
+                buf
             }
         } catch (_: Exception) {
             return Decision(Plan.DIRECT, "读取失败，需 root 侧判定", appReadable = false)

@@ -95,6 +95,31 @@ class ShNormalizationTest {
         assertEquals(ShNormalization.Plan.NORMALIZE, ShNormalization.decideBytes(bytes).plan)
     }
 
+    @Test fun `CRLF plain text carrying only two gzip bytes is still normalized`() {
+        // gzip 特征补到 `1F 8B 08`（CM 位恒为 deflate）。仅出现 `1F 8B` 的字节噪声
+        // 不能把本应归一化的 CRLF 脚本误判为 DIRECT，否则去 CR 保护失效。
+        val bytes = "#!/bin/sh\r\necho ok\r\n".toByteArray() + byteArrayOf(0x1f, 0x8b.toByte())
+        assertEquals(ShNormalization.Plan.NORMALIZE, ShNormalization.decideBytes(bytes).plan)
+    }
+
+    @Test fun `CRLF script with embedded gzip header preserves exact bytes`() {
+        val bytes = "#!/bin/sh\r\necho extracting\r\n".toByteArray() +
+            byteArrayOf(0x1f, 0x8b.toByte(), 0x08, 0x00, 0x00, 0x00)
+        assertEquals(ShNormalization.Plan.DIRECT, ShNormalization.decideBytes(bytes).plan)
+    }
+
+    @Test fun `app readable CRLF file is normalized through decide`() {
+        val file = java.io.File.createTempFile("shso-norm", ".sh")
+        try {
+            file.writeBytes("#!/system/bin/sh\r\necho ok\r\n".toByteArray())
+            val decision = ShNormalization.decide(file)
+            assertEquals(ShNormalization.Plan.NORMALIZE, decision.plan)
+            assertEquals(true, decision.appReadable)
+        } finally {
+            file.delete()
+        }
+    }
+
     @Test fun `unreadable file reports app unreadable for root fallback`() {
         val missing = java.io.File("/definitely/not/here/shso-x.sh")
         val decision = ShNormalization.decide(missing)

@@ -8,6 +8,7 @@ import java.io.FileOutputStream
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.charset.Charset
+import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.LinkedHashSet
@@ -188,6 +189,22 @@ object TextCompare {
 
     private fun hashCapacity(expected: Int): Int = (expected / 0.75f).toInt() + 1
 
+    /**
+     * 行分隔符在给定编码下占用的字节宽度。
+     *
+     * UTF-16 的 `\n` 是两字节码元（LE `0A 00`、BE `00 0A`），只按单字节 `0x0A`
+     * 定位行边界会从第二行起丢掉码元对齐：行文本错位成乱码，且行尾 `\r` 判错。
+     */
+    private fun lineUnitWidth(charset: Charset): Int =
+        if (charset === StandardCharsets.UTF_16LE || charset === StandardCharsets.UTF_16BE) 2 else 1
+
+    /** 换行字节在给定编码下的码元序列（单字节编码即该字节本身）。 */
+    private fun lineBreakBytes(charset: Charset, value: Byte): ByteArray = when {
+        charset === StandardCharsets.UTF_16LE -> byteArrayOf(value, 0)
+        charset === StandardCharsets.UTF_16BE -> byteArrayOf(0, value)
+        else -> byteArrayOf(value)
+    }
+
     //  行解析 / 字节比较
 
     /** 定长字节比较：逐行对比的主路径，避免解码开销。 */
@@ -203,7 +220,7 @@ object TextCompare {
         return true
     }
 
-    /** 行游标：扫描 `\n` 定位行边界，行尾 `\r` 剔除；复用单个 ByteBuffer 视图解码。 */
+    /** 行游标：定位行分隔符切行，行尾 CR 剔除；复用单个 ByteBuffer 视图解码。 */
     private class LineScanner(src: MappedFile, private val charset: Charset) {
         val buffer: MappedByteBuffer = src.buffer
         private val size: Int = src.size
@@ -214,15 +231,26 @@ object TextCompare {
         var length = 0
             private set
 
+        /** 推进单位与分隔符码元宽度：UTF-16 下为 2 字节，其余为 1 字节，逐字节等价。 */
+        private val unit = lineUnitWidth(charset)
+        private val lfBytes = lineBreakBytes(charset, LF)
+        private val crBytes = lineBreakBytes(charset, CR)
+
+        private fun matches(at: Int, pattern: ByteArray): Boolean {
+            if (at < 0 || at + pattern.size > size) return false
+            for (k in pattern.indices) if (buffer[at + k] != pattern[k]) return false
+            return true
+        }
+
         fun next(): Boolean {
             if (pos >= size) return false
             var i = pos
-            while (i < size && buffer[i] != LF) i++
-            var end = i
-            if (end > pos && buffer[end - 1] == CR) end--
+            while (i < size && !matches(i, lfBytes)) i += unit
+            var end = minOf(i, size)
+            if (end - unit >= pos && matches(end - unit, crBytes)) end -= unit
             start = pos
             length = end - pos
-            pos = i + 1
+            pos = if (i < size) i + unit else size
             return true
         }
 
@@ -253,10 +281,12 @@ object TextCompare {
          */
         val detectedCharset: Charset by lazy {
             if (dataStart >= size) return@lazy Charsets.UTF_8
-            val n = minOf(CHARSET_PROBE_BYTES, size - dataStart)
+            // 探测取自**文件头**而非 dataStart：dataStart 已跳过 BOM（UTF-8 3 字节 / UTF-16 2 字节），
+            // 从那里取样会漏掉 BOM 这一最强判据，无 BOM 嗅探对纯中文 UTF-16 未必可靠。
+            // 从 0 取样时 CharsetDetector 先命中 BOM 分支，结果与是否跳过 BOM 无关。
+            val n = minOf(CHARSET_PROBE_BYTES, size)
             val head = ByteArray(n)
             val dup = buffer.duplicate()
-            dup.position(dataStart)
             dup.get(head, 0, n)
             CharsetDetector.detect(head).charset
         }
@@ -329,22 +359,40 @@ object TextCompare {
                 throw CompareException("无法读取文件: $path")
             }
 
-            /** UTF-8 BOM 检测：EF BB BF → 数据从偏移 3 开始。 */
+            /** 数据起始偏移：UTF-8 BOM(EF BB BF) 跳过 3 字节，UTF-16 LE/BE BOM 跳过 2 字节。 */
             private fun bomOffset(buf: MappedByteBuffer, size: Int): Int {
                 if (size >= 3 && buf[0] == 0xEF.toByte() && buf[1] == 0xBB.toByte() && buf[2] == 0xBF.toByte()) return 3
+                if (size >= 2 && ((buf[0] == 0xFF.toByte() && buf[1] == 0xFE.toByte()) ||
+                        (buf[0] == 0xFE.toByte() && buf[1] == 0xFF.toByte()))
+                ) {
+                    return 2
+                }
                 return 0
             }
         }
 
         fun countLines(): Int {
             if (dataStart >= size) return 0
+            val cs = detectedCharset
+            val unit = lineUnitWidth(cs)
+            val lf = lineBreakBytes(cs, LF)
             var count = 1
             var i = dataStart
             while (i < size) {
-                if (buffer[i] == LF) count++
-                i++
+                if (i + lf.size <= size) {
+                    var hit = true
+                    for (k in lf.indices) if (buffer[i + k] != lf[k]) { hit = false; break }
+                    if (hit) count++
+                }
+                i += unit
             }
-            if (buffer[size - 1] == LF) count--
+            // 末尾恰为换行符时该换行不产生额外行
+            val tail = size - lf.size
+            if (tail >= dataStart) {
+                var hit = true
+                for (k in lf.indices) if (buffer[tail + k] != lf[k]) { hit = false; break }
+                if (hit) count--
+            }
             return count
         }
 
