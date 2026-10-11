@@ -672,6 +672,7 @@ private fun TextEditorDialogContent(
                                 wordWrap = wordWrap,
                                 fileName = grammarFileName,
                                 syntaxRevision = syntaxRevision,
+                                contentRevision = textRevision,
                                 controller = soraEditor,
                                 onChanged = { dirty = true; textRevision++ }
                             )

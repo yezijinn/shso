@@ -247,6 +247,9 @@ class AppSettings private constructor(context: Context) {
 
     fun addBookmark(path: String) {
         val normalized = path.trim().trimEnd('/').ifEmpty { "/" }
+        // 书签以换行分隔的字符串持久化（见 persistBookmarks），路径里带上换行/回车/NUL
+        // 会让读回时被 split 成多条 —— 一个目录名就能污染整份列表。与 isUnsafePath 同口径拒绝。
+        if (normalized.any { it == '\n' || it == '\r' || it == '\u0000' }) return
         bookmarkPaths.add(normalized)
         bookmarks = bookmarkPaths.toList()
         persistBookmarks()

@@ -121,7 +121,8 @@ object PermissionChecker {
             val finished = process.waitFor(ROOT_CHECK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             if (!finished) {
                 process.destroyForcibly()
-                process.waitFor()
+                // 销毁后只做**有界**回收：su 若卡在不可中断状态，无参 waitFor() 会把 IO 线程永久占住。
+                process.waitFor(ROOT_CHECK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 return@withContext false
             }
             val output = process.inputStream.use { stream ->

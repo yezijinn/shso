@@ -168,6 +168,8 @@ fun SoraTextEditor(
     fileName: String?,
     /** 语法包变更计数：变化时重新取语法（用于导入/删除语法包后即时生效）。 */
     syntaxRevision: Int = 0,
+    /** 内容修订号：文本被程序化改写（查找替换、编码转换、另存载入）后递增，用于重估高亮阈值。 */
+    contentRevision: Int = 0,
     modifier: Modifier = Modifier,
     controller: SoraEditorController,
     onChanged: () -> Unit
@@ -176,8 +178,12 @@ fun SoraTextEditor(
     val context = androidx.compose.ui.platform.LocalContext.current
     // 语法按扩展名缓存；超大文本不启用高亮：Monarch 分析虽按可视区增量执行，
     // 但超大文本的首次分析仍会抢占主线程，收益低于代价（与统计跳过阈值同量级）。
-    val editorLanguage = remember(fileName, initialText.length, syntaxRevision) {
-        if (initialText.length <= HIGHLIGHT_MAX_CHARS) SoraMonarchGrammars.languageFor(context, fileName) else null
+    // 长度必须取**当前**文本：只看打开时的 initialText.length，超大文本经查找替换缩短到
+    // 阈值以内仍不会启用高亮，而 initialText 不变，任何编辑都无法让它重新判定。
+    val editorLanguage = remember(fileName, contentRevision, syntaxRevision) {
+        // 控件未挂载时 charCount() 恒为 0，会把超大文本误判成「可高亮」；此时回落到打开时的文本长度。
+        val length = if (controller.isAttached) controller.charCount() else initialText.length
+        if (length <= HIGHLIGHT_MAX_CHARS) SoraMonarchGrammars.languageFor(context, fileName) else null
     }
     // 语法生效时必须同时套用 Monarch 主题配色：无主题时令牌色为 0，文本会渲染成不可见。
     val monarchScheme = remember(editorLanguage) {

@@ -660,10 +660,19 @@ object RootFileManager {
 
         val sourceFile = File(sourcePath)
         val sourceName = sourceFile.name
-        val nameWithoutExt = sourceFile.nameWithoutExtension.replace("'", "")
+        // 独立目录名要落进 shell 并作为路径段：控制字符、路径分隔符、".." 会改变命令语义或越目录，
+        // 统一替换为下划线；首尾的点与空格（`..`、`.`）会与目录穿越混淆，一并裁掉。
+        val nameWithoutExt = sourceFile.nameWithoutExtension
+            .replace("'", "")
+            .map { if (it.isISOControl() || it == '/' || it == '\\') '_' else it }
+            .joinToString("")
+            .trim('.', ' ')
+            .ifEmpty { "item" }
 
         val targetDir = if (useIndependentFolder) {
-            val timestamp = (System.currentTimeMillis() % 100000).toString()
+            // 用完整 epoch 毫秒：取模 100000 只有 100 秒周期，同一分钟内多次「添加」就会撞进同一目录，
+            // 后一次的 cp 落在已存在的目录上变成嵌套副本（X/X）。
+            val timestamp = System.currentTimeMillis().toString()
             "$DEFAULT_SHSO_DIR/${nameWithoutExt}_$timestamp"
         } else {
             DEFAULT_SHSO_DIR
@@ -674,6 +683,12 @@ object RootFileManager {
         RootService.runCommandSync(createDirCmd)
 
         val destinationPath = "$targetDir/$sourceName"
+        // 目标已存在时必须先拒绝：`cp -r 源 目标` 在目标已存在且为**目录**时会把源拷到其**内部**
+        // （同名二次添加产生 X/X 嵌套副本），而目标是同名文件时则被静默覆盖。
+        // 与 rename「一律拒绝覆盖」同口径 —— 覆盖不是本入口的选项。
+        if (destinationExists(destinationPath, sourcePath)) {
+            return@withContext Pair(false, "目标已存在同名文件或目录：$sourceName")
+        }
         val escapedSource = RootService.escapeShellArg(sourcePath)
         val escapedDest = RootService.escapeShellArg(destinationPath)
 

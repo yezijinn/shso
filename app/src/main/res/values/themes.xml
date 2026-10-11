@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.shso" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- 冷启动窗口底：应用恒为 Aurora 暗色，缺此项时系统浅色模式下窗口先铺白再切暗，出现白闪。
+             与 AuroraTokens.AuroraTop（135° 渐变起始色）一致。 -->
+        <item name="android:windowBackground">#FF0C1626</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">false</item>

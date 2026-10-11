@@ -2,7 +2,7 @@
 <paths>
     <!-- 共享外部存储（/sdcard 等），普通用户可读取的 APK 经此暴露给系统安装器 -->
     <external-path name="external" path="." />
-    <!-- 应用私有目录（cache/files），兜底共享 -->
-    <files-path name="internal" path="." />
-    <cache-path name="cache" path="." />
+    <!-- 仅暴露安装暂存目录：installApkViaSystem 的唯一入参就是 cache/install-confirm 下的副本，
+         按整棵 cache 暴露会让应用私有的其它缓存文件同样可被外部按 URI 读取。 -->
+    <cache-path name="cache" path="install-confirm/" />
 </paths>

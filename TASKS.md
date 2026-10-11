@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011` → `284090f`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 544 tests / 0 failures / 1 skipped |
+| 单元测试 | 555 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -72,6 +72,42 @@
 ---
 
 ## 待办
+
+### A99. 添加文件嵌套、执行标志与主题背景复核（2026-10-11）
+
+对只读审查近期提出的 14 条逐条对照当前代码复核：10 条成立并修复，2 条证据证伪，1 条归为设计取舍，1 条架构性挂起。
+
+- [x] **「添加文件」产生 `X/X` 嵌套副本**（`BUG-LOGIC-116`，P2）：`addFileToShso` 用 `cp -r 源 目标` 落盘前未探测
+  目标是否已存在，目标为**目录**时 cp 把源拷进其内部，等同于名二次添加生成嵌套副本，目标是同名文件时被静默覆盖；
+  独立目录名取时间戳后 `% 100000` 只有 100 秒周期，同一分钟内多次添加即撞进同一目录。现先探测目标、命中即拒绝，
+  独立目录名改完整 epoch 毫秒。
+- [x] **独立目录名未过滤控制字符与路径分隔符**（`BUG-EDGE-117`，P3）：目录名直接取自源文件名，控制字符、`/`、`\`
+  会改变 shell 命令语义或越目录，`..`、首尾点与空格与目录穿越混淆。现统一归一为 `_` 并 `trim('.', ' ')`，空值回落 `item`。
+- [x] **解压/拷贝/移动的状态标志与作业挂在页面级**（`BUG-CONSIST-119`，P3）：旋转先取消页面级 scope，但
+  `withContext(Dispatchers.IO)` 块体无挂起点会整段跑完（副作用已落地），收尾复位被取消吞掉、标志又被新页面
+  重新初始化为 false → 可重入交叠。现改为文件级 `actionJobScope` + 文件级标志，并补幂等早退守卫。
+- [x] **超大文本高亮判定不随内容长度重算**（`BUG-COMPAT-120`，P3）：阈值在组合期按 `controller.charCount()` 判定，
+  控件未挂载时恒为 0；改用初值长度后必须把内容修订号纳入 `remember` 键，否则改写缩短到阈值内也不启用高亮。
+- [x] **FileProvider 暴露面过宽**（`BUG-SEC-121`，P3）：`file_provider_paths.xml` 同时暴露 `files-path path="."`
+  与整棵 `cache-path path="."`，而安装入口的唯一入参只是 `cache/install-confirm` 下的副本。现移除 files-path，
+  cache 收窄为 `install-confirm/`。
+- [x] **ROOT 探测超时后无界等待回收**（`BUG-EXC-122`，P3）：`destroyForcibly` 之后调无参 `process.waitFor()`，
+  `su` 若停在不可中断状态会把 IO 线程永久占住。现改为有界回收。
+- [x] **窗口背景缺失导致冷启动白闪**（`BUG-COMPAT-123`，P3）：四个主题变体均未设 `android:windowBackground`；
+  且 `v27` 变体的 `Theme.shso` 未复列基础条目 —— style 资源按配置**整体择一**、不跨配置项合并，导致 `v27`
+  设备上 `statusBarColor` 等一并丢失。现四变体统一补深色窗口背景，`v27` 变体复列全部条目（`aapt2 dump resources` 实证）。
+- [x] **无冲突批量移动静默覆盖**（`BUG-CONSIST-125`，P3）：无冲突分支沿用默认 `OVERWRITE`，选中目录与执行之间存在
+  TOCTOU。现与冲突弹窗一致显式传 `SKIP`。
+- [x] **书签路径含换行污染列表**（`BUG-CONSIST-126`，P3）：书签以换行分隔的字符串持久化，路径含 `\n`/`\r`/NUL
+  会让读回时 split 成多条。现与 `isUnsafePath` 同口径拒绝。
+- [x] **构建告警全静默**（`BUG-COMPAT-127`，P3）：`org.gradle.warning.mode=none` 连新增的弃用告警一并静默；
+  改 `summary` 保留计数与标题。
+- [x] 判为不成立 2 条：`BUG-COMPAT-114`（`ServiceCompat.startForeground` 在 API<29 走两参重载，类型位被忽略，
+  原判定正确）、`BUG-COMPAT-124`（`packaging.resources.excludes` 不作用于 assets，解包实证 `assets/sora-themes/shso-dark.json` 仍在）。
+- [x] 设计取舍 1 条：`BUG-CONSIST-118`（收件箱文件数与容量上限已存在，去重与 TTL 属产品特性）。
+- [x] 架构性挂起 1 条：`BUG-CONSIST-115`（编辑中旋转丢未保存内容，与 `AI2-UI-002` 同源，需内容持久化改造）。
+- [x] 单测：新增 `PathAndActionHardeningTest` 11 项源码契约；全量 `testDebugUnitTest` → 555 tests / 0 failures / 1 skipped。
+- [x] 真机（root）验证：`adb install -r -g` 成功，进程存活，logcat 无 `FATAL`/`ANR`；主页列出 `/data/adb/shso`，文件页列出 `/storage/emulated/0`。
 
 ### A98. 语法包上限与终端 SGR 复核（2026-10-11）
 

@@ -167,6 +167,23 @@ private var installInFlight by mutableStateOf(false)
  */
 private var batchInFlight by mutableStateOf(false)
 
+/**
+ * 解压 / 原地拷贝 / 移动（含批量移动）的执行 scope：**不随组合销毁**。
+ *
+ * 与 [installJobScope] 同理：这些动作底层都是一次不可撤销的磁盘副作用，而页面级
+ * `rememberCoroutineScope()` 在旋屏/Activity 重建时被取消 —— 取消只在**下一个挂起点**
+ * 生效，`RootFileManager.*` 内部 `withContext(IO)` 的块体没有挂起点，会整段跑完：
+ * 副作用已经落地，收尾的提示与 `refresh()` 全部丢失，标志又随组合归零、入口重新可点，
+ * 用户再点一次就在同一目标目录叠加一次解压/拷贝/移动。
+ * 用 `Dispatchers.Main.immediate` 与页面级 scope 保持同线程语义，避免改动各处的状态写入线程。
+ */
+private val actionJobScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+/** 解压 / 拷贝 / 移动进行中标志：进程级，与 [actionJobScope] 同生命周期（理由同上）。 */
+private var isExtracting by mutableStateOf(false)
+private var isCopying by mutableStateOf(false)
+private var isMoving by mutableStateOf(false)
+
 @Composable
 fun FilePage(
     appSettings: AppSettings,
@@ -297,14 +314,11 @@ fun FilePage(
     var showExtractPasswordDialog by remember { mutableStateOf(false) }
     var extractPasswordInput by remember { mutableStateOf("") }
     var extractTargetItem by remember { mutableStateOf<FileItem?>(null) }
-    var isExtracting by remember { mutableStateOf(false) }
-    var isCopying by remember { mutableStateOf(false) }
     var showMoveDialog by remember { mutableStateOf(false) }
     var moveFiles by remember { mutableStateOf<List<String>?>(null) }
     var showConflictDialog by remember { mutableStateOf(false) }
     var conflictTargets by remember { mutableStateOf<List<String>>(emptyList()) }
     var conflictDestination by remember { mutableStateOf("") }
-    var isMoving by remember { mutableStateOf(false) }
 
 
     // 选中集合的 HashSet 视图：selectedPaths 是 SnapshotStateList，
@@ -582,9 +596,11 @@ fun FilePage(
         val targets = conflictTargets
         val destination = conflictDestination
         if (targets.isEmpty() || destination.isEmpty()) return
+        // 已有移动在跑时不再叠加一条循环：两次循环写的是同一批目标与同一份 isMoving。
+        if (isMoving) return
         conflictTargets = emptyList()
         conflictDestination = ""
-        scope.launch {
+        actionJobScope.launch {
             isMoving = true
             var ok = 0
             var fail = 0
@@ -633,7 +649,7 @@ fun FilePage(
 
     // 自动解压到当前目录
     fun startExtract(item: FileItem) {
-        scope.launch {
+        actionJobScope.launch {
             isExtracting = true
             val result = try {
                 ArchiveExtractor.extract(archivePath = item.path, targetParent = currentDirectory)
@@ -1907,7 +1923,7 @@ fun FilePage(
                 if (!item.isDirectory) {
                     ActionTextRow(if (isCopying) "正在拷贝…" else "原地拷贝", AuroraTokens.Text, enabled = !isCopying) {
                         showActionDialog = false
-                        scope.launch {
+                        actionJobScope.launch {
                             isCopying = true
                             val (success, resultPath) = RootFileManager.copyFile(item.path)
                             isCopying = false
@@ -1955,9 +1971,11 @@ fun FilePage(
             onDirectorySelected = { destinationDirectory ->
                 val targets = moveFiles
                 if (targets.isNullOrEmpty()) return@BuiltInFilePicker
+                // 已有移动在跑时不再叠加一条循环（同上）。
+                if (isMoving) return@BuiltInFilePicker
                 showMoveDialog = false
                 moveFiles = null
-                scope.launch {
+                actionJobScope.launch {
                     isMoving = true
                     // 先探测是否存在同名冲突，有冲突则弹出决策框
                     val conflicted = targets.any {
@@ -1972,7 +1990,11 @@ fun FilePage(
                         var ok = 0
                         var fail = 0
                         targets.forEach { sourcePath ->
-                            val (success) = RootFileManager.moveFile(sourcePath, destinationDirectory)
+                            // 走 SKIP 而非默认的 OVERWRITE：探测与执行之间目标可能被并发写入，
+                            // 此时静默覆盖会直接销毁别人的文件；不覆盖、按失败计数更符合本入口语义。
+                            val (success) = RootFileManager.moveFile(
+                                sourcePath, destinationDirectory, onConflict = MoveDestinationConflict.SKIP
+                            )
                             if (success) ok++ else fail++
                         }
                         isMoving = false
@@ -2457,7 +2479,7 @@ fun FilePage(
                         onClick = {
                             val pwd = extractPasswordInput
                             showExtractPasswordDialog = false
-                            scope.launch {
+                            actionJobScope.launch {
                                 isExtracting = true
                                 val result = ArchiveExtractor.extract(
                                     archivePath = targetItem.path,

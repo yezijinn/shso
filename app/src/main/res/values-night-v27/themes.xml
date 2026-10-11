@@ -1,8 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- windowLightNavigationBar 仅 API 27+ 生效，隔离在 -v27 目录以避免 minSdk 26 上的 NewApi 告警。
-         parent 必须显式声明：style 名含点号时 AAPT 会把点号前部分当作隐式 parent。 -->
+    <!-- 同 values-v27：本目录的 Theme.shso 完全取代 values-night/ 下的同名 style，
+         须复列全部条目，否则 API 27+ 夜间模式下底色与系统栏设置丢失。 -->
     <style name="Theme.shso" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF0C1626</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
     </style>
 </resources>
