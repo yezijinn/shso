@@ -44,6 +44,58 @@ class SecondRoundSecurityAndResourceTest {
     private val apkInstaller = source("data/ApkInstaller.kt")
     private val sparseLineIndex = source("data/SparseLineIndex.kt")
     private val editHistory = source("data/EditHistoryManager.kt")
+    private val archiveExtractor = source("data/ArchiveExtractor.kt")
+    private val foregroundService = source("data/ExecutionForegroundService.kt")
+
+    // ---------- 安全：解压落盘不得跟随软链 ----------
+
+    @Test fun `解压落盘不得跟随符号链接`() {
+        assertTrue(
+            "FileOutputStream 会顺着已存在的软链写到链接目标，canonical 校验与打开之间存在 TOCTOU 窗口",
+            !archiveExtractor.contains("FileOutputStream(dest)")
+        )
+        assertTrue(
+            "落盘必须用 NOFOLLOW_LINKS 打开，末段为软链时直接失败而非跟随",
+            archiveExtractor.contains("LinkOption.NOFOLLOW_LINKS")
+        )
+        val callSites = Regex("openOutputNoFollow\\(dest\\)").findAll(archiveExtractor).count()
+        assertTrue(
+            "ZIP/TAR 与 7z 两条落盘路径都要走同一个不跟随软链的打开方式，实际调用点=$callSites",
+            callSites >= 2
+        )
+    }
+
+    // ---------- 资源：ZIP 预读的预算前置 ----------
+
+    @Test fun `ZIP 预读必须先过条目数探针再构造 central directory`() {
+        val peek = archiveExtractor.substringAfter("private fun peekRoot")
+            .substringAfter("Kind.ZIP ->")
+            .substringBefore("Kind.SEVENZ ->")
+        val probeIdx = peek.indexOf("probeZipEntryCountOrThrow(path)")
+        val headersIdx = peek.indexOf("val headers = zip.fileHeaders")
+        assertTrue(
+            "fileHeaders 一行就把 N 万个 FileHeader 分配进堆，预算判定必须排在它之前；" +
+                "probe=$probeIdx headers=$headersIdx",
+            probeIdx in 0 until headersIdx
+        )
+    }
+
+    // ---------- 资源：前台服务提升失败必须退出 ----------
+
+    @Test fun `前台服务提升失败必须立即退出`() {
+        assertTrue(
+            "startForegroundService 之后未在数秒内进入前台，系统会以 RemoteServiceException 崩溃整个进程",
+            foregroundService.contains("if (!startAsForeground())")
+        )
+        val guard = foregroundService.substringAfter("if (!startAsForeground())")
+            .substringBefore("pollJob?.cancel()")
+        assertTrue("失败分支必须 stopSelf 退出，不得继续跑保活轮询", guard.contains("stopSelf()"))
+        assertTrue(
+            "startForeground 抛出的异常必须被捕获并转成失败返回值",
+            foregroundService.substringAfter("private fun startAsForeground(): Boolean")
+                .contains("catch (_: Exception)")
+        )
+    }
 
     // ---------- 安全：分包套件必须整套暂存 ----------
 

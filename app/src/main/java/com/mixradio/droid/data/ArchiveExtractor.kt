@@ -19,8 +19,11 @@ import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.io.InputStream
+import java.io.OutputStream
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.StandardOpenOption
 import java.util.Locale
 
 /**
@@ -177,6 +180,11 @@ object ArchiveExtractor {
     private fun peekRoot(path: String): RootPeek = try {
         when (kindOf(path)) {
             Kind.ZIP -> {
+                // 预算前置：`zip.fileHeaders` 一行就会把 N 万个 FileHeader 分配进内存，
+                // 之后再比 `headers.size` 对「只靠条目数爆炸」的归档已无用。探针零分配，
+                // 先按此拦一道；探针读不到（空/非 ZIP/截断）时返回 null 放行，
+                // 由下面的 zip4j 给出更准确的报错。
+                probeZipEntryCountOrThrow(path)
                 Zip4jFile(path).use { zip ->
                     val headers = zip.fileHeaders
                     if (headers.size > MAX_EXTRACT_ENTRIES) {
@@ -562,7 +570,8 @@ object ArchiveExtractor {
                         continue
                     }
                     dest.parentFile?.mkdirs()
-                    FileOutputStream(dest).use { out ->
+                    // 与 copyStream 同用不跟随软链的打开方式，防归档内软链条目把内容写到 target 外。
+                    openOutputNoFollow(dest).use { out ->
                         val buffer = ByteArray(64 * 1024)
                         var total = 0L
                         // 连续零读上限：commons-compress 的 SevenZFile 在部分畸形/加密
@@ -695,8 +704,28 @@ object ArchiveExtractor {
         }
     }
 
+    /**
+     * 以**不跟随符号链接**的方式打开落盘目标。
+     *
+     * `FileOutputStream` 在目标已是符号链接时会顺着链接写到它指向的位置：归档里放一个
+     * 指向 `/system/...` 或 target 之外的软链条目，就能把内容写到 target 外
+     * （Zip Slip 的软链变体）。[safeDest] 的 `canonicalFile` 校验只解析到**父目录**——
+     * 末段若为本次刚解出的软链，此刻还不存在，校验无从覆盖。
+     *
+     * 打开末段为软链的路径时 `NOFOLLOW_LINKS` 会直接失败（Linux `O_NOFOLLOW` → ELOOP），
+     * 由调用方的异常分支转成解压失败，而不是把内容写到链接目标。
+     */
+    internal fun openOutputNoFollow(dest: File): OutputStream =
+        Files.newOutputStream(
+            dest.toPath(),
+            StandardOpenOption.CREATE,
+            StandardOpenOption.WRITE,
+            StandardOpenOption.TRUNCATE_EXISTING,
+            LinkOption.NOFOLLOW_LINKS
+        )
+
     private suspend fun copyStream(input: InputStream, dest: File, budget: ExtractionBudget) {
-        BufferedOutputStream(FileOutputStream(dest)).use { out ->
+        BufferedOutputStream(openOutputNoFollow(dest)).use { out ->
             val buffer = ByteArray(64 * 1024)
             while (true) {
                 // 每个 64KB 块边界检查一次取消。

@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（`85e320d`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 480 tests / 0 failures / 1 skipped |
+| 单元测试 | 493 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -63,11 +63,41 @@
 | `/data/adb/shso` 是 0777 但 **SELinux 拦住第三方**（目录标签 `adb_data_file`）。实测：`shell` 域与 app 域（`run-as` → `u:r:runas_app`，派生自 `untrusted_app`）对该目录的 list / unlink / symlink / write **全部 Permission denied**，dmesg 有对应 `avc: denied { getattr }`；只有 `su`(magisk 域) 能写 |
 | `/data/local/tmp` 子目录默认 `root:root 755`，adb（shell 身份）**无法写入** → 需 `su -c 'chmod 777'` 后再 push |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐）；双端同名 Release，资产 `app-release.apk` 2893369 字节，双端下载 sha256 与本地一致（`9e42bc6c…`）；旧版 APK 已从双端 `20261004` 移除，仅保留 Release 与 tag |
+| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐）；双端同名 Release，资产 `app-release.apk` 2893369 字节，双端下载 sha256 与本地一致（`fb2be7bd…`）；旧版 APK 已从双端 `20261004` 移除，仅保留 Release 与 tag |
 
 ---
 
 ## 待办
+
+### A86. 长期挂起缺陷收敛：解压写盘 / 前台服务 / 文件名（2026-10-11）
+
+长期挂起的 OPEN 缺陷里挑出 3 条 P1 与 1 条误杀类 P2 先修，其余留待各自专项。
+
+- [x] **解压写盘不再跟随符号链接**：ZIP/TAR 与 7z 两条落盘路径原各自用 `FileOutputStream`。
+  `safeDest` 的 `canonicalFile` 校验只解析到父目录，末段若本就是软链，检查与打开之间留有 TOCTOU 窗口，
+  写入会落到链接目标上。统一改为 `Files.newOutputStream` + `LinkOption.NOFOLLOW_LINKS`
+  （CREATE/WRITE/TRUNCATE_EXISTING）；末段为软链时内核实测抛 ELOOP，由既有异常分支转成解压失败。
+- [x] **ZIP 预读的预算判定前置**：`peekRoot` 原先 `zip.fileHeaders` 全量构造再比条目数，
+  「只靠条目数爆炸」的归档在判定之前就已经把对象分配完了。改为在 `fileHeaders` 之前调用条目数探针；
+  该探针是零分配的结构遍历，ZIP64 哨兵、中央目录越界、体积超 32MB、结构损坏一律按超限拒绝。
+  残余仅「探针返回 null」（非 ZIP／空／短于 22 字节）一条放行路径，此情形 zip4j 同样解不出条目。
+- [x] **前台服务提升失败即退出**：`startAsForeground()` 改为返回布尔并捕获异常，
+  失败时 `stopSelf()` 并返回 `START_NOT_STICKY`。只把异常吞掉不够——
+  `startForegroundService()` 之后未在数秒内进入前台，系统会以 `RemoteServiceException` 崩掉整个进程，
+  所以失败路径必须立即回收，且不启动保活轮询。
+- [x] **文件名不再误杀内嵌两点**：`isUnsafeFileName` 由子串 `contains("..")` 收敛为整名等于 `..`。
+  名字不是路径，`/` 与 `\` 已被拒，单个名字段拼不出 `..` 段；`a..b.txt`、`v1..2` 恢复合法。
+- [x] **执行读取循环的残余**：代际自检只解决了日志污染，读取循环保留「继续 drain 到 EOF」
+  的语义；写端永不关闭时旧协程无法退出，与 drain 目标互斥。此项尚未修复，方案需先确认真机出现频率。
+- [x] 契约测试同步：`ArchiveExtractorZipSlipTest` 增 2 例（含真实软链用例）、
+  `SecondRoundSecurityAndResourceTest` 增 3 例、`RootFileManagerEscapingTest` 把 `a..b` 一族移入合法名。
+- [x] 全量单测通过：`testDebugUnitTest` → 493 tests / 0 failures / 1 skipped。
+- [x] 真机（root）复验：`pm install -r -t` 装 release 包（versionCode 20261011 / versionName Jinn），
+  Activity Resumed 且 logcat 无 FATAL；以 `app_process` 在 `/data` 上直跑
+  `Files.newOutputStream(…, NOFOLLOW_LINKS)` 探针，末段软链返回
+  `IOException: Too many symbolic links encountered (NOFOLLOW_LINKS specified)`，链接目标内容未被改写；
+  R8 映射确认新方法已进发行包。
+- [x] 发版：APK 2893369 字节，双端同步与 Release 资产更新。
 
 ### A85. 执行引擎回收与归一化对称性（2026-10-11）
 

@@ -135,13 +135,16 @@ object RootFileManager {
             path.split('/').any { it == ".." }
 
     /**
-     * 文件名级非法校验：拒绝路径分隔符（/ 与 \）、`..`、NUL、换行、回车，防止越目录写入或命令分隔。
+     * 文件名级非法校验：拒绝空名、路径分隔符（/ 与 \）、`..`、NUL、换行、回车，防止越目录写入或命令分隔。
+     *
+     * `..` 只在**整名等于**它时才非法：文件名不是路径，`a..b`、`v1..2` 都是合法名，
+     * 旧写法 `contains("..")` 会把它们一并拒掉。
      */
     internal fun isUnsafeFileName(name: String): Boolean =
         name.isEmpty() ||
             name.contains("/") ||
             name.contains("\\") ||
-            name.contains("..") ||
+            name == ".." ||
             name.contains("\n") ||
             name.contains("\r") ||
             name.contains("\u0000")

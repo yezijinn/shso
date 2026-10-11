@@ -142,4 +142,50 @@ class ArchiveExtractorZipSlipTest {
             base.deleteRecursively()
         }
     }
+
+    @Test
+    fun `落盘打开不跟随指向外部的符号链接`() {
+        val base = tempBase()
+        try {
+            val outside = File(base, "outside.txt").apply { writeText("original") }
+            val target = File(base, "out").apply { mkdirs() }
+            val link = File(target, "link.txt")
+            val linked = try {
+                java.nio.file.Files.createSymbolicLink(link.toPath(), outside.toPath())
+                true
+            } catch (_: Throwable) {
+                false
+            }
+            assumeTrue("当前环境无法创建符号链接，跳过", linked)
+
+            var opened = false
+            try {
+                ArchiveExtractor.openOutputNoFollow(link).use { it.write("pwned".toByteArray()) }
+                opened = true
+            } catch (_: UnsupportedOperationException) {
+                // 该平台不认 NOFOLLOW_LINKS；下面的 POSIX 断言不适用，但链接目标仍不得被改写。
+            } catch (_: java.io.IOException) {
+                // 期望路径：O_NOFOLLOW 打开末段软链直接失败。
+            }
+            // 与平台无关的硬要求：链接目标的内容不得被改写。
+            assertEquals("软链指向的文件被写入，越界逃逸成立", "original", outside.readText())
+            if (File.separatorChar == '/') {
+                assertFalse("O_NOFOLLOW 是 POSIX 语义，类 Unix 平台上打开末段软链必须失败", opened)
+            }
+        } finally {
+            base.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `落盘打开对普通路径可写并截断`() {
+        val base = tempBase()
+        try {
+            val f = File(base, "plain.txt").apply { writeText("stale-content") }
+            ArchiveExtractor.openOutputNoFollow(f).use { it.write("ok".toByteArray()) }
+            assertEquals("ok", f.readText())
+        } finally {
+            base.deleteRecursively()
+        }
+    }
 }

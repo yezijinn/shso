@@ -52,7 +52,14 @@ class ExecutionForegroundService : Service() {
             RootService.killCurrentProcess()
             return START_NOT_STICKY
         }
-        startAsForeground()
+        if (!startAsForeground()) {
+            // 提升前台失败（Android 12+ 的 ForegroundServiceStartNotAllowedException、
+            // targetSdk 35 缺类型声明、通知渠道被禁用等）时绝不能吞掉继续跑：
+            // startForegroundService() 之后未在数秒内进入前台，系统会以
+            // RemoteServiceException 崩溃整个进程 —— 必须立即 stopSelf 退出。
+            stopSelf()
+            return START_NOT_STICKY
+        }
         pollJob?.cancel()
         pollJob = serviceScope.launch {
             // 任务进行中即循环刷新通知；任务结束即退出并回收前台服务。
@@ -87,16 +94,20 @@ class ExecutionForegroundService : Service() {
 
     // FOREGROUND_SERVICE_TYPE_DATA_SYNC 要求 API 29，但它是编译期内联的 int 常量，
     // API 26-28 设备上 ServiceCompat 会忽略该类型位，不会触发崩溃或反射查找，故抑制该告警。
+    //
+    // 返回是否成功进入前台：失败时由调用方 stopSelf 退出，理由见 onStartCommand。
     @SuppressLint("InlinedApi")
-    private fun startAsForeground() {
-        val notification = buildNotification()
+    private fun startAsForeground(): Boolean = try {
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
-            notification,
+            buildNotification(),
             // targetSdk 35 / Android 14+ 需要声明前台服务类型，与 Manifest 中 foregroundServiceType 对齐。
             ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
         )
+        true
+    } catch (_: Exception) {
+        false
     }
 
     private fun updateNotification() {

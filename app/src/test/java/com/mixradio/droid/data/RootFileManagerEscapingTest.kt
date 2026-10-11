@@ -69,7 +69,6 @@ class RootFileManagerEscapingTest {
         assertTrue(RootFileManager.isUnsafeFileName("a/b"))
         assertTrue(RootFileManager.isUnsafeFileName("a\\b"))
         assertTrue(RootFileManager.isUnsafeFileName(".."))
-        assertTrue(RootFileManager.isUnsafeFileName("a..b"))
         assertTrue(RootFileManager.isUnsafeFileName("a\nb"))
         assertTrue(RootFileManager.isUnsafeFileName("a\rb"))
         assertTrue(RootFileManager.isUnsafeFileName("a\u0000b"))
@@ -79,6 +78,10 @@ class RootFileManagerEscapingTest {
         assertFalse(RootFileManager.isUnsafeFileName("app.sh"))
         assertFalse(RootFileManager.isUnsafeFileName("my notes 中.txt"))
         assertFalse(RootFileManager.isUnsafeFileName("it's.txt"))
+        // 连续两点只在整名等于 `..` 时才构成穿越；名字内嵌两点是合法文件名。
+        assertFalse(RootFileManager.isUnsafeFileName("a..b"))
+        assertFalse(RootFileManager.isUnsafeFileName("a..b.txt"))
+        assertFalse(RootFileManager.isUnsafeFileName("v1..2"))
     }
 
     @Test fun `data path validation accepts only data tree`() {
