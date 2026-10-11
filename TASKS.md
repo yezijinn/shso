@@ -76,11 +76,45 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`b18b2991…`）；双端 tag 与 Release 的目标提交均已对齐 A116 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`1244c6e4…`）；双端 tag 与 Release 的目标提交均已对齐 A117 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 
 ---
 
 ## 待办
+
+### A117. 行内次要操作触控命中区与编辑器顶栏（BUG-COMPAT-185 / BUG-EDGE-186）（2026-10-12）
+
+`docs/AI-1-BUG.md` 第一百三十九 / 一百四十一 / 一百四十四 / 一百四十五轮连续指向同一件事：行内次要操作
+（查找栏动作、终端工具条、弹窗次级按钮）触控尺寸不足（AI-1 内部编号 COMPAT-168，此前长期未登记进 BUG.md）。
+第一百四十八 / 一百五十 / 一百五十一 / 一百五十三轮分别为无障碍 `contentDescription`、RTL、
+`LaunchedEffect` key 审计，均无新发现。`docs/AI-2-BUG.md` 无新增（止于 §8）。台账唯一 OPEN 项仍为
+BUG-PERF-030（A109 已裁定维持不修）。
+
+落地 AI-1 的 COMPAT-168 时，发现「补尺寸」这个动作本身写错了顺序，且顺带暴露出编辑器顶栏一个缺陷：
+
+- [x] **P3 · 修饰符顺序颠倒致命中区未扩（BUG-COMPAT-185）**：`Modifier.minimumInteractiveComponentSize().clickable{}`
+  只把**自身报出的**尺寸抬到 48dp（语义尺寸与 `uiautomator` bounds 随之为 144px），内层 `clickable` 的
+  pointer coordinator 仍按文字自身度量，真实命中区只有文字。改为 `clickable` 在外、
+  `minimumInteractiveComponentSize` 在内，共 7 个文件：`TextEditorDialog.kt`（顶栏 ✕ / 查找栏四项 /
+  设置面板 ✕ / 比对取消 / Diff 取消 / 加载更多）、`TerminalPage.kt`（9 处）、`SyntaxPackDialog.kt`（4 处）、
+  `BookmarksDialog.kt`、`BuiltInFilePicker.kt`、`FileListViewSettings.kt#SortModeTextOption`、
+  `FilePermissionDialog.kt#OwnerLabelRow`。查找栏四项补齐后总宽增大，间距 18dp → 8dp。
+  裸文字不照搬 `heightIn(min = 48.dp)`（会让文字顶对齐在超高节点内，视觉上移）。
+- [x] **P3 · 顶栏超长文件名挤压关闭入口（BUG-EDGE-186）**：`EditorTopBar` 标题 `Text(fileName)` 无
+  `maxLines/overflow`、内层标题 `Row` 无 `weight`，而外层是 `SpaceBetween` → 数十字符的文件名撑满整行，
+  「✕」被压成零宽，关闭入口不可见也不可点。标题行加 `Modifier.weight(1f)`，标题加 `maxLines = 1` +
+  `TextOverflow.Ellipsis` 且 `weight(1f, fill = false)`，✕ 同步补齐 48dp 命中区。
+- [x] 单测：`testDebugUnitTest` **613 tests / 0 failures / 1 skipped**（纯 UI 修饰符与布局约束，
+  JVM 单测无法覆盖指针命中区，不新增用例）。`assembleRelease` + `verifyReleasePayload` 通过。
+- [x] 真机（root，PACM00 / Android 10 / 1080×2280 / density 480）：
+  修复前 `✕ 关闭` 语义 bounds 已 144px，但在框内偏离文字中心 45px 的 `(875,1237)` 点击**不关闭**，
+  点文字中心 `(883,1282)` 才关闭 → 反证命中区未扩；修复后在 `(883,1236)`（偏离中心 45px）点击关闭成功，
+  终端页「设置」`[894,120][1038,264]` 在 `(966,147)` 点击弹出「终端设置」。
+  顶栏项：Download 下造 76 字符名 `.txt`，文件页 → 长按 → 编辑文本，顶栏以省略号截断，✕ 完整可见
+  （bounds `[889,228][1033,372]` = 48dp×48dp），在 `(900,240)`（偏离中心 61px ≈ 20dp）点击关闭成功。
+  验证后清理测试文件与设备/本地临时文件。
+- [x] 构建与发布：APK 2909869 字节，sha256 `1244c6e4…`；tag `20261012` 重指至本次发版提交，
+  双端 Release 资产替换并核验三方一致。语法包侧 `syntaxpacks-v2` 未变（APK 不内置语法）。
 
 ### A116. 语法包弹窗文案与触控复核（BUG-CONSIST-183 / BUG-COMPAT-184）（2026-10-12）
 

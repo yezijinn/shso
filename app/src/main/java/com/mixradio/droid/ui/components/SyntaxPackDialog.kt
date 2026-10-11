@@ -19,6 +19,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -103,21 +104,27 @@ fun SyntaxPackDialog(
                         style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        // 裸文字操作：命中区按 M3 最小触控尺寸补齐（原来只有文字高度，约 14dp）。
+                        // clickable 必须在 minimumInteractiveComponentSize 外层，否则命中区仍是文字本身。
                         Text(
                             "全部启用",
                             style = AuroraTextStyles.footnote2, color = AuroraTokens.Accent,
-                            modifier = Modifier.clickable {
-                                SyntaxPackStore.setAllEnabled(context, true)
-                                refresh("已启用全部 ${packs.size} 个语法包")
-                            }.padding(horizontal = 4.dp)
+                            modifier = Modifier
+                                .clickable {
+                                    SyntaxPackStore.setAllEnabled(context, true)
+                                    refresh("已启用全部 ${packs.size} 个语法包")
+                                }
+                                .minimumInteractiveComponentSize()
                         )
                         Text(
                             "全部停用",
                             style = AuroraTextStyles.footnote2, color = AuroraTokens.TextSecondary,
-                            modifier = Modifier.clickable {
-                                SyntaxPackStore.setAllEnabled(context, false)
-                                refresh("已停用全部语法包")
-                            }.padding(horizontal = 4.dp)
+                            modifier = Modifier
+                                .clickable {
+                                    SyntaxPackStore.setAllEnabled(context, false)
+                                    refresh("已停用全部语法包")
+                                }
+                                .minimumInteractiveComponentSize()
                         )
                     }
                 }
@@ -258,11 +265,15 @@ private fun PackRow(pack: SyntaxPack, onToggle: () -> Unit, onRemove: () -> Unit
         Text(
             if (pack.enabled) "停用" else "启用",
             style = AuroraTextStyles.footnote2, color = AuroraTokens.Accent,
-            modifier = Modifier.clickable { onToggle() }.padding(horizontal = 8.dp, vertical = 4.dp)
+            modifier = Modifier
+                .clickable { onToggle() }
+                .minimumInteractiveComponentSize()
         )
         Text(
             "✕", style = AuroraTextStyles.body2, color = AuroraTokens.Error,
-            modifier = Modifier.clickable { onRemove() }.padding(4.dp)
+            modifier = Modifier
+                .clickable { onRemove() }
+                .minimumInteractiveComponentSize()
         )
     }
 }

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -106,6 +107,7 @@ private fun SortModeTextOption(
     Box(
         modifier = modifier
             .clickable(onClick = onClick)
+            .minimumInteractiveComponentSize()
             .padding(vertical = 6.dp, horizontal = 2.dp),
         contentAlignment = Alignment.Center
     ) {

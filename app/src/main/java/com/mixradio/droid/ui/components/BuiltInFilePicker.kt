@@ -32,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -516,7 +517,7 @@ var loadError by remember { mutableStateOf<String?>(null) }
                                 color = AuroraTokens.TextSecondary,
                                 modifier = Modifier
                                     .clickable(onClick = onDismissRequest)
-                                    .padding(horizontal = 6.dp, vertical = 8.dp)
+                                    .minimumInteractiveComponentSize()
                             )
 
                             Spacer(modifier = Modifier.width(20.dp))
@@ -536,7 +537,7 @@ if (directoryOnly) {
                                             }
                                         }
                                     }
-                                    .padding(horizontal = 6.dp, vertical = 8.dp)
+                                    .minimumInteractiveComponentSize()
                             )
                         }
                     }

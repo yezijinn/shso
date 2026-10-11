@@ -42,6 +42,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -434,7 +435,7 @@ fun TerminalPage(
                         color = AuroraTokens.Text,
                         modifier = Modifier
                             .clickable { copyOutput() }
-                            .padding(horizontal = 4.dp, vertical = 6.dp)
+                            .minimumInteractiveComponentSize()
                     )
 
                     Text(
@@ -444,7 +445,7 @@ fun TerminalPage(
                         color = if (taskRunning) AuroraTokens.Error else AuroraTokens.TextUnselected,
                         modifier = Modifier
                             .clickable(enabled = taskRunning) { RootService.killCurrentProcess() }
-                            .padding(horizontal = 4.dp, vertical = 6.dp)
+                            .minimumInteractiveComponentSize()
                     )
 
                     Text(
@@ -454,7 +455,7 @@ fun TerminalPage(
                         color = AuroraTokens.Accent,
                         modifier = Modifier
                             .clickable { RootService.restartTerminal() }
-                            .padding(horizontal = 4.dp, vertical = 6.dp)
+                            .minimumInteractiveComponentSize()
                     )
 
                     // 设置：弹出终端设置对话框（文字颜色 / HyperCore 提示 / shso 提示）
@@ -465,7 +466,7 @@ fun TerminalPage(
                         color = AuroraTokens.Text,
                         modifier = Modifier
                             .clickable { showTerminalSettings = true }
-                            .padding(horizontal = 4.dp, vertical = 6.dp)
+                            .minimumInteractiveComponentSize()
                     )
                 }
             }
@@ -570,7 +571,7 @@ fun TerminalPage(
                     color = if (taskRunning) AuroraTokens.Error else AuroraTokens.TextUnselected,
                     modifier = Modifier
                         .clickable(enabled = taskRunning) { RootService.sendInterrupt() }
-                        .padding(horizontal = 2.dp, vertical = 6.dp)
+                        .minimumInteractiveComponentSize()
                 )
 
                 Text(
@@ -583,7 +584,7 @@ fun TerminalPage(
                             // 清屏后日志为空，视口必须回到尾部，否则停在旧滚动位置看不到新输出
                             followTail = true
                         }
-                        .padding(horizontal = 2.dp, vertical = 6.dp)
+                        .minimumInteractiveComponentSize()
                 )
 
                 // 「历史」为空时不禁用：灰字点击后给出说明，否则用户反复点却不知为何无效。
@@ -600,7 +601,7 @@ fun TerminalPage(
                                 showCmdHistory = true
                             }
                         }
-                        .padding(horizontal = 2.dp, vertical = 6.dp)
+                        .minimumInteractiveComponentSize()
                 )
 
                 // 「Enter」只发送空行（不携带输入框内容，也不会清空它）；输入框内容交给「发送」
@@ -610,7 +611,7 @@ fun TerminalPage(
                     color = AuroraTokens.Text,
                     modifier = Modifier
                         .clickable { handleSend("") }
-                        .padding(horizontal = 2.dp, vertical = 6.dp)
+                        .minimumInteractiveComponentSize()
                 )
 
                 Text(
@@ -620,7 +621,7 @@ fun TerminalPage(
                     color = if (inputText.isNotBlank()) AuroraTokens.Accent else AuroraTokens.TextUnselected,
                     modifier = Modifier
                         .clickable(enabled = inputText.isNotBlank()) { handleSend(inputText) }
-                        .padding(horizontal = 2.dp, vertical = 6.dp)
+                        .minimumInteractiveComponentSize()
                 )
             }
         }

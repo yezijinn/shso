@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -40,6 +41,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -1226,10 +1228,19 @@ private fun EditorTopBar(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            // 标题行必须限宽（weight）+ 截断（maxLines/overflow）：文件名由用户决定长度，
+            // 不设约束时超长名会横向撑满并把右侧「✕」压成零宽 —— 关闭入口既看不见也点不到。
+            Row(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
                     text = if (fileName.isEmpty()) "编辑器" else fileName,
-                    style = AuroraTextStyles.title3, color = AuroraTokens.Text
+                    style = AuroraTextStyles.title3, color = AuroraTokens.Text,
+                    // fill = false：宽度不定死，短名仍按内容宽显示，超长才截断出省略号。
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
                 if (dirty) Text("●", style = AuroraTextStyles.body2, color = AuroraTokens.Accent)
                 if (languageLabel != null) {
@@ -1242,9 +1253,13 @@ private fun EditorTopBar(
                     )
                 }
             }
+            // 修饰符顺序不可调换：clickable 在外、minimumInteractiveComponentSize 在内，
+            // 指针命中区才真正扩到 48dp（写反只扩语义尺寸，命中的仍是文字本身）。
             Text(
                 text = "✕", style = AuroraTextStyles.body1, color = AuroraTokens.TextSecondary,
-                modifier = Modifier.clickable { onDismissRequest() }.padding(4.dp)
+                modifier = Modifier
+                    .clickable { onDismissRequest() }
+                    .minimumInteractiveComponentSize()
             )
         }
         Spacer(Modifier.height(8.dp))
@@ -1347,7 +1362,7 @@ private fun ChunkedInfoBar(
         if (hasMore && indexedLines == null && !indexing) {
             Text(
                 text = "加载更多 →", style = AuroraTextStyles.footnote2, color = AuroraTokens.Accent,
-                modifier = Modifier.clickable(onClick = onLoadMore).padding(4.dp)
+                modifier = Modifier.clickable(onClick = onLoadMore).minimumInteractiveComponentSize()
             )
         } else if (indexedLines != null) {
             // 本提示条只在只读浏览态（文件超过可载入上限）渲染，故一律标注「只读预览」。
@@ -1872,8 +1887,11 @@ private fun FindReplaceDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 // 动作行：查找下一个 / 替换 / 全部替换 / 关闭
+                // 各项命中区补齐到最小触控尺寸后总宽变大，间距由 18dp 收到 8dp（实测行宽恰好用尽）
+                // 修饰符顺序不可调换：clickable 必须在外层，minimumInteractiveComponentSize 只外扩自身
+                // 尺寸、不改变内层 clickable 的度量，写反则命中的仍是文字本身而非 48dp 区域。
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     val enabledNext = findText.isNotEmpty() && matchCount > 0
@@ -1900,7 +1918,7 @@ private fun FindReplaceDialog(
                             .clickable(enabled = enabledNext) {
                                 dismissIme(); onFindNext(findText)
                             }
-                            .padding(vertical = 5.dp)
+                            .minimumInteractiveComponentSize()
                     )
                     val replaceBrush = remember(enabledNext) {
                         androidx.compose.ui.graphics.Brush.horizontalGradient(
@@ -1924,7 +1942,7 @@ private fun FindReplaceDialog(
                             .clickable(enabled = enabledNext) {
                                 dismissIme(); onReplace(findText, replaceText)
                             }
-                            .padding(vertical = 5.dp)
+                            .minimumInteractiveComponentSize()
                     )
                     val replaceAllBrush = remember(enabledNext) {
                         androidx.compose.ui.graphics.Brush.horizontalGradient(
@@ -1948,7 +1966,7 @@ private fun FindReplaceDialog(
                             .clickable(enabled = enabledNext) {
                                 dismissIme(); onReplaceAll(findText, replaceText)
                             }
-                            .padding(vertical = 5.dp)
+                            .minimumInteractiveComponentSize()
                     )
                     Spacer(Modifier.weight(1f))
                     // 关闭：偏红渐变（同时收起输入法），字号 +5
@@ -1961,7 +1979,7 @@ private fun FindReplaceDialog(
                         ),
                         modifier = Modifier
                             .clickable { dismissIme(); onDismiss() }
-                            .padding(vertical = 5.dp)
+                            .minimumInteractiveComponentSize()
                     )
                 }
             }
@@ -2066,7 +2084,9 @@ private fun EditorSettingsDialog(
                     )
                     Text(
                         text = "✕", style = AuroraTextStyles.body2, color = AuroraTokens.TextSecondary,
-                        modifier = Modifier.clickable { onDismiss() }.padding(4.dp)
+                        modifier = Modifier
+                            .clickable { onDismiss() }
+                            .minimumInteractiveComponentSize()
                     )
                 }
                 HorizontalDivider(color = AuroraTokens.Stroke, thickness = 0.5.dp, modifier = Modifier.padding(vertical = 6.dp))
@@ -2130,15 +2150,23 @@ private fun EditorSettingsDialog(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text("字号", style = AuroraTextStyles.body2, color = AuroraTokens.Text)
-                            Spacer(Modifier.weight(1f))
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Spacer(Modifier.width(12.dp))
+                            // 档位命中区取 48dp 高；7 档各占 48dp 宽会超出行宽，故用等分列给出宽度
+                            Row(modifier = Modifier.weight(1f)) {
                                 listOf(10, 12, 14, 16, 18, 20, 24).forEach { sz ->
-                                    Text(
-                                        text = "$sz",
-                                        style = AuroraTextStyles.footnote1,
-                                        color = if (sz == fontSize.toInt()) AuroraTokens.Accent else AuroraTokens.TextSecondary,
-                                        modifier = Modifier.clickable { onFontSizeChange(sz.toFloat()) }
-                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .heightIn(min = 48.dp)
+                                            .clickable { onFontSizeChange(sz.toFloat()) },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "$sz",
+                                            style = AuroraTextStyles.footnote1,
+                                            color = if (sz == fontSize.toInt()) AuroraTokens.Accent else AuroraTokens.TextSecondary
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -2148,15 +2176,22 @@ private fun EditorSettingsDialog(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text("草稿快照", style = AuroraTextStyles.body2, color = AuroraTokens.Text)
-                            Spacer(Modifier.weight(1f))
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Spacer(Modifier.width(12.dp))
+                            Row(modifier = Modifier.weight(1f)) {
                                 listOf(0, 30, 60, 120, 300).forEach { sec ->
-                                    Text(
-                                        text = "${sec}s",
-                                        style = AuroraTextStyles.footnote1,
-                                        color = if (sec == autoSaveSeconds) AuroraTokens.Accent else AuroraTokens.TextSecondary,
-                                        modifier = Modifier.clickable { onAutoSaveChange(sec) }
-                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .heightIn(min = 48.dp)
+                                            .clickable { onAutoSaveChange(sec) },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "${sec}s",
+                                            style = AuroraTextStyles.footnote1,
+                                            color = if (sec == autoSaveSeconds) AuroraTokens.Accent else AuroraTokens.TextSecondary
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -2290,7 +2325,9 @@ private fun DiffModeDialog(
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = "取消", style = AuroraTextStyles.footnote1, color = AuroraTokens.TextSecondary,
-                    modifier = Modifier.clickable(onClick = onDismiss).padding(vertical = 7.dp)
+                    modifier = Modifier
+                        .clickable(onClick = onDismiss)
+                        .minimumInteractiveComponentSize()
                 )
             }
         }
@@ -2321,7 +2358,9 @@ private fun DiffProgressDialog(progressLines: Long, onCancel: () -> Unit) {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     text = "取消", style = AuroraTextStyles.footnote1, color = AuroraTokens.Error,
-                    modifier = Modifier.clickable(onClick = onCancel).padding(vertical = 6.dp)
+                    modifier = Modifier
+                        .clickable(onClick = onCancel)
+                        .minimumInteractiveComponentSize()
                 )
             }
         }

@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -370,7 +371,7 @@ private fun OwnerLabelRow(label: String, enabled: Boolean, onPick: () -> Unit) {
             color = if (enabled) AuroraTokens.Accent else AuroraTokens.TextDisabled,
             modifier = Modifier
                 .clickable(enabled = enabled, onClick = onPick)
-                .padding(horizontal = 4.dp, vertical = 2.dp)
+                .minimumInteractiveComponentSize()
         )
     }
 }
