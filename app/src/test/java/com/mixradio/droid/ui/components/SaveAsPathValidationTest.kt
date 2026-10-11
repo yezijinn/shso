@@ -59,6 +59,16 @@ class SaveAsPathValidationTest {
         assertNotNull(validateSaveAsPath("/sdcard/a\u0000.txt", priv))
     }
 
+    @Test fun `换行与回车被拒`() {
+        // 路径会原样进入 `cat > <path>`、`readlink`、`stat` 的参数位，内嵌换行等价于命令分隔；
+        // 与 RootFileManager.isUnsafePath / isUnsafeFileName 同口径。
+        assertNotNull(validateSaveAsPath("/sdcard/a\nb.txt", priv))
+        assertNotNull(validateSaveAsPath("/sdcard/a\rb.txt", priv))
+        assertNotNull(validateSaveAsPath("/sdcard/a\r\nb.txt", priv))
+        // 首尾空白仍由 trim 吸收，不算内嵌换行
+        assertNull(validateSaveAsPath("/sdcard/a.txt\n", priv))
+    }
+
     @Test fun `应用私有目录被拒_防止自毁数据`() {
         // 覆盖 /data/user/0/<pkg>/… 会直接毁掉数据库与 SharedPreferences，且不可撤销
         assertNotNull(validateSaveAsPath("/data/user/0/com.mixradio.droid/databases/app.db", priv))

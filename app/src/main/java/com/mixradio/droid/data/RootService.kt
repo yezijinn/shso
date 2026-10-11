@@ -187,7 +187,9 @@ object RootService {
      * 应用持有的 `Process` 只对应 `su` 本身，对它发信号杀不到 `sh -c …` 与真正的脚本进程。
      * 按进程组发信号（`kill -2 -- -<pgid>`，toybox `kill` 支持负 pid）可整组回收。
      *
-     * 任务结束后刻意保留，供「结束进程」兜底回收逃逸的子孙进程；下一轮执行开始时覆盖。
+     * 任务结束后不清零，但**只在仍有存活实体时**可被消费：实体消失后该 pgid 可能已被内核
+     * 复用给无关进程组，此时一律弃用（见 [killCurrentProcess] / [restartTerminal] 的守卫）。
+     * 下一轮执行开始时覆盖。
      */
     @Volatile
     private var runPgid: Int = 0
@@ -312,6 +314,77 @@ object RootService {
     private val sweptExecutionTemp = AtomicBoolean(false)
 
     /**
+     * 「另存为」待清理临时文件的登记表（一行一条绝对路径，位于应用私有 files 目录）。
+     *
+     * 临时文件建在**目标同目录**（同文件系统内 rename/mv 才原子），目录由用户自由指定，
+     * 无法用目录白名单覆盖扫描。若在「写完临时文件」与「替换目标」之间进程被强杀/OOM，
+     * 残留的隐藏文件会落在用户可见目录里，且不在 [sweepExecutionTempFiles] 的固定目录范围内。
+     * 故写入前先登记路径、替换或就地删除后撤销登记，下次启动据此精确清理：
+     * 不依赖 mtime 阈值，也不遍历用户目录。
+     */
+    private const val SAVE_TEMP_JOURNAL = ".shso_save_pending"
+
+    private val saveTempJournalLock = Any()
+
+    /**
+     * 登记一个「另存为」临时文件路径，供下次启动兜底清理。
+     *
+     * 仅接受形如另存为临时文件的路径（[isSaveTempPath]），避免调用方误传目标文件路径。
+     */
+    fun recordSaveTemp(path: String) {
+        if (!isSaveTempPath(path)) return
+        synchronized(saveTempJournalLock) {
+            runCatching {
+                File(com.mixradio.droid.ShsoApplication.appContext.filesDir, SAVE_TEMP_JOURNAL)
+                    .appendText(path + "\n")
+            }
+        }
+    }
+
+    /** 临时文件已被 mv/rename 消费或已就地删除，撤销登记。 */
+    fun clearSaveTemp(path: String) {
+        synchronized(saveTempJournalLock) {
+            runCatching {
+                val journal = File(com.mixradio.droid.ShsoApplication.appContext.filesDir, SAVE_TEMP_JOURNAL)
+                if (!journal.exists()) return
+                val remain = journal.readLines().filter { it.isNotBlank() && it.trim() != path }
+                if (remain.isEmpty()) journal.delete()
+                else journal.writeText(remain.joinToString("\n", postfix = "\n"))
+            }
+        }
+    }
+
+    /**
+     * 清理登记在案的「另存为」临时文件残留。
+     *
+     * 只删名字符合临时文件命名的条目（[isSaveTempPath]）：登记表被截断产生脏行时，
+     * 不至于把任意路径删掉。删不掉的条目保留在登记表里，留给下次启动重试
+     * （root 路径在应用侧 `File.exists()` 恒为假，故 root 分支以 `rm` 退出码为准）。
+     */
+    private suspend fun sweepRegisteredSaveTemps() {
+        val journal = File(com.mixradio.droid.ShsoApplication.appContext.filesDir, SAVE_TEMP_JOURNAL)
+        val entries = runCatching { journal.readLines() }.getOrDefault(emptyList())
+            .map { it.trim() }.filter { isSaveTempPath(it) }.distinct()
+        if (entries.isEmpty()) {
+            runCatching { journal.delete() }
+            return
+        }
+        val remain = entries.filter { path ->
+            val removed = if (isRootGranted == true) {
+                val (code, _) = runCommandSync("rm -f " + escapeShellArg(path), 10_000L)
+                code == 0
+            } else {
+                !File(path).exists() || runCatching { File(path).delete() }.getOrDefault(false)
+            }
+            !removed
+        }
+        runCatching {
+            if (remain.isEmpty()) journal.delete()
+            else journal.writeText(remain.joinToString("\n", postfix = "\n"))
+        }
+    }
+
+    /**
      * 清扫上一次运行遗留的临时文件：执行期文件（`.exec_attr_*` / `.sh_norm_*`，在应用私有目录）、
      * 安装临时包（`/data/local/tmp/_shso_install_*.apk` / `_shso_split_*.apk`）与安装确认弹窗的
      * 暂存副本（`cacheDir` 下 `install-confirm` 目录里的暂存 apk）。
@@ -351,6 +424,8 @@ object RootService {
                         10_000L
                     )
                 }
+                // 「另存为」临时文件残留：路径随用户目标目录而变，登记表是唯一线索。
+                sweepRegisteredSaveTemps()
             }
         }
     }
@@ -1039,8 +1114,10 @@ object RootService {
                     }
                 }
 
-                // 非 Root 走 setsid：本应用进程不是进程组组长，故 toybox setsid 的 setsid(2)
-                // 必然成功、不 fork，退出码原样透传（真机实测 `setsid sh -c 'exit 7'` 得 7）。
+                // 非 Root 走 setsid：ProcessBuilder 起的子进程继承本应用进程组，而它的 pid 是新分配的、
+                // 必不等于该组 id，故子进程本身不是进程组组长 —— toybox setsid 的 setsid(2) 必然成功、
+                // 不 fork，退出码原样透传（真机实测 `setsid sh -c 'exit 7'` 得 7），
+                // 且 sh 自任会话/组长 ⇒ 新 pgid == 子进程 pid，无需读 /proc 复核。
                 // 若不隔离，子进程沿用**本应用自身进程组**：组杀会连应用一起杀掉，
                 // 于是「中断/结束」只能杀到外层 sh，内层脚本以应用 uid 继续跑（`sleep 600` 无尽的
                 // 典型形态），而应用本来就有权杀同 uid 的进程组，隔离后这条回收通道才成立。
@@ -1075,8 +1152,9 @@ object RootService {
                     if (isolatedGroup) runPgid = childPid
                 }
 
-                // 异步取回本次执行的进程组 id（不阻塞输出读取）。任务结束后刻意保留，
-                // 供「结束进程」兜底回收被中断后逃逸到 init 下的子孙进程。
+                // 异步取回本次执行的进程组 id（不阻塞输出读取）。任务结束后不清零，但消费方
+                // （killCurrentProcess / restartTerminal / sendInterrupt）一律以「仍有存活实体」
+                // 为前提；实体消失后该值弃用，以防 pgid 被内核复用给无关进程组时误杀。
                 //
                 // 必须按本次 Job 自检：这个协程挂在页面级 scope 上，**不是** executionJob 的子任务，
                 // 下一轮 `executionJob?.cancel()` 收不到它。轮询最长 1.5s，期间若新任务已起并
@@ -1346,10 +1424,12 @@ object RootService {
         val targetSlot = terminalSlotOwner.get()
         val targetUsesRoot = execUsesRoot
         // 只认「存活实体」，不认 stale pgid（与 restartTerminal 同口径）：
-        // runPgid 在任务收尾时被刻意保留（供回收被中断后逃逸到 init 下的子孙），但那时组长已被
-        // 内核回收，该 pgid 可能已被复用给无关进程组 —— 组杀校验只确认「是组长、非本应用组」，
-        // 照样通过，于是以 root 整组误杀。而放宽守卫零收益：组长已回收时 /proc/<pgid> 不存在，
-        // 那条组杀本就是 no-op。targetName 通道保留（捕获时点可能与 Job 存在性不同步）。
+        // runPgid 在任务收尾时不清零，但那时组长与成员都已被内核回收，该 pgid 可能已被复用给
+        // 一个完全无关的进程组 —— buildProcessGroupKillCommand 的校验②（组内有存活成员）
+        // 恰好会被这类复用组满足（有成员即放行），所以**不能**据 pgid 放宽守卫。
+        // 结论：实体消失后一律不做组杀；被中断后逃逸的子孙只有在执行实体仍存活
+        // （执行协程未退出、isTaskRunning 仍为真）时才可能被回收。
+        // targetName 通道保留（捕获时点可能与 Job 存在性不同步）。
         val hasLiveEntity = isTaskRunning || targetProcess != null || targetPid > 0
         if (!hasLiveEntity && targetName == null) return
 
@@ -1560,10 +1640,9 @@ object RootService {
         val targetSlot = terminalSlotOwner.get()
 
         // 无任何活动实体时**只复位横幅，不发信号**。
-        // `runPgid` 在任务收尾时被刻意保留（供「中断后子孙进程仍在」的场景回收），
-        // 因此跑完任意命令后它仍非零；而那个 pid 早已被内核回收给别的进程，
-        // `buildProcessGroupKillCommand` 只校验「是组长、且不等于本应用 pgrp」，
-        // pid 复用后照样通过 → 以 root 整组 SIGKILL 一个完全无关的进程组。
+        // `runPgid` 在任务收尾时不清零，因此跑完任意命令后它仍非零；而那个进程组早已回收，
+        // 该 pgid 可能已被内核复用给无关进程组，而 `buildProcessGroupKillCommand` 的
+        // 「组内有存活成员」校验会被复用组满足 → 以 root 整组 SIGKILL 一个完全无关的进程组。
         val hasLiveEntity = isTaskRunning || targetProcess != null || targetPid > 0
         if (!hasLiveEntity) {
             runPgid = 0
@@ -1633,6 +1712,22 @@ object RootService {
     private fun appendOutputDirect(text: String) {
         outputLog = HyperCore.appendWithSlidingWindow(outputLog, text)
     }
+}
+
+/**
+ * 判定路径是否是「另存为」写入过程中产生的临时文件（顶层纯函数，便于 JVM 单测）。
+ *
+ * root 通道：`<目标目录>/.shso_edit_<uuid>.tmp`；
+ * 非 root 通道：`<目标目录>/.<目标名>.shso_<uuid>.tmp`。
+ * 两者共同特征：绝对路径、文件名为隐藏名（`.` 开头）、含 `.shso_`、以 `.tmp` 结尾。
+ *
+ * 含换行/回车的一律排除：登记表按行存储，被污染的行会被截断成两条，反而产生误删风险。
+ */
+internal fun isSaveTempPath(path: String): Boolean {
+    if (path.isEmpty() || !path.startsWith("/")) return false
+    if (path.contains('\n') || path.contains('\r') || path.contains('\u0000')) return false
+    val name = path.substringAfterLast('/')
+    return name.startsWith(".") && name.contains(".shso_") && name.endsWith(".tmp")
 }
 
 /**

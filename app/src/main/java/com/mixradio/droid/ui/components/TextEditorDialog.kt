@@ -1147,22 +1147,31 @@ private suspend fun writeTextFile(
             val targetDir = resolved.substringBeforeLast('/', "/").ifEmpty { "/" }
             val tmpFile = "$targetDir/.shso_edit_$suffix.tmp"
             val escapedTmp = RootService.escapeShellArg(tmpFile)
+            // 先登记再落盘：写完临时文件与替换目标之间被强杀即残留隐藏文件，
+            // 且落在用户可见目录（本目录由用户指定，启动清扫的固定目录扫不到），只能靠登记表兜底。
+            RootService.recordSaveTemp(tmpFile)
             val writeOk = RootService.writeBytesAsRoot(tmpFile, bytes)
-            if (!writeOk) return@withContext Pair(false, "写入临时文件失败")
+            if (!writeOk) {
+                RootService.clearSaveTemp(tmpFile)
+                return@withContext Pair(false, "写入临时文件失败")
+            }
             // 复核：必须是刚写出的普通文件而非软链（纵深防御，即便命名已不可预测）
             val (chkCode, _) = RootService.runCommandSync(
                 "[ -f $escapedTmp ] && [ ! -L $escapedTmp ]", 10_000L
             )
             if (chkCode != 0) {
                 runCatching { RootService.runCommandSync("rm -f $escapedTmp", 10_000L) }
+                RootService.clearSaveTemp(tmpFile)
                 return@withContext Pair(false, "临时文件异常，已中止保存")
             }
             val (mvCode, mvOut) = RootService.runCommandSync("mv $escapedTmp $escapedTarget", 60_000L)
             if (mvCode != 0) {
                 // 失败时清理临时文件，避免在系统目录留下垃圾
                 RootService.runCommandSync("rm -f $escapedTmp", 10_000L)
+                RootService.clearSaveTemp(tmpFile)
                 return@withContext Pair(false, "保存失败: ${mvOut.trim().ifEmpty { "未知错误" }}")
             }
+            RootService.clearSaveTemp(tmpFile)
 
             if (statCode == 0) {
                 val restore = buildRestoreAttrsCommand(statOut, escapedTarget)
@@ -1179,15 +1188,19 @@ private suspend fun writeTextFile(
             val originalMode = if (target.exists()) {
                 runCatching { android.system.Os.stat(target.absolutePath).st_mode }.getOrNull()
             } else null
+            RootService.recordSaveTemp(tmp.absolutePath)
             try {
                 tmp.writeBytes(bytes)
                 if (originalMode != null) runCatching { android.system.Os.chmod(tmp.absolutePath, originalMode) }
                 if (!tmp.renameTo(target)) {
                     tmp.delete()
+                    RootService.clearSaveTemp(tmp.absolutePath)
                     return@withContext Pair(false, "保存失败: 无法替换原文件")
                 }
+                RootService.clearSaveTemp(tmp.absolutePath)
             } catch (t: Throwable) {
                 tmp.delete()
+                RootService.clearSaveTemp(tmp.absolutePath)
                 throw t
             }
             Pair(true, null)
@@ -2358,7 +2371,10 @@ private fun CompactSettingRow(
 internal fun validateSaveAsPath(rawPath: String, privateDataDirs: List<String> = emptyList()): String? {
     val path = rawPath.trim()
     if (path.isEmpty()) return "请输入保存路径"
-    if (path.contains('\u0000')) return "保存路径包含非法字符"
+    // 换行/回车与 NUL 同属「会撕裂 shell 命令与文件操作」的控制字符：路径会原样进入
+    // `cat > <path>` 与 `readlink`/`stat` 的参数位，内嵌换行即等价于命令分隔。
+    // 与 RootFileManager.isUnsafePath / isUnsafeFileName 同口径。
+    if (path.contains('\u0000') || path.contains('\n') || path.contains('\r')) return "保存路径包含非法字符"
     if (path.contains('\\')) return "保存路径不能包含反斜杠"
     if (!path.startsWith("/")) return "请输入绝对路径"
     if (path.contains("//")) return "保存路径包含空目录段"

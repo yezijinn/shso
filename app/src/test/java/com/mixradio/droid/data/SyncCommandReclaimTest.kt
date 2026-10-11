@@ -174,9 +174,35 @@ class SyncCommandReclaimTest {
         val text = source.readText()
         val start = text.indexOf("private fun sweepExecutionTempFiles()")
         assertTrue("必须存在启动清扫入口", start > 0)
-        val body = text.substring(start, minOf(text.length, start + 600))
+        val body = text.substring(start, minOf(text.length, start + 2600))
         assertTrue("两类临时文件都要清理", body.contains(".exec_attr_") && body.contains(".sh_norm_"))
         assertTrue("扫一次即可，避免误删运行中的临时文件", body.contains("compareAndSet(false, true)"))
+        assertTrue("另存为残留无固定目录，必须靠登记表兜底", body.contains("sweepRegisteredSaveTemps()"))
+    }
+
+    @Test fun `另存为临时文件名识别不得漏收也不误收`() {
+        // root: <目标目录>/.shso_edit_<uuid>.tmp；非 root: <目标目录>/.<目标名>.shso_<uuid>.tmp
+        assertTrue(isSaveTempPath("/sdcard/Download/.shso_edit_abc.tmp"))
+        assertTrue(isSaveTempPath("/sdcard/Download/.notes.txt.shso_abc.tmp"))
+        assertTrue(!isSaveTempPath("/sdcard/Download/notes.txt"))
+        assertTrue(!isSaveTempPath("/sdcard/Download/.hidden.shso_x"))
+        assertTrue(!isSaveTempPath("/sdcard/Download/shsso_a.tmp"))
+        assertTrue(!isSaveTempPath("relative/.shso_edit_a.tmp"))
+        // 含换行会撕裂按行存储的登记表，必须排除
+        assertTrue(!isSaveTempPath("/sdcard/a\n.shso_edit_x.tmp"))
+    }
+
+    @Test fun `另存为临时文件必须先登记后撤销`() {
+        val text = source.readText()
+        assertTrue("必须登记待清理路径", text.contains("fun recordSaveTemp("))
+        assertTrue("替换/删除后必须撤销登记", text.contains("fun clearSaveTemp("))
+        val dialog = File("src/main/java/com/mixradio/droid/ui/components/TextEditorDialog.kt").readText()
+        assertTrue("写入临时文件前必须登记", dialog.contains("RootService.recordSaveTemp("))
+        // root 与非 root 两条通道、成功与失败各路径都必须撤销登记
+        assertTrue(
+            "撤销点应覆盖两条通道的全部出口，实际 ${Regex("RootService\\.clearSaveTemp\\(").findAll(dialog).count()}",
+            Regex("RootService\\.clearSaveTemp\\(").findAll(dialog).count() >= 5
+        )
     }
 
     @Test fun `写入 root 文件不得无界阻塞且必须 drain 错误通道`() {
