@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package com.mixradio.droid.data
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
@@ -137,6 +141,36 @@ class SparseLineIndexTest {
         val reader = MemoryByteRangeReader(ByteArray(0))
         val idx = runBlocking { SparseLineIndex.build("mem", StandardCharsets.UTF_8, reader) }
         assertNull("空文件不应建立索引（调用方回退旧策略）", idx)
+    }
+
+    @Test
+    fun `build 在扫描途中被取消时抛出 CancellationException 而非静默返回 null`() = runBlocking {
+        // 8MB = 32 个 256KB 读取块，保证循环会多次经过 ensureActive 检查点。
+        val big = ByteArray(8 * 1024 * 1024)
+        lateinit var job: Job
+        val reader = object : ByteRangeReader {
+            override fun size(path: String): Long = big.size.toLong()
+            override fun read(path: String, offset: Long, count: Long): ByteArray {
+                // 第二次读取时取消所在协程，模拟用户扫描途中关闭编辑器 / 切走文件。
+                if (offset > 0L) job.cancel()
+                val start = offset.toInt().coerceAtLeast(0)
+                val end = minOf(start + count.toInt(), big.size)
+                return if (end <= start) ByteArray(0) else big.copyOfRange(start, end)
+            }
+        }
+        var thrown: Throwable? = null
+        job = launch {
+            try {
+                SparseLineIndex.build("mem", StandardCharsets.UTF_8, reader)
+            } catch (e: Throwable) {
+                thrown = e
+            }
+        }
+        job.join()
+        assertTrue(
+            "取消信号必须以 CancellationException 向外传播；被 runCatching 吞成 null 会让大文件扫描不可取消",
+            thrown is CancellationException
+        )
     }
 
     @Test

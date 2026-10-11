@@ -97,6 +97,7 @@ import com.mixradio.droid.data.TextCompare
 import com.mixradio.droid.data.TextStatistics
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraTokens
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -363,6 +364,7 @@ private fun TextEditorDialogContent(
                         "editor open $path size=$total cost=${System.currentTimeMillis() - openStartMs}ms"
                     )
                 }
+            } catch (e: CancellationException) { throw e
             } catch (e: Exception) { loadError = "读取失败: ${e.message}" }
             finally { isLoading = false }
         }
@@ -1048,6 +1050,9 @@ private suspend fun loadNextChunk(
         val text = LineEnding.apply(String(bytes, charset), LineEnding.LF)
         val newOffset = fromOffset + consumedLen
         onResult(text, newOffset, newOffset < total)
+    } catch (e: CancellationException) {
+        // 取消不当作「读取失败」：否则会在已取消的 UI 上写 hasMore=false、offset 回退。
+        throw e
     } catch (_: Throwable) {
         onResult("", fromOffset, false)
     }
@@ -1323,11 +1328,13 @@ private fun ChunkedInfoBar(
                 modifier = Modifier.clickable(onClick = onLoadMore).padding(4.dp)
             )
         } else if (indexedLines != null) {
-            // LARGE/HUGE 由稀疏行索引只读虚拟滚动接管：显式标注只读预览策略（对齐 MP-Manager §7.1）。
-            val browseHint = when (sizeClass) {
-                FileSizeClass.HUGE -> "全文可浏览 · HUGE 只读预览"
-                FileSizeClass.LARGE -> "全文可浏览 · 只读预览"
-                else -> "全文可浏览"
+            // 本提示条只在只读浏览态（文件超过可载入上限）渲染，故一律标注「只读预览」。
+            // 原按 FileSizeClass 档位分派：只读判定用 MAX_LOAD_BYTES（32MB），而 LARGE 档从
+            // 50MB 起 —— 32–50MB 的文件实际只读却落在 MEDIUM 档，被误标成「全文可浏览」。
+            val browseHint = if (sizeClass == FileSizeClass.HUGE) {
+                "全文可浏览 · HUGE 只读预览"
+            } else {
+                "全文可浏览 · 只读预览"
             }
             Text(
                 text = browseHint,

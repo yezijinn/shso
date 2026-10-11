@@ -241,3 +241,64 @@ class RoundSixteenGuardTest {
         )
     }
 }
+
+/**
+ * 取消传播、批量守卫作用域、临时名不可预测的源码契约护栏。
+ *
+ * 这几处都是「改成旧写法即回归」的写法级约束，行为测试覆盖不到组合/私有函数内部，
+ * 用源码契约钉住。
+ */
+class CancellationAndScopeContractTest {
+
+    private val dialog = File("src/main/java/com/mixradio/droid/ui/components/TextEditorDialog.kt")
+    private val filePage = File("src/main/java/com/mixradio/droid/ui/pages/FilePage.kt")
+    private val textCompare = File("src/main/java/com/mixradio/droid/data/TextCompare.kt")
+    private val sparse = File("src/main/java/com/mixradio/droid/data/SparseLineIndex.kt")
+
+    @Test fun `挂起体不得用宽 catch 吞掉取消信号`() {
+        // CancellationException 是取消信号，不是「读取失败」。宽 catch 会把它吞成正常返回，
+        // 使取消在编辑器加载 / 加载更多这两条路径上失效。
+        val s = dialog.readText()
+        assertTrue("编辑器加载的 catch 必须先重抛取消", s.contains("} catch (e: CancellationException) { throw e"))
+        assertTrue("加载更多的 catch 必须先重抛取消", s.contains("} catch (e: CancellationException) {"))
+    }
+
+    @Test fun `稀疏索引 build 必须可取消`() {
+        // 原实现 runCatching 包住整个扫描体且循环无检查点：大文件建索引在用户离开后仍跑完整个文件。
+        val s = sparse.readText()
+        assertTrue("build 不得再用 runCatching 兜底", !Regex("withContext\\(Dispatchers\\.IO\\) \\{\\s*runCatching").containsMatchIn(s))
+        assertTrue("build 必须重抛取消", s.contains("} catch (e: CancellationException) {"))
+        assertTrue("扫描循环必须有取消检查点", s.contains("currentCoroutineContext().ensureActive()"))
+    }
+
+    @Test fun `批量守卫标记必须与执行作用域同生命周期`() {
+        // 批量循环跑在文件级 batchJobScope（旋屏不取消），守卫标记若是页面级 remember，
+        // 旋转归零后目录切换不再被拦截，删除落在旧目录而收尾刷新新目录。
+        val s = filePage.readText()
+        assertTrue("守卫标记必须定义在文件级", s.contains("private var batchInFlight by mutableStateOf(false)"))
+        assertTrue("不得再用页面级 remember 持有守卫", !s.contains("var isBatchRunning by remember"))
+        assertTrue("守卫标记不得残留旧名", !s.contains("isBatchRunning"))
+    }
+
+    @Test fun `对比结果非 root 落盘临时名必须不可预测`() {
+        // 结果文件名可预测，固定临时名会被在可写目录预置的软链劫持写入。
+        val s = textCompare.readText()
+        assertTrue(
+            "非 root 临时名必须含 UUID",
+            Regex("\\.\\$\\{target\\.name\\}\\.shso_\\$\\{java\\.util\\.UUID\\.randomUUID\\(\\)\\}\\.tmp")
+                .containsMatchIn(s)
+        )
+        assertTrue("不得再用固定临时名", !s.contains(".shso_tmp\""))
+    }
+
+    @Test fun `只读浏览提示必须反映只读能力而非体积档位`() {
+        // 只读判定用 MAX_LOAD_BYTES（32MB），LARGE 档从 50MB 起，32–50MB 落在 MEDIUM 档，
+        // 原按档位分派会误标「全文可浏览」。提示条只在只读态渲染，一律标注只读预览。
+        val s = dialog.readText()
+        assertTrue(
+            "MEDIUM 档不得再落到「全文可浏览」",
+            !s.contains("FileSizeClass.LARGE -> \"全文可浏览 · 只读预览\"")
+        )
+        assertTrue("只读态必须标注只读预览", s.contains("\"全文可浏览 · 只读预览\""))
+    }
+}

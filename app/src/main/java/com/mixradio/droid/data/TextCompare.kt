@@ -441,11 +441,13 @@ object TextCompare {
                 runCatching { RootService.runCommandSync("rm -f ${RootService.escapeShellArg(tmp)}", 10_000L) }
             }
         } else {
-            // 非 root 也必须原子写：直接 `FileOutputStream(path)` 会先截断目标，
-            // 写中进程被杀 / OOM 就只剩前缀；且 path 为软链时会跟着改写真身。
-            // 与 writeTextFile 的非 root 分支同法：同目录临时名 + 原子 rename。
+            // 与 writeTextFile 的非 root 分支同法：同目录临时名 + 原子 rename，
+            // 且临时名必须**不可预测**（结果文件名可预测，固定临时名会被预置软链）。
             val target = File(path)
-            val tmpFile = File(target.parentFile ?: File("."), ".${target.name}.shso_tmp")
+            val tmpFile = File(
+                target.parentFile ?: File("."),
+                ".${target.name}.shso_${java.util.UUID.randomUUID()}.tmp"
+            )
             try {
                 FileOutputStream(tmpFile).use { it.write(bytes) }
                 if (!tmpFile.renameTo(target)) {

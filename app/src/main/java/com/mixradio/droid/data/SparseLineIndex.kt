@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package com.mixradio.droid.data
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -84,7 +85,7 @@ class SparseLineIndex(
             charset: Charset,
             reader: ByteRangeReader = ChunkedFileReaderAdapter
         ): SparseLineIndex? = withContext(Dispatchers.IO) {
-            runCatching {
+            try {
                 val total = reader.size(filePath)
                 if (total <= 0L) return@withContext null
                 val utf16 = charset == Charsets.UTF_16 || charset == Charsets.UTF_16LE || charset == Charsets.UTF_16BE
@@ -96,6 +97,11 @@ class SparseLineIndex(
                 var pos = 0L
                 var endsWithLf = false
                 while (pos < total) {
+                    // 大文件扫描可持续数秒到数十秒，期间用户可能已关闭编辑器 / 切走文件。
+                    // 循环内显式检查取消：IO 调度器的取消是协作式的，不会中断阻塞中的 read，
+                    // 缺检查点时为已离开的界面继续扫完整个文件（每 256KB 一次 reader.read，
+                    // root 通道下即一次 dd|base64 su 往返）纯属白耗。
+                    currentCoroutineContext().ensureActive()
                     val raw = reader.read(filePath, pos, minOf(READ_BLOCK, total - pos))
                     if (raw.isEmpty()) break
                     if (utf16) {
@@ -142,7 +148,13 @@ class SparseLineIndex(
                 // 的行号数比真实值多 1，且随「索引是否建成」在 N 与 N+1 之间跳变。
                 val lines = if (endsWithLf) count else count + 1
                 SparseLineIndex(list.toLongArray(), lines, total, GRANULARITY)
-            }.getOrNull()
+            } catch (e: CancellationException) {
+                // 取消信号不是「读取失败」，必须原样抛出。原用 runCatching 兜底会在取消时
+                // 把它吞成 null，build 于是无法被取消（调用方认为「索引建成失败」而正常继续）。
+                throw e
+            } catch (_: Exception) {
+                null
+            }
         }
     }
 }

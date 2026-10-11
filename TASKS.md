@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261011`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 529 tests / 0 failures / 1 skipped |
+| 单元测试 | 535 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -72,6 +72,38 @@
 ---
 
 ## 待办
+
+### A96. 协程取消传播与批量守卫作用域复核（2026-10-11）
+
+对协程取消传播、批量操作状态与临时文件命名的后续审查条目逐条对照代码复核：6 条成立并修复，
+4 条经核实判为设计取舍或不可达状态。
+
+- [x] **大文件稀疏行索引静默吞掉取消**（`BUG-EXC-109`，P2，CONFIRMED）：
+  `SparseLineIndex.build` 用 `runCatching { … }.getOrNull()` 包住整个扫描体，
+  取消时 `CancellationException` 被折成 `null`，调用方按「读取失败」处理 —— 取消语义丢失。
+  改为 `try/catch`，首行 `catch (e: CancellationException) { throw e }` 原样重抛；
+  块内 `withContext(Dispatchers.IO)` 扫描循环补 `currentCoroutineContext().ensureActive()`。
+- [x] **编辑器加载/续读吞掉取消**（`BUG-EXC-106`，P2，CONFIRMED）：
+  加载 `LaunchedEffect` 的 `catch (e: Exception)` 与 `loadNextChunk` 的
+  `catch (_: Throwable)` 都会把取消当失败路径。各自补 `catch (e: CancellationException) { throw e }` 置前。
+- [x] **批量任务守卫随旋转归零**（`BUG-CONSIST-107` / `BUG-CONSIST-112`，P2，CONFIRMED）：
+  `isBatchRunning` 与 `batchDirGuard` 均为页面级 `remember`，旋转后归零，
+  旧 Activity 的收尾会与新 Activity 的启动互踩；且 `batchDirGuard` 只写不读（死状态）。
+  删死状态，守卫提为文件级 `private var batchInFlight by mutableStateOf(false)`（与 `installInFlight` 同模式）。
+- [x] **非 Root 拷贝临时名可预测**（`BUG-SEC-108`，P2，CONFIRMED）：
+  `TextCompare` 非 Root 分支临时名固定为 `.${target.name}.shso_tmp`，1777 目录可被预置同名软链，
+  `cat >` 跟随软链写穿到目标外。改为 `.${name}.shso_<UUID>.tmp`，不可预测。
+- [x] **只读浏览提示条口径不符**（`BUG-COMPAT-111`，P3，CONFIRMED）：
+  该提示条只在只读浏览态渲染，却对「大文件但可编辑」分支保留「可编辑」措辞。
+  统一为 `全文可浏览 · 只读预览`，HUGE 档附 `HUGE` 标识。
+- [x] **其余四条的处理**：`BUG-CONSIST-110`（删除确认显示层兜底）属防御性显示，
+  非缺陷级，判 `BY_DESIGN`；`BUG-COMPAT-093`（tif/tiff 声明与解码能力不符）维持 `BY_DESIGN`
+  （走 `BitmapFactory` 优雅失败，移出列表反而更差）；`BUG-EXC-033` / `BUG-EXC-054`
+  触发前提为应用私有 `filesDir` 不可写（应用已不可用），不为不可达路径在热路径加告警管路，判 `BY_DESIGN`。
+- [x] 单测：`SparseLineIndexTest` +1（扫描途中取消必须抛 `CancellationException`）；
+  `TextEditorAndTerminalGuardTest` 新增 `CancellationAndScopeContractTest` 5 项源码契约。
+- [x] 全量单测通过：`testDebugUnitTest` → 535 tests / 0 failures / 1 skipped。
+- [x] 真机（root）验证：`adb install -r -g` 成功，进程存活，logcat 无 `FATAL`，`su -c 'id'` 返回 `uid=0(magisk)`。
 
 ### A95. 拷贝权限与选择器末批复核（2026-10-11）
 

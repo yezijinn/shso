@@ -157,6 +157,16 @@ private val installJobScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.
  */
 private var installInFlight by mutableStateOf(false)
 
+/**
+ * 批量破坏性任务进行中标志：**进程级**，不随组合销毁。
+ *
+ * 批量循环本身跑在文件级 [batchJobScope]（旋屏不取消），但守卫标记若是页面级 remember，
+ * 旋转归零后 [navigateTo] 与外部定位 effect 都不再拦截切目录 —— 删除继续落在旧目录、
+ * 收尾刷新的是新目录，用户全程看不见删了什么，与「跑到有明确结论为止」的设计目标背离。
+ * 与 [installInFlight] 同法提到文件级，使标记与循环的作用域一致。
+ */
+private var batchInFlight by mutableStateOf(false)
+
 @Composable
 fun FilePage(
     appSettings: AppSettings,
@@ -178,9 +188,6 @@ fun FilePage(
      * 收尾 `finally` 另加 `NonCancellable` 兜底。
      */
     val batchScope = batchJobScope
-    // 批量任务开始时冻结的目录：执行期间用户切目录/被外部唤起改写目录，
-    // 删除仍会继续落在旧目录，而收尾 refresh 的是新目录 —— 用户全程看不见删了什么。
-    val batchDirGuard = remember { arrayOf<String?>(null) }
 
     // 外部唤起（「打开方式 / 分享」）待处理目标：由 ExternalOpenHub 投递。
     // 直接订阅单槽位，定位完成后由 Hub 清空；配置变更不会重投（MainActivity 侧已守卫）。
@@ -276,8 +283,6 @@ fun FilePage(
     var showDeleteDialog by remember { mutableStateOf(false) }
     /** 批量删除待确认的路径快照：确认框打开后不再随选择集变化。 */
     var batchDeletePaths by remember { mutableStateOf<List<String>>(emptyList()) }
-    /** 批量任务进行中：屏蔽并发触发与目录切换（见 batchScope 的说明）。 */
-    var isBatchRunning by remember { mutableStateOf(false) }
 
     var showJumpPathDialog by remember { mutableStateOf(false) }
     var jumpPathInput by remember { mutableStateOf("") }
@@ -386,7 +391,7 @@ fun FilePage(
      *  而收尾刷新的是新目录 —— Toast 浮在无关列表上，用户全程不可见、不可中断、不可撤销。
      */
     fun navigateTo(dir: String) {
-        if (isBatchRunning) {
+        if (batchInFlight) {
             feedbackMessage = "批量操作进行中，暂不能切换目录"
             return
         }
@@ -777,7 +782,7 @@ fun FilePage(
         selectedItem = null
         multiSelectMode = false
         selectedPaths.clear()
-        if (isBatchRunning) {
+        if (batchInFlight) {
             // 批量破坏性任务进行中不接受目录改写：删除循环继续落在旧目录，
             // 而收尾刷新的是新目录，用户全程看不见删了什么。
             feedbackMessage = "批量操作进行中，已忽略本次外部定位"
@@ -2116,8 +2121,7 @@ fun FilePage(
                         batchDeletePaths = emptyList()
                         deleteTargetItem = null
                         if (isBatch) {
-                            isBatchRunning = true
-                            batchDirGuard[0] = currentDirectory
+                            batchInFlight = true
                             val frozenDir = currentDirectory
                             val targets = batchPaths
                             batchScope.launch {
@@ -2139,10 +2143,9 @@ fun FilePage(
                                     // NonCancellable：收尾必须跑到有明确结论为止。
                                     // 放在可取消的上下文里时，withContext(Main) 的块体
                                     // 根本不会执行（以 CancellationException 恢复），
-                                    // 于是提示不弹、refresh 不跑、isBatchRunning 永不复位。
+                                    // 于是提示不弹、refresh 不跑、batchInFlight 永不复位。
                                     withContext(NonCancellable + Dispatchers.Main) {
-                                        isBatchRunning = false
-                                        batchDirGuard[0] = null
+                                        batchInFlight = false
                                         feedbackMessage = buildString {
                                             if (interrupted) append("删除被中断：已完成 $ok 个项目，")
                                             else append("已删除 $ok 个项目")
