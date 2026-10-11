@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（`c620dc6`） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（`85e320d`） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
 | 单元测试 | 480 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
@@ -63,7 +63,7 @@
 | `/data/adb/shso` 是 0777 但 **SELinux 拦住第三方**（目录标签 `adb_data_file`）。实测：`shell` 域与 app 域（`run-as` → `u:r:runas_app`，派生自 `untrusted_app`）对该目录的 list / unlink / symlink / write **全部 Permission denied**，dmesg 有对应 `avc: denied { getattr }`；只有 `su`(magisk 域) 能写 |
 | `/data/local/tmp` 子目录默认 `root:root 755`，adb（shell 身份）**无法写入** → 需 `su -c 'chmod 777'` 后再 push |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
-| 发版 | tag `20261004`（纯数字，与 `versionCode` 对齐）；双端同名 Release，资产 `app-release.apk` 2132114 字节，双端下载 sha256 与本地一致；旧版 APK 已从 GitHub `20261003`、Gitee `20261003` 与 `20261002` 删除（下载返回 404） |
+| 发版 | tag `20261011`（纯数字，与 `versionCode` 对齐）；双端同名 Release，资产 `app-release.apk` 2893369 字节，双端下载 sha256 与本地一致（`9e42bc6c…`）；旧版 APK 已从双端 `20261004` 移除，仅保留 Release 与 tag |
 
 ---
 
@@ -95,6 +95,8 @@
 - [x] 全量单测通过：`testDebugUnitTest` → 480 tests / 0 failures / 1 skipped。
 - [x] 真机（root）复验：CRLF 脚本经 root 判定执行 `len=3`、退出码 0；`.zst` / `.tar.zst`
   解压内容逐字节正确；含断链符号链接的目录完整列举且大小/类型无串位。
+- [x] 发版：tag `20261011` 推双远端；双端同名 Release 上传 `app-release.apk`（2893369 字节），
+  双端下载 sha256 与本地一致；旧版 APK 已从双端 `20261004` 移除，Release 与 tag 保留。
 
 ### A83. 恢复 zstd + 脚本归一化保守化（2026-10-11）
 
