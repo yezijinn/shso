@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
@@ -286,6 +287,7 @@ fun HomePage(
                 modifier = Modifier
                     .align(Alignment.CenterHorizontally)
                     .clickable(onClick = { showFilePicker = true })
+                    .minimumInteractiveComponentSize()
                     .padding(vertical = 6.dp)
             )
 

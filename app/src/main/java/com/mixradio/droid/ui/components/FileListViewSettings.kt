@@ -314,6 +314,7 @@ internal fun FileListSettingsDialog(
                     Box(
                         modifier = modifier
                             .clickable { onClick() }
+                            .minimumInteractiveComponentSize()
                             .padding(vertical = 10.dp, horizontal = 4.dp)
                     ) {
                         Text(

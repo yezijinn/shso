@@ -436,6 +436,7 @@ private fun OwnerPickerDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable { onPick(entry.name) }
+                        .minimumInteractiveComponentSize()
                         .padding(horizontal = 4.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {

@@ -740,6 +740,7 @@ fun TerminalPage(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable { inputText = cmd; showCmdHistory = false }
+                        .minimumInteractiveComponentSize()
                         .padding(horizontal = 4.dp, vertical = 10.dp)
                 )
             }
@@ -751,6 +752,7 @@ fun TerminalPage(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable { cmdHistory = emptyList(); showCmdHistory = false }
+                .minimumInteractiveComponentSize()
                 .padding(horizontal = 4.dp, vertical = 10.dp)
         )
     }

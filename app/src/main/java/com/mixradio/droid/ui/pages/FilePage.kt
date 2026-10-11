@@ -43,6 +43,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
@@ -1623,14 +1624,18 @@ fun FilePage(
                             color = if (displayFileList.isEmpty()) AuroraTokens.Warning else AuroraTokens.Accent
                         )
                     }
+                    // 裸文字 ✕：命中区补到最小触控尺寸。所在行由搜索输入框撑高，
+                    // 外扩不会改变行高，只是把可点范围从字形本身扩到 48dp。
                     Text(
                         text = "✕",
                         style = AuroraTextStyles.body2,
                         color = AuroraTokens.TextSecondary,
-                        modifier = Modifier.clickable {
-                            nameQuery = ""
-                            showSearch = false
-                        }
+                        modifier = Modifier
+                            .clickable {
+                                nameQuery = ""
+                                showSearch = false
+                            }
+                            .minimumInteractiveComponentSize()
                     )
                 }
             }
@@ -1827,6 +1832,7 @@ fun FilePage(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(enabled = enabled, onClick = onClick)
+                .minimumInteractiveComponentSize()
                 .padding(vertical = 11.dp, horizontal = 8.dp)
         ) {
             Text(

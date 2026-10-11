@@ -28,6 +28,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -2067,7 +2068,14 @@ private fun EditorSettingsDialog(
             border = BorderStroke(1.dp, AuroraTokens.Stroke),
             modifier = Modifier.fillMaxWidth(0.88f)
         ) {
-            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+            // 面板行统一按最小触控尺寸 48dp 排布后，根页十余行在小屏或系统大字号下会超出对话框高度。
+            // 这里补竖向滚动兜底：原先无滚动容器，超出部分既画不出也点不到。
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+            ) {
                 // 标题行
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -2379,6 +2387,7 @@ private fun CompactSettingRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled, onClick = onClick)
+            .minimumInteractiveComponentSize()
             .padding(vertical = 7.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
@@ -2448,7 +2457,11 @@ internal fun removeAllLineBreaks(text: String): String =
 @Composable
 private fun CompactOptionRow(text: String, selected: Boolean, onClick: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 7.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .minimumInteractiveComponentSize()
+            .padding(vertical = 7.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -2465,7 +2478,10 @@ private fun CompactOptionRow(text: String, selected: Boolean, onClick: () -> Uni
 private fun CompactBackRow(onClick: () -> Unit) {
     Text(
         text = "‹ 返回", style = AuroraTextStyles.footnote1, color = AuroraTokens.Accent,
-        modifier = Modifier.clickable(onClick = onClick).padding(vertical = 7.dp)
+        modifier = Modifier
+            .clickable(onClick = onClick)
+            .minimumInteractiveComponentSize()
+            .padding(vertical = 7.dp)
     )
 }
 

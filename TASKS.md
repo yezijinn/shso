@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A116） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A118） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
 | 单元测试 | 613 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
@@ -76,11 +76,41 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`1244c6e4…`）；双端 tag 与 Release 的目标提交均已对齐 A117 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`a9db14df…`）；双端 tag 与 Release 的目标提交均已对齐 A118 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 
 ---
 
 ## 待办
+
+### A118. 文本级可点目标触控尺寸兜底（BUG-COMPAT-187）（2026-10-12）
+
+`docs/AI-1-BUG.md` 末轮仍为第一百四十五轮（#153，复核 COMPAT-168 修复残留证据），无新增；
+`docs/AI-2-BUG.md` 无新增（止于 §8）。台账唯一 OPEN 项仍为 BUG-PERF-030（A109 已裁定维持不修）。
+
+A117 修的是「补尺寸这个动作**写错了顺序**」，覆盖范围只到**已经加过** `minimumInteractiveComponentSize`
+但顺序颠倒的站点。顺着 AI-1 的原话（「行内次要操作触控尺寸**系统性**不足」）复核全库 `.clickable`
+（含分行链式写法）后确认：另有一批站点**自始没加过任何补偿**，是同类缺陷的残留，需一并补齐：
+
+- [x] **P3 · 文本级可点目标补齐至 48dp（BUG-COMPAT-187）**：8 处 / 6 文件 —— 首页「从文件管理器选择」
+  （裸文字入口 ≈30dp）、文件页搜索栏 `✕`（无 padding，≈14×21dp）与长按动作菜单项（43dp）、
+  列表设置弹窗 `ActionCell`（43dp）、权限弹窗账户候选行（43dp，误点会改错属主/组）、终端命令历史行
+  与「清空历史」（≈36dp）、编辑器设置面板 `CompactSettingRow`/`CompactOptionRow`/`CompactBackRow`（35dp）。
+  一律按 `clickable` 在外、`minimumInteractiveComponentSize` 在内的顺序补齐。
+- [x] **判定边界（不改）**：有可见底/固定高度的容器属**设计尺寸**，不改 —— 36dp 工具行按钮
+  （`SurfaceHover` 底色）、42dp 路径行（`heightIn(min = 42.dp)`）、图片查看器 48sp 图标 + `padding(8.dp)`。
+- [x] **连带风险处置**：编辑器设置面板行高 35 → 48dp 后根页内容约 500 → 630dp，小屏/系统大字号下会
+  超出对话框高度，而该面板原先**无滚动容器**（超出部分既画不出也点不到）→ 同步补
+  `Modifier.verticalScroll(rememberScrollState())` 兜底。
+- [x] 单测：`testDebugUnitTest` **613 tests / 0 failures / 1 skipped**（纯 UI 尺寸与修饰符，
+  JVM 单测无法覆盖指针命中区，不新增用例）。`assembleRelease` + `verifyReleasePayload` 通过。
+- [x] 真机（root，PACM00 / Android 10 / 1080×2280 / density 480）：首页「从文件管理器选择」
+  bounds `[400,465][681,609]`（144px=48dp），在字形上缘外 `(540,480)` 点击 → 弹出「选择执行文件」；
+  搜索栏 `✕` bounds `[900,270][1044,414]`（144×144px），在 `(972,282)` 点击 → 搜索栏关闭；
+  列表设置弹窗 `搜索文件` `[180,1573][528,1717]`、`全选文件` `[552,1387][900,1531]` 均 144px（原 ≈123px）；
+  动作菜单 6 行、编辑器设置面板 12 行、编码二级页 10 行全部 144px；面板出现 `scrollable="true"`
+  节点 `[65,176][1015,2068]`（竖向滚动生效）。验证后清理设备与本地临时文件。
+- [x] 构建与发布：APK 2909869 字节，sha256 `a9db14df…`；tag `20261012` 重指至本次发版提交，
+  双端 Release 资产替换并核验三方一致。语法包侧 `syntaxpacks-v2` 未变（APK 不内置语法）。
 
 ### A117. 行内次要操作触控命中区与编辑器顶栏（BUG-COMPAT-185 / BUG-EDGE-186）（2026-10-12）
 
