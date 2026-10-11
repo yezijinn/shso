@@ -41,7 +41,7 @@
     - `FilePage.kt`：`displayFileList` 从 `remember` 组合期同步计算改为状态 + `Dispatchers.Default` 后台计算，组合期不再做 O(N log N) 排序；`refresh()` 改为先算完再连续写 `fileList`/`displayFileList`（两次写入之间无挂起点，不产生「新目录列表 + 旧排序结果」的中间帧）；新增视图偏好（隐藏文件/排序）变更时的后台重算 effect。
     - `RootFileManager.kt`：`listFiles` 移除「目录在前 + 名称升序」的重复排序——其结果必被 UI 层 `applyFileViewSettings` 覆盖，且比较器内同样存在逐次 `lowercase`；仅保留 `distinctBy` 去重，并删除因此不再使用的 `Locale` 导入。
   - 新增测试：`app/src/test/java/com/mixradio/droid/ui/components/FileListViewSettingsTest.kt`（6 例）锁定「目录恒在前、名称/时间升/降序、隐藏文件过滤、空输入」契约，防止本次重构改变行为。
-  - 验证：`./gradlew.bat :app:testDebugUnitTest` → **90 tests / 0 failures**；`./gradlew.bat :app:assembleDebug` → `BUILD SUCCESSFUL`；Debug APK 已安装至 BIYLBAFQQSS8DA69，uiautomator 核验文件页列表正常渲染（目录在前、名称不区分大小写升序）、进入 `Download` 子目录刷新正常、进程存活无异常。启动未受影响（`HorizontalPager` 无 `beyondViewportPageCount`，启动不组合文件页）。
+  - 验证：`./gradlew.bat :app:testDebugUnitTest` → **90 tests / 0 failures**；`./gradlew.bat :app:assembleDebug` → `BUILD SUCCESSFUL`；Debug APK 已安装至 $DEVICE，uiautomator 核验文件页列表正常渲染（目录在前、名称不区分大小写升序）、进入 `Download` 子目录刷新正常、进程存活无异常。启动未受影响（`HorizontalPager` 无 `beyondViewportPageCount`，启动不组合文件页）。
   - 契约说明：`RootFileManager.listFiles` 现返回「去重、无序」结果，展示顺序一律由 UI 层决定；4 处调用方或自行排序、或仅取名称集合，行为不变。
 
 > 并行说明：2026-09-10 用户要求「并行推进、同时修复多个功能」，故 4 / 5 / 7 三条**文件集互不重叠**的改造线同时开工（终端链路 / 编辑器链路 / 主页与全局），6 为统一回归收口。**三条线均已完成，并由独立验证代理（fresh eyes）对抗性复核通过。**
@@ -59,7 +59,7 @@
     - `AnsiParser.kt`：`ParsedAnsiResult` 由「整段 `AnnotatedString` + `plainText`」改为**按行** `List<AnnotatedString>`；新增局部 `emit(segment, style)` 助手做单遍 O(N+S) 构建（维护 `lineTexts` / `lineStyles` 每行相对偏移），跨行 SGR 状态机（颜色/加粗/256 色/truecolor）完整保留。`plainText` 改为 `by lazy`——它只在「复制输出」时被读取，避免每次 flush 都拼接 250k。CR 归一化改为**仅当 `raw.indexOf('\r') >= 0` 时才执行**（原为无条件两次全量 `replace`），逻辑逐字等价、**无行为变化**。
     - `TerminalPage.kt`：解析移出主线程——`snapshotFlow { RootService.outputLog }.conflate().collect { withContext(Dispatchers.Default) { parseAnsi(...) } }`（`conflate` 保证同一时刻只有一个解析在跑，中间值直接丢弃）；首帧仍同步解析一次，保证进入终端页即有内容、无空白闪烁。渲染由「`Column(verticalScroll)` + 单个 `Text` 渲染整段文本」改为 `LazyColumn { items(parsedOutput.lines) }` 按行懒布局。自动滚动由 `derivedStateOf { !canScrollForward }`（有缺陷：新内容一追加 `canScrollForward` 立刻变 true，会被误判「用户已向上回看」而**永久停滚**）改为 `followTail` 意图位——只在滚动进行中采样用户真实落点，并在回到底部时重新激活；key 改用 `parsedOutput.lines.size` 而非字符串长度，避免每次 flush 取消并重启协程；滚动方式改 `scrollToItem`（不再 `animateScrollTo` 造成每帧动画 churn）。
     - `HyperCore.kt`：flush 循环保留 16ms tick 排空队列（防止队列无界增长），但改为累积到 `pending` StringBuilder，**仅当距上次发布 ≥250ms 或累积 ≥400_000 字符**才发布一次；`finally` 中兜底 flush 残留文本（防任务退出丢日志）。
-  - **实测收益（真机 BIYLBAFQQSS8DA69，固定洪流负载 64k 行彩色输出）**：
+  - **实测收益（真机 $DEVICE，固定洪流负载 64k 行彩色输出）**：
 
     | 指标 | 改造前 | 改造后 | 变化 |
     |---|---|---|---|
@@ -86,7 +86,7 @@
 
 ### 6. 回归验证
 - [x] 运行完整性能回归与构建验证
-  - 验证命令与结果（2026-09-10，真机 BIYLBAFQQSS8DA69，Android 10 / ColorOS）：
+  - 验证命令与结果（2026-09-10，真机 $DEVICE，Android 10 / ColorOS）：
     - `./gradlew.bat --stop && ./gradlew.bat :app:testDebugUnitTest :app:assembleDebug` → `BUILD SUCCESSFUL`；且 `compileDebugKotlin` 与 `testDebugUnitTest` 均为**真实执行（非 UP-TO-DATE）**——先 `--stop` 规避陈旧 daemon 的 `CreateProcess error=740` 假通过（UP-TO-DATE 的测试任务会掩盖该故障）。
     - 单测 **100 tests / 0 failures / 0 errors / 0 skipped**（基线 90，本次新增 10）。逐类：`SecurityCoreTest` 63、`RootFileManagerEscapingTest` 12、`FileListViewSettingsTest` 6、`FilePermissionDialogTest` 6、`AnsiParserLinesTest` 5、`TextStatisticsColumnsTest` 5、`TextEditorTextTransformTest` 3。
     - **独立验证代理（fresh eyes，未参与实现）对抗性复核**，逐一给出结论与代码证据：B1 任务退出丢日志（`finally` 兜底 `pending`，无任何循环退出路径可跳过 `onFlush`）→ SAFE；B2 CR 语义 → SAFE（无字符丢失，但见下方已知行为）；B3 `plainText` 尾随换行（`"a\nb\n"` → 3 行、`plainText == "a\nb\n"`）→ SAFE；B4 `'\n'` 计入 `symbols` → SAFE；B5 自动滚动回到底部能否重新激活 → SAFE（`scrolling == true` 且 `canScrollForward == false` 时复位 `followTail`）。
@@ -120,7 +120,7 @@
     **43.8× 提速**。手法：① 策略解析改纯参数展开；② `judge` / `normalize_path` / `guard_operand_mode` 由 `$( )` 返回值改为**全局变量返回**（命令替换本身即 fork 子 shell）；③ 无符号链接分量时**跳过 realpath**。重构后单次调用只剩 2 个外部进程（审计 `date` + 真实二进制本身）。
   - 长期不变式：新增 `gen_wrappers.py`，由 `guard-template.sh` 生成 16 个守卫，保证「除 `__CMD_NAME__` / `__OPERAND_MODE__` 两处占位符外逐字节一致」，已加入循环校验。
   - README「能力边界」改为**诚实表述**：明确列出拦不住的情形——绝对路径调用（`/system/bin/rm`）、`command -p`、脚本自行改写 `PATH`、shell 重定向（`: > /system/build.prop`）、同进程内完成破坏的实现（`python -c 'shutil.rmtree(...)'`）、有 root 即可改配置与日志。删去原「任何调用路径都拦」的误导性表述。
-  - 验证：`sh -n` 全通过；**对抗性冒烟 37/37**（策略解析变体 / toybox-busybox / 新覆盖面 / fastboot-dd-wipe / **误杀检查** / 递归与缺失二进制 / 审计留痕）；真机（BIYLBAFQQSS8DA69, Android 10, Magisk）**符号链接绕过 8/8 + 正常路径不误杀 5/5 + sed 误杀回归 5/5**；重打包 zip 后解包内容与源码逐字节一致，且用解包出的守卫**复跑 37/37**。
+  - 验证：`sh -n` 全通过；**对抗性冒烟 37/37**（策略解析变体 / toybox-busybox / 新覆盖面 / fastboot-dd-wipe / **误杀检查** / 递归与缺失二进制 / 审计留痕）；真机（$DEVICE, Android 10, Magisk）**符号链接绕过 8/8 + 正常路径不误杀 5/5 + sed 误杀回归 5/5**；重打包 zip 后解包内容与源码逐字节一致，且用解包出的守卫**复跑 37/37**。
 
 ### 9. 守卫链路（App 侧集成）
 - [x] 把守卫接入 App 的全部 root 执行路径，并消除审计盲区
@@ -134,7 +134,7 @@
   - **守卫自动安装 + 版本升级**：档位 ≥2 时用 APK 内置 `shso_guard.zip` 静默安装。
     - **修复「永不升级」缺口**：原实现只要 `guard/rm` 存在就认为「已就绪」直接返回，已装过旧版的用户**永远拿不到 APK 内置的新版**（本轮新增的 toybox/busybox/mv/cp/find/sed 与 P0 修复全部拿不到）。真机确认：升级前设备上是 v1.0.0 的 13 个旧包装器，改后自动重装为 v1.1.0 的 18 个包装器。现比对 APK 内置 `module.prop` 的 `version=` 与已装版本，不一致即重装。
     - **修复安装并发竞态**：一次档位变更会被 `MainActivity` 与 `SettingsPage` **同时**触发 `ensureInstalled`，两个 `install()` 并发 `rm -rf $MODULE_DIR` + `cp -R` 互相破坏 —— 真机审计日志实锤 `GUARD_AUTO_INSTALL_FAILED | 安装校验失败（guard/rm 不可执行）` 后第二次才成功。已用 `Mutex` 串行化 + 持锁后双重检查；修复后清空模块重启，审计日志只有 1 条 `GUARD_INSTALL`，**0 条 FAILED**。
-  - 验证：真机（BIYLBAFQQSS8DA69, Android 10, Magisk v30.7）档位 0→1→2 全程无崩溃，进程存活。
+  - 验证：真机（$DEVICE, Android 10, Magisk v30.7）档位 0→1→2 全程无崩溃，进程存活。
 
 ### 10. 安全挡位 0-3 落实度
 - [x] 打通档位 3 的专属能力并消除「声称但未实现」
@@ -150,7 +150,7 @@
     - 真机验证：20000 次 `printf "\rProgress %d%%"` 刷新，终端**只占 1 行**（显示最后一次内容 `Progress 975%`）。旧语义下会产生 20000 行 —— 日志体积与后续解析成本随刷新次数**线性增长**，本项同时消灭了这个增长源。
   - **解析改为增量**：`TerminalPage` 复用同一个解析器，用 `log.startsWith(consumedLog)` 判定本次是**追加**还是**整体替换**；追加只喂增量，整体替换（清屏 / 横幅重生成 / 窗口裁剪掉头部）回落全量并 reset。解析器跨块维护：当前未完成行、SGR 颜色/粗体、**被 flush 边界截断的 ESC 序列**（缓冲到下一块，不会解析出错）。
     - 一个实测发现的坑：分块边界会让同一行产生大量**相邻同款式的 1 字符 SpanStyle 区间**（文本正确但区间碎片化，拖慢 AnnotatedString 构建）。已在快路径合并相邻同样式区间，等价性测试随即转绿。
-  - 实测收益（真机 BIYLBAFQQSS8DA69，同一 64k 行彩色洪流，debug 包，与上一轮「250ms 节流 + 全量解析」对比）：
+  - 实测收益（真机 $DEVICE，同一 64k 行彩色洪流，debug 包，与上一轮「250ms 节流 + 全量解析」对比）：
 
     | 指标 | 全量解析 | 增量解析 |
     |---|---|---|
@@ -169,7 +169,7 @@
   - 排查背景：前 11 项任务已全部 [x]，新一轮按"只做有证据的热点"原则排查未审过的范围。
     未审过 + 体积大：SettingsPage 815 行单 Composable + 9 state + 13 Dialog + 18 内联 Aurora* 项；
     FilePage 1746 行（文件列表已审，剩余 51 state 主要为多选/弹窗）；其余页面/组件已审。
-  - 实测基线（BIYLBAFQQSS8DA69 真机，进入设置页后 5 次切档位 × 3 轮取均值）：
+  - 实测基线（$DEVICE 真机，进入设置页后 5 次切档位 × 3 轮取均值）：
     重构前 ≈ 1040 jiffies / 5 = 208 jiffies 每次；重构后 ≈ 1051 jiffies / 5 = 210 jiffies 每次（**+1%，噪音内**）。
     帧 50th ≈ 36-48ms（重构前后相当）。**未拿到可量化的性能收益**。
   - 决策：保留改动并作为「结构改善」提交。**理由**：
@@ -186,7 +186,7 @@
     ③ DockBar / MainContainer —— DockBar 是稳定 Composable，Pager 默认 `beyondViewportPageCount=0`，
        无明显热点。
   - 验证：`./gradlew.bat :app:testDebugUnitTest :app:assembleDebug` → `BUILD SUCCESSFUL`；
-    **124 tests / 0 failures**（基线不变）；真机 BIYLBAFQQSS8DA69 进设置页 → 14 项可见 →
+    **124 tests / 0 failures**（基线不变）；真机 $DEVICE 进设置页 → 14 项可见 →
     档位点击循环正常 → 守卫模块显示"已安装" → 检查更新弹窗"已是最新版本" →
     审计日志弹窗正常 → 进程存活 + logcat 无崩溃。
 - [x] 优化文本编辑器批量文本处理的线程调度
@@ -203,7 +203,7 @@
 ### 13. FilePage 大目录滚动实测（**无热点**）
 - [x] 1000 文件目录加载 + 滚动 5 轮 × 3 测，确认无热点
   - 背景：任务 3 已审过 FilePage 文件列表（O(N) 预计算 + 后台排序 + LazyColumn `key`），但实测**只覆盖到 11 项**的 `/sdcard` 根目录，未压测 100+ 文件规模。
-  - 真机实测（BIYLBAFQQSS8DA69，debug 包，在 `/sdcard/loadtest` 建 1200 个 `f_*.txt` / `g_*.txt` 文件）：
+  - 真机实测（$DEVICE，debug 包，在 `/sdcard/loadtest` 建 1200 个 `f_*.txt` / `g_*.txt` 文件）：
     - 首次滚动（warm-up）：1282 jiffies / 38 帧 / p50=57ms / p99=150ms
     - 稳定轮：~2000-2500 jiffies / ~230-318 帧 / p50=**13-16ms** / p99=**17-53ms**
     - 1000 文件 vs 200 文件：CPU +19%、帧数 +38%，但帧 50th 几乎相同（13-16ms）
@@ -225,10 +225,10 @@
     - 新增 `app/proguard-rules.pro`：保留 commons-compress / xz / zip4j / zstd-jni 的反射、SPI 与 JNI 入口；对 commons-compress 未调用的 brotli / pack200 asm 可选依赖加 `-dontwarn`。
     - **keep 规则二次收窄**：首版额外保留 Kotlin metadata / BuildConfig / material3 后，mapping 实测 `MainActivity` 等应用类完全未混淆；源码无 `rememberSaveable` / kotlin.reflect / 序列化使用，故移除这三条宽 keep，交给 Compose / AndroidX consumer rules。收窄后应用与 Material3 合成类正常混淆。
   - R8 问题修复：首次构建报 `Missing classes`（`org.brotli.dec.BrotliInputStream`、`org.objectweb.asm.*`），确认均为 commons-compress 的可选路径，应用未调用，加 `-dontwarn` 后构建通过。
-  - 实测收益（BIYLBAFQQSS8DA69，真机 `am start -W`）：
+  - 实测收益（$DEVICE，真机 `am start -W`）：
     - 冷启动：debug 基线约 **4364 ms**；最终 release 5 次 **520 / 581 / 586 / 543 / 560 ms**，均值 **558 ms**，降幅约 **87.2%**。
     - APK：debug **38,707,000 bytes（约 38.7 MB）** → 最终 release **5,024,154 bytes（约 5.0 MB）**，降幅约 **87.0%**。
-  - 真机回归：设置页、主页文件列表、文件页进入 `Download`、文本编辑器打开冒烟文件（内容 / 行号 / 统计正常）、进程存活、`logcat -b crash` 无崩溃。ROOT 链路未重新验收（5a91ac60 未连接）。
+  - 真机回归：设置页、主页文件列表、文件页进入 `Download`、文本编辑器打开冒烟文件（内容 / 行号 / 统计正常）、进程存活、`logcat -b crash` 无崩溃。ROOT 链路未重新验收（$DEVICE_OLD 未连接）。
   - 独立复核：fresh-eyes 代理两轮确认——首轮确认压缩库 keep/dontwarn 覆盖充分、`kotlinx-serialization-core` 直接依赖确未使用、zstd-jni 四 ABI 原生库已打入 release APK；次轮强制 R8 真实重跑后确认移除三条宽 keep 不破坏 savedstate / BuildConfig / Material3 consumer rules，且应用类恢复混淆。
   - 验证：`./gradlew.bat :app:assembleRelease` → `BUILD SUCCESSFUL`；`./gradlew.bat :app:testDebugUnitTest --rerun-tasks` → **124 tests / 0 failures**（真实重跑，非 UP-TO-DATE）。
 
@@ -240,7 +240,7 @@
     - `themes.xml` 继承 `android:Theme.Material.Light.NoActionBar`，不走 AppCompat 主题路径。
     - UI 全自研 Compose + `Theme.shso`，不依赖 AppCompat。
   - 变更：`app/build.gradle.kts` 移除 `implementation("androidx.appcompat:appcompat:1.7.0")` 并补充注释。
-  - 实测收益（BIYLBAFQQSS8DA69，真机 `am start -W`）：
+  - 实测收益（$DEVICE，真机 `am start -W`）：
     - 冷启动：5 次 **509 / 580 / 531 / 554 / 560 ms**，均值 **546.8 ms**（较任务 15 的 558 ms 略快 2.0%）。
     - APK：从 **5,024,154 bytes** 进一步降至 **5,004,178 bytes**（约 5.0 MB），节省 **19,976 bytes**。
   - 真机回归：启动后文件页正常渲染、进程存活、`logcat -b crash` 无崩溃输出。冒烟文件测试期间因多次 back 导致误退到桌面，重启后验证进入文件页正常。
@@ -299,6 +299,6 @@
     `androidx.compose.foundation.layout.fillMaxWidth`（已有，编辑器 dispose 文案不变）。
   - 验证：`./gradlew.bat --stop` 后 `./gradlew.bat :app:compileDebugKotlin` 与 `:app:assembleDebug :app:assembleRelease` → `BUILD SUCCESSFUL`；
     `./gradlew.bat :app:testDebugUnitTest --rerun-tasks` → **124 tests / 0 failures**（基线守住，未因代码改动漂移）。
-    真机（BIYLBAFQQSS8DA69，debug）：`adb install -r` 成功，`am start` 后 `pidof com.mixradio.droid` 返回 PID，
-    `logcat -d -b crash` 为空，进程存活无 FATAL EXCEPTION。本轮无 ROOT 链路改动，ROOT 验收仍阻塞于 5a91ac60 未连接。
+    真机（$DEVICE，debug）：`adb install -r` 成功，`am start` 后 `pidof com.mixradio.droid` 返回 PID，
+    `logcat -d -b crash` 为空，进程存活无 FATAL EXCEPTION。本轮无 ROOT 链路改动，ROOT 验收仍阻塞于 $DEVICE_OLD 未连接。
 

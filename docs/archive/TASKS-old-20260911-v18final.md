@@ -24,7 +24,7 @@
 - **任务 28（新）**：解压到 `/data/adb/` 下静默失败已定位（SELinux 拦截应用 uid，与我方改动无关），修法待定。
 - **任务 20 审计余项 已逐项核查完毕**：4 项真修（Zip Slip canonical 校验 / `runCommandSync` 关闭 stdin / `TextCompare` tmp 泄漏 / `ChunkedFileReader` 上限加固）+ 1 项改后按用户要求回退（`ensureShsoDir` 必须 777）、4 项判定不成立（含「`Process.pid()` 在 Android 不存在」）、2 项已覆盖。真机验证 2 项（目录权限、`cat` 不再阻塞）。
 - 推送状态：分支 `fix/github-tag-version-check` 已推送至 `be6db40`；PR **#1 已 ready for review**。任务 20 的修复**尚未提交**。
-- ROOT 链路：BIYLBAFQQSS8DA69 是**已连接、已确认 ROOT 的真机**（Magisk v30.7、`su -c id` uid=0、守卫模块已装、PATH 注入验证通过）——**此前记忆里 5a91ac60 当 ROOT 机是错的,本机无 ROOT 的说法也是错的**。任务 19 ROOT 链路补测可立即执行。
+- ROOT 链路：$DEVICE 是**已连接、已确认 ROOT 的真机**（Magisk v30.7、`su -c id` uid=0、守卫模块已装、PATH 注入验证通过）——**此前记忆里 $DEVICE_OLD 当 ROOT 机是错的,本机无 ROOT 的说法也是错的**。任务 19 ROOT 链路补测可立即执行。
 - 审计余项：22 项 BUG 排查已闭环 8 项；剩余 14 项 P2（FilePage key / ChunkedFileReader >2GB overflow / RootService pid reflection / ArchiveExtractor Zip Slip canonical path / chmod 777 / runCommandSync stream close / Bitmap recycle / 等）属次优先级，按用户节奏分批处理。
 
 ---
@@ -33,7 +33,7 @@
 
 **待用户确认**。从已知状态衍生的三条候选主线（独立、可任意切换）：
 
-1. **「推送 + 真机补测」主线**：把当前 16 个未推送提交推到 `origin/fix/github-tag-version-check` → 创建 PR → 5a91ac60 设备连接后补 ROOT 链路验收 → 合并回 `main`。这是最低风险、最高确定性的推进路径。
+1. **「推送 + 真机补测」主线**：把当前 16 个未推送提交推到 `origin/fix/github-tag-version-check` → 创建 PR → $DEVICE_OLD 设备连接后补 ROOT 链路验收 → 合并回 `main`。这是最低风险、最高确定性的推进路径。
 2. **「清空审计余项」主线**：按依赖关系分 2-3 批把审计剩余 14 项 P2 BUG 全部闭环，每批附测试与真机冒烟。无新功能，纯健壮性 / 边界场景。
 3. **「下一轮功能 / 体验」主线**：新需求 / 新场景 / 用户报告的具体 BUG / 设计改进（由用户指派）。
 
@@ -53,10 +53,10 @@
  - 标题：「feat: 守卫模块 / 终端洪流进化 / 编辑器优化 / R8 / BUG 闭环」。
  - 描述取自新生成的 `artifacts/推送前检查报告-20260911.md`（**该文件此前并不存在，任务 18 首轮核验时补生成**；`artifacts/` 已 gitignore，不入库）。
  - CI 说明：仓库两个 workflow 均为 `workflow_dispatch` 手动触发，推送/PR **不会自动跑 CI**，故 `gh pr checks` 显示 "no checks reported" 属预期，非失败。
-- [x] 后续：**BIYLBAFQQSS8DA69** 跑通任务 19 端到端冒烟 → **已于 2026-09-11 完成**，PR #1 具备转 ready for review 的条件（是否转由用户决定）。
- - 注：原写「5a91ac60 连接」为旧认知残留，按任务 19 修正为准。
+- [x] 后续：**$DEVICE** 跑通任务 19 端到端冒烟 → **已于 2026-09-11 完成**，PR #1 具备转 ready for review 的条件（是否转由用户决定）。
+ - 注：原写「$DEVICE_OLD 连接」为旧认知残留，按任务 19 修正为准。
 
-### 19. ROOT 链路真机补测（BIYLBAFQQSS8DA69）—— 全部通过（4/4）
+### 19. ROOT 链路真机补测（$DEVICE）—— 全部通过（4/4）
 - [x] 真机能力已确认（2026-09-11 重新核验）：`su -c id` → `uid=0(root) context=u:r:magisk:s0`（Magisk v30.7 / 30750）；`/data/adb/modules/shso_guard/` 已装（20 wrapper）；守卫 PATH 注入 `which rm` → `guard/rm`；`/data/adb/shso/` 落盘。
 - [x] **1. 守卫符号链接绕过回归（真机全绿）**
  - 复测手法：当前 `module/shso_guard/guard` 重新推送至 `/data/local/tmp/gt/guard`，`su -c` 运行 `test/device-symlink.sh`。
@@ -159,12 +159,12 @@
 
 ### 24. 守卫单次调用开销（真机实测；非缺陷，但需知悉）
 - **方法学坑**：Android mksh 算术为 **32 位**，`date +%s%N`（19 位纳秒纪元）会被截断产生垃圾值（曾得到 712/64/−908 等无意义结果）。真机计时必须用 POSIX `time` 内建。
-- **实测**（BIYLBAFQQSS8DA69，各 300 次 `cp`）：裸 `cp` ≈ **16.8 ms/次**；守卫 `cp` ≈ **58.0 ms/次**（+41 ms）。
+- **实测**（$DEVICE，各 300 次 `cp`）：裸 `cp` ≈ **16.8 ms/次**；守卫 `cp` ≈ **58.0 ms/次**（+41 ms）。
 - **归因**：mksh 解释器启动 + 每次调用一次 `date` fork（`common.sh:503` 的 ALLOW 路径**无条件**调用 `audit()`，`audit()` 内 `common.sh:252` 跑 `date`）。
 - **结论**：README 宣称的「每次守卫调用 0–1 个进程」指**守卫逻辑自身**的 fork，与本测量不矛盾，但表述易被误读；且档位 ≤1 是「不装守卫」语义，该开销只在 ≥2 档出现。是否优化另开任务，不在任务 19 验收范围。
 
 ### 25. [P1·已修复] 高输出任务「中断」后孤儿进程存活，且 UI 无任何手段回收
-- **复现步骤**（BIYLBAFQQSS8DA69，12:34 版 APK）：主页输入脚本路径 → 立即执行 → 确认框「确认执行」→ 自动跳转终端页，状态「运行中..」、输出流式 → 点「中断」。
+- **复现步骤**（$DEVICE，12:34 版 APK）：主页输入脚本路径 → 立即执行 → 确认框「确认执行」→ 自动跳转终端页，状态「运行中..」、输出流式 → 点「中断」。
 - **对照实验（两次实测，结论相反，正是问题所在）**：
  | 被中断的任务 | `^C` 回显 | SIGINT 兜底提示 | UI 状态 | 实际进程 |
  |---|---|---|---|---|
@@ -197,7 +197,7 @@
 - **测试**：新增 `RootServiceProcessGroupTest`（3 例，精确等值锁定命令串与三重校验）。
  说明：`RootService` 是 object 且初始化依赖 Android/Compose，JVM 测试里无法加载（实测 `ExceptionInInitializerError`），
  故纯函数必须是**文件顶层**声明 —— 这也是本项目既有约定（见 `FileExecutionAnalyzer` / `TextEditorDialog`）。
-- **真机验证**（13:00 版 APK，BIYLBAFQQSS8DA69）：
+- **真机验证**（13:00 版 APK，$DEVICE）：
  - 高输出 `flood.sh` 运行中点「中断」→ `^C` 回显、状态回「待命中」、**进程全部消失**（修复前：孤儿继续占 10% CPU）。
  - 高输出 `flood.sh` 运行中点「结束进程」→ **进程全部消失**。
  - 低输出 `slow.sh` 中断 → 进程全部消失（回归保持）。
@@ -280,7 +280,7 @@
 > 补充：任务 29 修的是「>2MB 永远空白」（真 BUG），本项是「≤2MB 也慢到像坏了」（阈值失准），两者不同。
 
 - **现象**：2,097,151 B（正好比 2MB 阈值小 1 字节）的文件走**小文件 `loadAll` 路径**，整段文本塞进 BasicTextField。
-- **实测（BIYLBAFQQSS8DA69，这台机子性能较弱）**：
+- **实测（$DEVICE，这台机子性能较弱）**：
  | 体积 | 表现 |
  |---|---|
  | 32KB / 64KB | 秒开 |
@@ -328,7 +328,7 @@
 ## 待决事项（需用户确认或外部依赖）
 
 1. **主线选择**：任务 18 与 **19 均已完成**（19 真机补测 4/4 通过）。期间闭环任务 22/25/26/27。当前处 **19 → 20** 节点：可选「转 PR #1 ready」或「开任务 20 清理审计余项」。
-2. **5a91ac60 历史身份**：2026-09-11 修正——该 ID 自 2026-09-06 后已不在 adb 设备列表,长期被记忆误标为"ROOT 主力机",实际上 BIYLBAFQQSS8DA69 才是 ROOT 真机。历史 daily log 里的 5a91ac60 引用是当时真实接入的设备（与今日不同),保留原状不再回填;但新生成的看板、commit、PR 描述一律以 BIYLBAFQQSS8DA69 为准。
+2. **$DEVICE_OLD 历史身份**：2026-09-11 修正——该 ID 自 2026-09-06 后已不在 adb 设备列表,长期被记忆误标为"ROOT 主力机",实际上 $DEVICE 才是 ROOT 真机。历史 daily log 里的 $DEVICE_OLD 引用是当时真实接入的设备（与今日不同),保留原状不再回填;但新生成的看板、commit、PR 描述一律以 $DEVICE 为准。
 3. **审计余项处理节奏**：任务 20 **已逐项核查完毕**（4 修 / 4 判不成立 / 2 已覆盖），不再需要分批。注意：任务 22/25/26/27 与本轮核查共同说明**原审计清单本身不够准确**（有过时项、有建议本身错误、有重复项），后续引用清单前应回代码核对。
 4. **PR 标题 / 描述模板**：已用于 PR #1（标题「feat: 守卫模块 / 终端洪流进化 / 编辑器优化 / R8 / BUG 闭环」，描述存 `artifacts/pr-body-fix-github-tag-version-check.md`）；用户可随时改。
 5. **TASKS-old-20260911-v17final.md 保留期**：默认永久保留（git history 仍可查），用户可指派删除。
