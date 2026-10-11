@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A111） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 603 tests / 0 failures / 1 skipped |
+| 单元测试 | 606 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -38,6 +38,8 @@
 | 终端 | 增量 ANSI/OSC 解析、单行渲染上限 4000 字符、一次性命令可中断/流式/保活 |
 | 编辑器内核 | Sora Editor 0.23.6（打开即可编辑；语法由外置语法包提供）；检索 API 全部经 `queryActive` 守卫 |
 | 保存守卫 | 三条保存入口（doSave / 另存为 / 未保存弹窗）均拦「加载中 / 读取失败 / 只读大文件」，后者曾漏检致 0 字节覆盖 |
+| 另存为残留 | 临时文件建在目标同目录，目录由用户指定：写入前登记 `filesDir/.shso_save_pending`、替换或就地删除后撤销；启动清扫按名白名单（绝对路径 + 隐藏名 + 含 `.shso_` + `.tmp`）逐条清理，删不掉的留待下次重试 |
+| 另存为路径校验 | 控制字符（NUL / `\n` / `\r`）一并拒绝，与 `RootFileManager.isUnsafePath` / `isUnsafeFileName` 同口径 |
 | 终端渲染 | 解析代次计数器为**文件级**（跨 Activity 有效）；自动滚动 key 含末行长度并钉到底 |
 | 解析规模 | `completed` 行数硬上限 4000（超限从头部一次性丢弃，`droppedLines` 如实计数）→ snapshot 分配恒定有界 |
 | 编辑器状态 | 保存目标 `currentFilePath` 用 `rememberSaveable`（与 dirty/编码/行尾同组）；编辑器内容一律主线程读取 |
@@ -78,6 +80,36 @@
 ---
 
 ## 待办
+
+### A112. `docs/AI-1-BUG.md` 第 124~129 轮移交项（2026-10-12）
+
+逐条读码核实四条发现（AI-1 编号 162~165，与既有条目撞号，重编为 176~179）：
+两条确认（另存为残留、路径控制字符），一条一致性（进程组守卫与注释相悖），一条疑似项经复核不成立（setsid 前提）。
+
+- [x] **P3 · 另存为临时文件残留无清扫通道（BUG-EDGE-176）**：临时文件必须建在**目标同目录**
+  （跨文件系统 `mv` 非原子），而目录完全由用户指定；启动清扫只覆盖 filesDir / `/data/local/tmp` /
+  cacheDir 三处固定位置，用户目录里的 `.shso_edit_*.tmp` / `.*.shso_*.tmp` 扫不到 ——
+  写完临时文件与替换目标之间被强杀即永久残留隐藏文件。新增登记表 `filesDir/.shso_save_pending`：
+  `writeTextFile` 落盘前 `recordSaveTemp`，`mv`/`rename` 成功或就地删除后 `clearSaveTemp`；
+  启动清扫新增 `sweepRegisteredSaveTemps()`，按 `isSaveTempPath` 白名单删除，不依赖 mtime、
+  不遍历用户目录，删不掉的行保留至下次启动（root 路径以 `rm` 退出码为准）。
+- [x] **P3 · 另存为路径不拒换行/回车（BUG-LOGIC-177）**：`validateSaveAsPath` 拒 NUL、拒反斜杠，
+  却不拒 `\n`/`\r`，而路径原样进入 `cat > <path>` / `readlink` / `stat` 的参数位，内嵌换行等价
+  命令分隔；并入 NUL 的控制字符判定，与项目既有口径对齐。
+- [x] **P3 · 进程组守卫与注释相悖（BUG-CONSIST-178）**：字段 KDoc 与三处注释称 `runPgid`
+  「刻意保留，供回收被中断后逃逸到 init 下的子孙」，而守卫只认存活实体，该路径不可达；
+  AI-1 建议放宽守卫以兑现注释，复核否决 —— 校验②（组内仍有存活成员）会被内核复用后的
+  无关进程组满足，放宽即等于以 root 整组误杀。**保留守卫，订正 4 处注释**（含字段 KDoc）。
+- [x] **P3 · setsid 不 fork 的前提（BUG-LOGIC-179，不成立）**：非 Root 分支无条件
+  `runPgid = childPid` 被疑依赖 toybox `setsid` 不 fork。该依赖成立：子进程继承应用进程组，其 pid
+  为本次新分配、必不等于该组 id → 子进程非组长 → `setsid(2)` 必成功不 fork；A111 真机
+  `EXIT_RELAY=7` 已证退出码原样透传。订正注释表述（「子进程不是组长」）。
+- [x] 单测：`testDebugUnitTest` **606 tests / 0 failures / 1 skipped**（新增 3 条护栏：
+  换行/回车拒绝、另存为临时文件名识别白名单、登记与撤销通道）。
+- [x] 真机（root）端到端：预置残留 `/sdcard/Download/.shso_edit_A112TEST.tmp` 与登记表
+  （chown 应用 uid），`am force-stop` 后启动 MainActivity → 两者均被清除，logcat 无 FATAL。
+- [x] 发版：APK 构建（2909869 字节，sha256 `972abfa7…`）、root 真机安装冒烟；双端 `main` 与
+  tag `20261012` 推送、Release 目标提交改指 A112 代码提交并替换资产，下载 sha256 双端一致。
 
 ### A111. 非 ROOT 任务进程组隔离专项：`setsid` + 身份感知 kill 通道（BUG-LOGIC-173 / 原 AI2-LOGIC-023）（2026-10-12）
 
