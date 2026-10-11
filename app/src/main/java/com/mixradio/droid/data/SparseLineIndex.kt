@@ -289,7 +289,9 @@ class IndexedLineProvider(
         // 而 `split('\n')` 最多产出 `newlines + 1` 段，`getOrNull(i - floor)` 必然为 null ——
         // 直接 `?: ""` 等于把已经读到的 4MB 全部丢掉，用户只看到一行「已截断」提示。
         val parts = String(bytes, charset).split('\n')
-        val line = parts.getOrNull(i - floor) ?: parts.last()
+        // CRLF：只按 '\n' 切分会把行尾的 CR 留在行文本里，渲染出多余空白、复制时带出隐藏字符。
+        // 去一个尾随 CR（LF 行尾无 CR，多字节编码下 CR 已随解码成单个字符）。
+        val line = (parts.getOrNull(i - floor) ?: parts.last()).removeSuffix("\r")
         // 截断标记必须让用户看得见：只读浏览里不能把残缺行当完整行渲染/复制
         if (truncated) "$line…（本行超过 ${MAX_READ_BYTES / 1024 / 1024}MB，已截断显示）" else line
     }

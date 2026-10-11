@@ -92,6 +92,30 @@ class SparseLineIndexTest {
     }
 
     @Test
+    fun `CRLF 行尾的 CR 不进入行文本`() {
+        // 只按 '\n' 切分会把 CRLF 的 CR 留在行文本里：渲染出多余空白、复制时带出隐藏字符。
+        val bytes = "aa\r\nbb\r\ncc".toByteArray(StandardCharsets.UTF_8)
+        val reader = MemoryByteRangeReader(bytes)
+        val idx = runBlocking { SparseLineIndex.build("mem", StandardCharsets.UTF_8, reader) }!!
+        assertEquals(3, idx.totalLines)
+        val provider = IndexedLineProvider(idx, "mem", StandardCharsets.UTF_8, reader)
+        assertEquals("aa", runBlocking { provider.load(0) })
+        assertEquals("bb", runBlocking { provider.load(1) })
+        assertEquals("cc", runBlocking { provider.load(2) })
+    }
+
+    @Test
+    fun `UTF-16LE 下 CRLF 的 CR 同样被剔除`() {
+        val bytes = "aa\r\nbb".toByteArray(StandardCharsets.UTF_16LE)
+        val reader = MemoryByteRangeReader(bytes)
+        val idx = runBlocking { SparseLineIndex.build("mem", StandardCharsets.UTF_16LE, reader) }!!
+        assertEquals(2, idx.totalLines)
+        val provider = IndexedLineProvider(idx, "mem", StandardCharsets.UTF_16LE, reader)
+        assertEquals("aa", runBlocking { provider.load(0) })
+        assertEquals("bb", runBlocking { provider.load(1) })
+    }
+
+    @Test
     fun `lineStartOffset 正确 floor 到索引点`() {
         // offsets[k] = 第 k*1024 行的起始偏移；共 4 个索引点（行 0 / 1024 / 2048 / 3072）。
         val idx = SparseLineIndex(longArrayOf(0L, 100L, 300L, 700L), 1000, 5000L, SparseLineIndex.GRANULARITY)

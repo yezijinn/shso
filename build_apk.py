@@ -520,6 +520,11 @@ def verify_payload(apk: Path) -> Optional[dict]:
         for info in z.infolist():
             name = info.filename
             total += info.compress_size
+            # 桌面原生库检测对所有条目生效，不能嵌在下面的 else（未识别前缀）分支里，
+            # 否则落在 lib/ 等已识别前缀下的同名目录会被漏检。要求条目带 '/'，
+            # 避免根目录下一个恰好叫 win/linux 的无斜杠文件被误报成目录。
+            if "/" in name and name.split("/")[0] in DESKTOP_NATIVE_DIRS:
+                stray_platforms.add(name.split("/")[0])
             if name.startswith("lib/"):
                 abis.add(name.split("/")[1])
                 buckets["lib/"] = buckets.get("lib/", 0) + info.compress_size
@@ -533,8 +538,6 @@ def verify_payload(apk: Path) -> Optional[dict]:
                 buckets["resources.arsc"] = buckets.get("resources.arsc", 0) + info.compress_size
             else:
                 buckets["其他"] = buckets.get("其他", 0) + info.compress_size
-                if name.split("/")[0] in DESKTOP_NATIVE_DIRS:
-                    stray_platforms.add(name.split("/")[0])
 
     log(INFO, "体积构成（压缩后，占比按 APK 内条目合计）")
     for key, size in sorted(buckets.items(), key=lambda kv: -kv[1]):

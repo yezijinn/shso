@@ -175,6 +175,13 @@ object ArchiveExtractor {
     }
 
     /**
+     * zstd 解压组件（native 库）不可用。与「归档本身损坏」区分开：
+     * 前者是能力缺失，用户不该去怀疑/删除自己的文件。
+     */
+    private class ZstdUnavailableException(message: String, cause: Throwable) :
+        Exception(message, cause)
+
+    /**
      * 预读归档型压缩包根目录一级结构。
      */
     private fun peekRoot(path: String): RootPeek = try {
@@ -240,6 +247,10 @@ object ArchiveExtractor {
         }
     } catch (e: ExtractionLimitException) {
         throw e
+    } catch (e: ZstdUnavailableException) {
+        // 组件不可用不能被下面的宽 catch 吞成 parseFailed：TAR+zstd 走 peekRoot，
+        // 吞掉后 extract 会报「压缩包已损坏」，与 SINGLE 分支给出的「组件不可用」自相矛盾。
+        throw e
     } catch (_: Exception) {
         // 解析失败必须与「空归档」区分开。原实现两者都返回空结构，
         // 于是损坏/截断的 7z 走到下面的加密头预检分支 → 反复向用户索要密码，
@@ -283,7 +294,7 @@ object ArchiveExtractor {
         ZstdCompressorInputStream(base)
     } catch (e: LinkageError) {
         runCatching { base.close() }
-        throw IllegalStateException("zstd 解压组件不可用：${e.message ?: e.javaClass.simpleName}", e)
+        throw ZstdUnavailableException("zstd 解压组件不可用：${e.message ?: e.javaClass.simpleName}", e)
     }
 
     /** 打开 tar 归档流（按压缩格式自动包装）。 */

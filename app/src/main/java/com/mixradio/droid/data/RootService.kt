@@ -678,6 +678,9 @@ object RootService {
         }
     }
 
+    /** 下载器（腾讯系等）给重名文件追加的「.数字」尾缀，如 qq.sh.1。 */
+    private val NUMERIC_SUFFIX = Regex("\\.\\d+$")
+
     /**
      * 执行脚本/二进制文件。
      *
@@ -687,8 +690,11 @@ object RootService {
     fun executeFile(filePath: String, runAsRoot: Boolean? = null) {
         val file = File(filePath)
         val fileName = file.name
-        val isSh = fileName.endsWith(".sh", ignoreCase = true)
-        val isSo = fileName.endsWith(".so", ignoreCase = true)
+        // 与 FileItem.isExecutableScript/Binary 同口径：剥掉「.数字」尾缀再判格式。
+        // 只放宽文件页谓词而这里按字面后缀判定，会让带尾缀的脚本出现「有执行入口却报不支持格式」。
+        val effectiveName = NUMERIC_SUFFIX.replace(fileName, "")
+        val isSh = effectiveName.endsWith(".sh", ignoreCase = true)
+        val isSo = effectiveName.endsWith(".so", ignoreCase = true)
 
         if (!isSh && !isSo) {
             appendOutputDirect("\n[!] 错误: 不支持的文件格式，仅支持执行 .sh 和 .so 文件\n")
@@ -821,12 +827,15 @@ object RootService {
             val runShCmd: String = if (needsNormalize && normalizedShFile != null) {
                 val tmp = normalizedShFile
                 val t = escapeShellArg(tmp.absolutePath)
-                val probe = escapeShellArg(tmp.absolutePath + ".bom")
-                val prepare = "( head -c 3 $escapedFile 2>/dev/null | od -An -tx1 | tr -d ' \n' > $probe 2>/dev/null; " +
-                    "if [ \"\$(cat $probe 2>/dev/null)\" = efbbbf ]; then " +
-                    "tail -c +4 $escapedFile 2>/dev/null | tr -d '\r' > $t 2>/dev/null; " +
-                    "else tr -d '\r' < $escapedFile > $t 2>/dev/null; fi; " +
-                    "rm -f $probe ) ; "
+                val tNoBom = escapeShellArg(tmp.absolutePath + ".nobom")
+                // 先一次性读原文件、去 CR 写出副本，再在**副本**上探 BOM 并剥除。
+                // 原实现「先读原文件头 3 字节探 BOM、再整读原文件去 CR」两次读的是两份可能不同的数据
+                // （TOCTOU），且 od 读空时把「探测失败」当成「无 BOM」。改为只读原文件一次，
+                // BOM 探测与剥除都作用在同一份已落盘的内容上。
+                val prepare = "( tr -d '\r' < $escapedFile > $t 2>/dev/null; " +
+                    "if [ \"\$(head -c 3 $t 2>/dev/null | od -An -tx1 | tr -d ' \n')\" = efbbbf ]; then " +
+                    "tail -c +4 $t 2>/dev/null > $tNoBom && mv $tNoBom $t; fi; " +
+                    "rm -f $tNoBom ) ; "
                 // 归一化产出为空但原文件非空 → 读取本身失败，此时必须回落原路径让真实报错浮现，
                 // 不能拿空脚本假装执行成功。原文件本就为空则保留「空脚本 = 空操作」的旧语义。
                 "$prepare" +

@@ -98,9 +98,11 @@ data class FileItem(
     private val realArchiveName: String =
         if (NUMERIC_SUFFIX.matches(name)) name.substringBeforeLast('.') else name
 
-    val isExecutableScript: Boolean = !isDirectory && extension == "sh"
+    // 与 isInstallable / isViewableImage / isEditableText 同口径：一律用 realExtension，
+    // 否则下载器追加「.数字」尾缀（qq.sh.1）的脚本会被判成不可执行，而其余类型判定却承认它。
+    val isExecutableScript: Boolean = !isDirectory && realExtension == "sh"
 
-    val isExecutableBinary: Boolean = !isDirectory && extension == "so"
+    val isExecutableBinary: Boolean = !isDirectory && realExtension == "so"
 
     val isSupportedExecutable: Boolean = isExecutableScript || isExecutableBinary
 
@@ -147,9 +149,11 @@ data class FileItem(
         val mb = kb / 1024.0
         val gb = mb / 1024.0
         when {
-            gb >= 1.0 -> String.format(Locale.getDefault(), "%.2f GB", gb)
-            mb >= 1.0 -> String.format(Locale.getDefault(), "%.2f MB", mb)
-            kb >= 1.0 -> String.format(Locale.getDefault(), "%.1f KB", kb)
+            // 区域无关：与 formattedDate 一致。用默认 locale 会让部分区域把小数点渲染成
+            // 本地化数字形状（如阿拉伯语区的非 ASCII 数字），同一行里大小与时间两种口径。
+            gb >= 1.0 -> String.format(Locale.ROOT, "%.2f GB", gb)
+            mb >= 1.0 -> String.format(Locale.ROOT, "%.2f MB", mb)
+            kb >= 1.0 -> String.format(Locale.ROOT, "%.1f KB", kb)
             else -> "$size B"
         }
     }

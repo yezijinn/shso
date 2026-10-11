@@ -28,7 +28,8 @@ object TextStatistics {
         if (text.isEmpty()) return Stats(0, 0, 0, 0, 0, 0, 0, 0)
         val lines = countLines(text)
         // 最长行（columns）：与分类遍历合并到同一个 while 循环，避免 split 分配整行列表。
-        // 语义等价于 text.split('\n').maxOfOrNull { it.length }（仅按 '\n' 切分，末尾段也参与比较）。
+        // 按 '\n' 切分、末尾段也参与比较，并剔除 CRLF 的行尾 CR：CR 是行尾标记而非可见列，
+        // 计入会让 CRLF 文件的列数恒定比实际多 1，误导「列宽对齐 / 折行位置」的判断。
         var maxLine = 0
         var currentLen = 0
         var english = 0
@@ -42,6 +43,8 @@ object TextStatistics {
             // 仅按 '\n' 切分；遇换行即结算当前行长度并归零（与 split 的分段一致）。
             // 约束：'\n' 仍须计入 symbols（与既有统计口径保持一致），不可在此提前 continue 跳过分类。
             if (ch == '\n') {
+                // CRLF：上一字符是 CR 时为它加过 1，这里扣掉，行宽只计可见列。
+                if (currentLen > 0 && i > 0 && text[i - 1] == '\r') currentLen--
                 if (currentLen > maxLine) maxLine = currentLen
                 currentLen = 0
                 symbols++
@@ -67,7 +70,10 @@ object TextStatistics {
         // 比较尾部段（split 出来的最后一段长度）
         if (currentLen > maxLine) maxLine = currentLen
         return Stats(
-            chars = text.length,
+            // 码点数而非 UTF-16 码元数：四类分类按码点累加（代理对算 1），
+            // 若这里取 text.length，含 emoji / 扩展 B 区汉字的文本会出现
+            // 「四类之和 ≠ 总字符数」，与文首契约冲突。
+            chars = text.codePointCount(0, n),
             lines = lines,
             english = english,
             chinese = chinese,

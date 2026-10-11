@@ -41,12 +41,19 @@ object HyperCore {
     }
 
     /**
- * 批量发布代次。`clearBatchQueue()` 递增它，发布循环发现变化即丢弃自己已积累
- * 但尚未发布的 [StringBuilder] 积压 —— 否则「清屏」清掉的输出会在下一个 tick
- * 被回灌回屏幕。跨线程可见，故 @Volatile。
- */
-@Volatile
-private var batchFlushEpoch: Int = 0
+     * 清屏代次。`clearBatchQueue()` 递增它，发布循环发现变化即丢弃自己已积累
+     * 但尚未发布的 [StringBuilder] 积压 —— 否则「清屏」清掉的输出会在下一个 tick
+     * 被回灌回屏幕。跨线程可见，故 @Volatile。
+     */
+    @Volatile
+    private var batchFlushEpoch: Int = 0
+
+    /**
+     * 发布循环代次。每次 [startBatchFlushLoop] 递增，用于判定「当前循环是否已被替换」：
+     * 被替换的旧循环不得再把自己局部 pending 的残留写入新循环的输出。
+     */
+    @Volatile
+    private var batchFlushGeneration: Int = 0
 
     fun clearBatchQueue() {
         logBatchQueue.clear()
@@ -67,6 +74,11 @@ private var batchFlushEpoch: Int = 0
         onFlush: (String) -> Unit
     ): Job {
         batchFlushJob?.cancel()
+        // 循环代次：cancel() 只是投递取消，旧循环的 finally 是**异步**执行的。
+        // 只递增纪元（清屏）盖不住「循环被替换」——替换不递增纪元，旧 finally 会把
+        // 它局部 pending 里的旧任务尾部输出刷进新循环的会话。代次在启动新循环前自增，
+        // 旧 finally 一旦发现代次已变即丢弃自己的残留。
+        val myGeneration = ++batchFlushGeneration
         val job = scope.launch(Dispatchers.Main) {
             // 保留 16ms tick 去 drain 队列（防止队列无界增长），但先累积到 pending，
             // 满足阈值（距上次发布 ≥ minIntervalMs，或累积 ≥ backlogChars）才发布一次，降低重组频率。
@@ -113,7 +125,9 @@ private var batchFlushEpoch: Int = 0
                 // 局部 pending，用户点「清屏」后若循环恰好在此刻退出，无守卫的 finally
                 // 会把最多 250ms / 400k 字符的清屏前内容整段回灌 —— 屏幕闪回一批旧输出
                 // 且与新内容无法区分，与循环体 L124 注释描述的是同一类故障，只是漏了这条路径。
-                if (pending.isNotEmpty() && batchFlushEpoch == seenEpoch) {
+                if (pending.isNotEmpty() && batchFlushEpoch == seenEpoch &&
+                    batchFlushGeneration == myGeneration
+                ) {
                     onFlush(pending.toString())
                     pending.setLength(0)
                 }

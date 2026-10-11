@@ -100,10 +100,18 @@ internal object ShNormalization {
         val hasCr = bytes.any { it == '\r'.code.toByte() }
         if (!hasBom && !hasCr) return Decision(Plan.DIRECT, "无需归一化")
 
-        val prefix = bytes.copyOfRange(0, minOf(bytes.size, 1024 * 1024))
-            .toString(Charsets.ISO_8859_1)
-        if (hasOffsetSelfReference(prefix)) {
-            return Decision(Plan.DIRECT, "脚本按自身偏移读取载荷，保留原字节")
+        // 自引用只可能是 `$0` / `${0}` / `$BASH_SOURCE` 形态，窗口内没有 '$' 时无需物化 prefix：
+        // 否则每个含 CR/BOM 的脚本都要付一次最多 1MB 拷贝 + 1M 字符的 ISO-8859-1 → String 解码。
+        val window = minOf(bytes.size, 1024 * 1024)
+        var hasDollar = false
+        for (k in 0 until window) {
+            if (bytes[k] == '$'.code.toByte()) { hasDollar = true; break }
+        }
+        if (hasDollar) {
+            val prefix = bytes.copyOfRange(0, window).toString(Charsets.ISO_8859_1)
+            if (hasOffsetSelfReference(prefix)) {
+                return Decision(Plan.DIRECT, "脚本按自身偏移读取载荷，保留原字节")
+            }
         }
         if (containsMagic(bytes)) return Decision(Plan.DIRECT, "发现内嵌压缩载荷，保留字节偏移")
         return Decision(Plan.NORMALIZE, "普通文本脚本，去 BOM 与 CR")

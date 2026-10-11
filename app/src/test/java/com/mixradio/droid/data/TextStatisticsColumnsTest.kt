@@ -61,14 +61,26 @@ class TextStatisticsColumnsTest {
     }
 
     @Test
-    fun `含 CRLF：按换行切分，CR 计入 symbols`() {
-        // "ab\r\ncde" → split('\n') = ["ab\r","cde"] → 最长 3
-        val s = TextStatistics.compute("ab\r\ncde")
+    fun `含 CRLF：行宽剔除行尾 CR，CR 仍计入 symbols`() {
+        // "abcd\r\nx" → 段 ["abcd\r","x"]。行尾 CR 是换行标记（LF 的组成部分）而非可见列，
+        // 计入会让 CRLF 文件的最长行恒比实际多 1，误导「列宽对齐 / 折行位置」的判断。
+        val s = TextStatistics.compute("abcd\r\nx")
         assertEquals(7, s.chars)
         assertEquals(2, s.lines)      // \r 与 \n 共同触发一次换行
-        assertEquals(3, s.columns)    // "ab\r" 与 "cde" 均为 3
-        assertEquals(5, s.english)    // ab + cde
-        assertEquals(2, s.symbols)    // '\r' 与 '\n'
+        assertEquals(4, s.columns)    // "abcd"（CR 已剔除），"x" 为 1
+        assertEquals(5, s.english)    // abcd + x
+        assertEquals(2, s.symbols)    // '\r' 与 '\n' 仍计入符号
         assertEquals(7, s.bytes)      // 全 ASCII
+    }
+
+    @Test
+    fun `chars 按码点计数：四类之和等于总字符数`() {
+        // 含 emoji（U+1F600，UTF-16 代理对）：chars 取码点数而非码元数，
+        // 否则 "a😀b" 会出现 chars=4 而四类之和=3，与「四类之和 = 总字符数」契约冲突。
+        val s = TextStatistics.compute("a\uD83D\uDE00b")
+        assertEquals(3, s.chars)
+        assertEquals(2, s.english)    // a、b
+        assertEquals(1, s.symbols)    // emoji 归符号
+        assertEquals(s.chars, s.english + s.chinese + s.digits + s.symbols)
     }
 }

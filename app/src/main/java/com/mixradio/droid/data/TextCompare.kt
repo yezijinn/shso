@@ -28,7 +28,7 @@ import java.util.Locale
  *  4. **重复对比按行数选择**：先字节扫描统计行数，行数较少者构建 `HashSet<String>`（按行数预设容量，
  *     避免 rehash），再流式扫描较大者查重；结果用 LinkedHashSet 去重并保持出现顺序。
  *  5. **单线程 Dispatchers.IO**：无锁竞争、无线程切换；结果先入 StringBuilder，最后一次性落盘。
- *  6. **释放**：映射引用显式置 null 并 close channel，结束时建议一次 GC。
+ *  6. **释放**：映射引用显式置 null 并 close channel，不主动触发 GC。
  */
 object TextCompare {
 
@@ -182,8 +182,8 @@ object TextCompare {
         val elapsed = System.currentTimeMillis() - t0
         if (cancelled) return Result(outPath, processed, hits, elapsed, true)
         writeResult(outPath, charset, sb)
-        // 映射已 close，此处仅建议一次 GC 促使 DirectByteBuffer 关联内存尽快回收
-        System.gc()
+        // 不显式 System.gc()：它是全局 STW 提示，对比跑在 Dispatchers.IO 却会停顿整个进程
+        // （含 UI 线程）。映射已 close，DirectByteBuffer 交给常规 GC 回收即可。
         return Result(outPath, processed, hits, elapsed, false)
     }
 

@@ -338,7 +338,23 @@ object ExternalOpen {
         for (base in normalizedAllowed) {
             if (p == base || p.startsWith("$base/")) return true
         }
-        return false
+        // 可移除存储（SD 卡）：`/storage/<卷名>/…`，卷名限单段字符集。
+        // 排除 emulated / self —— 它们已有独立前缀，若在此放行会把 `/storage/emulated/01`
+        // 之类的伪造路径一并接纳（那不是 `/storage/emulated/0` 的子目录）。
+        // 归一化阶段已把任何含 `..` 的路径判否，故这里不存在穿越到 /data 的余地。
+        return isRemovableVolumePath(p)
+    }
+
+    /** 内部存储卷别名：`/storage/<这些名字>` 由前缀白名单单独约束，不走可移除卷规则。 */
+    private val INTERNAL_VOLUME_ALIASES = setOf("emulated", "self")
+
+    /** 是否为可移除卷路径：`/storage/<卷名>` 或 `/storage/<卷名>/…`，卷名须为单段合法字符。 */
+    private fun isRemovableVolumePath(p: String): Boolean {
+        val prefix = "/storage/"
+        if (!p.startsWith(prefix)) return false
+        val volume = p.substring(prefix.length).substringBefore('/')
+        if (volume.isEmpty() || volume in INTERNAL_VOLUME_ALIASES) return false
+        return volume.all { it.isLetterOrDigit() || it == '-' || it == '_' }
     }
 
     /**
