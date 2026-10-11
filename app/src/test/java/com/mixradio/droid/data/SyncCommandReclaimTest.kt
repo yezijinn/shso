@@ -166,7 +166,7 @@ class SyncCommandReclaimTest {
         val body = text.substring(start, if (end > 0) end else text.length)
         assertTrue(
             "pgid 不可用且无路径可匹配时，必须用 su 的 pid 反查进程组",
-            body.contains("forceKillProcessTree(targetProcess, targetPid)")
+            body.contains("forceKillProcessTree(targetProcess, targetPid, targetUsesRoot)")
         )
     }
 
@@ -226,6 +226,67 @@ class SyncCommandReclaimTest {
             "还原必须离开 Main（不能写在 Dispatchers.Main 的 withContext 内）",
             guard.contains("Dispatchers.IO")
         )
+    }
+
+    @Test fun `非 Root 任务必须经 setsid 自成进程组`() {
+        // 不隔离时子进程沿用本应用自身进程组：组杀会连应用一起杀掉，于是「中断/结束」只能
+        // 杀到外层 sh，内层脚本以应用 uid 继续跑（`sleep 600` 无尽的典型形态）。
+        val text = source.readText()
+        assertTrue(
+            "非 Root 分支必须经 setsid 起进程",
+            text.contains("ProcessBuilder(setsid.absolutePath, \"sh\", \"-c\", execCmd)")
+        )
+        assertTrue(
+            "setsid 不可用（极老机型）时必须退回原路径而不是拒绝执行",
+            text.contains("setsid.canExecute()")
+        )
+    }
+
+    @Test fun `非 Root 任务的进程组由其自身 pid 直接确定`() {
+        // setsid 后 sh 自任组长，pgid == 其 pid，无需等落盘回填；若仍去等文件回填，
+        // 非 Root 从不写该文件，回填只会把刚设好的 pgid 冲成 0，组回收当场失效。
+        val text = source.readText()
+        assertTrue(
+            "隔离成功时必须直接用直接子进程 pid 充当 pgid",
+            text.contains("if (isolatedGroup) runPgid = childPid")
+        )
+        val backfill = text.substringAfter("仅 Root 需要回填")
+        assertTrue(
+            "回填必须限定在 Root 路径（非 Root 由 setsid 同步确定）",
+            backfill.contains("if (useRoot) {") && backfill.indexOf("awaitRunPgid()") > backfill.indexOf("if (useRoot) {")
+        )
+    }
+
+    @Test fun `非 Root 任务的 kill 不得经 su`() {
+        // 同 uid 进程本就允许互发信号；走 su 只会平白弹授权框，弹框无人回应时 kill 停在
+        // 超时窗口里，用户看到的是「点了结束进程但脚本还在跑」。
+        val text = source.readText()
+        assertTrue("runCommandSync 必须能按身份选择 su 或 sh", text.contains("asRoot: Boolean = true"))
+        val kill = text.substringAfter("private fun runKillSync(").substringBefore("fun sendInterrupt()")
+        assertTrue("kill 命令一律不得在超时时回跳整组回收", kill.contains("reclaimOnTimeout = false"))
+        val end = text.indexOf("private fun forceCloseProcess(")
+        val kills = text.substring(text.indexOf("fun killCurrentProcess()"), if (end > 0) end else text.length)
+        assertTrue(
+            "结束进程必须按捕获到的执行身份发信号",
+            kills.contains("killProcessGroup(9, targetPgid, targetUsesRoot)") &&
+                kills.contains("runKillSync(\"kill -9 \$targetPid 2>/dev/null\", targetUsesRoot)")
+        )
+        val interrupt = text.substringAfter("fun sendInterrupt()").substringBefore("fun restartTerminal()")
+        assertTrue(
+            "中断同样必须按执行身份发信号",
+            interrupt.contains("killProcessGroup(2, targetPgid, targetUsesRoot)") &&
+                interrupt.contains("runKillSync(\"kill -2 \$targetPid 2>/dev/null\", targetUsesRoot)")
+        )
+    }
+
+    @Test fun `终端命令必须复位执行身份`() {
+        // 终端恒经 su 执行；若沿用上一次「非 Root 执行」遗留的 false，
+        // 中断/结束会走应用自身 uid 的 kill 通道，杀不到 root 名下的进程组。
+        val text = source.readText()
+        val start = text.indexOf("private suspend fun runTerminalCommand(")
+        val end = text.indexOf("fun writeBytesAsRoot(", start)
+        val body = text.substring(start, if (end > 0) end else text.length)
+        assertTrue("终端起进程前必须把执行身份复位为 root", body.contains("execUsesRoot = true"))
     }
 }
 

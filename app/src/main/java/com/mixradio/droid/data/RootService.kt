@@ -193,6 +193,15 @@ object RootService {
     private var runPgid: Int = 0
 
     /**
+     * 当前任务的执行身份：true = 经 `su` 以 root 运行，false = 以应用自身 uid 运行。
+     *
+     * 收尾与回收通道依赖它选择 kill 通道 —— 非 Root 任务的 kill 若仍经 `su`，会平白弹出
+     * 授权框，且对同 uid 进程而言 `su` 毫无必要（应用本来就有权杀自己的子进程）。
+     */
+    @Volatile
+    private var execUsesRoot: Boolean = true
+
+    /**
      * 记录进程组 id 的文件。必须放应用私有目录（`files/`）；
      * `/data/adb/shso` 为 0777，任何应用都能伪造 pgid 使本应用以 root 杀任意进程组。
      */
@@ -399,10 +408,16 @@ object RootService {
      *   forceKillProcessTree …」互递归无上限：su 停在授权弹窗不回应时，每 5s 就多挂一个 su
      *   进程与一条读线程，链长仅由用户何时拒绝授权决定。
      */
-    fun runCommandSync(cmd: String, timeoutMs: Long = 120_000L, reclaimOnTimeout: Boolean = true): Pair<Int, String> {
+    fun runCommandSync(
+        cmd: String,
+        timeoutMs: Long = 120_000L,
+        reclaimOnTimeout: Boolean = true,
+        asRoot: Boolean = true
+    ): Pair<Int, String> {
         return try {
             // 先记下 su 的 pid：超时时用它反查进程组并整组回收。
-            val process = ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
+            val process = (if (asRoot) ProcessBuilder("su", "-c", cmd) else ProcessBuilder("sh", "-c", cmd))
+                .redirectErrorStream(true).start()
             val suPid = pidOfProcess(process)
             // 立即关闭子进程 stdin：本函数只读输出、从不喂输入。若不关闭，任何会读 stdin 的命令
             // （cat / read / 等 EOF 的交互式命令）都会一直阻塞到 timeoutMs（默认 120s）才返回。
@@ -428,7 +443,7 @@ object RootService {
 
             val finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
             if (!finished) {
-                if (reclaimOnTimeout) {
+                if (reclaimOnTimeout && asRoot) {
                     // 先整组回收，再 destroy su 本身：顺序反了的话组组长已消失，
                     // 后续按 pgid 校验会 fail-closed 而漏掉子孙进程。
                     forceKillProcessTree(process, suPid)
@@ -469,7 +484,7 @@ object RootService {
      * 本函数内部发起的两条 kill 命令都传 `reclaimOnTimeout = false`：它们自身超时时
      * 只销毁 su，不再回跳本函数，斩断互递归（见 [runCommandSync] 参数说明）。
      */
-    private fun forceKillProcessTree(process: Process, suPid: Int) {
+    private fun forceKillProcessTree(process: Process, suPid: Int, asRoot: Boolean = true) {
         if (suPid > 1) {
             val pgrp = runCatching {
                 val stat = File("/proc/$suPid/stat").readText()
@@ -479,14 +494,14 @@ object RootService {
             }.getOrNull() ?: 0
             if (pgrp > 1) {
                 buildProcessGroupKillCommand(9, pgrp, android.os.Process.myPid())?.let {
-                    runCommandSync(it, timeoutMs = 5_000L, reclaimOnTimeout = false)
+                    runCommandSync(it, timeoutMs = 5_000L, reclaimOnTimeout = false, asRoot = asRoot)
                 }
             }
         }
         runCatching { process.destroyForcibly() }
         // 再补一次直接子进程：某些 su 实现不新建会话，此时组杀会被自身进程组校验挡下。
         if (suPid > 1) {
-            RootService.runCommandSync("kill -9 $suPid 2>/dev/null", timeoutMs = 5_000L, reclaimOnTimeout = false)
+            runCommandSync("kill -9 $suPid 2>/dev/null", timeoutMs = 5_000L, reclaimOnTimeout = false, asRoot = asRoot)
         }
     }
 
@@ -565,6 +580,9 @@ object RootService {
         // 先作废上一轮的 pgid 记录再启动，确保随后读到的一定来自本次命令（与 executeFile 同法）。
         runCatching { runPgidFile?.delete() }
         runPgid = 0
+        // 终端命令恒经 su 执行，身份必须一并复位：否则上一次「非 Root 执行」遗留的 false
+        // 会让本命令的「中断/结束」走应用自身 uid 的 kill 通道，杀不到 root 名下的进程组。
+        execUsesRoot = true
         // 清残留必须发生在**启动进程之前**：进程一旦起来就可能立刻吐输出，
         // 之后再 clear 会把这段输出丢掉。
         HyperCore.clearBatchQueue()
@@ -810,6 +828,9 @@ object RootService {
         runPgid = 0
         activeProcess = null
         processPid = 0
+        // 执行身份与上面几项同属「上一轮执行实体」：新任务的身份在起进程时才确定，
+        // 若窗口内点到「结束进程」，用旧身份选 kill 通道会把非 Root 任务的 kill 送上 su。
+        execUsesRoot = true
         // processWriter 同属上一轮执行实体：作废清单漏掉它时，旧任务 finally 因 isCurrentJob=false
         // 会跳过全局清理，但它对**局部引用** writer?.close() 是无条件执行的 —— 全局 processWriter
         // 随即指向一个已关闭的 writer。归一化窗口内（root 兜底最长约 125s）用户输入会因
@@ -901,8 +922,8 @@ object RootService {
                 runCatching { runPgidFile?.delete() }
                 runPgid = 0
                 // 把本次执行的「进程组组长 pid」落盘：su 会新建会话，`$$` 即组长 pid
-                //（组长同时是进程组组长与会话组长）。仅 root 路径记录 —— 非 root 走 ProcessBuilder("sh")，
-                // 子进程沿用应用自身进程组，记录后会诱导误杀本应用所在的组。
+                //（组长同时是进程组组长与会话组长）。仅 root 路径记录 —— 非 root 侧由 setsid
+                // 同步保证「组长就是直接子进程」，直接用其 pid，无需也无法经文件回填。
                 val pgidRecorder = if (useRoot) {
                     runPgidFile?.let { "echo " + "\$\$" + " > " + escapeShellArg(it.absolutePath) + "; " } ?: ""
                 } else ""
@@ -1018,10 +1039,27 @@ object RootService {
                     }
                 }
 
-                if (useRoot) {
-                    process = ProcessBuilder("su", "-c", execCmd).redirectErrorStream(true).start()
+                // 非 Root 走 setsid：本应用进程不是进程组组长，故 toybox setsid 的 setsid(2)
+                // 必然成功、不 fork，退出码原样透传（真机实测 `setsid sh -c 'exit 7'` 得 7）。
+                // 若不隔离，子进程沿用**本应用自身进程组**：组杀会连应用一起杀掉，
+                // 于是「中断/结束」只能杀到外层 sh，内层脚本以应用 uid 继续跑（`sleep 600` 无尽的
+                // 典型形态），而应用本来就有权杀同 uid 的进程组，隔离后这条回收通道才成立。
+                var isolatedGroup = false
+                process = if (useRoot) {
+                    ProcessBuilder("su", "-c", execCmd).redirectErrorStream(true).start()
                 } else {
-                    process = ProcessBuilder("sh", "-c", execCmd).redirectErrorStream(true).start()
+                    val setsid = File("/system/bin/setsid")
+                    if (setsid.canExecute()) {
+                        try {
+                            ProcessBuilder(setsid.absolutePath, "sh", "-c", execCmd)
+                                .redirectErrorStream(true).start()
+                                .also { isolatedGroup = true }
+                        } catch (_: Exception) {
+                            ProcessBuilder("sh", "-c", execCmd).redirectErrorStream(true).start()
+                        }
+                    } else {
+                        ProcessBuilder("sh", "-c", execCmd).redirectErrorStream(true).start()
+                    }
                 }
                 activeProcess = process
                 writer = OutputStreamWriter(process.outputStream, Charsets.UTF_8)
@@ -1032,6 +1070,9 @@ object RootService {
                 val childPid = pidOfProcess(process)
                 withContext(Dispatchers.Main) {
                     processPid = childPid
+                    execUsesRoot = useRoot
+                    // 非 Root 且已隔离：sh 自任会话/进程组组长，pgid == 其 pid，无需等落盘回填。
+                    if (isolatedGroup) runPgid = childPid
                 }
 
                 // 异步取回本次执行的进程组 id（不阻塞输出读取）。任务结束后刻意保留，
@@ -1041,9 +1082,14 @@ object RootService {
                 // 下一轮 `executionJob?.cancel()` 收不到它。轮询最长 1.5s，期间若新任务已起并
                 // 写入了自己的 pgid，此处的迟到结果（尤其是超时归零）会把新任务的进程组冲掉，
                 // 它的「中断/结束进程」退化成只杀 su，真正的 `sh -c …` 以 root 继续跑。
-                scope.launch {
-                    val pgid = awaitRunPgid()
-                    if (executionJob === myJob) runPgid = pgid
+                //
+                // 仅 Root 需要回填（非 Root 由 setsid 同步确定，且从不写 pgid 文件，
+                // 回填只会把刚设好的值冲成 0）。
+                if (useRoot) {
+                    scope.launch {
+                        val pgid = awaitRunPgid()
+                        if (executionJob === myJob) runPgid = pgid
+                    }
                 }
 
                 // 脚本是否产出过内容：静默脚本（只做 rm/touch、无任何 echo）在终端里
@@ -1298,6 +1344,7 @@ object RootService {
         val targetPath = currentTaskPath
         val targetFlushLoop = activeFlushLoop
         val targetSlot = terminalSlotOwner.get()
+        val targetUsesRoot = execUsesRoot
         // 只认「存活实体」，不认 stale pgid（与 restartTerminal 同口径）：
         // runPgid 在任务收尾时被刻意保留（供回收被中断后逃逸到 init 下的子孙），但那时组长已被
         // 内核回收，该 pgid 可能已被复用给无关进程组 —— 组杀校验只确认「是组长、非本应用组」，
@@ -1311,30 +1358,30 @@ object RootService {
                 // 先杀**整个进程组**：`su -c` 把命令放进新会话且组长被重挂到 init，
                 // 中断后逃逸的子孙进程（`sh -c …`、真正的脚本进程）只有这样才能回收。
                 if (targetPgid > 1) {
-                    killProcessGroup(9, targetPgid)
+                    killProcessGroup(9, targetPgid, targetUsesRoot)
                     if (targetPid > 0) {
-                        runCommandSync("kill -9 $targetPid 2>/dev/null")
+                        runKillSync("kill -9 $targetPid 2>/dev/null", targetUsesRoot)
                     }
                     targetProcess?.destroyForcibly()
                 } else {
-                    // 兜底：进程组不可用时（pgid 未落盘；或非 Root 执行——子进程沿用本应用进程组，
-                    // 整组回收会误伤自身）按**完整路径**匹配残留子孙。
+                    // 兜底：进程组不可用时（pgid 未落盘；或非 Root 且设备无 setsid，子进程沿用
+                    // 本应用进程组，整组回收会误伤自身）按**完整路径**匹配残留子孙。
                     // 不可退化为按文件名匹配：同一脚本「覆盖启动」时，新任务的命令行里含同样的文件名，
                     // `pkill -9 -f <文件名>` 会把刚启动的新任务一并杀死（表现为覆盖启动后脚本秒退）。
                     targetPath?.takeIf { it.isNotBlank() }?.let { path ->
                         // 必须转 ERE 元字符：pkill -f 把参数当扩展正则，
                         // 路径里的 `.` `(` `+` 等会被解释而误杀无关进程（且以 root 身份执行）。
-                        runCommandSync("pkill -9 -f ${escapeShellArg(escapeEreLiteral(path))} 2>/dev/null")
+                        runKillSync("pkill -9 -f ${escapeShellArg(escapeEreLiteral(path))} 2>/dev/null", targetUsesRoot)
                     }
                     if (targetProcess != null && targetPid > 1) {
                         // 终端命令的 currentTaskPath 恒为 null（pkill 兜底整段跳过），若 pgid 又尚未回填
                         // ——命令刚发出，回填窗口最长 1.5s——就只剩「杀 su」一条路，`sh -c …` 会留成
                         // init 名下的 root 孤儿。这里用 su 的 pid 反查进程组整组回收（与超时路径同源）。
                         // 三重校验 fail-closed：su 未新建会话时组杀被挡下，退化为只杀直接子进程。
-                        forceKillProcessTree(targetProcess, targetPid)
+                        forceKillProcessTree(targetProcess, targetPid, targetUsesRoot)
                     } else {
                         if (targetPid > 0) {
-                            runCommandSync("kill -9 $targetPid 2>/dev/null")
+                            runKillSync("kill -9 $targetPid 2>/dev/null", targetUsesRoot)
                         }
                         targetProcess?.destroyForcibly()
                     }
@@ -1424,9 +1471,21 @@ object RootService {
      *
      * 安全校验见文件末尾的顶层纯函数 [buildProcessGroupKillCommand]（返回 null 即放弃）。
      */
-    private fun killProcessGroup(signal: Int, pgid: Int) {
+    private fun killProcessGroup(signal: Int, pgid: Int, asRoot: Boolean) {
         val cmd = buildProcessGroupKillCommand(signal, pgid, android.os.Process.myPid()) ?: return
-        runCommandSync(cmd)
+        runKillSync(cmd, asRoot)
+    }
+
+    /**
+     * 按任务执行身份发送 kill 命令。
+     *
+     * Root 任务经 `su`；非 Root 任务以应用自身 uid 执行 —— 同 uid 进程本就允许互发信号，
+     * 走 `su` 只会平白弹授权框，且授权框无人回应时 kill 停在超时窗口里，用户看到的是
+     * 「点了结束进程但脚本还在跑」。一律 `reclaimOnTimeout = false`：kill 命令自身超时时
+     * 不得再触发整组回收（避免与 [forceKillProcessTree] 互相递归）。
+     */
+    private fun runKillSync(cmd: String, asRoot: Boolean) {
+        runCommandSync(cmd, timeoutMs = 5_000L, reclaimOnTimeout = false, asRoot = asRoot)
     }
 
     fun sendInterrupt() {
@@ -1436,6 +1495,7 @@ object RootService {
         val targetWriter = processWriter
         val targetPid = processPid
         val targetPgid = runPgid
+        val targetUsesRoot = execUsesRoot
         // 与 killCurrentProcess 同理：捕获**本次**的槽位令牌用于归属判定。
         val targetSlot = terminalSlotOwner.get()
         scope.launch(Dispatchers.IO) {
@@ -1458,11 +1518,11 @@ object RootService {
 
                     // 对进程组发 SIGINT：只杀直接子进程会留下 `sh -c …` 与脚本进程继续运行。
                     if (targetPgid > 1) {
-                        killProcessGroup(2, targetPgid)
+                        killProcessGroup(2, targetPgid, targetUsesRoot)
                     }
                     // 兜底：直接子进程也发一次（个别 su 实现下它就是组长）
                     if (targetPid > 0) {
-                        runCommandSync("kill -2 $targetPid 2>/dev/null")
+                        runKillSync("kill -2 $targetPid 2>/dev/null", targetUsesRoot)
                     }
 
                     // 进程未必响应 SIGINT：等待短暂窗口后仍未退出，则提示用户可用「结束进程」强制兜底，
@@ -1494,6 +1554,7 @@ object RootService {
         val targetPid = processPid
         val targetPgid = runPgid
         val targetProcess = activeProcess
+        val targetUsesRoot = execUsesRoot
         // 与 killCurrentProcess 同理：必须捕获**本次**的槽位令牌。
         // 否则收尾判据退化为「存在任意终端命令」，会误清新命令的状态与发布循环。
         val targetSlot = terminalSlotOwner.get()
@@ -1526,10 +1587,10 @@ object RootService {
                 // 与「结束进程」同源：必须先整组回收。只杀 su 本身的话，`sh -c …` 与脚本进程
                 // 会变成 init 名下的孤儿继续跑（重启后横幅已复位、UI 显示待命中，用户以为停了）。
                 if (targetPgid > 1) {
-                    killProcessGroup(9, targetPgid)
+                    killProcessGroup(9, targetPgid, targetUsesRoot)
                 }
                 if (targetPid > 0) {
-                    runCommandSync("kill -9 $targetPid 2>/dev/null")
+                    runKillSync("kill -9 $targetPid 2>/dev/null", targetUsesRoot)
                 }
                 targetProcess?.destroyForcibly()
                 forceCloseProcess(targetProcess)
@@ -1557,6 +1618,7 @@ object RootService {
                         lastExitCode = null
                         processPid = 0
                         runPgid = 0
+                        execUsesRoot = true
                     }
                 }
             }
