@@ -76,7 +76,7 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`e9b8e2ad…`）；双端 tag 与 Release 的目标提交均已对齐 A129 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`bb5e0b7b…`）；双端 tag 与 Release 的目标提交均已对齐 A129 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 
 ---
 
@@ -98,21 +98,25 @@
   主页、文件页、设置页原先写死的 `padding(bottom = 56.dp)` 改为调用；终端页底部留白改为
   `if (isImeVisible || appSettings.hideDockBar) 0.dp else 58.dp`。漏掉这一步的表现是「底栏没了、
   原位仍留一条空白带」，与需求相反。
-- [x] 冷启动提示：文件级 `@Volatile swipeHintShown` + `LaunchedEffect(appSettings.showSwipeHint)`
-  弹一次。用进程级标记而非 `remember`/`rememberSaveable` —— 按需求是「每次冷启动一次」，
-  转屏、深色模式切换等配置变更导致的 Activity 重建不应重弹。
+- [x] 冷启动提示：文件级 `@Volatile swipeHintShown` + `LaunchedEffect(Unit)` 弹一次。
+  键取 `Unit` 而非 `showSwipeHint` —— 后者的表现是在设置页拨动开关时就地弹一条，且同一进程内
+  「关掉再打开」时而弹、时而不弹（取决于本进程是否已弹过）；提示按需求只在冷启动出现。
+  用进程级标记而非 `remember`/`rememberSaveable`，转屏、深色模式切换等配置变更导致的
+  Activity 重建不重弹。
 - [x] 设置入口：`SettingsPagePartials.kt` 新增 `SettingsInterfaceGroup`（两个 `AuroraSwitchPreference`），
   挂在设置页「文件行为」组之后。
 - [x] 护栏测试：`ConsistencyCleanupRegressionTest` 新增「隐藏底栏与左右提示两个开关必须真正生效」，
-  断言两个键名与默认值、底栏门控表达式、提示文案、进程级标记、`dockBarBottomPadding` 定义与三页
+  断言两个键名与默认值、底栏门控表达式、提示文案、进程级标记、提示 effect 不得以开关为 key、
+  `dockBarBottomPadding` 定义与三页
   调用（且三页不得再写死 `56.dp`）、终端页留白表达式。两个开关都跨「存储 → Activity → 各页布局」
   三层，任一层漏接都表现为「开关点得动、界面没变化」。
 - [x] 单测 626 通过 / 0 失败 / 1 跳过；`assembleRelease` + `verifyReleasePayload` 通过（APK 2909869 字节）。
-- [x] 真机（root）：开启「隐藏底栏」后反复冷启动，`uiautomator` 层级中底栏四页签（主页 / 终端 / 文件 / 设置）
-  始终缺席、仅剩页标题；关闭后四页签回归。关闭「左右提示」后冷启动探针 60 次采样
-  `toast_hits=0`；恢复默认（隐藏底栏关、左右提示开）后同一探针 `toast_hits=37`，
-  `dumpsys window` 命中 `Toast` 窗口（`package=com.mixradio.droid`、`appop=TOAST_WINDOW`）。
-  左右滑屏切页全程可用（三连滑由主页抵设置页）。
+- [x] 真机（root）：开启「隐藏底栏」后逐页截图，主页列表、终端按钮行（中断 / 清屏 / 历史 / Enter / 发送）、
+  文件页工具条（顶部 / 底部 / 新建 / 同步 / 刷新）均抵到系统导航条上沿，原底栏位置无空白带；
+  反复冷启动后 `uiautomator` 层级中底栏四页签始终缺席，关闭后四页签回归。
+- [x] 提示两态实测：默认（开）冷启动探针 60 次采样 `toast_hits=36`；关闭后同一探针 `toast_hits=0`；
+  在设置页把开关关掉再打开，两次拨动期间 `dumpsys window` 均无 Toast 窗口（提示不再随开关就地弹）。
+- [x] 左右滑屏切页全程可用（底栏隐藏时三连滑由主页抵设置页）。
 
 ### A128. 冷启动列表被 ROOT 探测阻塞、列举无超时与构建配置残留（2026-10-12）
 
