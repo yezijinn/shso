@@ -18,9 +18,9 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A145） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 652 tests / 0 failures / 1 skipped |
+| 单元测试 | 657 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
-| release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
+| release 体积 | 2.77 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
 | 文件名通道 | `find -print0`（NUL 分隔）；元数据通道**批量**一次调用取（`find -exec stat -L -c '%n\|%A\|%s\|%Y' {} +`，`%n` 自带名称、`sed` 按末三字段切开、`tr` 换 NUL）→ 进程创建 O(n)→O(1)，188 条目目录由 9.34s 降至 0.11s；按名称配对 → 列举期间增删/断链不再让大小与类型串位；标记须两侧 NUL 包裹才命中 |
 | 列表一致性 | `listIsStale` + `loadingGenRef` 双护栏：陈旧列表不可操作，重算不越代落盘 |
@@ -69,6 +69,7 @@
 | 已知环境坑 | Magisk 授权策略可用 `magisk --sqlite <文件>` 批量写入（`policies` 表 `policy=2` 为允许），避免弹窗阻塞自动化；直接内联 SQL 会被 mksh 的引号规则拆坏，必须落文件 |
 | 已知环境坑 | Compose 页面在本机 `uiautomator dump` 里 `content-desc` 与 `text` 常为空或为**上一个页面**的缓存，坐标易失效 → 复杂交互改用截图确认，或在 shell 层复刻判定链验证 |
 | 已知环境坑 | 屏幕会自行熄灭导致截图全黑；长时间真机操作前先 `svc power stayon true` + `input keyevent KEYCODE_WAKEUP` |
+| 已知环境坑 | 真机回显截图 480×1070（设备 1080×2280），`input tap` 坐标须按 ×2.25 / ×2.1308 换算；按截图目测坐标直点会点错条目（实测点到 `_精灵输入法`）。软键盘弹出后对话框上移，须重新截图定位 |
 | `/data/adb/shso` 是 0777 但 **SELinux 拦住第三方**（目录标签 `adb_data_file`）。实测：`shell` 域与 app 域（`run-as` → `u:r:runas_app`，派生自 `untrusted_app`）对该目录的 list / unlink / symlink / write **全部 Permission denied**，dmesg 有对应 `avc: denied { getattr }`；只有 `su`(magisk 域) 能写 |
 | `/data/local/tmp` 子目录默认 `root:root 755`，adb（shell 身份）**无法写入** → 需 `su -c 'chmod 777'` 后再 push |
 | 已知环境坑 | 应用进程的 environ **不含 `TMPDIR`**（`su -c` 也不补），而 `adb shell` 自带 `TMPDIR=/data/local/tmp` → 依赖 `$TMPDIR` 的脚本「adb 下正常、应用内失败」。执行环境须显式 `export TMPDIR` |
@@ -82,6 +83,45 @@
 ---
 
 ## 待办
+
+### A146. 「全选」改为范围弹窗：一切 / 文件 / 图片 / 文本（2026-10-12）
+
+需求：文件设置弹窗的「全选」原只选文件、不含文件夹；改为打开「全选范围」弹窗，提供四类范围——
+一切（含文件夹）/ 文件（不选文件夹）/ 图片 / 文本。
+
+- [x] **范围拆分（`FileListViewSettings.kt`）**：新增纯函数 `buildFileSelectScopes(list)` 按固定顺序
+      拆出四个 `FileSelectScope(label, unit, paths)`——一切 / 文件（不选文件夹，跳过目录）/
+      图片（`isViewableImage`）/ 文本（`isEditableText`）；弹窗 `FileSelectScopeDialog` 逐行渲染
+      名称 + 「N 项」，数量为零的行禁用，已整体选中的行以强调色 + 半粗显示。入口
+      `ActionCell("全选", onSelectRequest)` 取代原「全选文件 / 取消全选」两态标签。
+- [x] **接入与选择语义（`FilePage.kt`）**：设置弹窗关闭后再开范围弹窗（不叠两层）；
+      范围清单按**当前展示列表**（含搜索过滤）拆分、只在弹窗打开时算（`if (showSelectScopeDialog)`
+      内 `remember(displayFileList)`，性能护栏断言位置）。点击语义为**并入**：不替换既有选择，
+      图片 + 文本可叠成并集；对已整体选中的范围再点一次只 `removeAll` 该范围，
+      选择退空即退出多选模式。判定取点击时刻实时值（范围行着色是组合期结果，
+      其间列表可能已刷新并裁剪过选中集）。
+- [x] **文件夹纳入选择**：多选模式下单击任意条目（含文件夹）切换选中（原实现多选下点文件夹
+      无任何反应）；行点击改写**本列** `pane.selectedPaths`——原先读页面级委托（指向聚焦列），
+      在非聚焦列点行会把该列路径加进另一列的选中集，界面不变色而批量名单多出别列条目；
+      长按任意条目在多选下弹批量菜单。批量「原地拷贝」按目录集合 partition 出文件夹、跳过并
+      在提示里写明跳过数（单文件入口本就不提供文件夹拷贝，toybox `cp` 不递归目录）；
+      批量重命名按目录集合判定，目录不加扩展名后缀（`File.extension` 对 `my.folder` 会取到 `folder`）。
+- [x] **测试护栏**：`FileListViewSettingsTest` 新增 3 条纯逻辑（固定顺序拆分、空列表各范围为空、
+      仅目录时文件类范围为空的 name 带 `.txt` 的目录与 Dockerfile 归类）；`DualPaneStateRegressionTest`
+      更新选中集断言并新增「多选切换写本列选中集且文件夹可选中」「全选范围入口连通四类范围」；
+      `PerfAndNestingRegressionTest` 的线性扫描断言与「范围清单只在弹窗打开时计算」改写。
+      全绿：657 tests / 0 failures / 1 skipped。
+- [x] **构建**：`assembleRelease` + `verifyReleasePayload` 通过；产物 2908305 字节 /
+      sha256 `53D6B60AC4D33F650051EC435B590BCEA3E864E23CD015A589BD31445F0158A5`。
+- [x] **真机（root，Android 10 / 1080×2280）**：Download（183 文件 + 5 文件夹）→ 设置 → 全选，
+      范围弹窗四项 188 / 183 / 16 / 155；文本 →「已全选 155 个文本文件」且仅文本行着色；
+      图片 →「已全选 16 张图片」文本仍选中（并集）；一切 →「已全选 188 项（含文件夹）」，
+      文件夹行像素 (24,53,73)→(20,74,98)；再点一切 → 整批取消；文件范围 →「已全选 183 个文件
+      （不含文件夹）」，文件夹行回 (24,53,73)、文件行不动。多选下点文件夹：路径栏不变、
+      行像素 (24,53,73)→(20,74,98)（选中而非进入）。临时目录 `shso_vtest`（`sub_a` + 2 文件）：
+      原地拷贝 →「已拷贝 4 个文件，跳过 1 个文件夹」（重选一次后 4 文件全拷、目录未复制）；
+      批量重命名 →「已批量重命名 9 项」，`renamed_0` 为目录（无扩展名）、`renamed_1..4.txt`、
+      `renamed_5..8.jpg`；测试目录已删除，crash buffer 0 条。
 
 ### A145. 选中反馈失效的真实根因：remember 以快照列表实例为键（2026-10-12）
 

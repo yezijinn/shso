@@ -103,11 +103,14 @@ import com.mixradio.droid.ui.components.BuiltInFilePicker
 import com.mixradio.droid.ui.components.ExecuteConfirmDialog
 import com.mixradio.droid.ui.components.FileListSettingsDialog
 import com.mixradio.droid.ui.components.FilePermissionDialog
+import com.mixradio.droid.ui.components.FileSelectScopeDialog
+import com.mixradio.droid.ui.components.FileSelectScopeOption
 import com.mixradio.droid.ui.components.FileShortcutButton
 import com.mixradio.droid.ui.components.ImageViewerDialog
 import com.mixradio.droid.ui.components.InstallConfirmDialog
 import com.mixradio.droid.ui.components.TextEditorDialog
 import com.mixradio.droid.ui.components.applyFileViewSettings
+import com.mixradio.droid.ui.components.buildFileSelectScopes
 import com.mixradio.droid.ui.components.dockBarBottomPadding
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraTokens
@@ -322,6 +325,8 @@ fun FilePage(
     var previewFontItem by remember { mutableStateOf<FileItem?>(null) }
 
     var showFileSettingsDialog by remember { mutableStateOf(false) }
+    // 「全选范围」弹窗：由文件列表设置里的「全选」打开（一切 / 文件 / 图片 / 文本）。
+    var showSelectScopeDialog by remember { mutableStateOf(false) }
     var showBookmarksDialog by remember { mutableStateOf(false) }
 
     // 自动解压：密码输入弹窗状态
@@ -337,19 +342,14 @@ fun FilePage(
 
     // 选中集合的 HashSet 视图：selectedPaths 是 SnapshotStateList，
     // contains / containsAll 都是**线性扫描**。每个可见行都要判一次 isSelected，
-    // 全选判定还要 containsAll(N)，选中 500 项 + 15 个可见行 = 单次重组约 7500 次字符串比较。
+    // 范围判定还要 containsAll(N)，选中 500 项 + 15 个可见行 = 单次重组约 7500 次字符串比较。
     // 必须用 derivedStateOf 缓存：remember 以列表**实例**为键，SnapshotStateList 内容变化
-    // 不换实例，缓存首帧的空集会永远停在空集上 —— 「已全选」判定恒为 false，
-    // 全选入口永远显示「全选文件」，第二次点击也走不到「取消全选」分支。
+    // 不换实例，缓存首帧的空集会永远停在空集上 —— 范围弹窗里「该范围已整体选中」判定
+    // 恒为 false，已选中的范围行不着色，再点一次也走不到整批退出的分支。
     val selectedPathSet by remember(selectedPaths) {
         derivedStateOf { selectedPaths.toHashSet() }
     }
 
-    // 当前目录下的全部文件路径（不含文件夹），供全选/取消全选共用。
-    // 用 mapNotNull 一趟完成，替代 filter{}.map{} 两趟。
-    val allFilePaths = remember(displayFileList) {
-        displayFileList.mapNotNull { if (it.isDirectory) null else it.path }
-    }
     var showModeDialog by remember { mutableStateOf(false) }
     var showBatchDialog by remember { mutableStateOf(false) }
     var showBatchRenameDialog by remember { mutableStateOf(false) }
@@ -1004,8 +1004,8 @@ fun FilePage(
         // 且批量删除不可撤销 —— 正是注释想修的场景。
         // 故裁剪并入本 effect 末尾，基于**刚算出的 computed** 判定。
         //
-        // 另一侧：「全选文件」取的是筛选后的子集，清掉筛选词后按钮文案又变回「全选」，
-        // 再点一次不是取消而是把全量并入选择集，口径随筛选词漂移。
+        // 另一侧：范围清单按当前展示列表（含筛选词）拆出，清掉筛选词后同一范围会变大，
+        // 再点一次不是整批退出而是把新增的项并入选择集，口径随筛选词漂移。
         // 这里在筛选词非空时把选中集裁剪到可见范围，并如实告知被裁掉的数量 ——
         // 「静默删掉用户的选择」也比「静默删掉用户的文件」可接受，但两者都不该静默。
         if (query.isNotEmpty()) {
@@ -1177,37 +1177,36 @@ fun FilePage(
                                                             enabled = !pane.listIsStale,
                                                             onClick = {
                                                                 if (isHighlighted) pane.highlightPath = null
-                                                                if (item.isDirectory) {
-                                                                    // 文件夹：非多选模式单击进入；多选模式文件夹不参与选择
-                                                                    if (!pane.multiSelectMode) navigateTo(item.path)
+                                                                if (pane.multiSelectMode) {
+                                                                    // 多选模式：单击任意项（含文件夹）切换选中。
+                                                                    // 必须写**本列**的选中集：页面级 selectedPaths 指向聚焦列，
+                                                                    // 在非聚焦列点行会把项加进另一列的选中集，
+                                                                    // 本列行既不变色也选不中。
+                                                                    if (pane.selectedPaths.contains(item.path)) pane.selectedPaths.remove(item.path)
+                                                                    else pane.selectedPaths.add(item.path)
+                                                                } else if (item.isDirectory) {
+                                                                    // 非多选：文件夹单击进入
+                                                                    navigateTo(item.path)
                                                                 } else {
-                                                                    if (pane.multiSelectMode) {
-                                                                        // 多选模式：单击文件 = 切换选中状态
-                                                                        if (selectedPaths.contains(item.path)) selectedPaths.remove(item.path)
-                                                                        else selectedPaths.add(item.path)
-                                                                    } else {
-                                                                        // 非多选：单击文件弹动作菜单
-                                                                        selectedItem = item
-                                                                        showActionDialog = true
-                                                                    }
+                                                                    // 非多选：单击文件弹动作菜单
+                                                                    selectedItem = item
+                                                                    showActionDialog = true
                                                                 }
                                                             },
                                                             onLongClick = {
                                                                 if (isHighlighted) pane.highlightPath = null
-                                                                if (item.isDirectory) {
-                                                                    // 文件夹长按：始终弹动作菜单
+                                                                if (pane.multiSelectMode) {
+                                                                    // 多选模式：长按任意项弹批量操作菜单
+                                                                    showBatchDialog = true
+                                                                } else if (item.isDirectory) {
+                                                                    // 非多选：文件夹长按弹动作菜单
                                                                     selectedItem = item
                                                                     showActionDialog = true
                                                                 } else {
+                                                                    // 非多选：文件长按弹 进入/退出多选模式
                                                                     selectedItem = item
-                                                                    if (pane.multiSelectMode) {
-                                                                        // 多选模式：长按弹批量操作菜单
-                                                                        showBatchDialog = true
-                                                                    } else {
-                                                                        // 非多选：长按弹 进入/退出多选模式
-                                                                        showModeDialog = true
-                                                        modeTargetItem = item
-                                                                    }
+                                                                    showModeDialog = true
+                                                                    modeTargetItem = item
                                                                 }
                                                             }
                                                         )
@@ -1770,11 +1769,6 @@ fun FilePage(
     }
 
     if (showFileSettingsDialog) {
-        // 只在弹窗真正打开时才算「是否已全选」：此前它写在 if 之外，
-        // 而唯一消费者就是这个弹窗 —— 弹窗关着时纯属白算（每次重组多分配两个 N 长度列表
-        // 外加一次 N·M 的 containsAll）。
-        val allFilesSelected = allFilePaths.isNotEmpty() && multiSelectMode &&
-            selectedPathSet.containsAll(allFilePaths)
         FileListSettingsDialog(
             appSettings = appSettings,
             onDismissRequest = { showFileSettingsDialog = false },
@@ -1786,26 +1780,12 @@ fun FilePage(
                 showFileSettingsDialog = false
                 showNewFileDialog = true
             },
-            onSelectAllFilesRequest = {
-                // 全选**文件**（不含文件夹）：多选模式只针对文件，文件夹不参与选中与批量操作。
-                // 第一次点击 = 全选；已全选状态下再点击 = 取消全选（清空选择并退出多选模式）
-                // 复用 allFilePaths（已 mapNotNull 一趟算好），不再 filter{}.map{} 两趟
-                val filePaths = allFilePaths
+            onSelectRequest = {
+                // 全选先选范围（一切 / 文件 / 图片 / 文本）。关闭设置弹窗再开范围弹窗，
+                // 不叠成两层；与搜索、提取 APK 等入口的动作方式一致。
                 showFileSettingsDialog = false
-                if (filePaths.isEmpty()) {
-                    feedbackMessage = "当前目录没有可全选的文件"
-                } else if (multiSelectMode && selectedPathSet.containsAll(filePaths)) {
-                    selectedPaths.clear()
-                    multiSelectMode = false
-                    feedbackMessage = "已取消全选（${filePaths.size} 个文件）"
-                } else {
-                    selectedPaths.clear()
-                    selectedPaths.addAll(filePaths)
-                    multiSelectMode = true
-                    feedbackMessage = "已全选 ${filePaths.size} 个文件（不含文件夹）"
-                }
+                showSelectScopeDialog = true
             },
-            allFilesSelected = allFilesSelected,
             onSearchRequest = {
                 // 搜索入口从文件页顶部移入此处：打开名称过滤栏（仅过滤当前目录）。
                 // 关闭弹窗再展开，避免弹窗遮挡搜索栏；保留当前 nameQuery 以便续筛。
@@ -1816,6 +1796,44 @@ fun FilePage(
                 showFileSettingsDialog = false
                 showExtractApkDialog = true
             }
+        )
+    }
+
+    if (showSelectScopeDialog) {
+        // 范围清单只在弹窗打开时算：弹窗关着时白扫一遍当前目录列表。
+        // 基准是**当前展示列表**（含搜索过滤），与选中集裁剪口径一致。
+        val scopes = remember(displayFileList) { buildFileSelectScopes(displayFileList) }
+        FileSelectScopeDialog(
+            options = scopes.map { scope ->
+                FileSelectScopeOption(
+                    label = scope.label,
+                    count = scope.paths.size,
+                    selected = multiSelectMode && scope.paths.isNotEmpty() &&
+                        selectedPathSet.containsAll(scope.paths),
+                    onClick = {
+                        showSelectScopeDialog = false
+                        val paths = scope.paths
+                        // 判定必须取点击时刻的实时值：范围行的着色是组合期结果，
+                        // 二者之间列表可能已刷新（后台重载会顺带裁剪选中集）。
+                        val fullySelected = multiSelectMode && paths.isNotEmpty() &&
+                            selectedPathSet.containsAll(paths)
+                        if (fullySelected) {
+                            // 只退掉本范围：其余范围的选择保留，逐个范围可独立增减。
+                            selectedPaths.removeAll(paths.toHashSet())
+                            if (selectedPaths.isEmpty()) multiSelectMode = false
+                            feedbackMessage = "已取消选择 ${paths.size} 项"
+                        } else {
+                            // 并入而非替换：图片 + 文本两次点选即得两类并集，
+                            // 手动点选过的项也不会被范围选择静默顶掉。
+                            val existing = selectedPathSet
+                            paths.forEach { if (it !in existing) selectedPaths.add(it) }
+                            multiSelectMode = true
+                            feedbackMessage = "已全选 ${paths.size} ${scope.unit}"
+                        }
+                    }
+                )
+            },
+            onDismissRequest = { showSelectScopeDialog = false }
         )
     }
 
@@ -2644,13 +2662,22 @@ fun FilePage(
                 ActionTextRow("原地拷贝", AuroraTokens.Text) {
                     showBatchDialog = false
                     scope.launch {
+                        // 文件夹不在原地拷贝范围内（单文件动作菜单同样不为文件夹提供该入口，
+                        // 递归拷贝的语义与体量都没有入口承载）。「一切」范围会把文件夹选进来，
+                        // 这里跳过并如实告知——不能让它们混在「拷贝失败」里计数。
+                        val dirPaths = displayFileList.asSequence()
+                            .filter { it.isDirectory }.map { it.path }.toHashSet()
+                        val (folders, files) = selectedPaths.toList().partition { it in dirPaths }
                         var ok = 0
                         var fail = 0
-                        selectedPaths.toList().forEach { p ->
+                        files.forEach { p ->
                             val (s) = RootFileManager.copyFile(p)
                             if (s) ok++ else fail++
                         }
-                        feedbackMessage = if (fail == 0) "已拷贝 $ok 个文件" else "拷贝完成：$ok 成功 / $fail 失败"
+                        feedbackMessage = buildString {
+                            append(if (fail == 0) "已拷贝 $ok 个文件" else "拷贝完成：$ok 成功 / $fail 失败")
+                            if (folders.isNotEmpty()) append("，跳过 ${folders.size} 个文件夹")
+                        }
                         selectedPaths.clear()
                         multiSelectMode = false
                         refresh()
@@ -2684,7 +2711,7 @@ fun FilePage(
         AuroraWindowDialog(
             show = true,
             title = "批量重命名",
-            summary = "输入统一名称，将依次命名为 名称_0、名称_1…（保留原扩展名）",
+            summary = "输入统一名称，将依次命名为 名称_0、名称_1…（文件保留原扩展名）",
             onDismissRequest = { showBatchRenameDialog = false }
         ) {
             Column(
@@ -2727,21 +2754,28 @@ fun FilePage(
                             // 无论成功与否都提示「已批量重命名 N 个文件」——
                             // 失败项被静默吞掉，用户以为改完了。
                             val targets = selectedPaths.toList()
+                            // 目录名没有「扩展名」可言：按 File.extension 处理会把 my.folder
+                            // 这类含点的目录名截成 my_0.folder。目录判定取自当前展示列表
+                            // （选中集只会由本列表产生，切目录时已清空）。
+                            val dirPaths = displayFileList.asSequence()
+                                .filter { it.isDirectory }.map { it.path }.toHashSet()
                             scope.launch {
                                 var ok = 0
                                 val failures = ArrayList<String>()
                                 targets.forEachIndexed { i, p ->
                                     val file = File(p)
-                                    val ext = file.extension
-                                    val suffix = if (ext.isNotEmpty()) ".$ext" else ""
+                                    val suffix = if (p in dirPaths) "" else {
+                                        val ext = file.extension
+                                        if (ext.isNotEmpty()) ".$ext" else ""
+                                    }
                                     val (success, reason) =
                                         RootFileManager.rename(p, "${base}_$i$suffix")
                                     if (success) ok++ else failures += "${file.name}（$reason）"
                                 }
                                 feedbackMessage = if (failures.isEmpty()) {
-                                    "已批量重命名 $ok 个文件"
+                                    "已批量重命名 $ok 项"
                                 } else {
-                                    "已重命名 $ok 个，失败 ${failures.size} 个：${failures.take(2).joinToString("；")}"
+                                    "已重命名 $ok 项，失败 ${failures.size} 项：${failures.take(2).joinToString("；")}"
                                 }
                                 selectedPaths.clear()
                                 multiSelectMode = false

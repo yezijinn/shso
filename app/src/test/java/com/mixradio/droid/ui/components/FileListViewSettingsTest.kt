@@ -107,4 +107,53 @@ class FileListViewSettingsTest {
             java.util.Locale.setDefault(original)
         }
     }
+
+    @Test
+    fun `select scopes split the listing by type in fixed order`() {
+        val list = listOf(
+            dir("photos"),
+            file("a.png"),
+            file("b.txt"),
+            file("c.apk"),
+            file("Dockerfile"),
+            // 名字带 .txt 的目录仍只属「一切」：范围依据 isDirectory 判定，与名字无关
+            dir("notes.txt")
+        )
+        val scopes = buildFileSelectScopes(list)
+
+        assertEquals(
+            listOf("一切", "文件（不选文件夹）", "图片", "文本"),
+            scopes.map { it.label }
+        )
+        assertEquals(
+            listOf(
+                "/root/photos", "/root/a.png", "/root/b.txt",
+                "/root/c.apk", "/root/Dockerfile", "/root/notes.txt"
+            ),
+            scopes[0].paths
+        )
+        assertEquals(
+            listOf("/root/a.png", "/root/b.txt", "/root/c.apk", "/root/Dockerfile"),
+            scopes[1].paths
+        )
+        assertEquals(listOf("/root/a.png"), scopes[2].paths)
+        // 无扩展名文件按文本处理，与 FileItem.isEditableText 同口径
+        assertEquals(listOf("/root/b.txt", "/root/Dockerfile"), scopes[3].paths)
+    }
+
+    @Test
+    fun `select scopes stay empty for an empty listing`() {
+        val scopes = buildFileSelectScopes(emptyList())
+        assertEquals(4, scopes.size)
+        scopes.forEach { assertEquals(emptyList<String>(), it.paths) }
+    }
+
+    @Test
+    fun `folder-only listing leaves file scopes empty`() {
+        val scopes = buildFileSelectScopes(listOf(dir("dcim"), dir("download")))
+        assertEquals(listOf("/root/dcim", "/root/download"), scopes[0].paths)
+        assertEquals(emptyList<String>(), scopes[1].paths)
+        assertEquals(emptyList<String>(), scopes[2].paths)
+        assertEquals(emptyList<String>(), scopes[3].paths)
+    }
 }

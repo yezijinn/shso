@@ -122,9 +122,46 @@ class DualPaneStateRegressionTest {
         )
         assertTrue(
             "页面级 selectedPathSet 同因：remember(selectedPaths) 停在首帧空集，" +
-                "「已全选」判定恒为 false，全选入口永远显示「全选文件」、" +
-                "第二次点击也走不到「取消全选」分支",
+                "「该范围已整体选中」判定恒为 false，范围弹窗里已选中的范围行不着色、" +
+                "第二次点击也走不到整批退出的分支",
             page.contains("derivedStateOf { selectedPaths.toHashSet() }")
+        )
+    }
+
+    @Test fun `多选切换写本列选中集且文件夹可选中`() {
+        val body = paneBody()
+        assertTrue(
+            "行点击切换选中必须写 pane.selectedPaths：页面级 selectedPaths 指向聚焦列，" +
+                "在非聚焦列点行会把项加进另一列的选中集，本列既不变色也选不中",
+            body.contains("pane.selectedPaths.remove(item.path)") &&
+                body.contains("pane.selectedPaths.add(item.path)")
+        )
+        assertTrue(
+            "多选模式下文件夹必须可切换选中：「一切」范围会把文件夹选进来，" +
+                "用户得能逐项退掉；不得保留「多选模式点文件夹什么都不做」的分支",
+            !body.contains("if (!pane.multiSelectMode) navigateTo(item.path)")
+        )
+    }
+
+    @Test fun `全选范围入口连通四类范围`() {
+        val page = page()
+        assertTrue(
+            "范围清单应由 buildFileSelectScopes 从展示列表拆出（基准必须与旧全选口径一致，即筛选后的展示列表）",
+            page.contains("buildFileSelectScopes(displayFileList)")
+        )
+        assertTrue("范围弹窗必须挂在文件页上", page.contains("FileSelectScopeDialog("))
+        assertTrue(
+            "设置弹窗的入口应改为打开范围弹窗，而不是直接动选中集",
+            page.contains("onSelectRequest = {") && page.contains("showSelectScopeDialog = true")
+        )
+        assertTrue(
+            "旧的无范围全选入口（allFilePaths / onSelectAllFilesRequest）应已移除",
+            !page.contains("allFilePaths") && !page.contains("onSelectAllFilesRequest")
+        )
+        val settings = File("src/main/java/com/mixradio/droid/ui/components/FileListViewSettings.kt").readText()
+        assertTrue(
+            "设置弹窗里的入口文案应为「全选」，两处入口都要指向范围弹窗",
+            settings.contains("ActionCell(\"全选\", onSelectRequest")
         )
     }
 

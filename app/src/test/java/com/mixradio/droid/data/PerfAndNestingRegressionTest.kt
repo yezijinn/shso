@@ -105,18 +105,22 @@ class PerfAndNestingRegressionTest {
             filePage.contains("item.path in paneSelectedPaths")
         )
         assertTrue(
-            "全选判定的 containsAll 也必须走 HashSet",
-            filePage.contains("selectedPathSet.containsAll(allFilePaths)")
+            "范围选中的 containsAll 也必须走 HashSet",
+            filePage.contains("selectedPathSet.containsAll(")
         )
     }
 
-    @Test fun `全选判定只在弹窗打开时计算`() {
-        val at = filePage.indexOf("val allFilesSelected")
-        assertTrue("应能找到 allFilesSelected", at > 0)
-        val dialogAt = filePage.indexOf("if (showFileSettingsDialog) {")
+    @Test fun `范围清单只在弹窗打开时计算`() {
+        val at = filePage.indexOf("buildFileSelectScopes(displayFileList)")
+        assertTrue("应能找到范围清单计算", at > 0)
+        val dialogAt = filePage.indexOf("if (showSelectScopeDialog) {")
         assertTrue(
-            "allFilesSelected 的唯一消费者是该弹窗，写在 if 之外就是每次重组白算",
+            "范围清单的唯一消费者是范围弹窗，写在 if 之外就是每次重组白扫一遍当前目录列表",
             at > dialogAt
+        )
+        assertTrue(
+            "旧的无范围全选路径表（页面级 remember 的 allFilePaths）应已移除",
+            !filePage.contains("val allFilePaths")
         )
     }
 

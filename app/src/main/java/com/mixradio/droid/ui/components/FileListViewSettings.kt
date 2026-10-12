@@ -162,11 +162,10 @@ internal fun FileShortcutButton(
 }
 
 /**
- * 「文件列表设置」弹窗：字号一行（字号—拖动条—数值）/ 显示隐藏文件开关 / 四种排序方式（纯文本）/ 全选文件 + 新建文件（同一行）。
+ * 「文件列表设置」弹窗：字号一行（字号—拖动条—数值）/ 显示隐藏文件开关 / 四种排序方式（纯文本）/ 全选 + 新建文件（同一行）。
  * 绑定传入的 AppSettings，任何入口的修改即时写入同一份偏好。
  *
- * @param onSelectAllFilesRequest 全选/取消全选**文件**（不含文件夹）；为 null 表示该入口不支持多选（如文件选择器），不渲染该项。
- * @param allFilesSelected 当前是否已处于「全选文件」状态；用于把文案切换为「取消全选」。
+ * @param onSelectRequest 打开「全选范围」弹窗（一切 / 文件 / 图片 / 文本）；为 null 表示该入口不支持多选（如文件选择器），不渲染该项。
  * @param onSearchRequest 打开名称过滤栏（仅文件页提供）；为 null 表示该入口不提供（如文件选择器复用本弹窗时不渲染）。
  * @param onExtractApkRequest 打开「提取 APK」；为 null 表示该入口不提供（如文件选择器复用本弹窗时不渲染）。
  */
@@ -175,8 +174,7 @@ internal fun FileListSettingsDialog(
     appSettings: AppSettings,
     onDismissRequest: () -> Unit,
     onNewFileRequest: () -> Unit,
-    onSelectAllFilesRequest: (() -> Unit)? = null,
-    allFilesSelected: Boolean = false,
+    onSelectRequest: (() -> Unit)? = null,
     onSearchRequest: (() -> Unit)? = null,
     onExtractApkRequest: (() -> Unit)? = null
 ) {
@@ -304,7 +302,7 @@ internal fun FileListSettingsDialog(
             }
 
             // 功能入口（2 列栅格，固定顺序）：
-            //   新建文件  全选文件
+            //   新建文件  全选
             //   搜索文件  提取APK
             // 仅文件页提供搜索 / 全选 / 提取；文件选择器只暴露「新建文件」。
             // null 入口渲染为占位空格，保住 2×2 栅格布局。
@@ -333,11 +331,7 @@ internal fun FileListSettingsDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 ActionCell("新建文件", onNewFileRequest, Modifier.weight(1f))
-                ActionCell(
-                    if (allFilesSelected) "取消全选" else "全选文件",
-                    onSelectAllFilesRequest,
-                    Modifier.weight(1f)
-                )
+                ActionCell("全选", onSelectRequest, Modifier.weight(1f))
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -345,6 +339,112 @@ internal fun FileListSettingsDialog(
             ) {
                 ActionCell("搜索文件", onSearchRequest, Modifier.weight(1f))
                 ActionCell("提取APK", onExtractApkRequest, Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/**
+ * 「全选范围」的一种：范围名、反馈文案里的数量单位、该范围在当前列表中的全部路径。
+ *
+ * [paths] 与顺序无关，只用于「该项是否已全部在选中集里」判定与整批增删。
+ */
+internal class FileSelectScope(
+    val label: String,
+    val unit: String,
+    val paths: List<String>
+)
+
+/**
+ * 把当前展示列表拆成四种全选范围，顺序固定：一切 / 文件（不选文件夹）/ 图片 / 文本。
+ *
+ * 纯函数，便于单测。「一切」含文件夹（与「文件（不选文件夹）」的区别即在于此），
+ * 图片 / 文本按 [FileItem.isViewableImage] / [FileItem.isEditableText] 判定，
+ * 两者都只可能是文件，天然不含文件夹。
+ */
+internal fun buildFileSelectScopes(list: List<FileItem>): List<FileSelectScope> {
+    val all = ArrayList<String>(list.size)
+    val files = ArrayList<String>(list.size)
+    val images = ArrayList<String>()
+    val texts = ArrayList<String>()
+    // 一趟遍历拆四份：逐个范围各跑一次 filter 会让大目录多扫三遍，且每遍都新建列表。
+    list.forEach { item ->
+        all += item.path
+        if (item.isDirectory) return@forEach
+        files += item.path
+        if (item.isViewableImage) images += item.path
+        if (item.isEditableText) texts += item.path
+    }
+    return listOf(
+        FileSelectScope("一切", "项（含文件夹）", all),
+        FileSelectScope("文件（不选文件夹）", "个文件（不含文件夹）", files),
+        FileSelectScope("图片", "张图片", images),
+        FileSelectScope("文本", "个文本文件", texts)
+    )
+}
+
+/** 「全选范围」弹窗里的一行：范围名、当前项数、是否该范围已整体处于选中集、点击动作。 */
+internal class FileSelectScopeOption(
+    val label: String,
+    val count: Int,
+    val selected: Boolean,
+    val onClick: () -> Unit
+)
+
+/**
+ * 「全选范围」弹窗。纯文字行，无底色容器：整行可点（点击属性在前、最小触控尺寸在后，
+ * 命中区覆盖整行），完全选中的范围用 Accent + SemiBold 表达，空范围以 TextDisabled
+ * 呈现且不可点。
+ */
+@Composable
+internal fun FileSelectScopeDialog(
+    options: List<FileSelectScopeOption>,
+    onDismissRequest: () -> Unit
+) {
+    AuroraWindowDialog(
+        show = true,
+        title = "全选范围",
+        onDismissRequest = onDismissRequest
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+        ) {
+            options.forEach { option ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = option.count > 0, onClick = option.onClick)
+                        .minimumInteractiveComponentSize()
+                        .padding(vertical = 10.dp, horizontal = 4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = option.label,
+                            style = AuroraTextStyles.body1,
+                            fontWeight = if (option.selected) FontWeight.SemiBold else FontWeight.Normal,
+                            color = when {
+                                option.count == 0 -> AuroraTokens.TextDisabled
+                                option.selected -> AuroraTokens.Accent
+                                else -> AuroraTokens.Text
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        // 项数：一眼看清每个范围在当前目录里有多少可选项，空范围也据此显式归零
+                        Text(
+                            text = "${option.count} 项",
+                            style = AuroraTextStyles.footnote2,
+                            color = AuroraTokens.TextSecondary
+                        )
+                    }
+                }
             }
         }
     }
