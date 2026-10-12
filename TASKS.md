@@ -83,14 +83,18 @@
 
 ## 待办
 
-### A143. 发版完整性核验与外部建议收口（2026-10-12）
+### A144. 发版完整性核验与选中态反馈复核（2026-10-12）
 
 `docs/AI-1-BUG.md` 无新增（止于第 349 轮），`docs/AI-2-BUG.md` 止于 §8.5、无变更。
 第 349 轮列出的三条（218/219/220）已由 A141 的 `8e6718a` 处置，逐条复核确认闭环；
-台账唯一 OPEN 仍为 `BUG-PERF-030`（A109 裁定维持，见 §2.12）。
+台账 §2.43 登记的 BUG-CONSIST-249（双列选中态不可见）经真机复现判为不成立。
 
 - [x] **A141 改名复核**：`RootService` / `ExecuteConfirmDialog` / `FilePage` 为纯标识符改名，
       调用点与默认值等价、无行为变化；全库 `asRoot` 零命中（`hasRootAccess` 是子串误命中）。
+- [x] **BUG-CONSIST-249（P3 CONSIST）改判 DISPROVEN**：登记内容称选中反馈仅靠「行尾 ✓」表达、
+      窄列中难以察觉，建议改为选中行加容器底色。实读 `FilePage.kt:1204-1210`：行级 `.background`
+      已按 `isSelected` 给整行铺 `Accent.copy(alpha = 0.16f)`（另有 `isHighlighted` 的更亮一档），
+      该实现自 `e8ca598`（2026-09-28）即在位，根因与修法建议均与代码不符；真机复现见下。
 - [x] **构建与回归**：`testDebugUnitTest` 652 tests / 0 failures / 1 skipped；`assembleRelease` +
       `verifyReleasePayload` 通过；产物 2908305 字节、sha256 `CA6825CA…`，与双端发布资产逐字节相同。
 - [x] **依赖解析核验**：`releaseRuntimeClasspath` 实测 zip4j 2.11.6（CVE-2023-22899 修复版确在产物内）、
@@ -99,8 +103,13 @@
       资产 `app-release.apk` 各一份且 sha256 与本地重建一致；更早的 tag 与 Release 保留、无残留发行程序。
 - [x] **真机（root）**：`su -c 'pm install -r -t'` 覆盖安装成功，`am start` 后
       `mResumedActivity = com.mixradio.droid/.MainActivity`，crash buffer 无该包记录；
-      设备上装的是正式版，不卸载、不动用户数据。
+      文件页 → 设置 → 「全选文件」选中 Download 的 183 个文件，选中行整行底色与同页未选中的
+      文件夹行对比明显（截图可辨），退出多选后状态复原；设备上装的是正式版，不卸载、不动用户数据。
 - [x] **发布影响**：无代码改动，tag `20261012`、Release 资产与正文均不动。
+
+### A143. 双列布局下「全选 / 多选」选中反馈复核（2026-10-12）
+
+登记于台账 §2.43；复核结论见 § A144（判 DISPROVEN）。
 
 ### A142. 在线编译工作流签名凭据修复（2026-10-12）
 
