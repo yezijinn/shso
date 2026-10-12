@@ -76,11 +76,36 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`e52a508f…`）；双端 tag 与 Release 的目标提交均已对齐 A122 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`c2cb7db6…`）；双端 tag 与 Release 的目标提交均已对齐 A125 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 
 ---
 
 ## 待办
+
+### A125. 静默失败面清扫 + AI-1 残留项落地（BUG-CONSIST-191 / 192 / BUG-SEC-193）（2026-10-12）
+
+换维度查「失败被吞掉、界面却当作成功」的路径（空 catch、`runCatching` 结果被丢弃、
+`getOrDefault` 把失败折成默认值、写入失败无提示）。主干已闭环，另把 `docs/AI-1-BUG.md`
+末尾剩余的四条 OPEN 逐条实读后处置三条。
+
+- [x] **静默失败面实读**：`data/` 与 `ui/` 全域逐处读上下文。结论：清理型吞异常属预期；
+  `EditHistoryManager.readFileOrNull` 失败返回 `null`（损坏原文另存固定键）而非空列表；
+  `SoraMonarchGrammars` 失败留日志且主题不可用即拒绝装语法；`TextEditorDialog` 保存链路
+  逐条回传失败原因；`RootService` 命令超时有可见说明。无新增缺陷。
+- [x] **BUG-CONSIST-191（原 AI-1-BUG-CONSIST-171）**：`formatBytes` 的 `"%.1f MB".format`
+  走默认区域，逗号小数点的区域显示「34,0 MB」，与文件列表（固定 `Locale.ROOT`）写法不一致。
+  改 `String.format(Locale.ROOT, …)`，函数提为 `internal` 并加 `Locale.GERMANY` 行为断言。
+- [x] **BUG-CONSIST-192（原 AI-1-BUG-CONSIST-172）**：`ExternalOpen.resolveToRealPath` 里
+  `val isFileScheme = … == "file"` 与紧随其后的 `when` 判定重复且无消费点，删除；加缺席断言。
+- [x] **BUG-SEC-193（原 AI-1-BUG-SEC-173）**：`gradle-wrapper.properties` 只校验 URL 形态、
+  不校验发行包内容，CI 每次在全新 runner 上按该包编译发版。补 `distributionSha256Sum`，
+  取值以 `gradle.org/release-checksums` 与 `services.gradle.org` 的 `.sha256` 两源一致为准。
+- [x] **AI-1-BUG-CONSIST-118 维持 BY_DESIGN**：收件箱拒绝原因已可辨识（A113），
+  自动 TTL 删除用户可见目录的真实文件不可接受。
+- [x] 单测 618 通过 / 0 失败 / 1 跳过；`assembleRelease` + `verifyReleasePayload` 通过。
+- [x] root 真机：34MB 大文件经 `VIEW` 意图打开，走入巨型只读分段模式，状态条「字节数 34.0 MB / 34.0 MB」正常，
+  `logcat` 无本应用 FATAL。
+- [x] 提交 `00780ff`，tag `20261012` 重指该提交，双端 Release 资产替换并以 sha256 核验三端一致。
 
 ### A124. UI 布局健壮性清扫：长文本挤压相邻固定元素（2026-10-12）
 
