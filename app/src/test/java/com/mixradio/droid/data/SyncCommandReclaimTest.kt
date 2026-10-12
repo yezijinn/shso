@@ -287,7 +287,7 @@ class SyncCommandReclaimTest {
         // 同 uid 进程本就允许互发信号；走 su 只会平白弹授权框，弹框无人回应时 kill 停在
         // 超时窗口里，用户看到的是「点了结束进程但脚本还在跑」。
         val text = source.readText()
-        assertTrue("runCommandSync 必须能按身份选择 su 或 sh", text.contains("asRoot: Boolean = true"))
+        assertTrue("runCommandSync 必须能按身份选择 su 或 sh", text.contains("runAsRoot: Boolean = true"))
         val kill = text.substringAfter("private fun runKillSync(").substringBefore("fun sendInterrupt()")
         assertTrue("kill 命令一律不得在超时时回跳整组回收", kill.contains("reclaimOnTimeout = false"))
         val end = text.indexOf("private fun forceCloseProcess(")

@@ -92,7 +92,7 @@ class ExecuteEntryRegressionTest {
         )
         assertTrue(
             "确认后必须把身份传给执行入口",
-            page.contains("onExecuteFileAndNavigate(target.path, asRoot)")
+            page.contains("onExecuteFileAndNavigate(target.path, runAsRoot)")
         )
         assertTrue(
             "取消与选择两条路径都要清空槽位，否则下次点任意文件会以旧目标重现",

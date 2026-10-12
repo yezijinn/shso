@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A140） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A141） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
 | 单元测试 | 652 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
@@ -76,11 +76,37 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2908305 字节，三端 sha256 一致（`CA6825CA…`）；双端 tag 与 Release 的目标提交均已对齐 A140 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2908305 字节，三端 sha256 一致（`CA6825CA…`）；A141 产物与 A140 逐字节相同，故资产未替换、正文未改，双端 tag 与 Release 目标提交已对齐 A141 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 
 ---
 
 ## 待办
+
+### A141. 命名与文档一致性收口（2026-10-12）
+
+`docs/AI-1-BUG.md` 推进到第 349 轮；「文档维度 100% 覆盖」后新开 3 条（218~220），
+均为 CONSIST / P3。逐条读实码与 workflow 复核后一并修复；改名为标识符级，产物字节不变。
+
+- [x] **AI-1-BUG-218（P3）命名规范禁用 `asRoot`，代码内仍在用**：规范规定「是否以 ROOT 执行」
+      统一叫 `runAsRoot`（跨层参数）/ `useRoot`（局部开关），而执行引擎参数仍叫 `asRoot`。
+      采取改代码而非改文档：`runCommandSync` / `forceKillProcessTree` / `killProcessGroup` /
+      `runKillSync` 的声明与命名实参、`ExecuteConfirmDialog.onPick` 回调形参、`FilePage`
+      调用点全部改名 `runAsRoot`；两处 source-contract 单测的源码文本断言同步。
+      `forceKillProcessTree` 的超时回收调用保留两参形式——该分支已由
+      `reclaimOnTimeout && runAsRoot` 守卫，默认值与显式传参等价。
+- [x] **AI-1-BUG-219（P3）`大文件只读方案.md` 结论句与差异表不符**：结论称「差异仅在三处」，
+      同文 §3 实为 6 行（编码、块缓存对象、块缓存实现、只读阈值、渲染容器、索引粒度）
+      → 改为「差异共六处」并列明项。
+- [x] **AI-1-BUG-220（P3）`在线编译.md` 的包名字符集与产物名不准**：workflow 正则
+      `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$` 还允许数字与下划线；artifact 名实为
+      `app-release-` 前缀 + 用户完整输入。两处订正并给出示例。
+- [x] **回归**：`testDebugUnitTest` 652 tests / 0 failures / 1 skipped；`assembleRelease`
+      与 `verifyReleasePayload` 通过。产物 2908305 字节，sha256 与 A140 发布资产相同
+      （标识符改名不进字节码常量池）。
+- [x] **外部建议复核**：`docs/AI-2-BUG.md` 无新增；`docs/AI-1-BUG.md` 第 290~346 轮的
+      200~217 已由 49076c6 / b0e9c64 / 9f54fbe / db64931 闭环，第 349 轮仅剩 218/219/220，
+      本轮全部处置；长期 OPEN（PERF-030 / PERF-182 / CONSIST-118 / COMPAT-093 / CONC-148）维持原判。
+- [x] **发布**：产物字节与 A140 一致，Release 资产不替换、正文不改；tag `20261012` 重指到本轮提交。
 
 ### A140. 依赖供应链 / CI 加固 / 主题与工具链保鲜（2026-10-12）
 

@@ -42,7 +42,7 @@ fun ExecuteConfirmDialog(
     fileItem: FileItem?,
     rootGranted: Boolean,
     onDismiss: () -> Unit,
-    onPick: (asRoot: Boolean) -> Unit
+    onPick: (runAsRoot: Boolean) -> Unit
 ) {
     if (!show || fileItem == null) return
     AuroraWindowDialog(

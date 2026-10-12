@@ -2886,10 +2886,10 @@ fun FilePage(
         fileItem = pendingExecuteItem,
         rootGranted = rootGrantedForExecute,
         onDismiss = { pendingExecuteItem = null },
-        onPick = { asRoot ->
+        onPick = { runAsRoot ->
             val target = pendingExecuteItem
             pendingExecuteItem = null
-            if (target != null) onExecuteFileAndNavigate(target.path, asRoot)
+            if (target != null) onExecuteFileAndNavigate(target.path, runAsRoot)
         }
     )
 }

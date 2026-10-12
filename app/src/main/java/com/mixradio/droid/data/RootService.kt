@@ -497,11 +497,11 @@ object RootService {
         cmd: String,
         timeoutMs: Long = 120_000L,
         reclaimOnTimeout: Boolean = true,
-        asRoot: Boolean = true
+        runAsRoot: Boolean = true
     ): Pair<Int, String> {
         return try {
             // 先记下 su 的 pid：超时时用它反查进程组并整组回收。
-            val process = (if (asRoot) ProcessBuilder("su", "-c", cmd) else ProcessBuilder("sh", "-c", cmd))
+            val process = (if (runAsRoot) ProcessBuilder("su", "-c", cmd) else ProcessBuilder("sh", "-c", cmd))
                 .redirectErrorStream(true).start()
             val suPid = pidOfProcess(process)
             // 立即关闭子进程 stdin：本函数只读输出、从不喂输入。若不关闭，任何会读 stdin 的命令
@@ -528,7 +528,7 @@ object RootService {
 
             val finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
             if (!finished) {
-                if (reclaimOnTimeout && asRoot) {
+                if (reclaimOnTimeout && runAsRoot) {
                     // 先整组回收，再 destroy su 本身：顺序反了的话组组长已消失，
                     // 后续按 pgid 校验会 fail-closed 而漏掉子孙进程。
                     forceKillProcessTree(process, suPid)
@@ -569,7 +569,7 @@ object RootService {
      * 本函数内部发起的两条 kill 命令都传 `reclaimOnTimeout = false`：它们自身超时时
      * 只销毁 su，不再回跳本函数，斩断互递归（见 [runCommandSync] 参数说明）。
      */
-    private fun forceKillProcessTree(process: Process, suPid: Int, asRoot: Boolean = true) {
+    private fun forceKillProcessTree(process: Process, suPid: Int, runAsRoot: Boolean = true) {
         if (suPid > 1) {
             val pgrp = runCatching {
                 val stat = File("/proc/$suPid/stat").readText()
@@ -579,14 +579,14 @@ object RootService {
             }.getOrNull() ?: 0
             if (pgrp > 1) {
                 buildProcessGroupKillCommand(9, pgrp, android.os.Process.myPid())?.let {
-                    runCommandSync(it, timeoutMs = 5_000L, reclaimOnTimeout = false, asRoot = asRoot)
+                    runCommandSync(it, timeoutMs = 5_000L, reclaimOnTimeout = false, runAsRoot = runAsRoot)
                 }
             }
         }
         runCatching { process.destroyForcibly() }
         // 再补一次直接子进程：某些 su 实现不新建会话，此时组杀会被自身进程组校验挡下。
         if (suPid > 1) {
-            runCommandSync("kill -9 $suPid 2>/dev/null", timeoutMs = 5_000L, reclaimOnTimeout = false, asRoot = asRoot)
+            runCommandSync("kill -9 $suPid 2>/dev/null", timeoutMs = 5_000L, reclaimOnTimeout = false, runAsRoot = runAsRoot)
         }
     }
 
@@ -1561,9 +1561,9 @@ object RootService {
      *
      * 安全校验见文件末尾的顶层纯函数 [buildProcessGroupKillCommand]（返回 null 即放弃）。
      */
-    private fun killProcessGroup(signal: Int, pgid: Int, asRoot: Boolean) {
+    private fun killProcessGroup(signal: Int, pgid: Int, runAsRoot: Boolean) {
         val cmd = buildProcessGroupKillCommand(signal, pgid, android.os.Process.myPid()) ?: return
-        runKillSync(cmd, asRoot)
+        runKillSync(cmd, runAsRoot)
     }
 
     /**
@@ -1574,8 +1574,8 @@ object RootService {
      * 「点了结束进程但脚本还在跑」。一律 `reclaimOnTimeout = false`：kill 命令自身超时时
      * 不得再触发整组回收（避免与 [forceKillProcessTree] 互相递归）。
      */
-    private fun runKillSync(cmd: String, asRoot: Boolean) {
-        runCommandSync(cmd, timeoutMs = 5_000L, reclaimOnTimeout = false, asRoot = asRoot)
+    private fun runKillSync(cmd: String, runAsRoot: Boolean) {
+        runCommandSync(cmd, timeoutMs = 5_000L, reclaimOnTimeout = false, runAsRoot = runAsRoot)
     }
 
     fun sendInterrupt() {
