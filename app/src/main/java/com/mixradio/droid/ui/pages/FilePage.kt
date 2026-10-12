@@ -338,7 +338,12 @@ fun FilePage(
     // 选中集合的 HashSet 视图：selectedPaths 是 SnapshotStateList，
     // contains / containsAll 都是**线性扫描**。每个可见行都要判一次 isSelected，
     // 全选判定还要 containsAll(N)，选中 500 项 + 15 个可见行 = 单次重组约 7500 次字符串比较。
-    val selectedPathSet = remember(selectedPaths) { selectedPaths.toHashSet() }
+    // 必须用 derivedStateOf 缓存：remember 以列表**实例**为键，SnapshotStateList 内容变化
+    // 不换实例，缓存首帧的空集会永远停在空集上 —— 「已全选」判定恒为 false，
+    // 全选入口永远显示「全选文件」，第二次点击也走不到「取消全选」分支。
+    val selectedPathSet by remember(selectedPaths) {
+        derivedStateOf { selectedPaths.toHashSet() }
+    }
 
     // 当前目录下的全部文件路径（不含文件夹），供全选/取消全选共用。
     // 用 mapNotNull 一趟完成，替代 filter{}.map{} 两趟。
@@ -1039,7 +1044,12 @@ fun FilePage(
         // 选中集判选用的 HashSet 必须在**列级别**建一次。
         // 放进 itemsIndexed 的 item 作用域里会得到「每个可见行各一份」：
         // 十几行就是十几份集合，既没起到缓存作用，又把 O(N) 换成 O(可见行数 × N)。
-        val paneSelectedPaths = remember(pane.selectedPaths) { pane.selectedPaths.toHashSet() }
+        // 且必须用 derivedStateOf：remember 以列表实例为键、内容变化不重算，
+        // 集合视图恒为首帧的空快照 —— isSelected 永远为 false，选中行既无底色
+        // 也无行尾标记，多选在界面上完全没有反馈。
+        val paneSelectedPaths by remember(pane.selectedPaths) {
+            derivedStateOf { pane.selectedPaths.toHashSet() }
+        }
         Box(modifier = Modifier.fillMaxSize()) {
         if (pane.isLoading && pane.displayFileList.isEmpty()) {
                                     // 骨架占位：加载期间先铺出列表轮廓，消除首屏空白观感
@@ -1202,6 +1212,8 @@ fun FilePage(
                                                             }
                                                         )
                                                         .background(
+                                                            // 选中态只由整行底色表达：窄列下再挂行尾对勾会挤压文件名，
+                                                            // 且与底色功能重复。
                                                             when {
                                                                 isSelected -> AuroraTokens.Accent.copy(alpha = 0.16f)
                                                                 isHighlighted -> AuroraTokens.Accent.copy(alpha = 0.22f)
@@ -1270,21 +1282,6 @@ fun FilePage(
                                                             )
                                                         }
                                                     }
-                                                }
-
-                                                // 多选模式选中标记：极光渐变对勾（无底色方块，纯文字）
-                                                if (isSelected) {
-                                                    Text(
-                                                        text = "✓",
-                                                        style = AuroraTextStyles.title3.copy(
-                                                            fontSize = 18.sp,
-                                                            fontWeight = FontWeight.Black,
-                                                            brush = androidx.compose.ui.graphics.Brush.horizontalGradient(
-                                                                colors = listOf(AuroraTokens.GlowCyan, AuroraTokens.GlowBlue, AuroraTokens.AccentViolet)
-                                                            )
-                                                        ),
-                                                        modifier = Modifier.padding(start = 8.dp)
-                                                    )
                                                 }
 
                                                 // 行内按钮只剩字体预览。

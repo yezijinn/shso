@@ -103,9 +103,9 @@ class DualPaneStateRegressionTest {
         )
     }
 
-    @Test fun `选中集 HashSet 建在列级而非每个列表项`() {
+    @Test fun `选中集 HashSet 建在列级且随内容变化重算`() {
         val page = page()
-        val rememberAt = page.indexOf("val paneSelectedPaths = remember(pane.selectedPaths)")
+        val rememberAt = page.indexOf("val paneSelectedPaths by remember(pane.selectedPaths)")
         val listAt = page.indexOf("itemsIndexed(pane.displayFileList")
         assertTrue("应能找到选中集 HashSet", rememberAt > 0)
         assertTrue("应能找到列表构建", listAt > 0)
@@ -113,6 +113,18 @@ class DualPaneStateRegressionTest {
             "选中集 HashSet 必须早于 itemsIndexed。放进 item 作用域会得到「每个可见行各一份」：" +
                 "既没起缓存作用，又把一次 O(N) 换成 O(可见行数 × N)",
             rememberAt < listAt
+        )
+        assertTrue(
+            "列级选中集必须以 derivedStateOf 缓存：remember 以列表实例为键，" +
+                "SnapshotStateList 内容变化不换实例，缓存首帧的空集会让 isSelected 恒为 false，" +
+                "选中行既无底色也无行尾标记，多选在界面上完全没有反馈",
+            page.contains("derivedStateOf { pane.selectedPaths.toHashSet() }")
+        )
+        assertTrue(
+            "页面级 selectedPathSet 同因：remember(selectedPaths) 停在首帧空集，" +
+                "「已全选」判定恒为 false，全选入口永远显示「全选文件」、" +
+                "第二次点击也走不到「取消全选」分支",
+            page.contains("derivedStateOf { selectedPaths.toHashSet() }")
         )
     }
 

@@ -49,7 +49,7 @@
 | 全局底栏 | `顶部 / 底部 / 新建 / 同步 / 刷新` 置于 DockBar 上方；作用对象为聚焦列，`同步` 把聚焦列目录赋给另一列 |
 | 逐列状态 | 左右列各自持有目录、列表、过滤、多选、刷新代次（`FilePaneState`）；目录失效回退与静默空列表自愈均按列独立触发 |
 | 列表刷新 | **不再清空列表**（消除刷新期空白）；保留期间由 `enabled = !listIsStale` 真正禁用交互并降透明度；同目录刷新 120ms 节流 |
-| 列表性能 | `FileItem` 类型判定构造期一次算好（不再每帧重算正则）；选中判定走 HashSet；搜索 250ms 防抖；主页行用 derivedStateOf 隔离；目录元数据批量 stat（不逐条目 fork） |
+| 列表性能 | `FileItem` 类型判定构造期一次算好（不再每帧重算正则）；选中判定走 HashSet（`derivedStateOf` 缓存、随选择实时重算，见 § A145）；搜索 250ms 防抖；主页行用 derivedStateOf 隔离；目录元数据批量 stat（不逐条目 fork） |
 | 代码结构 | 无重复分支/无用中间层：`preferRoot` 已扁平、`pathExistsQuiet`/`uniqueFile`/`isExtractable` 已删 |
 | 脚本执行 | `.sh` 归一化改为**字节级保守判定**（`ShNormalization`）：含字节偏移自引用（`$0`/`${0}`/`${BASH_SOURCE`，配 `tail…+N`／含变量形式 `+$skip`、`head -c`、`dd skip=`、`sed -n 'N,'`）或内嵌压缩魔数即直跑原字节，仅普通文本脚本去 BOM/CR（上限 16 MiB，超限直跑）；app 侧不可读时由 `decideAsRoot` 先 `stat` 取大小再按实际长度以 root 读头部判定；`.so` 权限先记录后还原，还原排在执行之后；执行环境统一补 `TMPDIR`（root 侧 `/data/local/tmp`，非 Root 侧应用私有 `cacheDir`），终端命令同样注入 |
 | 归档格式 | 14 种：tar 系（`.tar.gz/.tar.xz/.tar.bz2/.tar.lz4/.tar.zst/.tgz/.tzst/.tar`）+ 单文件（`.gz/.xz/.bz2/.lz4/.zst/.zip`）；`.tzst` 为 tar+zstd 别名 |
@@ -82,6 +82,42 @@
 ---
 
 ## 待办
+
+### A145. 选中反馈失效的真实根因：remember 以快照列表实例为键（2026-10-12）
+
+A144 把台账 §2.43 / BUG-CONSIST-249 判为 DISPROVEN（登记前提「选中反馈只靠行尾 ✓」与代码不符）。
+A145 按需求删掉行尾对勾（选中态统一由整行底色表达）后构建上机复验，发现**选中反馈是整体不渲染**：
+全选 183 个文件后选中行没有任何底色，选前 / 选后逐像素差分除提示气泡区域外完全一致 ——
+A144 的「选中行整行浅色块可见」判定被页面纵向渐变干扰，属误判，249 的真实成因是另一处。
+
+- [x] **根因定位（BUG-CONSIST-250，P2）**：`a247ff3`（10-04「修文件页双列与目录列举」）把
+      `isSelected` 的判据从 `selectedPaths.contains(item.path)`（直接读 SnapshotStateList，
+      读操作随内容变化失效重组）换成 `item.path in paneSelectedPaths`，而 `paneSelectedPaths` 由
+      `remember(pane.selectedPaths) { pane.selectedPaths.toHashSet() }` 缓存：remember 的键是列表
+      **实例**，SnapshotStateList 内容增删不换实例、键恒等 → 缓存永不重算，集合恒停在首帧的空集上
+      → `isSelected` 恒为 false。页面级 `selectedPathSet`（原 L341）同因，「已全选」判定恒为 false：
+      全选入口永远显示「全选文件」，第二次点击也走不到「取消全选」分支。
+- [x] **修复**：两处均改为 `derivedStateOf`（`val x by remember(list) { derivedStateOf { list.toHashSet() } }`），
+      保留 HashSet 缓存意图、恢复随内容变化重算；全库仅 `selectedPaths` 一处 SnapshotStateList，
+      两处派生视图即全部同类面（`fileList` / `displayFileList` 为 `mutableStateOf<List>`，换实例，无此问题）。
+- [x] **测试护栏**：`DualPaneStateRegressionTest` 的列级断言按新写法同步并加强：新增两条
+      「必须以 derivedStateOf 缓存」断言（列级 + 页面级），失败信息写明「停在首帧空集会让
+      isSelected 恒为 false / 已全选恒为 false」。
+- [x] **构建与回归**：`testDebugUnitTest` 652 tests / 0 failures / 1 skipped（含加强后的契约测试）；
+      `assembleRelease` + `verifyReleasePayload` 通过；产物 2908305 字节 / sha256 `D3EBC71D…`。
+- [x] **真机（root，Android 10 / 1080×2280）**：`su -c 'pm install -r -t'` 覆盖安装成功，
+      `mResumedActivity = com.mixradio.droid/.MainActivity`；Download（183 文件）→「全选文件」→
+      选中行整行变色（像素采样 y=1157：(28,40,57)→(23,64,85)；同屏未选中的文件夹行 y=681 逐字节不变）；
+      重开弹窗标签正确变为「取消全选」；取消后与选前截图逐像素一致（仅提示气泡区域差异）。
+- [x] **发版（同日第二次）**：见下方「发布核验」。
+
+#### 发布核验（A145）
+
+~~~yaml
+build: "testDebugUnitTest 652/0/1；assembleRelease + verifyReleasePayload 通过"
+apk: "2908305 字节 / sha256 D3EBC71D83FB4D001FB01DD379B7DC8EC3614DF814044DE266615AAB626278D3"
+~~~
+（重指 tag、替换资产、双端正文同步与三端核验结果随发版回填。）
 
 ### A144. 发版完整性核验与选中态反馈复核（2026-10-12）
 
