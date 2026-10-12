@@ -3,6 +3,7 @@
 
 package com.mixradio.droid.data
 
+import com.mixradio.droid.data.syntax.SyntaxPackStore
 import com.mixradio.droid.ui.components.SyntaxPackUrls
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -47,5 +48,18 @@ class SyntaxPackSourceTest {
         assertEquals("github", SyntaxPackUrls.sourceLabel(SyntaxPackUrls.PACK_ZIP_ALT))
         // 本地文件导入的 source 是路径，原样显示
         assertEquals("/sdcard/Download/x.zip", SyntaxPackUrls.sourceLabel("/sdcard/Download/x.zip"))
+    }
+
+    @Test
+    fun `直链推断语法标识必须先剥 query 再取末段`() {
+        // query 自身含斜杠时（带签名的下载链、带路径参数的网关），先取末段会取到 query 里的片段，
+        // 语法就以该片段为 id 落盘，编辑器不会用它匹配 .kt 一类文件 —— 导入成功却不高亮。
+        assertEquals("kotlin", SyntaxPackStore.idFromUrl("https://host/a/kotlin.json?p=a/b"))
+        assertEquals("kotlin", SyntaxPackStore.idFromUrl("https://host/kotlin.json?sig=x/y&t=1"))
+        // fragment 同理
+        assertEquals("kotlin", SyntaxPackStore.idFromUrl("https://host/kotlin.json#/frag/ment"))
+        // 常规形态不受影响
+        assertEquals("kotlin", SyntaxPackStore.idFromUrl("https://host/x/kotlin.json"))
+        assertEquals("kotlin", SyntaxPackStore.idFromUrl("https://host/kotlin.json?v=2"))
     }
 }

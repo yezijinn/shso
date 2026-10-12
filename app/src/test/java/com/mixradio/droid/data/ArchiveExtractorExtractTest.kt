@@ -7,6 +7,7 @@ import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -70,6 +71,28 @@ class ArchiveExtractorExtractTest {
             assertTrue(File(dir, "shso_zip_slip_deep.txt").isFile)
             // ③ 正常条目不受影响
             assertTrue(File(dir, "ok.txt").isFile)
+        } finally {
+            base.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `含显式顶层目录条目的归档不得解出 unnamed 占位目录`() = runBlocking {
+        val base = java.nio.file.Files.createTempDirectory("shso-x-topdir").toFile()
+        try {
+            // 条件 A：根目录仅一个顶层目录 -> 剥离前缀，直接解到以该目录为名的目标里。
+            // 顶层目录条目自身（"abc/"）剥离后是空串，若落进占位名分支就会多建一个
+            // `unnamed_<hash>_/` 空目录。
+            val zip = zipOf(listOf("abc/" to "", "abc/f.txt" to "TOP LEVEL"))
+            val parent = File(base, "out").apply { mkdirs() }
+            val r = ArchiveExtractor.extract(zip.path, parent.path)
+            assertTrue("解压应成功，实际=$r", r is ArchiveExtractor.ExtractResult.Success)
+            val dir = File((r as ArchiveExtractor.ExtractResult.Success).targetDir)
+            assertEquals("目标目录应为顶层目录名本身", "abc", dir.name)
+            assertTrue(File(dir, "f.txt").isFile)
+            val stray = dir.listFiles()?.map { it.name }?.filter { it.startsWith("unnamed_") } ?: emptyList()
+            assertTrue("目标内不得出现占位空目录，实际残留=$stray", stray.isEmpty())
+            assertEquals("目标内应只有剥离后的条目", listOf("f.txt"), dir.listFiles()?.map { it.name }?.sorted())
         } finally {
             base.deleteRecursively()
         }

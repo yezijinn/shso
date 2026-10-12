@@ -264,7 +264,19 @@ object SyntaxPackStore {
         }
     }
 
-    /** 从 https 地址导入：内容可为语法包 zip 或单个语法 JSON。 */
+    /**
+     * 从直链推断语法标识。
+     *
+     * 必须先剥 query / fragment 再取末段。先取末段再剥 query 时，query 自身含斜杠的直链
+     * （带签名的下载链、带路径参数的网关）取到的是 query 里的片段，语法会以该随机片段为 id
+     * 落盘、exts 回退成它，编辑器不会用它匹配 `.kt` 一类文件 —— 表现为「导入成功却不高亮」。
+     */
+    internal fun idFromUrl(url: String): String {
+        val fileName = url.substringBefore('?').substringBefore('#').substringAfterLast('/')
+        return sanitize(fileName.substringBeforeLast('.').ifEmpty { fileName })
+    }
+
+    /** 从 https 地址导入：内容可为语法包 zip 或单个 Monarch 语法 JSON。 */
     fun importFromUrl(ctx: Context, url: String, expectedSha256: String?): Result<Int> = runCatching {
         val trimmed = url.trim()
         require(trimmed.startsWith("https://")) { "仅支持 https:// 地址" }
@@ -281,8 +293,7 @@ object SyntaxPackStore {
             }
             importZip(ctx, bytes, trimmed)
         } else {
-            val fileName = trimmed.substringAfterLast('/').substringBefore('?')
-            val id = sanitize(fileName.substringBeforeLast('.').ifEmpty { fileName })
+            val id = idFromUrl(trimmed)
             require(id.isNotEmpty()) { "无法从 URL 推断语法标识" }
             ingest(ctx, bytes, id, exts = null, source = trimmed, expectedSha256 = expectedSha256)
             1

@@ -471,6 +471,10 @@ object ArchiveExtractor {
                 for (h in headers) {
                     budget.beginEntry(if (h.isDirectory) 0L else h.uncompressedSize)
                     val entryName = stripPrefix?.let { stripTopFolder(h.fileName, it) } ?: h.fileName
+                    // 条件 A 下顶层目录条目自身剥离后为空串（`abc/` 与 `abc` 皆是），它对应的就是
+                    // target 本身（已由 reserveTargetDirectory 预占）。交给 safeDest 会走占位名分支，
+                    // 在目标目录里多出一个 `unnamed_<hash>_/` 空目录。
+                    if (h.isDirectory && entryName.isEmpty()) continue
                     val dest = safeDest(target, entryName, fallbackName = placeholderNameFor(entryName))
                         ?: return ExtractResult.Failure("\u5f52\u6863\u5305\u542b\u8d8a\u754c\u8def\u5f84: $entryName")
                     if (!writtenPaths.add(dest.canonicalPath)) {
@@ -517,6 +521,8 @@ object ArchiveExtractor {
                     val entry = tarIn.nextEntry ?: break
                     budget.beginEntry(if (entry.isDirectory) 0L else entry.size)
                     val entryName = stripPrefix?.let { stripTopFolder(entry.name, it) } ?: entry.name
+                    // 顶层目录条目自身剥离后为空串，它对应的就是 target 本身（见 extractZip 同处说明）。
+                    if (entry.isDirectory && entryName.isEmpty()) continue
                     val dest = safeDest(target, entryName, fallbackName = placeholderNameFor(entryName))
                         ?: return ExtractResult.Failure("\u5f52\u6863\u5305\u542b\u8d8a\u754c\u8def\u5f84: $entryName")
                     if (!writtenPaths.add(dest.canonicalPath)) {
@@ -560,6 +566,8 @@ object ArchiveExtractor {
                     }
                     budget.beginEntry(if (entry.isDirectory) 0L else entry.size)
                     val entryName = stripPrefix?.let { stripTopFolder(entry.name, it) } ?: entry.name
+                    // 顶层目录条目自身剥离后为空串，它对应的就是 target 本身（见 extractZip 同处说明）。
+                    if (entry.isDirectory && entryName.isEmpty()) continue
                     val dest = safeDest(target, entryName, fallbackName = placeholderNameFor(entryName))
                         ?: return ExtractResult.Failure("\u5f52\u6863\u5305\u542b\u8d8a\u754c\u8def\u5f84: $entryName")
                     if (!writtenPaths.add(dest.canonicalPath)) {
