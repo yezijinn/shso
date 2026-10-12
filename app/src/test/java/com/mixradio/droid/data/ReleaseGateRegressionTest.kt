@@ -50,6 +50,22 @@ class ReleaseGateRegressionTest {
     }
 
     @Test
+    fun `构建配置不得残留多平台模板项`() {
+        // 工程为纯 Android：settings.gradle.kts 仅 include(":app")，app 插件仅 androidApplication +
+        // composeCompiler。gradle.properties 若留着 KMP / iOS / Native 模板项，会让读者误以为是
+        // 多平台工程，升级 AGP / Kotlin 时也容易被无效属性误导。
+        val text = File("../gradle.properties").readText()
+        listOf(
+            "xcodeproj", "kotlin.mpp.", "kotlin.native.",
+            "kotlin.incremental.multiplatform", "kotlin.incremental.js",
+            "kotlin.incremental.native", "kotlin.incremental.wasm",
+            "compose.experimental.macos", "xcodeCompatibility"
+        ).forEach { key ->
+            assertFalse("纯 Android 工程不应残留多平台配置：$key", text.contains(key))
+        }
+    }
+
+    @Test
     fun `OBB 锁脚本不得按固定字段号解析 procfs stat`() {
         val script = ApkInstaller.buildObbLockAcquireScript("'/x.lock'", "'t|1|2|3'", "'/x.q'")
         assertFalse("不得用 awk 固定字段号取 starttime", script.contains("awk '{print \$22}'"))
