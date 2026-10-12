@@ -283,7 +283,7 @@ object ExternalOpen {
 
     /**
      * 解 `com.android.externalstorage.documents` 的 documentId。
-     * 形如 `primary:Download/x.apk` → `/storage/emulated/0/Download/x.apk`；
+     * 形如 `primary:Download/x.apk` → `<当前用户共享存储根>/Download/x.apk`；
      * 非 primary 卷（SD 卡）返回 `/storage/<卷名>/…`。
      */
     fun decodeExternalStorageDocumentId(documentId: String?): String? {
@@ -311,7 +311,7 @@ object ExternalOpen {
         return if (id.startsWith("raw:")) id.removePrefix("raw:").takeIf { it.isNotEmpty() } else null
     }
 
-    /** 规范化 `file://` 路径中的 `/sdcard` 别名，统一到 `/storage/emulated/0`。 */
+    /** 规范化 `file://` 路径中的 `/sdcard` 别名，统一到当前用户的共享存储根。 */
     fun normalizeSdCardAlias(path: String): String = when {
         path == "/sdcard" -> INTERNAL_STORAGE_PATH
         path.startsWith("/sdcard/") -> INTERNAL_STORAGE_PATH + path.removePrefix("/sdcard")
@@ -389,7 +389,7 @@ object ExternalOpen {
         }
         // 可移除存储（SD 卡）：`/storage/<卷名>/…`，卷名限单段字符集。
         // 排除 emulated / self —— 它们已有独立前缀，若在此放行会把 `/storage/emulated/01`
-        // 之类的伪造路径一并接纳（那不是 `/storage/emulated/0` 的子目录）。
+        // 之类的伪造路径一并接纳（那不是共享存储根的子目录）。
         // 归一化阶段已把任何含 `..` 的路径判否，故这里不存在穿越到 /data 的余地。
         return isRemovableVolumePath(p)
     }
