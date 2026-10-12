@@ -129,6 +129,9 @@ object RootFileManager {
      * 于是拿到空列表/无权限 —— 用户看到「当前目录为空」，实际目录里有大量文件。
      * 真机实测：Debug 首启即进文件页，root=null 时 /storage/emulated/0 列出 0 项。
      * 因此 null 时先等待探测落定，由 [awaitRootState] 负责。
+     *
+     * 只读的 [listDirectory] 不适用这条：它拿不到条目时才等（本地能列出内容就直接返回），
+     * 等探测会白白占住首帧。写操作没有「先用弱口径做一遍」的退路，必须等状态落定。
      */
     private suspend fun preferRoot(): Boolean {
         // 只需「等探测落定」，返回值本身不参与判定：
@@ -159,11 +162,21 @@ object RootFileManager {
      * ROOT 状态未落定时的最长等待。
      *
      * 3 秒是在「授权弹窗要用户点」与「页面不能一直卡在骨架屏」之间的折中。
-     * 但更关键的是 [preferRoot] 现在**只在本地列举拿不到条目时**才会走到这里
-     * （见 listDirectoryLocal 的快路径），因此这个等待绝大多数情况下不会发生。
+     * [listDirectory] 只在本地拿不到条目时才走到这里（本地能列出内容就直接返回），
+     * 因此读路径上的这个等待只在「目录确实读不出来」时才发生。
      */
     private const val ROOT_STATE_WAIT_MS = 3_000L
     private const val ROOT_STATE_POLL_MS = 50L
+
+    /**
+     * 目录列举单次 su 调用的超时。
+     *
+     * 列举正常在 1s 内返回（真机 188 条目 0.11s），15s 已极宽松；
+     * 取更短会把「目录很大」「设备正忙」误判成 ROOT 失败。
+     * 关键在于**必须显式给**：不传就走 [RootService.runCommandSync] 的 120s 默认值，
+     * su 停在授权弹窗上时列表要卡满两分钟才回到本地兜底。
+     */
+    private const val LIST_TIMEOUT_MS = 15_000L
 
     /**
      * 路径级非法校验：拒绝空路径、反斜杠、NUL、换行、回车，以及含 `..` 的路径段（防路径穿越）。
@@ -485,7 +498,25 @@ object RootFileManager {
 
         val escapedPath = RootService.escapeShellArg(targetPath)
 
-        if (preferRoot()) {
+        // ROOT 状态未落定（探测还在跑）时**不阻塞首帧**：先本地列举，本地能拿出条目就直接用。
+        // 列举是只读操作，本地读得出来就没必要等 ROOT —— 而等探测最长要 ROOT_STATE_WAIT_MS，
+        // 这段时间界面是空的，正是「进目录后半天不出文件」的来源之一。
+        //
+        // 本地拿不到条目才必须等：那种情形本地给的是「空」，而无权访问时 FUSE 会把无权目录
+        // 也呈现成空目录（真机实测：未获「所有文件访问」时 /storage/emulated/0 本地列出 0 项，
+        // 实际有 150 项），与真空目录无法区分 —— 只有 ROOT 的结论能定夺走 su 还是如实报空。
+        //
+        // 探测落定后界面会重读一次（FilePage 订阅 RootService.isRootGranted），
+        // 因此这里「先本地」不会把受保护目录的失败结果永久留在屏幕上。
+        if (RootService.isRootGranted == null) {
+            val local = listDirectoryLocal(targetPath)
+            if (local is DirectoryListing.Success && local.items.isNotEmpty()) {
+                return@withContext local
+            }
+            awaitRootState()
+        }
+
+        if (RootService.isRootGranted == true) {
             // ── 单次 su 完成「存在性 + 名称 + 元数据」────────────────────────
             //
             // 旧实现是三次串行 su：test -d → find -print0 → find -exec stat。
@@ -518,11 +549,16 @@ object RootFileManager {
             // 会被正确留在名称一侧，见下方 filterKeys 的兜底），再由 tr 把行分隔换成 NUL。
             // 输出与旧实现逐字节同构：`名称\0权限串|字节数|mtime\0` 成对记录，分隔一律 NUL
             // —— 文件名可含换行，按行切分会错位。
+            //
+            // 超时必须显式给：runCommandSync 的默认值是 120s，那是为长任务准备的。
+            // 列举正常在 1s 内返回，若 su 停在 Magisk 授权弹窗上（用户没点），
+            // 默认值会让这一趟挂满两分钟，界面停在骨架屏或过期列表上 —— 观感即卡死。
             val (code, out) = RootService.runCommandSync(
                 "cd $escapedPath 2>/dev/null || exit 3; test -d . || exit 4; " +
                     "find . -maxdepth 1 -mindepth 1 -print0; printf '\\0$META_SEP\\0'; " +
                     "find . -maxdepth 1 -mindepth 1 -exec stat -L -c '%n|%A|%s|%Y' {} + 2>/dev/null " +
-                    "| sed 's/|\\([^|]*\\)|\\([^|]*\\)|\\([^|]*\\)$/\\n\\1|\\2|\\3/' | tr '\\n' '\\0'"
+                    "| sed 's/|\\([^|]*\\)|\\([^|]*\\)|\\([^|]*\\)$/\\n\\1|\\2|\\3/' | tr '\\n' '\\0'",
+                timeoutMs = LIST_TIMEOUT_MS
             )
             if (code == 3 || code == 4) {
                 // ROOT 明确「进不去」或「不是目录」。仍给本地一次机会：
@@ -585,8 +621,8 @@ object RootFileManager {
         }
 
         // 无 ROOT，或 ROOT 调用失败：交给本地兜底判定。
-        // 能走到这里说明 preferRoot() 为 false —— su 从未被调用过，
-        // 因此不存在「ROOT 不可用」这一前提，不传该标记。
+        // 能走到这里说明本次列举没有走 su：或是 ROOT 未授权，或是探测仍无结论。
+        // 两种情形 su 都没有被调用过，因此不存在「ROOT 不可用」这一前提，不传该标记。
         // （su 被拒/超时的情形已在上面 code == -1 分支显式以 rootUnavailable=true 兜底。）
         listDirectoryLocal(targetPath)
     }

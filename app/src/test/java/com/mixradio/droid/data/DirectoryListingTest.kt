@@ -518,12 +518,13 @@ class DirectoryListingTest {
     // root 探测时序：null 不得被当作「无 ROOT」
     // ========================================================================
 
-    @Test fun `root 未探测时必须等待而非直接降级`() {
+    @Test fun `写操作在 root 未探测时必须等待而非直接降级`() {
         // 真机复现：Debug 首启即进文件页，isRootGranted 仍是 null，
-        // preferRoot() 返回 false → 跳过 su 直接走本地 File API →
+        // 判据取 `== true` → 跳过 su 直接走本地 File API →
         // /storage/emulated/0 列出 0 项 → UI 显示「当前目录为空」，
         // 而该目录实际有 150 个文件。
-        // null 的语义是「尚未探测」，不是「无 ROOT」，必须先等探测落定。
+        // null 的语义是「尚未探测」，不是「无 ROOT」，写操作必须先等探测落定：
+        // 它没有「先用弱口径做一遍」的退路，用错口径就是把操作做在错的地方。
         val text = source.readText()
         val fn = text.indexOf("private suspend fun preferRoot(")
         assertTrue("应能找到 preferRoot", fn > 0)
@@ -540,6 +541,34 @@ class DirectoryListingTest {
         assertTrue(
             "等待必须有超时上限，不能无限阻塞文件页",
             text.contains("ROOT_STATE_WAIT_MS")
+        )
+    }
+
+    @Test fun `列举在 root 未落定时先本地出内容而非阻塞首帧`() {
+        // 只读的列举不适用写操作那条：等探测会占住首帧（最长 ROOT_STATE_WAIT_MS，
+        // Magisk 授权弹窗挂起时更久）。本地能拿出条目就直接用，不必等 ROOT。
+        // 本地拿不到条目才必须等 —— 那时光看本地分不清「真空目录」与
+        // 「无权访问被 FUSE 呈现为空目录」，只有 ROOT 的结论能定夺走 su 还是如实报空。
+        val body = listDirectoryBody()
+
+        assertTrue("必须先本地列举", body.contains("listDirectoryLocal(targetPath)"))
+        assertTrue("必须判 root 状态未落定", body.contains("RootService.isRootGranted == null"))
+        assertTrue("本地有条目必须直接返回", body.contains("local.items.isNotEmpty()"))
+        assertTrue("本地拿不到条目才等探测", body.contains("awaitRootState()"))
+        assertTrue(
+            "走 su 的判据必须是「已授权」，未落定不得走 su",
+            body.contains("if (RootService.isRootGranted == true)")
+        )
+    }
+
+    @Test fun `列举必须显式传超时`() {
+        // 不传 timeoutMs 就沿用 runCommandSync 的 120s 默认值：su 若停在授权弹窗上
+        // （用户没点），这一趟要挂满两分钟，界面全程停在骨架屏或过期列表上。
+        val body = listDirectoryBody()
+        assertTrue("列举调用必须显式传超时", body.contains("timeoutMs = LIST_TIMEOUT_MS"))
+        assertTrue(
+            "超时常量必须定义",
+            source.readText().contains("private const val LIST_TIMEOUT_MS")
         )
     }
 

@@ -115,6 +115,21 @@ class FileListingRefreshRegressionTest {
         )
     }
 
+    @Test fun `root 落定后必须重读两列`() {
+        // 首帧列举常与 root 探测并发，此时按本地口径列举的受保护目录读到的是空或失败。
+        // 没有这个 effect，探测落定后列表不会自动更新，用户看到「有 ROOT 却一直空」，
+        // 只能手动刷新。
+        val page = page()
+        val at = page.indexOf("LaunchedEffect(RootService.isRootGranted)")
+        assertTrue("必须订阅 ROOT 状态落定", at > 0)
+        val body = page.substring(at, at + 400)
+        assertTrue(
+            "只在「上一代已知未授权 → 本次已授权」时重读，否则冷启动会与各列首屏列举重复一遍",
+            body.contains("if (settled && previous == false)")
+        )
+        assertTrue("两列都要重读，不能只刷聚焦列", body.contains("panes.forEachIndexed"))
+    }
+
     @Test fun `单次 su 完成存在性与列举`() {
         val rfm = File("src/main/java/com/mixradio/droid/data/RootFileManager.kt").readText()
         val start = rfm.indexOf("suspend fun listDirectory(")

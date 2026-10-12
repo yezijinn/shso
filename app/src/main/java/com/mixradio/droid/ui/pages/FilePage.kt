@@ -895,6 +895,23 @@ fun FilePage(
         }
     }
 
+    // ROOT 落定后重读。首帧列举常与 root 探测并发：RootFileManager.listDirectory 此时按本地口径
+    // 先出结果（本地拿不到条目才等探测），受保护目录（/data/adb/…）在这一帧读到的是空或失败。
+    // 没有这个重读，探测落定后两列都不会自动更新，用户看到「有 ROOT 却一直空 / 一直报错」，
+    // 只能手动刷新。HomePage 有同类 effect。
+    //
+    // 只认「上一代已知未授权 → 本次已授权」这一次跃迁：首帧的初始值不讲，
+    // 否则每次冷启动都会与各列自己的首屏列举撞在一起，白跑一轮 su 列举。
+    var rootSettleKey by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(RootService.isRootGranted) {
+        val settled = RootService.isRootGranted == true
+        val previous = rootSettleKey
+        rootSettleKey = settled
+        if (settled && previous == false) {
+            panes.forEachIndexed { index, _ -> refreshPane(index) }
+        }
+    }
+
     LaunchedEffect(feedbackMessage) {
         feedbackMessage?.let {
             Toast.makeText(context, it, Toast.LENGTH_LONG).show()
