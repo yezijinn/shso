@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A132） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A133） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 640 tests / 0 failures / 1 skipped |
+| 单元测试 | 642 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -76,11 +76,41 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909817 字节，三端 sha256 一致（`cf9eeb28…`）；双端 tag 与 Release 的目标提交均已对齐 A132 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909817 字节，三端 sha256 一致（`8aeb624d…`）；双端 tag 与 Release 的目标提交均已对齐 A133 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 
 ---
 
 ## 待办
+
+### A133. 解压顶层剥离与语法包直链导入（2026-10-12）
+
+复核 `docs/AI-1-BUG.md` 已推进至第 259 轮（第 242~259 轮的发现均未进入上一轮处置范围），
+新增 OPEN 仅 2 条，逐条对源码复核后属实，立案 2 条（P3×2），修复并加护栏。
+
+- [x] **BUG-LOGIC-221（P3）条件 A 剥离顶层前缀后多出 `unnamed_` 空目录**：根目录仅 1 个顶层目录时
+      剥离前缀直接解压到当前目录，而顶层目录条目自身（`abc/` 与 `abc`）剥离后为空串，落进
+      `safeDest` 为 `./`、`..` 准备的 `fallbackName` 分支，被赋占位名 `unnamed_<hash>_` 并由
+      `dest.mkdirs()` 建成实体空目录；zip / tar / 7z 三条链路同病。三处目录条目在剥离后为空串时
+      直接 `continue`（该条目就是 `reserveTargetDirectory` 已预占的 target 本身）。
+- [x] **BUG-LOGIC-222（P3）语法包直链推断 id 先取末段再剥 query**：原写法
+      `substringAfterLast('/').substringBefore('?')` 顺序相反，query 自身含斜杠的直链
+      （带签名的下载链、带路径参数的网关）取到的是 query 里的片段 —— 语法以该随机片段为 id
+      落盘、`exts` 回退成它，编辑器不会用它匹配 `.kt` 一类文件，表现为「导入成功却不高亮」。
+      抽出纯函数 `idFromUrl`：先剥 query/fragment 再取末段，`#` 一并处理。
+- [x] **回归**：`testDebugUnitTest` 642 tests / 0 failures / 1 skipped（新增 2 条护栏）；
+      `assembleRelease verifyReleasePayload` 通过（无语法包、无数据表）。
+      `ArchiveExtractorExtractTest` 新增「含显式顶层目录条目的归档不得解出 unnamed 占位目录」
+      端到端用例；`SyntaxPackSourceTest` 新增 `idFromUrl` 六种 URL 形态断言。
+- [x] **真机验证（root，PACM00 / Android 10 / 1080×2280 / density 480）**：push 自造
+      `topdir_test.zip`（`abc/` + `abc/f.txt`，211 B）到 `/sdcard/Download`，文件页长按 →
+      「自动解压文件」→ 提示「已解压到: /storage/emulated/0/Download/abc」；
+      `ls -a .../Download/abc` 仅 `f.txt`，`ls /sdcard/Download | grep -c unnamed_` 为 0，
+      `logcat -b crash` 无本应用记录。222 为纯函数，由单测覆盖。
+- [x] **外部建议复核**：`docs/AI-1-BUG.md` 第 259 轮 2 条 OPEN 全部处置；第 259 轮残留的唯一
+      待确认点依赖第三方 Monarch 库内部实现，静态无法确证，不立案；`docs/AI-2-BUG.md`（§8.5）
+      无新增；`BUG.md` 唯一 OPEN 仍为 `BUG-PERF-030`（A109 裁定维持）。
+      经复核不改动：`AI-1-BUG-CONSIST-184`（`TerminalPage` 底距 58dp，`hideDockBar` 时已归零）、
+      `185`（维持 `BUG-CONSIST-200` 裁定）、`PERF-182`（维持 BY_DESIGN / `BUG-PERF-203`）。
 
 ### A132. 安装链路与文件操作的边缘缺陷复查（2026-10-12）
 
