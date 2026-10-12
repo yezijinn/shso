@@ -82,6 +82,22 @@
 
 ## 待办
 
+### A124. UI 布局健壮性清扫：长文本挤压相邻固定元素（2026-10-12）
+
+AI-1 第 146 轮自述第二个 UI 盲区：此前只查「命中区尺寸」，未查「用户可控长文本把相邻固定元素挤出
+视野」（编辑器顶栏文件名压掉 ✕ 即此类）。按该维度全库实读，无残留，无代码改动。
+
+- [x] **固定关闭/删除入口的行**：`BookmarksDialog`、`SyntaxPackDialog#PackRow`、`FilePage#查找栏`、
+  `TextEditorDialog` 顶栏（已修）与设置面板标题行（枚举字面量）逐处核对，用户可控文本侧均带
+  `weight(1f)` + `maxLines` + 省略号，或本行不含用户输入。
+- [x] **`ContentViewerDialogs` 图片操作行排除**：`iconStyle` 为 48sp 字形 + `padding(8)`，命中区约 74dp，
+  原就不低于触控约定，故不出现在 AI-1 的 168 清单中。
+- [x] **非加权文本的测量顺序**：`FilePermissionDialog` 账户候选行的 `accountName`（无 `weight`）曾疑为
+  挤压点，按 Compose Row 规则排除——`label` 位于末位且带省略号，只会自身截断；`accountName` 取值域有界。
+- [x] **滚动容器内嵌可滚动子项**：`AuroraWindowDialog` 的 30 个调用点逐处核对，需固定头部的窗口均自建头部，
+  其余标题为固定文案；`FilePermissionDialog` 的 `LazyColumn` 有 `heightIn(max = 300.dp)` 兜底。
+- 无代码改动，不发版。
+
 ### A123. 同类风险模式扫描与外部建议复核（2026-10-12）
 
 A122 落地后台账唯一 OPEN 仍为 `BUG-PERF-030`（A109 裁定维持架构取舍）。无新增改动项，转做
