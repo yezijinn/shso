@@ -424,6 +424,16 @@ object RootService {
                         10_000L
                     )
                 }
+                // XAPK 解压暂存目录：正常路径由 installXapk 的 finally 删除，进程被强杀时不会执行。
+                // 同样只删超过 1 小时未变动的，避免误删仍在进行的安装。
+                runCatching {
+                    val cutoff = System.currentTimeMillis() - 60 * 60 * 1000L
+                    com.mixradio.droid.ShsoApplication.appContext.cacheDir.listFiles()?.forEach { f ->
+                        if (f.name.startsWith(".shso_xapk_") && f.lastModified() < cutoff) {
+                            runCatching { f.deleteRecursively() }
+                        }
+                    }
+                }
                 // 「另存为」临时文件残留：路径随用户目标目录而变，登记表是唯一线索。
                 sweepRegisteredSaveTemps()
             }

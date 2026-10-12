@@ -183,7 +183,11 @@ class PerfAndNestingRegressionTest {
         )
         assertTrue(
             "拷贝时的同名探测应只调一次 exists",
-            rootFileManager.contains("while (n < COPY_NAME_PROBE_LIMIT && File(destPath).exists())")
+            rootFileManager.contains("while (File(destPath).exists())")
+        )
+        assertFalse(
+            "Java 路径不得退化成 do-while（`n++ 后判上限` 会比 shell 少试一个候选名）",
+            rootFileManager.contains("} while (n < COPY_NAME_PROBE_LIMIT")
         )
     }
 

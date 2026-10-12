@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A131） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A132） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 630 tests / 0 failures / 1 skipped |
+| 单元测试 | 640 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -76,11 +76,63 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`bb5e0b7b…`）；双端 tag 与 Release 的目标提交均已对齐 A129 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909817 字节，三端 sha256 一致（`cf9eeb28…`）；双端 tag 与 Release 的目标提交均已对齐 A132 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 
 ---
 
 ## 待办
+
+### A132. 安装链路与文件操作的边缘缺陷复查（2026-10-12）
+
+复核 `docs/AI-1-BUG.md` 第 253 轮新增的 11 条 OPEN 项（该文件已从第 241 轮推进到 253 轮），
+逐条对源码复核后全部属实，立案 11 条（P2×1 / P3×10），全部修复并加护栏。
+
+- [x] **BUG-LOGIC-210（P2）OBB 幂等判据用 inode 比较恒假**：`readObbIdentity` 取
+      `stat -c %i:%s:%y`，标识文件本身而非内容；目标与本次解压出的 OBB 是同时存在的两个文件，
+      inode 必然不同 → 幂等分支不可达，重复安装同一 XAPK 稳定落进「内容不同」失败分支。
+      新增 `readObbContentSignature`（`stat -c %s` + `sha256sum` → `size:sha256`，失败返回 null
+      按「内容不同」处理，fail-closed），判据改比内容签名。
+- [x] **BUG-LOGIC-211（P3）多 OBB 部分幂等时 finally 误删已落位 OBB**：内层 finally 只比
+      `copiedObbTargets.size`，漏掉走幂等分支的既有目标 → 完整成功路径被判成未全部成功，删掉
+      本次刚落位的 OBB；该 finally 在 APK 安装之前执行，结果是「APK 装好、OBB 没了」。判据改为
+      `copiedObbTargets.size + preexistingObbTargets.size != obbFiles.size`。
+- [x] **BUG-LOGIC-212（P3）XAPK 解压暂存建在用户可见目录**：`.shso_xapk_<uuid>` 建在 XAPK 同目录
+      （通常 `/sdcard/Download`），进程被强杀时 finally 不执行，残留整份 base + 分片，且不在启动
+      清扫覆盖内。迁到 `cacheDir`；`sweepExecutionTempFiles` 增加同类目录清扫（只删 mtime 超
+      1 小时者，避免误删进行中的解压）。
+- [x] **BUG-LOGIC-213（P3）非规范 OBB 一律兜底成 main**：XAPK 内条目常写作 `main.obb` /
+      `patch.obb`，兜底命名都拼成 `main.<vc>.<pkg>.obb`，第二个撞「重复 OBB 目标」使整包安装
+      失败。兜底按名字前缀区分 main / patch。
+- [x] **BUG-SEC-214（P3）FileProvider 暴露整棵外部存储**：`file_provider_paths.xml` 残留
+      `<external-path name="external" path="." />`。全库 `getUriForFile` 仅 1 处
+      （`installApkViaSystem`），入参是 `cacheDir/install-confirm` 下的校验副本，该配置已成死项
+      → 删除，只留 `<cache-path name="cache" path="install-confirm/" />`。
+- [x] **BUG-CONSIST-215（P3）文档仍写 Toast 统一 LONG**：`README.md` 与
+      `docs/B站专栏-shso分享.md` 各订正 1 行。后者属其它工作线迁移中的未提交文件，只改内容不
+      纳入提交。
+- [x] **BUG-LOGIC-216（P3）`raw:` 路径未过 `normalizeSdCardAlias`**：`file://` 分支过了、
+      `raw:` 分支没过，Downloads provider 的 `/sdcard/...` 形态被白名单拒掉，降级为一次无谓的
+      全量拷贝。两条分支统一口径。
+- [x] **BUG-LOGIC-217（P3）共享文件名不限长度**：超长 `DISPLAY_NAME` 让 `createNewFile` 抛
+      `ENAMETOOLONG` 返回 null，调用方却报「同名文件过多」，把用户引去清理收件箱而无效。新增
+      `truncateUtf8Bytes`，按 UTF-8 字节截断到 200 字节（保留扩展名、不在字符中间切断）。
+- [x] **BUG-LOGIC-218（P3）Java 拷贝重名探测少试一个名**：`n++` 后判上限的 do-while 只试
+      `0..998`，shell 路径试 `0..999`；且 `File.exists() || pathExistsQuiet()` 对同一路径重复
+      探测。统一为先判存在再自增。
+- [x] **BUG-LOGIC-219（P3）对比输出扩展名取自整条路径**：无扩展名文件配上含点的父目录时，
+      `substringAfterLast('.')` 取出的「扩展名」带多层子目录，输出路径落盘失败。改为先取文件名
+      再取扩展名。
+- [x] **BUG-LOGIC-220（P3）新文件历史落成空串 key**：`currentFilePath` 为 null 时
+      `addHistory("", …)` 写进所有新文件共享的 `history:`，既取不回又会被顶掉。无归属不写。
+- [x] **回归**：`testDebugUnitTest` 640 tests / 0 failures / 1 skipped；`assembleRelease
+      verifyReleasePayload` 通过（无语法包、无数据表）。新增护栏 10 条；另订正
+      `PerfAndNestingRegressionTest` 中钉住旧循环形态的断言（旧断言与被修复的实现冲突）。
+- [x] **真机验证（root，PACM00 / Android 10 / 1080×2280 / density 480）**：冷启动前在应用 cache
+      预置带旧 mtime（2020-01-01）的 `.shso_xapk_sweeptest`，启动后被清扫；`/sdcard/Download`
+      无 `.shso_xapk_*`；`logcat` 无本应用 FATAL；界面渲染正常；设备侧 `stat -c %s` +
+      `sha256sum` 组合可用。OBB 幂等与含 `patch.obb` 的 XAPK 需现成素材，以单测与静态复核为准。
+- [x] **外部建议复核**：`docs/AI-1-BUG.md` 第 253 轮 11 条 OPEN 全部处置；
+      `docs/AI-2-BUG.md`（§8.5）无新增；`BUG.md` 唯一 OPEN 仍为 `BUG-PERF-030`（A109 裁定维持）。
 
 ### A131. Toast 时长统一 + APK 安装链路审查（2026-10-12）
 

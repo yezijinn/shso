@@ -4,6 +4,7 @@
 package com.mixradio.droid.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -81,5 +82,21 @@ class TextCompareUnicodeBoundaryTest {
         assertTrue(produced, produced.contains("[2]\tq"))
         assertTrue(produced, produced.contains("[3]\tr"))
         assertEquals(3, result.hitLines)
+    }
+
+    @Test
+    fun `对比输出扩展名只能取自文件名`() {
+        // 回归护栏：对整条路径 substringAfterLast('.')，无扩展名文件（Makefile / hosts 等）
+        // 配上含点的父目录时，会取出 "foo/files/Makefile" 这类带子目录的「扩展名」，
+        // 拼出的输出名带多层子目录，落盘因父目录不存在而失败。
+        val s = File("src/main/java/com/mixradio/droid/data/TextCompare.kt").readText()
+        assertTrue(
+            "扩展名须先取文件名",
+            s.contains("val sourceName = currentFilePath.substringAfterLast('/')")
+        )
+        assertFalse(
+            "不得对整条路径取扩展名",
+            s.contains("currentFilePath.substringAfterLast('.')")
+        )
     }
 }

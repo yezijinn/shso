@@ -296,4 +296,23 @@ class RootFileManagerEscapingTest {
             s.contains("COPY_MODE_MASK = 0b111101101")
         )
     }
+
+    @Test fun `拷贝重名探测口径与 shell 路径一致`() {
+        // 回归护栏：Java 路径曾用 `n++ 后判 n>=LIMIT`，候选名恰为空闲时也报「重名过多」，
+        // 比 shell 路径（试 n=0..LIMIT-1）少试一个名；另曾用 `File.exists() || pathExistsQuiet()`
+        // 对同一路径重复探测。两条路径的口径必须一致。
+        val s = java.io.File("src/main/java/com/mixradio/droid/data/RootFileManager.kt").readText()
+        assertTrue(
+            "Java 路径须先判存在再自增",
+            s.contains("while (File(destPath).exists())")
+        )
+        assertTrue(
+            "须在自增后判上限",
+            s.contains("if (n >= COPY_NAME_PROBE_LIMIT) {")
+        )
+        assertFalse(
+            "不得用 do-while 少试一个候选名",
+            s.contains("} while (n < COPY_NAME_PROBE_LIMIT && File(destPath).exists())")
+        )
+    }
 }

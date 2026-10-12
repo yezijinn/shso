@@ -1156,19 +1156,22 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
         }
 
         // Java 路径：同样需要重名查找，但走 File.exists() 不 fork su
-
-                // 单次 File.exists() 即可：此前写成 `File(destPath).exists() || pathExistsQuiet(destPath)`，
+        //
+        // 单次 File.exists() 即可：此前写成 `File(destPath).exists() || pathExistsQuiet(destPath)`，
         // 而后者函数体就是 File(path).exists() —— `||` 只在左为 true 时省下右，
         // 左为 false（正是需要继续探测下一个名字的情况）时必然**再做一次完整 stat**。
         // 同名副本 N 个 → 2N 次系统调用。
+        //
+        // 探测口径必须与下面的 shell 路径一致（都试 n=0..COPY_NAME_PROBE_LIMIT-1）：
+        // 用 `n++ 后判 n>=LIMIT` 会在候选名恰为空闲时也报「重名过多」，比 shell 少试一个名。
         var n = 0
-        var destPath: String
-        do {
-            destPath = copyCandidatePath(parent, base, suffix, n)
+        var destPath = copyCandidatePath(parent, base, suffix, n)
+        while (File(destPath).exists()) {
             n++
-        } while (n < COPY_NAME_PROBE_LIMIT && File(destPath).exists())
-        if (n >= COPY_NAME_PROBE_LIMIT) {
-            return@withContext Pair(false, "同级重名过多，未找到可用的目标名")
+            if (n >= COPY_NAME_PROBE_LIMIT) {
+                return@withContext Pair(false, "同级重名过多，未找到可用的目标名")
+            }
+            destPath = copyCandidatePath(parent, base, suffix, n)
         }
 
         try {

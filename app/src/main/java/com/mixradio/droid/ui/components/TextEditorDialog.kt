@@ -916,12 +916,14 @@ private fun TextEditorDialogContent(
                 // 解析最坏可达每文件 100 万字，放在主线程就是一次可感知的掉帧。
                 history = withContext(Dispatchers.IO) {
                     val cur = contentValue.text
-                    if (cur != entry.content) {
-                        EditHistoryManager.addHistory(
-                            currentFilePath ?: "", cur, EditHistoryManager.HistorySource.DRAFT
-                        )
+                    // 新建未保存的文件没有路径：此时写历史会落成空串 key（`history:`），
+                    // 把这份内容塞进所有新文件共享的同一个 key —— 既无从取回（该文件的 key
+                    // 始终是空串），又会被另一个新文件的恢复操作顶掉。无归属就不写。
+                    val path = currentFilePath
+                    if (cur != entry.content && path != null) {
+                        EditHistoryManager.addHistory(path, cur, EditHistoryManager.HistorySource.DRAFT)
                     }
-                    EditHistoryManager.getHistory(currentFilePath ?: "")
+                    EditHistoryManager.getHistory(path ?: "")
                 }
                 setEditorContent(entry.content, markDirty = true)
                 showHistoryDialog = false

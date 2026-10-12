@@ -573,4 +573,86 @@ class InstallAndBudgetHardeningTest {
             ((buf[offset + 1].toInt() and 0xFF) shl 8) or
             ((buf[offset + 2].toInt() and 0xFF) shl 16) or
             ((buf[offset + 3].toInt() and 0xFF) shl 24)
+
+    // ========================================================================
+    // XAPK / OBB 落位
+    // ========================================================================
+
+    private val installerSource: String =
+        File("src/main/java/com/mixradio/droid/data/ApkInstaller.kt").readText()
+
+    @Test fun `OBB 幂等判据必须比较内容而非 inode`() {
+        // 回归护栏：`existing == readObbIdentity(obb.absolutePath)` 比的是两个**同时存在**的
+        // 文件的 inode，必然不同 → 幂等分支永不可达，重复安装同一 XAPK 稳定走「内容不同」
+        // 失败分支。判据必须是内容（size + sha256）。
+        assertTrue(
+            "幂等分支须用内容签名比较",
+            installerSource.contains("existingSig == readObbContentSignature(obb.absolutePath)")
+        )
+        assertFalse(
+            "不得再用 inode 身份比较两个同时存在的文件",
+            installerSource.contains("existing == readObbIdentity(obb.absolutePath)")
+        )
+        assertTrue(
+            "内容签名须由 size 与 sha256 组成",
+            installerSource.contains("stat -c '%s' \$escaped && sha256sum \$escaped")
+        )
+    }
+
+    @Test fun `多 OBB 部分幂等时不得误删本次落位的 OBB`() {
+        // 回归护栏：finally 判据只比 copiedObbTargets.size，会把「安装前已存在、走幂等分支」
+        // 的目标漏掉，把完整成功路径误判成未全部成功，删掉本次刚落位的 OBB —— 而该 finally
+        // 在 APK 安装之前执行，最终「APK 装好、OBB 却没了」。
+        assertTrue(
+            "finally 判据须把安装前已存在的目标一并计入",
+            installerSource.contains("if (copiedObbTargets.size + preexistingObbTargets.size != obbFiles.size)")
+        )
+    }
+
+    @Test fun `非规范 OBB 兜底命名必须区分 main 与 patch`() {
+        // 回归护栏：XAPK 内条目常写作 main.obb / patch.obb，若都兜底成 main.<vc>.<pkg>.obb，
+        // 第二个目标撞「重复 OBB 目标」，整包安装失败。
+        assertTrue(
+            "兜底命名须区分 main 与 patch",
+            installerSource.contains("val kind = if (obb.name.startsWith(\"patch\", ignoreCase = true)) \"patch\" else \"main\"")
+        )
+        assertTrue(
+            "目标名须拼上 kind",
+            installerSource.contains("\"\$kind.\$versionCode.\$packageName.obb\"")
+        )
+    }
+
+    @Test fun `XAPK 解压暂存不得落在用户可见目录`() {
+        // 回归护栏：暂存放在 XAPK 同目录（通常是 /sdcard/Download），进程被强杀时 finally 不执行，
+        // 会留下含 base 与全部分片的隐藏目录长期堆在用户可见空间。
+        assertTrue(
+            "暂存须落在应用私有 cache",
+            installerSource.contains("val stagingDir = File(context.cacheDir, \".shso_xapk_\${UUID.randomUUID()}\")")
+        )
+        assertFalse(
+            "不得再把暂存放进 XAPK 同目录",
+            installerSource.contains("File(zipFile.parentFile, \".shso_xapk_")
+        )
+        val rootSource = File("src/main/java/com/mixradio/droid/data/RootService.kt").readText()
+        assertTrue(
+            "启动清扫须覆盖 .shso_xapk_ 残留",
+            rootSource.contains("f.name.startsWith(\".shso_xapk_\")")
+        )
+    }
+
+    @Test fun `FileProvider 不得暴露整棵外部存储`() {
+        // 回归护栏：`<external-path name="external" path="." />` 会为整个外部存储签发
+        // content:// URI。当前唯一使用方是安装暂存副本，external-path 已成死配置。
+        val xml = File("src/main/res/xml/file_provider_paths.xml").readText()
+        // 注释里会以文本形式提到该元素，判定前先去掉注释
+        val body = xml.replace(Regex("<!--[\\s\\S]*?-->"), "")
+        assertFalse(
+            "不得为整个外部存储签发 URI",
+            Regex("<external-path[^>]*path=\"\\.\"").containsMatchIn(body)
+        )
+        assertTrue(
+            "只暴露安装暂存目录",
+            body.contains("<cache-path name=\"cache\" path=\"install-confirm/\" />")
+        )
+    }
 }

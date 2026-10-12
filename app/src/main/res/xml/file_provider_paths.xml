@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <!-- 共享外部存储（/sdcard 等），普通用户可读取的 APK 经此暴露给系统安装器 -->
-    <external-path name="external" path="." />
-    <!-- 仅暴露安装暂存目录：installApkViaSystem 的唯一入参就是 cache/install-confirm 下的副本，
-         按整棵 cache 暴露会让应用私有的其它缓存文件同样可被外部按 URI 读取。 -->
+    <!-- 只暴露安装暂存目录：installApkViaSystem 的唯一入参就是 cache/install-confirm 下的副本。
+         此前另有一行 <external-path name="external" path="." />，那是「无 ROOT 直装 /sdcard 上的
+         APK」年代的遗留；现在安装确认弹窗一律先把待装包拷到 cache/install-confirm 并交出该副本，
+         调用方拿不到 /sdcard 路径，external-path 已成死配置，留着等于愿意为整个外部存储签发
+         content:// URI。按最小权限移除；按整棵 cache 暴露同样不可取（会让应用私有的其它缓存文件
+         也可被外部按 URI 读取）。 -->
     <cache-path name="cache" path="install-confirm/" />
 </paths>

@@ -249,7 +249,36 @@ object ExternalOpen {
         }.trim()
         // 纯 `.` / `..` 或净化后为空一律回落，避免把名字用成路径
         if (cleaned.isEmpty() || cleaned.all { it == '.' }) return fallback
-        return cleaned
+        // 限制长度：provider 给出的 DISPLAY_NAME 可能远超 NAME_MAX，reserveUniqueFile 的
+        // createNewFile 会抛 ENAMETOOLONG 并返回 null，而调用方一律报「同名文件过多」——
+        // 用户被引去清理收件箱，怎么清都无效。截断到安全长度（保留扩展名、不切断多字节字符）。
+        val limited = truncateUtf8Bytes(cleaned, MAX_SHARED_NAME_BYTES)
+        if (limited.isEmpty() || limited.all { it == '.' }) return fallback
+        return limited
+    }
+
+    /** 收件箱文件名允许的最大 UTF-8 字节数（NAME_MAX=255，留出 `_<序号>` 与扩展名余量）。 */
+    private const val MAX_SHARED_NAME_BYTES = 200
+
+    /** 按 UTF-8 字节数截断，尽量保留扩展名；拒绝在字符中间截断。 */
+    private fun truncateUtf8Bytes(name: String, maxBytes: Int): String {
+        if (name.toByteArray(Charsets.UTF_8).size <= maxBytes) return name
+        val dot = name.lastIndexOf('.')
+        val ext = if (dot > 0) name.substring(dot) else ""
+        val extBytes = ext.toByteArray(Charsets.UTF_8).size
+        // 扩展名本身占掉过半预算时直接丢弃，否则留不出有意义的基名
+        val keepExt = ext.isNotEmpty() && extBytes * 2 <= maxBytes
+        val stem = if (keepExt) name.substring(0, dot) else name
+        val budget = maxBytes - (if (keepExt) extBytes else 0)
+        var used = 0
+        val sb = StringBuilder()
+        for (ch in stem) {
+            val bytes = ch.toString().toByteArray(Charsets.UTF_8).size
+            if (used + bytes > budget) break
+            sb.append(ch)
+            used += bytes
+        }
+        return sb.toString() + if (keepExt) ext else ""
     }
 
     /**
@@ -442,7 +471,10 @@ object ExternalOpen {
         }
         if (authority == "com.android.providers.downloads.documents") {
             decodeRawDownloadDocumentId(documentId)?.let { candidate ->
-                if (isExternalPathAllowed(candidate)) return candidate
+                // 与 file:// 分支同口径：Downloads provider 给的 raw: 路径可能是 /sdcard/... 形态，
+                // 不归一就会被白名单拒掉，进而降级为一次无谓的全量拷贝（占收件箱空间、多耗时）。
+                val normalized = normalizeSdCardAlias(candidate)
+                if (isExternalPathAllowed(normalized)) return normalized
             }
         }
         // 2) 其余（media / downloads 数字 ID / 带 _data 的 provider）：查询 DATA 列

@@ -488,8 +488,13 @@ object TextCompare {
     suspend fun nextOutputPath(dir: String, currentFilePath: String): String {
         val date = SimpleDateFormat("yyyyMMdd", Locale.ROOT).format(Date())
         val prefix = "文本对比_${date}_"
-        val ext = currentFilePath.substringAfterLast('.', "").let {
-            if (it.isEmpty() || it == currentFilePath) "" else ".$it"
+        // 扩展名必须取自**文件名**而非整条路径：无扩展名文件（Makefile / Dockerfile / hosts 等）
+        // 配上含点的父目录（/storage/emulated/0/Android/data/com.foo/files/）时，
+        // 对整条路径 substringAfterLast('.') 会取出 "foo/files/Makefile"，
+        // 拼出的输出名带多层子目录，落盘必然因父目录不存在而失败。
+        val sourceName = currentFilePath.substringAfterLast('/')
+        val ext = sourceName.substringAfterLast('.', "").let {
+            if (it.isEmpty() || it == sourceName) "" else ".$it"
         }
         val base = if (dir.endsWith("/")) dir else "$dir/"
         // 逐个 `test -e` 递增探测，**不依赖 listFiles**：

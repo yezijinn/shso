@@ -3,8 +3,11 @@
 package com.mixradio.droid.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 /**
  * 历史条目合并规则：相同内容不新增条目，但**来源更强时升级**（自动快照 → 手动保存）。
@@ -58,5 +61,25 @@ class HistoryMergeTest {
         val merged = HistoryMerge.apply(emptyList(), e("a", 1L, DRAFT))!!
         assertEquals(1, merged.size)
         assertEquals("a", merged[0].content)
+    }
+
+    @Test
+    fun `新文件恢复历史不得用空串 key 落盘`() {
+        // 回归护栏：新建未保存的文件没有路径，`currentFilePath ?: ""` 会落成空串 key
+        // （`history:`），把这份内容塞进所有新文件共享的同一个 key —— 既无从取回，
+        // 又会被另一个新文件的恢复操作顶掉。无归属就不写。
+        val s = File("src/main/java/com/mixradio/droid/ui/components/TextEditorDialog.kt").readText()
+        assertTrue(
+            "须先确认路径存在再写历史",
+            s.contains("if (cur != entry.content && path != null)")
+        )
+        assertTrue(
+            "写历史须用非空 path",
+            s.contains("EditHistoryManager.addHistory(path, cur, EditHistoryManager.HistorySource.DRAFT)")
+        )
+        assertFalse(
+            "不得把空串当历史 key",
+            s.contains("addHistory(currentFilePath ?: \"\"")
+        )
     }
 }

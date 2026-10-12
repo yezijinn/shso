@@ -222,7 +222,10 @@ object ApkInstaller {
         if (!file.isFile) return@withContext InstallResult.Failure("文件不存在: $xapkPath")
 
         // 1. 解压 XAPK（zip4j，zip 条目名可能含中文，需 UTF-8）
-        val stagingDir = File(File(xapkPath).parentFile ?: File(TMP_DIR), ".shso_xapk_${UUID.randomUUID()}")
+        // 解压暂存放应用私有 cache，不放 XAPK 所在目录：后者通常是 /sdcard/Download（用户可见），
+        // 进程被强杀 / OOM 时 finally 不执行，会留下一整份含 base 与全部分片的隐藏目录（数十 MB）
+        // 长期堆在用户目录里。放 cache 后即便残留也只占应用私有空间，且纳入启动清扫。
+        val stagingDir = File(context.cacheDir, ".shso_xapk_${UUID.randomUUID()}")
         val installedObbTargets = mutableListOf<String>()
         // 安装前就存在、走幂等分支而**未被本次改动**的目标 OBB。
         // 必须与 installedObbTargets 严格分开：后者是「失败该清理」清单。
@@ -346,11 +349,15 @@ object ApkInstaller {
                 val copiedObbTargets = mutableListOf<String>()
                 try {
                     for (obb in obbFiles) {
-                        // 已符合 main.<vc>.<pkg>.obb 命名则原样拷贝，否则按规范重命名
+                        // 已符合 main.<vc>.<pkg>.obb / patch.<vc>.<pkg>.obb 命名则原样拷贝；
+                        // 否则按规范重命名，且**必须区分 main 与 patch**：XAPK 内条目常写作
+                        // main.obb / patch.obb，若都兜底成 main.<vc>.<pkg>.obb，第二个会撞上
+                        // 「重复 OBB 目标」而让整包安装失败。
                         val targetName = if (obb.name.matches(Regex("^(main|patch)\\.\\d+\\..+\\.obb$"))) {
                             obb.name
                         } else {
-                            "main.$versionCode.$packageName.obb"
+                            val kind = if (obb.name.startsWith("patch", ignoreCase = true)) "patch" else "main"
+                            "$kind.$versionCode.$packageName.obb"
                         }
                         val targetPath = "$obbDir/$targetName"
                         if (targetPath in copiedObbTargets) {
@@ -360,12 +367,16 @@ object ApkInstaller {
                             obb.absolutePath, targetPath, obbTransactionLock, obbLockToken
                         )
                         if (copyCode == OBB_EXIT_ALREADY_EXISTS) {
-                            // 目标已存在：同身份说明期望的最终状态已经成立（重复安装同一 XAPK），
-                            // 视为成功而不是失败。此前这里直接失败且脚本一个字节都没输出，
+                            // 目标已存在：**内容相同**才说明期望的最终状态已经成立（重复安装同一
+                            // XAPK），视为成功而不是失败。此前这里直接失败且脚本一个字节都没输出，
                             // 界面只显示「复制 OBB 失败: 」，用户既看不出原因也没有自愈路径，
                             // 该 XAPK 从此再也装不上。
-                            val existing = readObbIdentity(targetPath)
-                            if (existing != null && existing == readObbIdentity(obb.absolutePath)) {
+                            //
+                            // 判据必须是内容而非文件身份：目标与本次解压出的 OBB 是两个同时存在的
+                            // 不同文件，inode 必然不同，用 inode 比较会恒为 false，幂等分支永不可达，
+                            // 重复安装便稳定落入下面的「内容不同」失败分支。
+                            val existingSig = readObbContentSignature(targetPath)
+                            if (existingSig != null && existingSig == readObbContentSignature(obb.absolutePath)) {
                                 // 关键：**不得**登记进 installedObbTargets。
                                 // 那张表是「本次安装亲手落位、失败时应清理」的清单，
                                 // 而这个文件是**安装前就存在**的用户数据（copyObbAtomically
@@ -395,7 +406,11 @@ object ApkInstaller {
                     }
                 } finally {
                     // Do not leave a partial OBB set when any copy fails or is cancelled.
-                    if (copiedObbTargets.size != obbFiles.size) {
+                    // 判据必须把「安装前已存在、走幂等分支的目标」一并计入：它们不计入
+                    // copiedObbTargets，只比 copiedObbTargets.size 会把「多 OBB 且部分幂等」
+                    // 的完整成功路径误判成未全部成功，删掉本次刚落位的 OBB —— 而这段 finally
+                    // 在 APK 安装之前执行，最终「APK 装好、OBB 却没了」。
+                    if (copiedObbTargets.size + preexistingObbTargets.size != obbFiles.size) {
                         // 走 removeOwnedObb（锁校验 + inode:size:mtime 校验），不用裸 rm -f：
                         // 从落位到此刻已过去一个最长 300s 的 cp 窗口，期间游戏自身/文件
                         // 管理器/旧版 shso 若按同规范名重建了该文件，无校验的 rm 会把它删掉。
@@ -497,6 +512,29 @@ object ApkInstaller {
 
     /** 身份格式：`<inode>:<size>:<mtime>`，mtime 段允许空格、点、冒号、时区偏移与正负号。 */
     private val OBB_IDENTITY_REGEX = Regex("\\d+:\\d+:.+")
+
+    /**
+     * OBB 内容签名 `<size>:<sha256>`，用于判定「两个不同路径的文件内容是否一致」。
+     *
+     * 不能用 [readObbIdentity] 代替：inode 标识的是文件本身而非内容，两个同时存在的
+     * 文件 inode 必然不同，拿它判「内容相同」恒为 false。
+     * 任一步失败返回 null，调用方按「内容不同」处理（fail-closed，不覆盖已有数据）。
+     */
+    private fun readObbContentSignature(path: String): String? {
+        val escaped = RootService.escapeShellArg(path)
+        val (code, output) = RootService.runCommandSync(
+            "stat -c '%s' $escaped && sha256sum $escaped 2>/dev/null", INSTALL_TIMEOUT_MS
+        )
+        if (code != 0) return null
+        val lines = output.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+        if (lines.size < 2) return null
+        val size = lines[0].takeIf { OBB_SIZE_REGEX.matches(it) } ?: return null
+        val digest = lines[1].substringBefore(' ').takeIf { OBB_SHA256_REGEX.matches(it) } ?: return null
+        return "$size:${digest.lowercase(Locale.ROOT)}"
+    }
+
+    private val OBB_SIZE_REGEX = Regex("\\d+")
+    private val OBB_SHA256_REGEX = Regex("[0-9a-fA-F]{64}")
 
     /**
      * 以「单文件 + O_EXCL 原子创建」实现 OBB 事务锁。
