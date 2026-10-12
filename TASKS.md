@@ -95,6 +95,8 @@
       `KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` 时为 `true` 并打 warning），不再产出 `sign_args`；
       单元测试步与编译步都改为 `-PuseDebugSigning="$USE_DEBUG_SIGNING"` 显式传入，测试步另补
       `KEYSTORE_FILE` / `KEYSTORE_PASSWORD` / `KEY_ALIAS_PASSWORD` 三个 env。开关只在一处产出。
+      同一遗漏也存在于 `publish-release.yml` 的单元测试步（那里 Secret 是必需项，故只补同样的三个
+      env，不引入开关），否则发布路径一样倒在配置期。
 - [x] **本地对照**：`local.properties` 临时替换为只含 `sdk.dir` 后
       `:app:testDebugUnitTest -PuseDebugSigning=true` 通过；不带该属性即复现线上那条
       `签名密码未配置` 报错。

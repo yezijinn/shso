@@ -92,6 +92,12 @@ jobs:
       - name: 运行单元测试
         # 单测含大量源码契约断言（专门防回归删分支，如权限矩阵、fail-closed 校验），
         # 发布路径必须跑，失败即中止，避免编译通过但破坏契约的改动进入 Release。
+        # 测试不签名，但 app/build.gradle.kts 的 signingConfigs 在配置期就读凭据，
+        # 故此处要与编译步一样把凭据喂给 Gradle，否则配置阶段直接报「签名密码未配置」。
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: ./gradlew testDebugUnitTest --no-configuration-cache
 
       # 不带 -PoverridePackage → applicationId 保持作者原包名 com.mixradio.droid
