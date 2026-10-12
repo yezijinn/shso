@@ -68,7 +68,7 @@ Define success criteria; verify in loops.
 | Item | Value |
 |---|---|
 | Language | Kotlin 2.4.0 (JVM Toolchain 21) |
-| UI | AndroidX Compose Material 3 (compose-bom 2026.08.00, `ui/theme/Aurora*`) |
+| UI | AndroidX Compose Material 3 (compose-bom 2026.09.00, `ui/theme/Aurora*`) |
 | Build | Gradle KTS + AGP 9.2.1 + Version Catalog (`gradle/libs.versions.toml`) |
 | Target | minSdk 26 / targetSdk 35 / compileSdk 37, applicationId `com.mixradio.droid` |
 | DI | No framework; global `object` singletons (`RootService`, `AppSettings`, etc.) |

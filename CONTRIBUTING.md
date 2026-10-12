@@ -64,7 +64,7 @@ Material 3 原生控件，极光玻璃暗色主题，无外部 UI 组件库。
 | 项 | 值 |
 |---|---|
 | 语言 | Kotlin 2.4.0（JVM Toolchain 21） |
-| UI | AndroidX Compose Material 3（compose-bom 2026.08.00，`ui/theme/Aurora*`） |
+| UI | AndroidX Compose Material 3（compose-bom 2026.09.00，`ui/theme/Aurora*`） |
 | 构建 | Gradle KTS + AGP 9.2.1 + Version Catalog（`gradle/libs.versions.toml`） |
 | 目标 | minSdk 26 / targetSdk 35 / compileSdk 37，applicationId `com.mixradio.droid` |
 | 依赖注入 | 无框架，全局 `object` 单例（`RootService`、`AppSettings` 等） |

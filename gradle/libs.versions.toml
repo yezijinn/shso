@@ -1,23 +1,12 @@
 [versions]
 agp = "9.2.1"
 kotlin = "2.4.0"
-kotlinx-serialization = "1.11.0"
 
-about-libraries = "15.2.0"
 androidx-activity = "1.13.0"
-androidx-collection = "1.6.0"
-androidx-navigation3 = "1.1.7"
 androidx-navigationevent = "1.1.2"
-jetbrains-compose-multiplatform = "1.12.0"
-jetbrains-compose-window-size = "1.9.0"
 androidx-compose-bom = "2026.09.00"
-jetbrains-dokka = "2.2.0"
-jetbrains-compose-hotReload = "1.2.0"
-jetbrains-lifecycle = "2.10.0"
-materialKolor-utilities = "4.1.1"
-spotless = "8.8.0"
+androidx-lifecycle = "2.11.0"
 
-junit = "1.3.0"
 junit4 = "4.13.2"
 coreKtx = "1.19.0"
 coroutines = "1.10.1"
@@ -28,38 +17,16 @@ zstdJni = "1.5.7-16"
 # 文本编辑器引擎（MP-Manager 同款）：自绘 CodeEditor View + 行索引增量 Content，源 Maven Central。
 # 许可为 LGPL-2.1：仅作库依赖使用，不改动其源码；分发需随附其许可声明。
 soraEditor = "0.23.6"
-espresso-core = "3.7.0"
-uiautomator = "2.4.0"
-benchmark-macro-junit4 = "1.5.0"
-baselineprofile = "1.5.0"
-profileinstaller = "1.4.1"
 
 [libraries]
-android-gradle-plugin = { module = "com.android.tools.build:gradle", version.ref = "agp" }
-kotlin-gradle-plugin = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", version.ref = "kotlin" }
-spotless-plugin-gradle = { module = "com.diffplug.spotless:spotless-plugin-gradle", version.ref = "spotless" }
-kotlinx-serialization-core = { module = "org.jetbrains.kotlinx:kotlinx-serialization-core", version.ref = "kotlinx-serialization" }
-
-aboutlibraries-core = { module = "com.mikepenz:aboutlibraries-core", version.ref = "about-libraries" }
 androidx-activity = { module = "androidx.activity:activity-compose", version.ref = "androidx-activity" }
-androidx-collection = { module = "androidx.collection:collection", version.ref = "androidx-collection" }
-androidx-navigation3-runtime = { module = "androidx.navigation3:navigation3-runtime", version.ref = "androidx-navigation3" }
 androidx-navigationevent = { module = "androidx.navigationevent:navigationevent-compose", version.ref = "androidx-navigationevent" }
-jetbrains-compose-foundation = { module = "org.jetbrains.compose.foundation:foundation", version.ref = "jetbrains-compose-multiplatform" }
-jetbrains-compose-components-resources = { module = "org.jetbrains.compose.components:components-resources", version.ref = "jetbrains-compose-multiplatform" }
-jetbrains-compose-material3 = { module = "org.jetbrains.compose.material3:material3", version.ref = "jetbrains-compose-multiplatform" }
-jetbrains-compose-material-icons-extended = { module = "org.jetbrains.compose.material:material-icons-extended", version.ref = "jetbrains-compose-multiplatform" }
-jetbrains-compose-window-size = { module = "org.jetbrains.compose.material3:material3-window-size-class", version.ref = "jetbrains-compose-window-size" }
-jetbrains-lifecycle-runtime = { module = "org.jetbrains.androidx.lifecycle:lifecycle-runtime", version.ref = "jetbrains-lifecycle" }
-jetbrains-lifecycle-runtime-compose = { module = "org.jetbrains.androidx.lifecycle:lifecycle-runtime-compose", version.ref = "jetbrains-lifecycle" }
 # AndroidX Compose（Google Maven 可达，替代已下线的 org.jetbrains.compose.* 制品；导入命名空间不变仍为 androidx.compose.*）
 androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "androidx-compose-bom" }
 androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
 androidx-compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
 androidx-compose-foundation = { module = "androidx.compose.foundation:foundation" }
-androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version = "2.11.0" }
-materialKolor-utilities = { module = "com.materialkolor:material-color-utilities", version.ref = "materialKolor-utilities" }
-
+androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "androidx-lifecycle" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
 commons-compress = { module = "org.apache.commons:commons-compress", version.ref = "commonsCompress" }
@@ -74,23 +41,6 @@ sora-editor = { module = "io.github.Rosemoe.sora-editor:editor" }
 # Monarch 语法高亮（引擎，语法定义由本项目内置 JSON 提供）
 sora-language-monarch = { module = "io.github.Rosemoe.sora-editor:language-monarch" }
 
-androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junit" }
-androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espresso-core" }
-androidx-uiautomator = { group = "androidx.test.uiautomator", name = "uiautomator", version.ref = "uiautomator" }
-androidx-benchmark-macro-junit4 = { group = "androidx.benchmark", name = "benchmark-macro-junit4", version.ref = "benchmark-macro-junit4" }
-androidx-profileinstaller = { group = "androidx.profileinstaller", name = "profileinstaller", version.ref = "profileinstaller" }
-
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" } # AGP
-androidKotlinMultiplatformLibrary = { id = "com.android.kotlin.multiplatform.library" } # AGP
-kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform" } # KGP
-kotlinSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
-
-aboutLibraries = { id = "com.mikepenz.aboutlibraries.plugin", version.ref = "about-libraries" }
 composeCompiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
-composeHotReload = { id = "org.jetbrains.compose.hot-reload", version.ref = "jetbrains-compose-hotReload" }
-composeMultiplatform = { id = "org.jetbrains.compose", version.ref = "jetbrains-compose-multiplatform" }
-dokka = { id = "org.jetbrains.dokka", version.ref = "jetbrains-dokka" }
-
-androidTest = { id = "com.android.test" } # AGP
-baselineprofile = { id = "androidx.baselineprofile", version.ref = "baselineprofile" }
