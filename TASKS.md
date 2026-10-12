@@ -76,11 +76,29 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`c2cb7db6…`）；双端 tag 与 Release 的目标提交均已对齐 A125 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909869 字节，双端下载 sha256 与本地一致（`8223f736…`）；双端 tag 与 Release 的目标提交均已对齐 A126 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 
 ---
 
 ## 待办
+
+### A126. 构建配置残留与权限文档漂移（BUG-CONSIST-194 / 195）（2026-10-12）
+
+复核 `docs/AI-1-BUG.md`（已到第 233 轮）末尾剩余 OPEN，处置两条 P3。
+
+- [x] **BUG-CONSIST-194（原 AI-1-BUG-CONSIST-174）**：`docs/PROJECT.md` 第 116、199 行称
+  「`.so` / 二进制执行前 `chmod 755`」，与实现（root `a+x`、非 root `u+x`，只补执行位并在执行后
+  按记录的原权限还原；`.sh` 经 `sh` 运行不改权限）不符。按实现改写两处。
+- [x] **BUG-CONSIST-195（原 AI-1-BUG-CONSIST-175）**：`gradle.properties` 保留 KMP/iOS/Native
+  模板项（`xcodeproj`、`kotlin.mpp.*`、`kotlin.native.*`、`kotlin.incremental.{multiplatform,js,js.klib,native,wasm}`、
+  `compose.experimental.macos`、`kotlin.apple.xcodeCompatibility.nowarn`），而工程为纯 Android
+  （`settings.gradle.kts` 仅 `include(":app")`）。删除上述无用项，保留 `org.gradle.*`、`android.*`、
+  `kotlin.code.style`、`kotlin.incremental`/`.jvm.fir`。
+- [x] **AI-1-BUG-CONSIST-118 维持 BY_DESIGN**（同上轮）；093 BY_DESIGN、148 WONTFIX 不变。
+- [x] 新增回归护栏：`ReleaseGateRegressionTest.构建配置不得残留多平台模板项`。
+- [x] 单测 619 通过 / 0 失败 / 1 跳过；`assembleRelease` + `verifyReleasePayload` 通过。
+- [x] APK 与上版逐条目比对 39/39 内容哈希一致（仅容器时间戳不同）；root 真机安装启动正常，`logcat` 无 FATAL。
+- [x] 提交，tag `20261012` 重指该提交，双端 Release 资产替换并核验三端 sha256 一致。
 
 ### A125. 静默失败面清扫 + AI-1 残留项落地（BUG-CONSIST-191 / 192 / BUG-SEC-193）（2026-10-12）
 
