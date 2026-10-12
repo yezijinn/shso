@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A127） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A129） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 619 tests / 0 failures / 1 skipped |
+| 单元测试 | 626 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -81,6 +81,38 @@
 ---
 
 ## 待办
+
+### A129. 设置页新增「隐藏底栏」与「左右提示」（2026-10-12）
+
+需求：左右滑屏切换导航页面的能力保留；设置页新增两个开关 —— 「隐藏底栏」隐藏底部的主页 / 终端 / 文件 / 设置，
+让每一页占满屏幕高度（默认关闭）；「左右提示」勾选则每次冷启动提示「左右滑屏可切换菜单」，
+不勾选则永久不再提示（默认开启）。
+
+- [x] 设置存储：`AppSettings` 新增 `hideDockBar`（键 `hide_dock_bar`，默认 false）、
+  `showSwipeHint`（键 `show_swipe_hint`，默认 true）。setter 命名 `updateHideDockBar` /
+  `updateShowSwipeHint` —— 与属性同名会被 JVM 视为属性 setter 的同签名重复定义（`Platform
+  declaration clash`），且改名前的报错会连带一批虚假的 `Unresolved reference` 干扰定位。
+- [x] 底栏门控：`MainContainer` 的 DockBar 绘制条件由 `!WindowInsets.isImeVisible` 改为
+  `!WindowInsets.isImeVisible && !appSettings.hideDockBar`。
+- [x] 预留高度换算：`DockBar.kt` 新增顶层 `dockBarBottomPadding(hideDockBar)` → `0.dp` / `56.dp`，
+  主页、文件页、设置页原先写死的 `padding(bottom = 56.dp)` 改为调用；终端页底部留白改为
+  `if (isImeVisible || appSettings.hideDockBar) 0.dp else 58.dp`。漏掉这一步的表现是「底栏没了、
+  原位仍留一条空白带」，与需求相反。
+- [x] 冷启动提示：文件级 `@Volatile swipeHintShown` + `LaunchedEffect(appSettings.showSwipeHint)`
+  弹一次。用进程级标记而非 `remember`/`rememberSaveable` —— 按需求是「每次冷启动一次」，
+  转屏、深色模式切换等配置变更导致的 Activity 重建不应重弹。
+- [x] 设置入口：`SettingsPagePartials.kt` 新增 `SettingsInterfaceGroup`（两个 `AuroraSwitchPreference`），
+  挂在设置页「文件行为」组之后。
+- [x] 护栏测试：`ConsistencyCleanupRegressionTest` 新增「隐藏底栏与左右提示两个开关必须真正生效」，
+  断言两个键名与默认值、底栏门控表达式、提示文案、进程级标记、`dockBarBottomPadding` 定义与三页
+  调用（且三页不得再写死 `56.dp`）、终端页留白表达式。两个开关都跨「存储 → Activity → 各页布局」
+  三层，任一层漏接都表现为「开关点得动、界面没变化」。
+- [x] 单测 626 通过 / 0 失败 / 1 跳过；`assembleRelease` + `verifyReleasePayload` 通过（APK 2909869 字节）。
+- [x] 真机（root）：开启「隐藏底栏」后反复冷启动，`uiautomator` 层级中底栏四页签（主页 / 终端 / 文件 / 设置）
+  始终缺席、仅剩页标题；关闭后四页签回归。关闭「左右提示」后冷启动探针 60 次采样
+  `toast_hits=0`；恢复默认（隐藏底栏关、左右提示开）后同一探针 `toast_hits=37`，
+  `dumpsys window` 命中 `Toast` 窗口（`package=com.mixradio.droid`、`appop=TOAST_WINDOW`）。
+  左右滑屏切页全程可用（三连滑由主页抵设置页）。
 
 ### A128. 冷启动列表被 ROOT 探测阻塞、列举无超时与构建配置残留（2026-10-12）
 
