@@ -4,6 +4,8 @@
 package com.mixradio.droid.data
 
 import java.io.File
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -37,6 +39,7 @@ class PerfAndNestingRegressionTest {
     private val editor = src("ui/components/TextEditorDialog.kt")
     private val homePage = src("ui/pages/HomePage.kt")
     private val externalOpen = src("data/ExternalOpen.kt")
+    private val apkExtractor = src("data/ApkExtractor.kt")
 
     // ── 反应慢：FileItem 的派生属性必须是构造期一次算好 ──────────────────
 
@@ -261,5 +264,61 @@ class PerfAndNestingRegressionTest {
         // `pm install` 超时分支刻意保留临时包（无法确认 su 是否仍在读它），
         // 故清扫只能按时间兜底：删掉仍在安装的文件会让安装读到被删文件。
         assertTrue("只能清理超过 1 小时未变动的", body.contains("-mmin +60"))
+    }
+
+    // ── 数值边界：预分配容量与行数上限 ──────────────────────────────
+
+    @Test fun `行集合预分配容量必须有界`() {
+        // Float 除法在 expected ≥ 1.61e9 时钳到 Int.MAX_VALUE；HashSet/HashMap 首次 put
+        // 即按该容量分配 2^30 个槽（约 8GB）直接 OOM。
+        assertEquals(16, TextCompare.hashCapacity(0))
+        assertEquals(22, TextCompare.hashCapacity(16))
+        assertTrue(
+            "超大行数不得放大成 GC 级预分配",
+            TextCompare.hashCapacity(Int.MAX_VALUE) <= (1 shl 22)
+        )
+    }
+
+    @Test fun `共同行对比超行数上限必须拒绝而不是 OOM`() {
+        // 基准文件的每一行都要同时驻留 HashSet 与 HashMap，行数无上限时是必然 OOM；
+        // 判据取两文件的较小行数（基准文件即较小者）。
+        val dir = Files.createTempDirectory("shso_cmp_limit").toFile()
+        try {
+            val lines = "\n".repeat(1_000_001)
+            val a = File(dir, "a.txt").apply { writeText(lines) }
+            val b = File(dir, "b.txt").apply { writeText(lines) }
+            var message: String? = null
+            try {
+                TextCompare.run(
+                    dir.absolutePath, a.absolutePath, b.absolutePath,
+                    File(dir, "out.txt").absolutePath,
+                    StandardCharsets.UTF_8, TextCompare.Mode.COMMON_LINES, {}, { false }
+                )
+            } catch (e: TextCompare.CompareException) {
+                message = e.message
+            }
+            assertTrue(
+                "超限必须抛 CompareException 并说明原因，实际: $message",
+                message != null && message.contains("上限")
+            )
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test fun `提取 APK 的 root cp 退出码不得被后续命令覆盖`() {
+        // 分号串接时整行退出码取自最后的 test -s，而重复提取（同名覆盖刷新）时目标
+        // 仍是旧内容、size>0，cp 失败也能通过校验并汇报成功。
+        val start = apkExtractor.indexOf("private fun copyOne(")
+        assertTrue("应能找到 copyOne", start > 0)
+        val body = apkExtractor.substring(start, start + 1200)
+        val rcAt = body.indexOf("rc=\\\$?")
+        val exitAt = body.indexOf("exit \\\$rc")
+        assertTrue("cp 退出码必须先落变量", rcAt > 0)
+        assertTrue("整行退出码必须由 cp 决定", exitAt > rcAt)
+        assertTrue(
+            "属主/上下文等尽力而为的命令须在判据之前",
+            body.lastIndexOf("restorecon") in rcAt until exitAt
+        )
     }
 }

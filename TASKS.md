@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A118） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 613 tests / 0 failures / 1 skipped |
+| 单元测试 | 616 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -81,6 +81,41 @@
 ---
 
 ## 待办
+
+### A122. `docs/AI-1-BUG.md` 长期残留项落地：提取退出码 + 对比行数上限（2026-10-12）
+
+`docs/AI-1-BUG.md` 已推进到第 180 轮（连续多轮标注 FINAL、内容为「复核无缺陷」留档），其「剩余项」表
+却长期停在同两条 P3 —— `AI-1-BUG-EDGE-169` 与 `AI-1-BUG-LOGIC-170`。两条在此前多轮复核中均被判
+真实缺陷（非误判、非 BY_DESIGN），只是优先级低于已修项而一直挂着，A122 一并落地。
+`docs/AI-2-BUG.md` 无新增（止于 §8.5）。
+
+- [x] **P3 · cp 失败被行尾 `test -s` 掩盖（BUG-LOGIC-189 / 原 AI-1-BUG-LOGIC-170）**：
+  提取命令 `cp -f $src $dst && chmod 0644 $dst; chown …; restorecon …; test -s $dst` 用 `;` 串接，
+  整行退出码取自最后的 `test -s`，`cp` 的失败被完全覆盖。首次提取（目标不存在）时 `test -s` 才如实报错，
+  所以缺陷只在「重复提取刷新」这个正常场景暴露：`collisionSuffix` 对同包返回空串、目标复用同名文件，
+  `cp` 失败后旧文件仍在（`size > 0`），`code == 0` 且 `dst.length() > 0` 两处校验同时通过 → 报「已提取」，
+  用户拿到旧版本或磁盘写满时的半截文件。修法：`rc=$?` 先记录 `cp && chmod` 的成败，属主/上下文等
+  尽力而为的命令与判据排在其后，末行 `exit $rc` 让 `cp` 的失败直达调用方；空文件校验仍由 Kotlin 侧
+  `dst.length() <= 0L` 兜底。
+- [x] **P3 · 共同行对比行数无上限（BUG-EDGE-190 / 原 AI-1-BUG-EDGE-169）**：COMMON_LINES 需把基准文件
+  每一行同时放进 `HashSet` 与 `HashMap`，链路上却没有行数或容量上限。`hashCapacity` 用 Float 除法，
+  `expected ≥ 约 1.61e9` 时钳到 `Int.MAX_VALUE`，容器首次 `put` 即按 2^30 槽分配（约 8GB）→
+  `OutOfMemoryError`（`Error` 不被 `catch (e: Exception)` 接住，直接崩进程）；`countLines()` 以 Int
+  累加，约 21 亿行处溢出为负、连带选反基准文件。修法：`countLines()` 返回 `Long`；基准行数
+  （两文件取小，即真正构建集合的那个）超 100 万即抛 `CompareException` 并提示改用逐行对比；
+  `hashCapacity` 结果 `coerceIn(16, 1 shl 22)`。守卫排在集合分配之前，超限文件不会先吃一遍内存。
+- [x] **回归测试**：`PerfAndNestingRegressionTest` 新增 3 例 ——
+  `提取 APK 的 root cp 退出码不得被后续命令覆盖`（源码断言 rc → restorecon → 判据 → `exit $rc` 的顺序）、
+  `共同行对比超行数上限必须拒绝而不是 OOM`（两文件各 100 万零 1 行）、
+  `行集合预分配容量必须有界`（`hashCapacity(Int.MAX_VALUE) <= 1 shl 22`）。
+- [x] **验证**：`testDebugUnitTest` 616 tests / 0 failures / 1 skipped；`assembleRelease` +
+  `verifyReleasePayload` 通过。root 真机（PACM00 / Android 10）：
+  - 退出码语义：源不存在且目标预先存在时，旧形态退出码 `0`、新形态 `1`；成功路径（源为
+    `/system/framework/framework-res.apk`）退出码 `0`、目标 23958375 字节。
+  - 完整链路：文件页设置弹窗 → 提取 APK → 提取 `com.standardar.service` →「已提取到 Download：1 个文件」，
+    产物 `ARunit-30.APK` 38865615 字节；对同一应用再提取一次（覆盖刷新路径）仍报成功、字节数不变，
+    `logcat` 无异常。
+  - 行数上限一条无真机证据：编辑器无法正常装载百万行文本，验证落在单测。
 
 ### A119. 编辑器设置面板滚动范围收窄（BUG-COMPAT-188）（2026-10-12）
 

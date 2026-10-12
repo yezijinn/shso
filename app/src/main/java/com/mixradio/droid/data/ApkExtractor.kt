@@ -198,9 +198,11 @@ object ApkExtractor {
             val escapedDst = RootService.escapeShellArg(dst.absolutePath)
             // cp 后修正属主与上下文：root 直接写入 /storage 的文件若属主/上下文不对，
             // 其他应用与媒体库可能看不到（chown/restorecon 失败不阻断，属尽力而为）。
-            val cmd = "cp -f $escapedSrc $escapedDst && chmod 0644 $escapedDst; " +
+            // 退出码必须由 cp 决定：分号串接时整行退出码取自最后的 test -s，而重复提取
+            // （同名覆盖刷新）时目标仍留着旧内容、size>0，cp 失败也能通过 test -s 报成功。
+            val cmd = "cp -f $escapedSrc $escapedDst && chmod 0644 $escapedDst; rc=\$?; " +
                 "chown $myId:$myId $escapedDst 2>/dev/null; restorecon $escapedDst 2>/dev/null; " +
-                "test -s $escapedDst"
+                "[ \$rc -eq 0 ] && test -s $escapedDst; exit \$rc"
             val (code, out) = RootService.runCommandSync(cmd, 120_000L)
             if (code != 0 || dst.length() <= 0L) {
                 return OneResult(false, "复制失败: ${out.trim().take(200).ifEmpty { src }}")

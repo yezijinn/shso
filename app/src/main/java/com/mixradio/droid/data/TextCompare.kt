@@ -52,6 +52,10 @@ object TextCompare {
     private const val PROGRESS_STEP = 5000L
     /** 编码探测取样字节数：与编辑器首块同量级，足以判定 BOM / NUL 分布 / 可解码性。 */
     private const val CHARSET_PROBE_BYTES = 1 shl 20
+    /** 共同行对比的基准文件行数上限（超限只能改用逐行对比，见该模式入口）。 */
+    private const val MAX_COMMON_LINES = 1_000_000L
+    /** 行集合预分配容量上限，防超大 expected 一次性分配 GB 级数组。 */
+    private const val MAX_HASH_CAPACITY = 1 shl 22
     private const val MISSING = "<缺失>"
 
     /**
@@ -117,9 +121,17 @@ object TextCompare {
                 Mode.COMMON_LINES -> {
                     val linesA = srcA.countLines()
                     val linesB = srcB.countLines()
+                    // 基准文件的每一行都要同时驻留 HashSet 与 HashMap（约百字节/行），
+                    // 行数无上限时是必然 OOM；入口拦下并引导改用流式的逐行对比。
+                    val baseLines = minOf(linesA, linesB)
+                    if (baseLines > MAX_COMMON_LINES) {
+                        throw CompareException(
+                            "共同行对比上限 $MAX_COMMON_LINES 行（该文件 $baseLines 行），请改用逐行对比"
+                        )
+                    }
                     // 行数较少者作为「基准文件」：构建行集合，并同时记录每行最小行号
                     val (small, large) = if (linesA <= linesB) srcA to srcB else srcB to srcA
-                    val cap = hashCapacity(minOf(linesA, linesB).coerceAtLeast(16))
+                    val cap = hashCapacity(baseLines.coerceAtLeast(16L).toInt())
                     val setSmall = HashSet<String>(cap)
                     val minInSmall = HashMap<String, Int>(cap)
 
@@ -187,7 +199,13 @@ object TextCompare {
         return Result(outPath, processed, hits, elapsed, false)
     }
 
-    private fun hashCapacity(expected: Int): Int = (expected / 0.75f).toInt() + 1
+    /**
+     * 预分配容量。`expected` 来自行数，而 HashMap/HashSet 首次 put 会按容量一次性分配数组：
+     * Float 除法在 expected 超过约 1.61e9 时会钳到 Int.MAX_VALUE，进而分配 2^30 个槽（约 8GB）
+     * 直接 OOM，故上限必须有界。
+     */
+    internal fun hashCapacity(expected: Int): Int =
+        ((expected / 0.75f).toInt() + 1).coerceIn(16, MAX_HASH_CAPACITY)
 
     /**
      * 行分隔符在给定编码下占用的字节宽度。
@@ -371,12 +389,12 @@ object TextCompare {
             }
         }
 
-        fun countLines(): Int {
-            if (dataStart >= size) return 0
+        fun countLines(): Long {
+            if (dataStart >= size) return 0L
             val cs = detectedCharset
             val unit = lineUnitWidth(cs)
             val lf = lineBreakBytes(cs, LF)
-            var count = 1
+            var count = 1L
             var i = dataStart
             while (i < size) {
                 if (i + lf.size <= size) {
