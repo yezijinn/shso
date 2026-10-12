@@ -4,13 +4,15 @@
 package com.mixradio.droid.data
 
 import java.io.File
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
  * 添加文件入口（同名目标）、ROOT 探测回收、编辑器高亮阈值、FileProvider 暴露面、
- * 主题冷启动底色、文件动作作用域与移动冲突策略的源码契约护栏。
+ * 主题冷启动底色、文件动作作用域与移动冲突策略、编辑历史随文件动作回收与迁移、
+ * 共享存储根的按用户取值等源码契约护栏。
  *
  * 这些缺陷的共同点是「不报错、不崩溃，只在特定时序/特定路径下静默出错」，
  * 行为验证要真实共享存储、真实 su 与真实旋屏，单测只能把源码结构钉住，
@@ -161,6 +163,90 @@ class PathAndActionHardeningTest {
             filePage.contains("onConflict = MoveDestinationConflict.SKIP")
         )
     }
+
+    // ---------- 编辑历史随文件动作回收与迁移 ----------
+
+    @Test fun `删除成功必须回收该路径的编辑历史`() {
+        // 历史键以绝对路径命名，删除后不回收就留下永不释放的 prefs 条目；
+        // 删目录时其下每个文件的历史也各占一个键。
+        val body = rootFileManager.substringAfter("suspend fun delete(")
+            .substringBefore("suspend fun copyFile(")
+        assertTrue(
+            "删除成功后必须回收该路径的编辑历史",
+            body.contains("EditHistoryManager.forget(path)")
+        )
+        val hooks = body.split("return@withContext removed()").size - 1
+        assertTrue(
+            "rm -rf / 符号链接 / Java 回退三条成功路径都要经过 removed()，实际=$hooks",
+            hooks >= 3
+        )
+        assertFalse(
+            "仍有未接回收的裸成功返回",
+            body.contains("return@withContext Pair(true, \"删除成功\")")
+        )
+    }
+
+    @Test fun `重命名与移动必须把编辑历史迁到新路径`() {
+        val renameBody = rootFileManager.substringAfter("suspend fun rename(oldPath")
+            .substringBefore("suspend fun moveFile(")
+        assertTrue(
+            "历史键仍指向旧路径时，重命名等于让该文件的历史凭空消失",
+            renameBody.contains("EditHistoryManager.moveHistory(oldPath, newPath)")
+        )
+        assertEquals(
+            "mv 与 File.renameTo 两条成功路径都要迁移",
+            2, renameBody.split("return@withContext renamed()").size - 1
+        )
+
+        val moveBody = rootFileManager.substringAfter("suspend fun moveFile(")
+            .substringBefore("suspend fun moveDestinationCollides(")
+        assertTrue(
+            "冲突改名后实际落点是 finalPath，历史必须跟到 finalPath 而非计划中的目标目录",
+            moveBody.contains("EditHistoryManager.moveHistory(sourcePath, finalPath)")
+        )
+        assertEquals(
+            "renameTo 与 mv 两条成功路径都要迁移",
+            2, moveBody.split("return@withContext moved()").size - 1
+        )
+    }
+
+    // ---------- 多用户：共享存储根 ----------
+
+    @Test fun `共享存储根必须运行时取值而非写死 user 0`() {
+        // 系统按 userId 挂载共享存储：主用户 /storage/emulated/0，次用户 /storage/emulated/10。
+        // 写死 0 会让次用户下的提取落点、收件箱、文件页起点与「内部存储」显示指向别人的存储。
+        val pathDisplay = root("app/src/main/java/com/mixradio/droid/data/PathDisplay.kt")
+        assertTrue(
+            "共享存储根须按当前用户推导",
+            pathDisplay.contains("Environment.getExternalStorageDirectory()")
+        )
+        assertTrue(
+            "推导结果须校验形状，个别 ROM 的异常路径不得进白名单",
+            pathDisplay.contains("^/storage/emulated/[0-9]+$")
+        )
+        assertTrue("推导失败须回落到主用户路径", pathDisplay.contains("PRIMARY_STORAGE_PATH"))
+
+        listOf(
+            "app/src/main/java/com/mixradio/droid/data/ApkExtractor.kt",
+            "app/src/main/java/com/mixradio/droid/data/ExternalOpen.kt",
+            "app/src/main/java/com/mixradio/droid/ui/pages/FilePage.kt",
+            "app/src/main/java/com/mixradio/droid/ui/pages/HomePage.kt",
+            "app/src/main/java/com/mixradio/droid/ui/components/BuiltInFilePicker.kt"
+        ).forEach { rel ->
+            assertFalse(
+                "$rel 不得再写死 /storage/emulated/0",
+                codeOnly(root(rel)).contains("/storage/emulated/0")
+            )
+        }
+    }
+
+    /** 去掉整行注释：注释里提到该路径是说明，不是硬编码。 */
+    private fun codeOnly(text: String): String = text.lines()
+        .filterNot { line ->
+            val t = line.trim()
+            t.startsWith("*") || t.startsWith("//") || t.startsWith("/*")
+        }
+        .joinToString("\n")
 
     // ---------- 书签持久化 ----------
 

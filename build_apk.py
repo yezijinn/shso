@@ -444,24 +444,27 @@ def gradle_build(variant: str, clean: bool, extra_args: Sequence[str]) -> int:
 def locate_apk(variant: str) -> Optional[Path]:
     """定位构建产物 APK。"""
     section("阶段 4 / 5：产物定位与签名校验")
-    # 兼容两种输出位置：默认 app/build，以及被重定向后的 .tmp/build_out/app
+    # 兼容两种输出位置：默认 app/build，以及被重定向后的 .tmp/build_out/app。
+    # 两个目录可能同时存在（例如上一次构建落在默认位置、本次改走重定向），
+    # 故不能按顺序取「第一个存在的目录」——那会拿到上一轮的旧产物。
     search_dirs = [
         PROJECT_DIR / "app" / "build" / "outputs" / "apk" / variant.lower(),
         PROJECT_DIR / ".tmp" / "build_out" / "app" / "outputs" / "apk" / variant.lower(),
     ]
-    apk_dir = next((d for d in search_dirs if d.is_dir()), None)
-    if apk_dir is None:
+    existing = [d for d in search_dirs if d.is_dir()]
+    if not existing:
         log(FAIL, f"产物目录不存在：{search_dirs}")
         return None
 
-    candidates = sorted(apk_dir.glob("*.apk"), key=lambda p: p.stat().st_mtime, reverse=True)
-    candidates = [p for p in candidates if "unsigned" not in p.name.lower()]
+    candidates: List[Path] = []
+    for apk_dir in existing:
+        candidates += [p for p in apk_dir.glob("*.apk") if "unsigned" not in p.name.lower()]
     candidates = [p for p in candidates if p.name.lower().startswith(f"app-{variant.lower()}")]
     if not candidates:
-        log(FAIL, f"未找到 APK 产物：{apk_dir}")
+        log(FAIL, f"未找到 APK 产物：{existing}")
         return None
 
-    apk = candidates[0]
+    apk = max(candidates, key=lambda p: p.stat().st_mtime)
     log(OK, f"产物：{apk}")
     log(INFO, f"大小：{human_size(apk.stat().st_size)}")
     return apk

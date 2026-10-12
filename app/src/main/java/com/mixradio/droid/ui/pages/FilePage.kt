@@ -235,7 +235,7 @@ fun FilePage(
 
     /** 右列的默认落点。取一个与左列（内部存储）不同的常用目录，
      *  使「同步」按钮初始即可用。 */
-    val defaultRightPaneDir = "/storage/emulated/0/Android"
+    val defaultRightPaneDir = "$INTERNAL_STORAGE_PATH/Android"
     /** 右列在 [panes] 中的下标。落点记忆按列分流时用它区分左右。 */
     val RIGHT_PANE_INDEX = 1
     // 两列浏览态跨配置变更保留（目录、过滤词、多选集合、搜索栏开合）。

@@ -82,4 +82,55 @@ class HistoryMergeTest {
             s.contains("addHistory(currentFilePath ?: \"\"")
         )
     }
+
+    // ---------- 历史键的定位规则（删除回收 / 重命名迁移共用） ----------
+
+    private val PREFIX = "history:"
+
+    @Test
+    fun `命中自身与整棵子树`() {
+        val all = listOf(
+            "history:/sdcard/dir",
+            "history:/sdcard/dir/a.sh",
+            "history:/sdcard/dir/sub/b.sh",
+            "history:/sdcard/dir2/c.sh",
+            "history:/sdcard/dirx"
+        )
+        assertEquals(
+            listOf("history:/sdcard/dir", "history:/sdcard/dir/a.sh", "history:/sdcard/dir/sub/b.sh"),
+            HistoryKeys.keysUnder(all, PREFIX, "/sdcard/dir")
+        )
+    }
+
+    @Test
+    fun `前缀相近的同级路径不得被误命中`() {
+        val all = listOf("history:/sdcard/di", "history:/sdcard/dir/a.sh", "history:/sdcard/dirx")
+        assertEquals(
+            "只有完全同名的键才命中：`/sdcard/di` 不是 `/sdcard/dir` 的父路径",
+            listOf("history:/sdcard/dir/a.sh"),
+            HistoryKeys.keysUnder(all, PREFIX, "/sdcard/dir")
+        )
+    }
+
+    @Test
+    fun `迁移目录时整棵子树改写到新前缀`() {
+        val all = listOf("history:/a/x.sh", "history:/a/sub/y.sh", "history:/b/z.sh")
+        val plan = HistoryKeys.movePlan(all, PREFIX, "/a", "/c/d") { false }
+        assertEquals(
+            listOf(
+                "history:/a/x.sh" to "history:/c/d/x.sh",
+                "history:/a/sub/y.sh" to "history:/c/d/sub/y.sh"
+            ),
+            plan
+        )
+    }
+
+    @Test
+    fun `目标键已存在时新键为空表示不覆盖`() {
+        val all = listOf("history:/a/x.sh")
+        val plan = HistoryKeys.movePlan(all, PREFIX, "/a", "/b") { it == "history:/b/x.sh" }
+        assertEquals(1, plan.size)
+        assertEquals("history:/a/x.sh", plan[0].first)
+        assertNull("目标已有历史，不得覆盖，只能丢弃源键", plan[0].second)
+    }
 }

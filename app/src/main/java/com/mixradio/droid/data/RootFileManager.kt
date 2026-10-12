@@ -850,16 +850,21 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
               return@withContext Pair(false, "目标已存在：$sanitized")
           }
 
+        // 改名不是删除：编辑历史跟着文件搬到新路径（目录则整棵子树一起搬）。
+        fun renamed(): Pair<Boolean, String> {
+            EditHistoryManager.moveHistory(oldPath, newPath)
+            return true to "重命名成功"
+        }
         // ROOT 已授权时优先用 su 移动（可操作受保护/系统路径）；
         // 未授权或 su 失败时回退标准 renameTo（授予「所有文件访问」后可操作 /sdcard）。
         if (preferRoot()) {
             val escapedOld = RootService.escapeShellArg(oldPath)
             val escapedNew = RootService.escapeShellArg(newPath)
             val (code, _) = RootService.runCommandSync("mv $escapedOld $escapedNew")
-            if (code == 0) return@withContext Pair(true, "重命名成功")
+            if (code == 0) return@withContext renamed()
         }
         try {
-            if (File(oldPath).renameTo(File(newPath))) return@withContext Pair(true, "重命名成功")
+            if (File(oldPath).renameTo(File(newPath))) return@withContext renamed()
         } catch (_: Exception) {
         }
         Pair(false, "重命名失败")
@@ -993,6 +998,12 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         // （local + root 各一次），重复调用等于白白多跑两趟 su 往返。
         val finalPath = if (destOccupied && onConflict == MoveDestinationConflict.RENAME) renamedDestPath() else destinationPath
 
+        // 移动同样不是删除：历史跟着搬到实际落点（冲突改名后是 finalPath，不是 destinationPath）。
+        fun moved(): Pair<Boolean, String> {
+            EditHistoryManager.moveHistory(sourcePath, finalPath)
+            return true to "移动成功"
+        }
+
         try {
             val dest = File(finalPath)
             // renameTo 返回 true 即视为成功。原先还要求 `localType(finalPath) == sourceType`，
@@ -1000,7 +1011,7 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
             // 复核必然失败 → 落到 root 分支再跑一次 mv（源已不在，报「移动失败」）。
             // 移动其实已经完成，用户会重试，第二次就命中 OVERWRITE 分支，可能连带删掉目标同名文件。
             if (source.renameTo(dest)) {
-                return@withContext Pair(true, "移动成功")
+                return@withContext moved()
             }
         } catch (_: Exception) {
         }
@@ -1012,7 +1023,7 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
                 "mv $escapedSource $escapedDestination && test ! -e $escapedSource && " +
                     if (sourceType == 2) "test -d $escapedDestination" else "test -f $escapedDestination"
             )
-            if (code == 0) return@withContext Pair(true, "移动成功")
+            if (code == 0) return@withContext moved()
             if (output.isNotBlank()) return@withContext Pair(false, "移动失败: ${output.trim()}")
         }
 
@@ -1045,12 +1056,18 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
             return@withContext Pair(false, "路径包含非法字符")
         }
         invalidateShsoDirIfAffected(path)
+        // 三条删除成功路径共用：文件没了，其编辑历史也不该再留在 SharedPreferences 里
+        // （删目录时连带其下所有文件，见 EditHistoryManager.forget 的前缀匹配）。
+        fun removed(): Pair<Boolean, String> {
+            EditHistoryManager.forget(path)
+            return true to "删除成功"
+        }
         // ROOT 已授权时优先用 su 删除（可操作受保护/系统路径）；
         // 未授权或 su 失败时回退标准 File API（授予「所有文件访问」后可操作 /sdcard）。
         if (preferRoot()) {
             val escaped = RootService.escapeShellArg(path)
             val (code, _) = RootService.runCommandSync("rm -rf $escaped")
-            if (code == 0) return@withContext Pair(true, "删除成功")
+            if (code == 0) return@withContext removed()
         }
         try {
             val targetFile = File(path)
@@ -1060,11 +1077,11 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
             // （ROOT 不可用 + 用户删的是 /sdcard 下自己放的链接时必现，且不可撤销）。
             if (Files.isSymbolicLink(targetFile.toPath())) {
                 val ok = targetFile.delete()   // 删链接本身，不动目标
-                if (ok) return@withContext Pair(true, "删除成功")
+                if (ok) return@withContext removed()
                 return@withContext Pair(false, "删除符号链接失败")
             }
             val ok = if (targetFile.isDirectory) targetFile.deleteRecursively() else targetFile.delete()
-            if (ok) return@withContext Pair(true, "删除成功")
+            if (ok) return@withContext removed()
         } catch (_: Exception) {
         }
         Pair(false, "删除失败")

@@ -30,11 +30,15 @@ jobs:
       - name: 拉取代码
         uses: actions/checkout@v7.0.1
 
-      - name: 校验包名
+      - name: 校验输入
         id: validate
+        # 表单值经 env 传入而非直接插值进脚本：输入含 `$()` / 反引号时不会被 shell 执行。
+        env:
+          INPUT_PACKAGE_NAME: ${{ github.event.inputs.package_name }}
+          INPUT_RETENTION_DAYS: ${{ github.event.inputs.artifact_retention_days }}
         run: |
           set -euo pipefail
-          PKG="${{ github.event.inputs.package_name }}"
+          PKG="$INPUT_PACKAGE_NAME"
           if [ -z "$PKG" ]; then
             echo "::error::必须填写 APP 包名（package_name）"
             exit 1
@@ -50,6 +54,14 @@ jobs:
             exit 1
           fi
           echo "package=$PKG" >> "$GITHUB_OUTPUT"
+          # 保留天数：upload-artifact 只接受 1~90 的整数，非法值要到最后一步上传时才报错，
+          # 前面几十步白跑。此处前置校验，留空回退默认 30。
+          DAYS="${INPUT_RETENTION_DAYS:-30}"
+          if [[ ! "$DAYS" =~ ^[0-9]+$ ]] || (( DAYS < 1 || DAYS > 90 )); then
+            echo "::error::artifact_retention_days 必须是 1~90 的整数，当前为：$INPUT_RETENTION_DAYS"
+            exit 1
+          fi
+          echo "retention=$DAYS" >> "$GITHUB_OUTPUT"
 
       - name: 配置 JDK 17
         uses: actions/setup-java@v6.0.0
@@ -128,4 +140,4 @@ jobs:
           name: app-release-${{ steps.validate.outputs.package }}
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
-          retention-days: ${{ fromJSON(github.event.inputs.artifact_retention_days) }}
+          retention-days: ${{ steps.validate.outputs.retention }}

@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A138） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A139） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 645 tests / 0 failures / 1 skipped |
+| 单元测试 | 652 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -81,6 +81,62 @@
 ---
 
 ## 待办
+
+### A139. 多用户路径 / 编辑历史回收 / CI 与构建脚本输入（2026-10-12）
+
+`docs/AI-1-BUG.md` 推进到第 324 轮，新开 4 条 CONFIRMED OPEN：路径适配、数据回收、
+CI 输入校验、构建脚本产物定位各一条。逐条读实码复核后全部处置。
+
+- [x] **BUG-COMPAT-234（P2）多用户路径适配不一致**：共享存储根在文件页 / 首页 /
+      文件选择器 / APK 提取 / 收件箱 / 外部唤起白名单六处被写死为 `/storage/emulated/0`，
+      而该常量只在主用户成立（次用户为 `/storage/emulated/<userId>`）。
+      报告推荐的两条路线中，方案 A（manifest 声明 `android:supportsMultipleUsers="false"`）
+      被 AAPT 直接拒绝——该属性不在公有 SDK 属性表内，第三方应用不可用，
+      故改采方案 B：`PathDisplay` 新增 `INTERNAL_STORAGE_PATH`，
+      由 `Environment.getExternalStorageDirectory()` 运行时推导，经
+      `^/storage/emulated/[0-9]+$` 形状校验（个别 ROM 返回异常路径时不得进白名单）
+      后采用，推导失败回落到 `PRIMARY_STORAGE_PATH`（`/storage/emulated/0`）；
+      `ApkExtractor.DOWNLOAD_DIR`、`ExternalOpen.INBOX_DIR`、
+      `EXTERNAL_FILE_URI_ALLOWED_PREFIXES`、`FilePage` 默认右列、`HomePage` 目录初值
+      一并改引该值。白名单语义复核：`/storage/emulated/01` 与 `/storage/self/*`
+      仍被拒（`isRemovableVolumePath` 排除 emulated/self）；
+      `APP_PRIVATE_PREFIXES` 保持主用户字面量不构成漏洞——次用户私有路径
+      `/data/user/<uid>/…` 命中不了任何允许前缀，fail-closed。
+- [x] **BUG-CONSIST-235（P2）编辑历史没有回收路径**：历史以 `history:<绝对路径>`
+      存于 SharedPreferences，而删除 / 重命名 / 移动文件时不触碰这些键——
+      删掉一个装满脚本的目录会留下一整批永不回收的键。修法：`RootFileManager.delete`
+      的三条成功路径（`rm -rf` / 符号链接 / Java 回退）统一经局部函数 `removed()`
+      调 `EditHistoryManager.forget(path)`（前缀匹配，命中的是「该路径及其整棵子树」，
+      无需先列举目录内容）；`rename` / `moveFile` 的两条成功路径经 `renamed()` / `moved()`
+      调 `moveHistory(old, new)`（目录整棵子树一起搬；目标键已存在则不覆盖，
+      但源键一律清除，避免留下孤儿键）。
+- [x] **同域补护栏**：把键的定位规则抽成纯函数 `HistoryKeys`（`keysUnder` / `movePlan`）
+      并让 `forget` / `moveHistory` 委托之，JVM 单测覆盖「自身 + 整棵子树命中」、
+      「`/sdcard/di` 不得命中 `/sdcard/dir/...` 与 `/sdcard/dirx`」、
+      「目标键已存在时新键为空（不覆盖）」四种语义。另补两条源码契约测试
+      （删除/重命名/移动三条路径必须接线、共享存储根必须运行时取值且四份调用点
+      不得再出现写死的 `/storage/emulated/0`）。
+- [x] **BUG-BUILD-236（P3）CI 的 `artifact_retention_days` 未校验**：该表单值直接
+      `fromJSON(...)` 交给 `upload-artifact`，只接受 1~90 的整数，非法值要到最后一步
+      才报错，前面几十步编译全白跑。改为在校验步骤内前置校验（经 `env:` 注入而非
+      `run:` 内直接插值，顺带消除 `$()` / 反引号被 shell 执行的注入面），
+      留空回退 30，结果经 `steps.validate.outputs.retention` 供上传步骤引用。
+- [x] **BUG-BUILD-237（P3）`build_apk.py` 的 `locate_apk` 会取到旧产物**：
+      函数只在「第一个存在的候选目录」里查找，而 `app/build/outputs/apk/...` 与
+      `.tmp/build_out/...` 可能同时存在，另一目录的旧 APK 会被当成本次产物。
+      改为跨两个候选目录收集全部候选，再按 mtime 取最新。
+- [x] **回归**：`testDebugUnitTest` 652 tests / 0 failures / 1 skipped（A138 为 645）；
+      `assembleRelease` 与 `verifyReleasePayload` 通过。产物 2908305 字节，
+      sha256 `2f9e0a9b…`（与 A138 的 `6297e1ec…` 不同，确为重新构建）。
+- [x] **真机验证（root，PACM00 / Android 10 / 1080×2280）**：删除端到端——为
+      `/storage/emulated/0/a139_probe.txt` 生成历史后经文件页多选删除，prefs 中该键
+      随之消失、其余文件历史不受影响；重命名端到端——把带历史的
+      `/storage/emulated/0/_精灵输入法/历史1.txt` 批量重命名为 `h1renamed_0.txt`，
+      prefs 中历史键同步改名且内容完整、旧键消失（验证后已复原文件名）。
+      新包 `pm install -r` 返回 Success，启动与文件页正常。
+- [x] **外部建议复核**：`docs/AI-1-BUG.md` 第 324 轮的 4 条 OPEN 全部处置；
+      第 329 轮记录的 A138 产物级核验（204/205/206）与双端 tag / 资产 sha256 一致
+      经复核无出入；`docs/AI-2-BUG.md` 止于 §8.5，无新增。
 
 ### A138. 打包配置与产物元数据（2026-10-12）
 

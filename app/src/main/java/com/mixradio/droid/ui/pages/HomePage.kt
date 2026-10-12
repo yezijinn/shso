@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.TextUnit
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.FileItem
+import com.mixradio.droid.data.INTERNAL_STORAGE_PATH
 import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.realExtensionOf
@@ -480,9 +481,9 @@ fun HomePage(
             appSettings = appSettings,
             show = true,
             initialDirectory = if (appSettings.rememberDirectory) {
-                RootFileManager.rememberedDirectory ?: "/storage/emulated/0"
+                RootFileManager.rememberedDirectory ?: INTERNAL_STORAGE_PATH
             } else {
-                "/storage/emulated/0"
+                INTERNAL_STORAGE_PATH
             },
             onDismissRequest = { showFilePicker = false },
             onFileSelected = { selectedPath ->

@@ -44,8 +44,8 @@ data class InstalledAppInfo(
  */
 object ApkExtractor {
 
-    /** 内部存储 Download 目录。应用持有 MANAGE_EXTERNAL_STORAGE，可直接写入。 */
-    const val DOWNLOAD_DIR = "/storage/emulated/0/Download"
+    /** 当前用户共享存储的 Download 目录。应用持有 MANAGE_EXTERNAL_STORAGE，可直接写入。 */
+    val DOWNLOAD_DIR = "$INTERNAL_STORAGE_PATH/Download"
 
     data class Result(
         val ok: Boolean,

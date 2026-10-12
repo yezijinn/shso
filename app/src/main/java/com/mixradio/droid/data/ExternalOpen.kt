@@ -205,7 +205,7 @@ fun decideExternalAction(
 object ExternalOpen {
 
     /** 不透明 URI 拷贝落盘的位置：用户可见、无 ROOT / SELinux 限制，文件页可直接浏览。 */
-    const val INBOX_DIR = "$INTERNAL_STORAGE_PATH/Download/shso"
+    val INBOX_DIR = "$INTERNAL_STORAGE_PATH/Download/shso"
 
     /** 拷贝体积上限：共享型 FileProvider 无法预知大小，超限直接拒绝而不是 OOM。 */
     const val COPY_LIMIT_BYTES = 512L * 1024 * 1024
@@ -336,7 +336,7 @@ object ExternalOpen {
      */
     @Suppress("SdCardPath")
     private val EXTERNAL_FILE_URI_ALLOWED_PREFIXES = listOf(
-        INTERNAL_STORAGE_PATH,   // /storage/emulated/0（normalizeSdCardAlias 已把 /sdcard 归一到这里）
+        INTERNAL_STORAGE_PATH,   // 当前用户的共享存储根（normalizeSdCardAlias 已把 /sdcard 归一到这里）
         "/storage/self/primary",
         "/data/local/tmp"
     )
@@ -344,9 +344,9 @@ object ExternalOpen {
     /**
      * 本进程私有目录：无论 URI 来自哪里都不得由外部 Intent 打开（无任何合法分享场景）。
      *
-     * 这里是**故意的绝对路径字面量**（`SdCardPath` lint 命中同款）：安全白名单必须写死
-     * 真实路径前缀，用 `Environment.getExternalStorageDirectory()` 之类的相对推导反而会
-     * 让白名单随环境漂移。与本文件既有的 `/sdcard` 归一常量同性质。
+     * 写死 user 0 形态（`/data/data` 与 `/data/user/0`、`/data/user_de/0`）不构成漏洞 ——
+     * 这是**兜底**的一道，真正的判据是上面的允许前缀只覆盖共享存储，
+     * 次用户私有目录 `/data/user/<uid>/…` 命中不了任何允许前缀，仍被拒绝。
      */
     @Suppress("SdCardPath")
     private val APP_PRIVATE_PREFIXES = listOf(

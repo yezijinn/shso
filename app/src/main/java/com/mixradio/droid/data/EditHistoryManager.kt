@@ -52,6 +52,42 @@ internal object HistoryMerge {
     }
 }
 
+/**
+ * 历史键的定位规则（纯函数，便于 JVM 单测）。
+ *
+ * 键是 `history:<绝对路径>`，于是「路径及其子树」天然对应「键或其前缀 + `/`」：
+ * 删掉一个装满脚本的目录时，其下每个文件的历史一并命中，无需先列举目录内容。
+ */
+internal object HistoryKeys {
+
+    /** 命中 [path] 自身与其子树的键。 */
+    fun keysUnder(allKeys: Collection<String>, keyPrefix: String, path: String): List<String> {
+        val exact = keyPrefix + path
+        val subtree = "$exact/"
+        return allKeys.filter { it == exact || it.startsWith(subtree) }
+    }
+
+    /**
+     * 迁移计划：`旧键 to 新键`（目录则整棵子树一起搬）。
+     *
+     * 目标键已存在时新键为 `null`：那是另一个文件的历史，合并会让两份内容混在一起。
+     * 调用方仍须清除源键——源路径已不存在，留在旧键上就是永不回收的孤儿。
+     */
+    fun movePlan(
+        allKeys: Collection<String>,
+        keyPrefix: String,
+        fromPath: String,
+        toPath: String,
+        targetExists: (String) -> Boolean
+    ): List<Pair<String, String?>> {
+        val fromKey = keyPrefix + fromPath
+        return keysUnder(allKeys, keyPrefix, fromPath).map { old ->
+            val moved = keyPrefix + toPath + old.removePrefix(fromKey)
+            old to moved.takeIf { !targetExists(it) }
+        }
+    }
+}
+
 object EditHistoryManager {
     /** 旧版：所有文件共用一个大 JSON 数组。仅用于一次性迁移。 */
     private const val KEY_LEGACY = "edit_history"
@@ -173,6 +209,46 @@ private const val KEY_LEGACY_UNMIGRATED = "edit_history.unmigrated"
     fun clearHistory(filePath: String) {
         ensureMigrated()
         prefs.edit { remove(keyFor(filePath)) }
+    }
+
+    /**
+     * 路径不复存在后回收其编辑历史。
+     *
+     * 键以绝对路径为名，故删除**目录**时其下所有文件的历史一并命中（前缀匹配，规则见 [HistoryKeys]），
+     * 无需先列举目录内容 —— 否则「删掉一个装满脚本的目录」会留下一整批永不回收的键。
+     */
+    @Synchronized
+    fun forget(path: String) {
+        val normalized = path.trimEnd('/')
+        if (normalized.isEmpty()) return
+        ensureMigrated()
+        val doomed = HistoryKeys.keysUnder(prefs.all.keys, KEY_PREFIX, normalized)
+        if (doomed.isEmpty()) return
+        prefs.edit { doomed.forEach { remove(it) } }
+    }
+
+    /**
+     * 路径改名或移动后把历史搬到新位置（目录则整棵子树一起搬，规则见 [HistoryKeys]）。
+     *
+     * 新位置已有历史时不覆盖：那是另一个文件的历史，合并会让两份内容混在一起；
+     * 但源键一律清除 —— 源路径已不存在，留着就是永不回收的孤儿键。
+     */
+    @Synchronized
+    fun moveHistory(fromPath: String, toPath: String) {
+        val from = fromPath.trimEnd('/')
+        val to = toPath.trimEnd('/')
+        if (from.isEmpty() || to.isEmpty() || from == to) return
+        ensureMigrated()
+        val snapshot = prefs.all
+        val plan = HistoryKeys.movePlan(snapshot.keys, KEY_PREFIX, from, to) { prefs.contains(it) }
+        if (plan.isEmpty()) return
+        prefs.edit {
+            plan.forEach { (oldKey, newKey) ->
+                val value = snapshot[oldKey] as? String
+                remove(oldKey)
+                if (value != null && newKey != null) putString(newKey, value)
+            }
+        }
     }
 
     private fun keyFor(filePath: String) = KEY_PREFIX + filePath
