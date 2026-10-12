@@ -82,6 +82,26 @@
 
 ## 待办
 
+### A123. 同类风险模式扫描与外部建议复核（2026-10-12）
+
+A122 落地后台账唯一 OPEN 仍为 `BUG-PERF-030`（A109 裁定维持架构取舍）。无新增改动项，转做
+两项复核，避免只从「已修条目」单一视角看问题。
+
+- [x] **A122 两类缺陷的全库模式扫描**：
+  - 「`;` 串接命令后整行退出码取自末条命令」——扫全库 cp/chmod/chown 命令串，仅 `ApkExtractor#copyOne`
+    一处构成假成功（已修）；`RootFileManager.kt:740` 的 `cp -r && chmod` 在 cp 失败时短路、退出码即 cp 的
+    失败码，只可能「假失败」；`ApkInstaller` 的两处 cp 为单命令或带显式 `exit`；`TextEditorDialog#permRestoreCmd`
+    取 chown 退出码，chmod 失败而 chown 成功不可达。
+  - 「按外部输入规模无界预分配」——带容量实参的集合构造点全库仅 `TextCompare.kt` 三处，已统一收敛。
+- [x] **`docs/AI-1-BUG.md` 第 145/146 轮残留候选逐条实读**：`TextEditorDialog` 顶栏 ✕、
+  `FileListViewSettings` ActionCell、`FilePermissionDialog` 账户候选行、`SettingsPage`「关于」入口
+  四处均已按「clickable 在外、`minimumInteractiveComponentSize` 在内」补齐；
+  `BuiltInFilePicker` 顶栏星标/设置（36dp 等分紧凑工具栏）与 `FilePage` 列头聚焦行（`fillMaxWidth` 整行可点）
+  属刻意设计或本已达标，维持。AI-1-BUG-COMPAT-168 闭环成立。
+- [x] **`docs/AI-2-BUG.md` 复核**：报告止于 §8.5，13 条 OPEN 清单已全部在 A6x~A12x 各轮落地，无新增项。
+- [x] **台账头部刷新**：`BUG.md` 的 `repo_head` / `source_dirty_worktree` 由 A119 更新为 A122（`1778aaf`）。
+- 无代码改动，不发版。
+
 ### A122. `docs/AI-1-BUG.md` 长期残留项落地：提取退出码 + 对比行数上限（2026-10-12）
 
 `docs/AI-1-BUG.md` 已推进到第 180 轮（连续多轮标注 FINAL、内容为「复核无缺陷」留档），其「剩余项」表
