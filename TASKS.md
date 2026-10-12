@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A141） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A145） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
 | 单元测试 | 652 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
@@ -76,7 +76,7 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2908305 字节，三端 sha256 一致（`CA6825CA…`）；A141 产物与 A140 逐字节相同，故资产未替换、正文未改，双端 tag 与 Release 目标提交已对齐 A141 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码** `da922e6`）；双端同名 Release，资产 `app-release.apk` 2908305 字节，三端 sha256 一致（`D3EBC71D…`）；同日第二次发版已重指 tag、替换双端资产并同步正文（7655 字符），双端 Release 目标提交均已对齐 `da922e6`（见 § A145）；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 | 在线编译 | 实跑 `workflow_dispatch` 通过（包名 `com.sina.news`，5m19s，产物 2908313 字节，`package: name='com.sina.news'`）；签名开关 `use_debug_signing` 由签名步单点产出，单元测试步与编译步以 `-PuseDebugSigning` 同口径消费（见 § A142） |
 
 ---
@@ -116,8 +116,9 @@ A144 的「选中行整行浅色块可见」判定被页面纵向渐变干扰，
 ~~~yaml
 build: "testDebugUnitTest 652/0/1；assembleRelease + verifyReleasePayload 通过"
 apk: "2908305 字节 / sha256 D3EBC71D83FB4D001FB01DD379B7DC8EC3614DF814044DE266615AAB626278D3"
+release: "tag 20261012 重指 da922e6b4c53492955a4ce02fc434c5fddc28e91（双端 ls-remote 一致）；GitHub Release 409779717 / Gitee Release 1198222 目标提交均 da922e6、正文均 7655 字符；双端资产替换后 sha256 与三端一致；Gitee 附件 id 由 3372252 换为 3373359"
 ~~~
-（重指 tag、替换资产、双端正文同步与三端核验结果随发版回填。）
+（同日第二次发版：tag 重指、资产替换、双端正文同步与三端核验均已完成。）
 
 ### A144. 发版完整性核验与选中态反馈复核（2026-10-12）
 
