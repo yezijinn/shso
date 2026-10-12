@@ -3,10 +3,13 @@
 
 package com.mixradio.droid.ui
 
+import com.mixradio.droid.ui.components.formatBytes
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.util.Locale
 
 /**
  * 虚假成功入口、死设置与线程内状态读取的回归护栏。
@@ -79,5 +82,28 @@ class ConsistencyCleanupRegressionTest {
         )
         assertTrue("应定义文件级提交作用域", s.contains("private val permissionSubmitScope"))
         assertTrue("保存必须走该作用域", s.contains("permissionSubmitScope.launch {"))
+    }
+
+    @Test
+    fun `体积格式化必须区域无关`() {
+        // 编辑器分段加载条用 `"%.1f MB".format(...)`，走默认区域：逗号作小数点的区域显示
+        // 「1,5 MB」，而文件列表（FileItem）固定 Locale.ROOT 显示「1.50 MB」——同一数值两种写法。
+        val original = Locale.getDefault()
+        try {
+            Locale.setDefault(Locale.GERMANY)
+            assertEquals("2.0 MB", formatBytes(2L * 1024 * 1024))
+            assertEquals("1.5 GB", formatBytes(1536L * 1024 * 1024))
+            assertEquals("3 KB", formatBytes(3072L))
+        } finally {
+            Locale.setDefault(original)
+        }
+    }
+
+    @Test
+    fun `URI 解析不得保留未使用的 scheme 局部量`() {
+        // resolveToRealPath 里 `val isFileScheme = … == "file"` 与紧随其后的 when 判定重复，
+        // 且没有任何消费点 —— 留着会让人误以为 file:// 走的是另一条分支。
+        val s = src("data/ExternalOpen.kt")
+        assertFalse("未使用的局部量应删除", s.contains("isFileScheme"))
     }
 }

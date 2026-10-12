@@ -424,7 +424,6 @@ object ExternalOpen {
      * 不可全信。因此 `file://` 与 `content://` 一律过 [isExternalPathAllowed]。
      */
     fun resolveToRealPath(context: Context, uri: Uri): String? {
-        val isFileScheme = uri.scheme?.lowercase(Locale.ROOT) == "file"
         when (uri.scheme?.lowercase(Locale.ROOT)) {
             "file" -> {
                 val path = uri.path?.let { normalizeSdCardAlias(it) } ?: return null

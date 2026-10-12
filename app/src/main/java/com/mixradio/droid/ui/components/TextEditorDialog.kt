@@ -1382,12 +1382,14 @@ private fun ChunkedInfoBar(
     }
 }
 
-private fun formatBytes(bytes: Long): String = when {
+internal fun formatBytes(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"
     bytes < 1024 * 1024 -> "${bytes / 1024} KB"
     // MB 段保留一位小数：整除法会把 2.00MB(2097151B) 显示成「1 MB」，与文件列表的「2.00 MB」自相矛盾。
-    bytes < 1024L * 1024 * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024))
-    else -> "%.1f GB".format(bytes / (1024.0 * 1024 * 1024))
+    // 必须显式指定区域：`"%.1f".format` 走默认区域，逗号作小数点的区域会显示成「1,5 MB」，
+    // 与文件列表（FileItem 固定 Locale.ROOT）同一数值两种写法。
+    bytes < 1024L * 1024 * 1024 -> String.format(Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024))
+    else -> String.format(Locale.ROOT, "%.1f GB", bytes / (1024.0 * 1024 * 1024))
 }
 
 //  巨型文件只读浏览区
