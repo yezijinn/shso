@@ -7,6 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 /**
  * 「提取 APK」的命名规则（纯函数部分）。
@@ -47,6 +48,47 @@ class ApkExtractorTest {
     @Test
     fun `提取目录固定为内部存储 Download`() {
         assertEquals("/storage/emulated/0/Download", ApkExtractor.DOWNLOAD_DIR)
+    }
+
+    @Test
+    fun `失败回滚只清除本次新建的产物`() {
+        // 分包应用是 base + 多个 split 的一组，中途失败若把已复制的留在原地，Download 里
+        // 就是「装不上的半套」；但同名覆盖刷新时目标本已存在，删掉等于销毁用户上一次
+        // 提取的可用产物 —— 回滚必须按「本次是否新建」区分。
+        val dir = java.nio.file.Files.createTempDirectory("shso-apk-rollback").toFile()
+        try {
+            val fresh1 = File(dir, "分包应用-100.APK").apply { writeText("base") }
+            val fresh2 = File(dir, "分包应用-100-split1.APK").apply { writeText("split1") }
+            val preExisting = File(dir, "分包应用-100-split2.APK").apply { writeText("旧产物") }
+
+            val removed = ApkExtractor.rollbackNewlyCreated(
+                listOf(fresh1.absolutePath, fresh2.absolutePath)
+            )
+
+            assertEquals("本次新建的两个文件都应清除", 2, removed)
+            assertFalse(fresh1.exists())
+            assertFalse(fresh2.exists())
+            assertTrue("先前已有的产物不得被删", preExisting.exists())
+            assertEquals("旧产物", preExisting.readText())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `提取失败必须回滚且逐文件先写临时名再改名`() {
+        // 两条路径各自出过问题：失败分支直接 return（已复制的留成半套）；直接写目标名时
+        // cp / 流拷贝中途失败会留下 size>0 的半截 APK。断言源码里这两处防线都在。
+        val s = File("src/main/java/com/mixradio/droid/data/ApkExtractor.kt").readText()
+        val failBranch = s.substringAfter("if (!one.ok) {").substringBefore("return@withContext Result(false")
+        assertTrue("失败分支必须回滚本次新建的目标", failBranch.contains("rollbackNewlyCreated(created)"))
+        assertTrue("回滚只针对本次新建", s.contains("if (!existed) created += dst.absolutePath"))
+        assertTrue("拷贝必须先写同目录临时名", s.contains("\"\${dst.name}.part-\${System.nanoTime()}\""))
+        assertTrue("成功后改名到目标名", s.contains("mv -f \$escapedTmp \$escapedDst") || s.contains("tmp.renameTo(dst)"))
+        // 目标被同名目录占住时 mv 会把文件塞进该目录内并返回成功（test -s <目录> 恒真），
+        // 于是界面报「已提取」而产物落在嵌套路径 —— 必须在拷贝前拦下。
+        assertTrue("目标为目录时须提前失败", s.contains("if (dst.isDirectory) {"))
+        assertTrue("目录占用必须报错而非静默成功", s.contains("目标路径已是目录，未提取"))
     }
 
     // 产物规划（单包 / 分包）

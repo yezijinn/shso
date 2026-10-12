@@ -315,7 +315,10 @@ class PerfAndNestingRegressionTest {
         // 仍是旧内容、size>0，cp 失败也能通过校验并汇报成功。
         val start = apkExtractor.indexOf("private fun copyOne(")
         assertTrue("应能找到 copyOne", start > 0)
-        val body = apkExtractor.substring(start, start + 1200)
+        // 区间取到 root 分支结束，不按固定字数截断：函数体内注释增删都会挪动下标。
+        val rootEnd = apkExtractor.indexOf("// 无 ROOT", start)
+        assertTrue("应能找到 root 分支终点", rootEnd > start)
+        val body = apkExtractor.substring(start, rootEnd)
         val rcAt = body.indexOf("rc=\\\$?")
         val exitAt = body.indexOf("exit \\\$rc")
         assertTrue("cp 退出码必须先落变量", rcAt > 0)

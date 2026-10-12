@@ -164,11 +164,27 @@ object ApkExtractor {
         val planned = plannedTargets(app, suffix)
 
         val written = ArrayList<String>(planned.size)
+        // 本次新建的目标：失败时要删的只有这些。同名覆盖刷新时目标本就存在，删掉等于
+        // 把用户上一次提取的可用产物一并销毁 —— 那是比「半套」更糟的结果。
+        val created = ArrayList<String>(planned.size)
         for ((name, src) in planned) {
             val dst = File(dir, name)
+            val existed = dst.exists()
             val one = copyOne(src, dst, rootGranted, myId)
-            if (!one.ok) return@withContext Result(false, one.message)
+            if (!one.ok) {
+                // 分包应用是 base + 多个 split 的一组：中途失败若把已复制的留在原地，
+                // Download 里就是「装不上的半套」——文件确实在，装的时候才报缺分片，
+                // 用户无从归因。故本次新建的一律清除。
+                val removed = rollbackNewlyCreated(created)
+                val tail = buildString {
+                    if (removed > 0) append("；已清除本次新建的 $removed 个文件")
+                    val kept = written.size - created.size
+                    if (kept > 0) append("；先前已有的 $kept 个文件保持原样")
+                }
+                return@withContext Result(false, one.message + tail)
+            }
             written += dst.absolutePath
+            if (!existed) created += dst.absolutePath
         }
 
         // 通知媒体库，让提取出的 APK 立即出现在其他文件管理器 / 扫描结果里（尽力而为）
@@ -189,22 +205,47 @@ object ApkExtractor {
     private class OneResult(val ok: Boolean, val message: String)
 
     /**
+     * 失败回滚：删除本次新建的目标，返回实际删除数。
+     *
+     * 只传「本次新建」的路径 —— 先前已存在的产物不可误删（见 [extract] 的说明）。
+     */
+    internal fun rollbackNewlyCreated(paths: List<String>): Int =
+        paths.count { runCatching { File(it).delete() }.getOrDefault(false) }
+
+    /**
      * 复制单个 APK。优先 ROOT（应用私有安装包只有 root 可读）；
      * 无 ROOT 时退回本地直读（系统分区的 APK 全局可读，此时可用）。
+     *
+     * 两条分支都先写同目录临时名、成功后再改名：`cp` 或流拷贝中途失败（磁盘满、源读失败）
+     * 只会留下半截临时文件，直接写目标名会留下一个 size>0、内容不完整的 APK —— 用户以为
+     * 提取成功，安装时才报解析失败。
      */
     private fun copyOne(src: String, dst: File, rootGranted: Boolean, myId: Int): OneResult {
+        // 目标路径被同名目录占住时（用户在 Download 里建过同名文件夹），`mv` 会把临时文件
+        // 塞进该目录内部并返回成功，而 `test -s <目录>` 恒为真 —— 界面报「已提取」，产物却
+        // 落在嵌套路径里，用户按名字去找只会看到一个空文件夹。必须在拷贝前拦下。
+        if (dst.isDirectory) {
+            return OneResult(false, "目标路径已是目录，未提取：${dst.absolutePath}")
+        }
+        val tmp = File(dst.parentFile, "${dst.name}.part-${System.nanoTime()}")
         if (rootGranted) {
             val escapedSrc = RootService.escapeShellArg(src)
+            val escapedTmp = RootService.escapeShellArg(tmp.absolutePath)
             val escapedDst = RootService.escapeShellArg(dst.absolutePath)
-            // cp 后修正属主与上下文：root 直接写入 /storage 的文件若属主/上下文不对，
-            // 其他应用与媒体库可能看不到（chown/restorecon 失败不阻断，属尽力而为）。
-            // 退出码必须由 cp 决定：分号串接时整行退出码取自最后的 test -s，而重复提取
+            // 属主与上下文在临时名上修正后直接改名，省一次 su 往返（root 写入 /storage 的
+            // 文件若属主/上下文不对，其他应用与媒体库可能看不到；失败不阻断，属尽力而为）。
+            // 退出码必须由 cp / mv 决定：分号串接时整行退出码取自最后的 test -s，而重复提取
             // （同名覆盖刷新）时目标仍留着旧内容、size>0，cp 失败也能通过 test -s 报成功。
-            val cmd = "cp -f $escapedSrc $escapedDst && chmod 0644 $escapedDst; rc=\$?; " +
-                "chown $myId:$myId $escapedDst 2>/dev/null; restorecon $escapedDst 2>/dev/null; " +
+            val cmd = "cp -f $escapedSrc $escapedTmp; rc=\$?; " +
+                "if [ \$rc -eq 0 ]; then chmod 0644 $escapedTmp 2>/dev/null; " +
+                "chown $myId:$myId $escapedTmp 2>/dev/null; restorecon $escapedTmp 2>/dev/null; " +
+                "mv -f $escapedTmp $escapedDst || rc=\$?; " +
+                "else rm -f $escapedTmp; fi; " +
                 "[ \$rc -eq 0 ] && test -s $escapedDst; exit \$rc"
             val (code, out) = RootService.runCommandSync(cmd, 120_000L)
             if (code != 0 || dst.length() <= 0L) {
+                // 兜底：命令超时或进程被杀时 shell 侧没机会执行 rm
+                runCatching { tmp.delete() }
                 return OneResult(false, "复制失败: ${out.trim().take(200).ifEmpty { src }}")
             }
             return OneResult(true, "")
@@ -213,11 +254,21 @@ object ApkExtractor {
         // 无 ROOT：仅当应用自身可读时才可行（典型为 /system 下的系统应用）
         return try {
             File(src).inputStream().use { input ->
-                dst.outputStream().use { output -> input.copyTo(output) }
+                tmp.outputStream().use { output -> input.copyTo(output) }
             }
-            if (dst.length() > 0L) OneResult(true, "")
-            else OneResult(false, "复制结果为空: $src")
+            when {
+                tmp.length() <= 0L -> {
+                    tmp.delete()
+                    OneResult(false, "复制结果为空: $src")
+                }
+                !tmp.renameTo(dst) -> {
+                    tmp.delete()
+                    OneResult(false, "写入 ${dst.absolutePath} 失败")
+                }
+                else -> OneResult(true, "")
+            }
         } catch (e: Exception) {
+            runCatching { tmp.delete() }
             OneResult(
                 false,
                 "读取安装包失败：需要 ROOT 权限（${e.javaClass.simpleName}）"

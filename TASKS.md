@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A135） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A136） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 643 tests / 0 failures / 1 skipped |
+| 单元测试 | 645 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -81,6 +81,40 @@
 ---
 
 ## 待办
+
+### A136. APK 提取的失败态与目标占用（2026-10-12）
+
+`docs/AI-1-BUG.md` 已推进到第 263 轮，新增 OPEN `AI-1-BUG-LOGIC-199`。按其
+fix_hint 落实时，在真机上把「拷贝中途失败」的相邻分支一并走查，发现第二条同族缺陷。
+
+- [x] **BUG-LOGIC-225（P2）分包提取中途失败不回滚**：`extract()` 逐个复制 base + 各 split，
+      任一失败即 `return`，此前已复制成功的目标留在 Download 成「装不上的半套」——文件在、
+      名字对，装的时候才报缺分片。改为 `created` 记录「本次新建」并在失败时
+      `rollbackNewlyCreated(created)` 只删这些（同名覆盖刷新时目标本已存在，误删会销毁用户
+      上一次的可用产物），失败消息回传「已清除 N 个 / 先前已有的 M 个保持原样」。
+      同时 `copyOne` 两条分支统一「先写同目录 `.part-<nanoTime>`、成功后改名」，杜绝
+      cp / 流拷贝中途失败留下的 size>0 半截 APK。
+- [x] **BUG-LOGIC-226（P2）目标被同名目录占住时报假成功（真机复现）**：
+      在 Download 建同名目录 `ARunit-30.APK/` 后提取，`mv -f tmp dst` 的语义是「移入该目录」
+      且返回 0，`test -s <目录>`（size 4096）与 Kotlin 的 `dst.length()` 双重判据同时通过 →
+      弹「已提取到 Download：1 个文件」，产物实际躺在 `<目录>/<名字>.part-<nano>`。
+      `copyOne` 入口判 `dst.isDirectory` 提前失败并带出目标路径。
+- [x] **护栏自身的可维护性**：`PerfAndNestingRegressionTest` 中「root cp 退出码不得被后续命令
+      覆盖」原以 `substring(start, start + 1200)` 取样，在 `copyOne` 入口插入守卫后
+      `exit $rc` 被挤出窗口而误报失败。区间改为取到 `// 无 ROOT`（root 分支终点），
+      不再受函数体内注释增删影响。
+- [x] **回归**：`testDebugUnitTest` 645 tests / 0 failures / 1 skipped（新增
+      `ApkExtractorTest` 两条：回滚纯函数 + 源码契约），`assembleRelease` 与
+      `verifyReleasePayload` 通过。
+- [x] **真机验证（root，PACM00 / Android 10 / 1080×2280 / density 480）**：目录占用场景
+      改前复现「报成功 + 目录内出现 .part- 嵌套文件」，改后提示「目标路径已是目录，未提取：
+      /storage/emulated/0/Download/ARunit-30.APK」且目录保持空；删除目录后重试成功落盘
+      38865615 字节，Download 无任何 `.part-` 残留。成功/失败两条 shell 链路另以等价脚本验证
+      （成功 rc=0、失败 rc=1 且无目标无残留）。本机无分包应用（`split_config*.apk` 扫描为空），
+      mid-way 失败无法端到端构造，回滚分支由单测覆盖。
+- [x] **外部建议复核**：`docs/AI-1-BUG.md` 第 263 轮的 `AI-1-BUG-LOGIC-199` 已处置；
+      剩余 PERF-182（BY_DESIGN）、CONSIST-118 / COMPAT-093（BY_DESIGN）、CONC-148（WONTFIX）
+      维持；`docs/AI-2-BUG.md` 止于 §8.5 无新增；`BUG.md` 中 `BUG-PERF-030` 维持 A109 裁定。
 
 ### A135. 终端页底栏预留的第二份真值（2026-10-12）
 
