@@ -133,11 +133,11 @@ class DualPaneStateRegressionTest {
         )
     }
 
-    @Test fun `两趟 find 名称不一致时重试一次`() {
+    @Test fun `两趟 find 出现新增名字时重试一次`() {
         val src = File("src/main/java/com/mixradio/droid/data/RootFileManager.kt").readText()
         assertTrue(
-            "重试必须按「两趟 find 的名称集合」判定：断链软链天然缺元数据，按条目数判等会白跑一整轮",
-            src.contains("parsed.names != names.toSet()") && src.contains("attempt == 0")
+            "重试只能由「元数据通道看见名称通道没有的名字」触发：断链软链天然无元数据记录，两集合全等判据会白跑一整轮",
+            src.contains("parsed.names.any { it !in nameSet }") && src.contains("attempt == 0")
         )
         assertTrue(
             "重试必须带 attempt 递增，否则持续变化的目录上无限递归",

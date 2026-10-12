@@ -404,9 +404,11 @@ class DirectoryListingTest {
             "旧的行分隔解析器必须已移除",
             !source.readText().contains("private fun parseStatOutput(")
         )
+        // 批量 stat 靠 `%n` 自带名称，于是「行分隔 → NUL」的转换成为必需：
+        // 含换行的文件名一旦按行切开，后续记录会整体错位。
         assertTrue(
-            "stat 元数据通道不得携带文件名（%n）",
-            !Regex("-exec stat[^\\n]*%n").containsMatchIn(body)
+            "带 %n 的元数据通道必须把行分隔换成 NUL",
+            body.contains("%n") && body.contains("tr '\\\\n' '\\\\0'")
         )
         assertTrue(
             "源码不得含裸 NUL 控制字符",
@@ -414,9 +416,13 @@ class DirectoryListingTest {
         )
     }
 
-    @Test fun `元数据通道不得包含文件名`() {
-        // 元数据通道按 \n 切分，只有不含文件名才安全（文件名里可能有 \n）。
-        // 元数据通道已随单次 su 合并内联进 listDirectory（不再有独立的 runStatMeta）。
+    @Test fun `元数据通道必须批量取且以 NUL 分隔`() {
+        // 元数据通道由 `%n` 批量 stat 产出：先按行给出「名称|权限|字节数|mtime」，
+        // 再由 sed 把名称与属性拆成两段、tr 把行分隔换成 NUL。分隔只能是 NUL ——
+        // 文件名可以含换行，按行切分会把后续记录整体错位。
+        //
+        // 批量也是硬要求：逐文件 fork 一次 stat 会让 200 条目的目录在真机上耗
+        // 1.1~10s（进程创建开销），批量后降到数十毫秒。列表「加载慢」的根因即此。
         val body = listDirectoryBody()
         // 只看代码行：注释里会引用旧格式 %A|%s|%Y|%n 作为反例说明，那不是实际执行的命令。
         val cmdText = body.lineSequence()
@@ -424,8 +430,24 @@ class DirectoryListingTest {
             .joinToString("\n")
 
         assertTrue(
-            "stat 格式只能是 %A|%s|%Y，不得含 %n",
-            cmdText.contains("%A|%s|%Y") && !cmdText.contains("%Y|%n")
+            "stat 格式必须是 %n|%A|%s|%Y",
+            cmdText.contains("'%n|%A|%s|%Y'")
+        )
+        assertTrue(
+            "名称与属性必须切开",
+            cmdText.contains("sed ")
+        )
+        assertTrue(
+            "行分隔必须换成 NUL",
+            cmdText.contains("tr '\\\\n' '\\\\0'")
+        )
+        assertTrue(
+            "不得逐文件 fork stat",
+            !cmdText.contains("stat -L -c \\\"%A|%s|%Y\\\" \\\"\$f\\\"")
+        )
+        assertTrue(
+            "元数据必须按名称通道过滤，防止劈开的半条记录冒充同名兄弟项",
+            body.contains("filterKeys") && body.contains("it in nameSet")
         )
     }
 
