@@ -16,13 +16,13 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A118） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A127） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 616 tests / 0 failures / 1 skipped |
+| 单元测试 | 619 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
-| 文件名通道 | `find -print0`（NUL 分隔）；元数据通道**自带名称**（`printf "%s\0"` + `stat`），按名称配对 → 列举期间增删/断链不再让大小与类型串位；标记须两侧 NUL 包裹才命中 |
+| 文件名通道 | `find -print0`（NUL 分隔）；元数据通道**批量**一次调用取（`find -exec stat -L -c '%n\|%A\|%s\|%Y' {} +`，`%n` 自带名称、`sed` 按末三字段切开、`tr` 换 NUL）→ 进程创建 O(n)→O(1)，188 条目目录由 9.34s 降至 0.11s；按名称配对 → 列举期间增删/断链不再让大小与类型串位；标记须两侧 NUL 包裹才命中 |
 | 列表一致性 | `listIsStale` + `loadingGenRef` 双护栏：陈旧列表不可操作，重算不越代落盘 |
 | 移动/复制 | 冲突探测单次化；覆盖目录先改名让位、失败回滚；拷贝只清 setuid/setgid 与 g/o 写位，保留执行位 |
 | root 探测时序 | `isRootGranted == null`（未探测）先等待探测落定，上限 3s，超时按已知状态处理 |
@@ -49,7 +49,7 @@
 | 全局底栏 | `顶部 / 底部 / 新建 / 同步 / 刷新` 置于 DockBar 上方；作用对象为聚焦列，`同步` 把聚焦列目录赋给另一列 |
 | 逐列状态 | 左右列各自持有目录、列表、过滤、多选、刷新代次（`FilePaneState`）；目录失效回退与静默空列表自愈均按列独立触发 |
 | 列表刷新 | **不再清空列表**（消除刷新期空白）；保留期间由 `enabled = !listIsStale` 真正禁用交互并降透明度；同目录刷新 120ms 节流 |
-| 列表性能 | `FileItem` 类型判定构造期一次算好（不再每帧重算正则）；选中判定走 HashSet；搜索 250ms 防抖；主页行用 derivedStateOf 隔离 |
+| 列表性能 | `FileItem` 类型判定构造期一次算好（不再每帧重算正则）；选中判定走 HashSet；搜索 250ms 防抖；主页行用 derivedStateOf 隔离；目录元数据批量 stat（不逐条目 fork） |
 | 代码结构 | 无重复分支/无用中间层：`preferRoot` 已扁平、`pathExistsQuiet`/`uniqueFile`/`isExtractable` 已删 |
 | 脚本执行 | `.sh` 归一化改为**字节级保守判定**（`ShNormalization`）：含字节偏移自引用（`$0`/`${0}`/`${BASH_SOURCE`，配 `tail…+N`／含变量形式 `+$skip`、`head -c`、`dd skip=`、`sed -n 'N,'`）或内嵌压缩魔数即直跑原字节，仅普通文本脚本去 BOM/CR（上限 16 MiB，超限直跑）；app 侧不可读时由 `decideAsRoot` 先 `stat` 取大小再按实际长度以 root 读头部判定；`.so` 权限先记录后还原，还原排在执行之后；执行环境统一补 `TMPDIR`（root 侧 `/data/local/tmp`，非 Root 侧应用私有 `cacheDir`），终端命令同样注入 |
 | 归档格式 | 14 种：tar 系（`.tar.gz/.tar.xz/.tar.bz2/.tar.lz4/.tar.zst/.tgz/.tzst/.tar`）+ 单文件（`.gz/.xz/.bz2/.lz4/.zst/.zip`）；`.tzst` 为 tar+zstd 别名 |
@@ -81,6 +81,37 @@
 ---
 
 ## 待办
+
+### A127. 目录列表加载慢：元数据通道逐文件 fork stat（BUG-PERF-196）（2026-10-12）
+
+需求：进入目录后文件列表加载过慢。逐段计时排除 su 往返（≈20ms）、名称通道（`find -print0`，30ms 量级）、
+排序过滤（纯内存无 I/O）之后，瓶颈落在 `listDirectory` 的元数据通道。
+
+- [x] **根因**：元数据通道用 `find … -exec sh -c 'for f ; do … stat …; done' sh {} +`，
+  `{} +` 只把路径批量交给**一个** `sh`，循环体内的 `stat` 仍是每文件一次 fork。
+  真机单次进程创建 21~27ms（最坏 50ms 量级），188 条目的 `/sdcard/Download` 即 188 次 fork，
+  实测该趟 9.34s（`time` user 3.84 + sys 5.52，时间几乎全在进程管理）。
+- [x] **修法**：改 `find … -exec stat -L -c '%n|%A|%s|%Y' {} + 2>/dev/null | sed 's/|\([^|]*\)|\([^|]*\)|\([^|]*\)$/\n\1|\2|\3/' | tr '\n' '\0'`
+  —— find 一次调用批量取，`%n` 自带名称、`sed` 按**最后**三字段切开（文件名含 `|` 亦正确）、
+  `tr` 把行分隔换成 NUL。输出与旧实现逐字节同构，下游 `parseStatMeta` / UI 层零改动；
+  同一 188 条目目录 9.34s → 0.11s，200 条目 1.1~10s → 0.05~0.07s。
+- [x] **连带处置 1**：重试判据由「两趟 find 名称集合全等」改为「元数据通道出现名称通道没有的名字」。
+  断链软链被 `stat -L` 拒绝、天然无元数据记录，是正常态；全等判据会让含断链软链的目录
+  每次进入都白跑一整轮列举。
+- [x] **连带处置 2**：新增 `filterKeys { it in nameSet }` —— `%n` 通道是「行分隔再转 NUL」，
+  文件名含换行时该条被劈成两段、后半段形如「名字后缀|元数据」，按名配对可能命中恰好同名的
+  兄弟项，滤掉即免疫。
+- [x] **不变项**：`-L` 语义、退出码 3/4/0/-1、`META_SEP` 两侧 NUL 判定、断链软链降级为
+  「非目录 / 0 字节」、`listDirectory(dirPath, attempt = 0)` 签名（`DualPaneStateRegressionTest`
+  锁定 JVM 三参签名）全部不变。
+- [x] **验证**：`od -c` 逐字节核对输出成对记录，NUL token 数恰为条目数 2 倍（188→376、10→20），
+  含 `|` 与含空格的文件名拆分正确；批量 `stat` 遇断链软链跳过该条并 rc=1、其余照常输出
+  （夹具建在 `/data/local/tmp`，`/sdcard` 是 FUSE 不允许 `ln -s`）。
+- [x] 单测 619 通过 / 0 失败 / 1 跳过；`assembleRelease` + `verifyReleasePayload` 通过。
+- [x] root 真机安装本版：冷启动后 `stat` 进程残留 0；`command -v stat` → `/system/bin/stat`；
+  「主页」`/data/adb/shso` 8 项、「文件」`/sdcard/Download` 188 项均正常渲染，类型与大小正确，
+  无空态与读取失败误报，`logcat` 无本应用 FATAL。
+- [x] 提交 `c487208`，tag `20261012` 重指该提交，双端 Release 资产替换并核验三端 sha256 一致。
 
 ### A126. 构建配置残留与权限文档漂移（BUG-CONSIST-194 / 195）（2026-10-12）
 
