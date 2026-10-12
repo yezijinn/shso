@@ -104,6 +104,8 @@ jobs:
           set -euo pipefail
           # 本工作流的用途是让别人编出自己包名的 APK。Fork 不会继承上游仓库的 Secrets，
           # 缺密钥时退回调试签名继续编译，只有确实提供了密钥才用 Release JKS。
+          # app/build.gradle.kts 在配置期解析签名凭据，单元测试步同样会触发配置期，
+          # 故开关在此一次性产出，后面两个 Gradle 步都按 -PuseDebugSigning 显式传入。
           if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
             echo "use_debug_signing=true" >> "$GITHUB_OUTPUT"
             echo "::warning::未配置 KEYSTORE_BASE64 / KEYSTORE_PASSWORD，产物将使用调试密钥签名"
@@ -114,24 +116,29 @@ jobs:
           echo "use_debug_signing=false" >> "$GITHUB_OUTPUT"
 
       - name: 运行单元测试
-        run: ./gradlew testDebugUnitTest --no-configuration-cache
-
-      - name: 编译 Release APK（按自定义包名）
-        # -PoverridePackage 仅覆盖 applicationId（安装身份），namespace/源码包名不变
-        # 签名：上一步给出 use_debug_signing 时才传 -PuseDebugSigning=true（缺 Secret 的场景）
+        # 测试本身不签名，但 Gradle 配置期就要读签名凭据（缺密钥时配置期即 error 中止），
+        # 故与编译步同口径传签名开关。
         env:
           USE_DEBUG_SIGNING: ${{ steps.signing.outputs.use_debug_signing }}
           KEYSTORE_FILE: ${{ runner.temp }}/release.jks
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
-          SIGN_ARGS=()
-          if [ "$USE_DEBUG_SIGNING" = "true" ]; then
-            SIGN_ARGS+=(-PuseDebugSigning=true)
-          fi
+          set -euo pipefail
+          ./gradlew testDebugUnitTest -PuseDebugSigning="$USE_DEBUG_SIGNING" --no-configuration-cache
+
+      - name: 编译 Release APK（按自定义包名）
+        # -PoverridePackage 仅覆盖 applicationId（安装身份），namespace/源码包名不变
+        env:
+          USE_DEBUG_SIGNING: ${{ steps.signing.outputs.use_debug_signing }}
+          KEYSTORE_FILE: ${{ runner.temp }}/release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
           ./gradlew assembleRelease \
             -PoverridePackage="${{ steps.validate.outputs.package }}" \
-            "${SIGN_ARGS[@]}" \
+            -PuseDebugSigning="$USE_DEBUG_SIGNING" \
             --no-configuration-cache
 
       - name: 上传 APK 产物
