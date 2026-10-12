@@ -120,6 +120,17 @@ class ConcurrencyAndSessionGuardTest {
     }
 
     @Test
+    fun `建立 shso 目录的并发调用必须只落一次 su`() {
+        // 冷启动时主页与文件页两列同时调 ensureShsoDir，而 @Volatile 标记只保证可见性：
+        // 「读到 false → 跑 su → 置位」可被另两个协程穿过，三次 mkdir 各发一次 su。
+        // su 是 Magisk 侧的串行资源，多出来的几次会排在同时发起的目录列举前。
+        val s = source("data/RootFileManager.kt")
+        assertTrue("并发去重须有互斥", s.contains("private val shsoDirLock = Mutex()"))
+        assertTrue("须在锁内二次检查标记", s.contains("if (shsoDirEnsured) return@withLock true"))
+        assertTrue("su 须落在锁内", s.contains("shsoDirLock.withLock {"))
+    }
+
+    @Test
     fun `shso 目录被删除或移走时必须让建立标记失效`() {
         // 标记残留时 ensureShsoDir 直接返回成功而不再 mkdir：本进程内后续
         // 「添加文件到 shso」「解压到 shso」全部失败，且报错是「目录不存在」，

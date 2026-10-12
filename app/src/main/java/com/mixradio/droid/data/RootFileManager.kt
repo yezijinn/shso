@@ -7,6 +7,8 @@ import android.os.SystemClock
 import android.system.Os
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.file.Files
@@ -97,6 +99,12 @@ object RootFileManager {
     // 目录只需建立一次，进程内去重，避免每次刷新/切目录都重复发起一次 su 调用
     @Volatile
     private var shsoDirEnsured = false
+
+    // 冷启动时主页与文件页两列会同时调 [ensureShsoDir]：上面那个标记只保证可见性，
+    // 「读到 false → 跑 su → 置位」三步之间可被另外两个协程穿过，各自再发一次 su。
+    // su 在 Magisk 侧是串行资源，多出来的几次会排在同时发起的目录列举前面。
+    // 这里把并发调用串行化，后到者拿到锁时标记通常已置位，直接返回。
+    private val shsoDirLock = Mutex()
 
     /**
      * 让「shso 目录已建立」标记失效。
@@ -364,10 +372,15 @@ object RootFileManager {
      */
     suspend fun ensureShsoDir(): Boolean = withContext(Dispatchers.IO) {
         if (shsoDirEnsured) return@withContext true
-        val cmd = "mkdir -p ${RootService.escapeShellArg(DEFAULT_SHSO_DIR)} && chmod 777 ${RootService.escapeShellArg(DEFAULT_SHSO_DIR)}"
-        val (code, _) = RootService.runCommandSync(cmd)
-        if (code == 0) shsoDirEnsured = true
-        code == 0
+        shsoDirLock.withLock {
+            // 双重检查：并发调用里只有第一个真正跑 su，其余在此处直接命中已置位的标记。
+            // 建立失败时不置位，后到者拿到锁会重试一次（与原有「失败即下次重来」语义一致）。
+            if (shsoDirEnsured) return@withLock true
+            val cmd = "mkdir -p ${RootService.escapeShellArg(DEFAULT_SHSO_DIR)} && chmod 777 ${RootService.escapeShellArg(DEFAULT_SHSO_DIR)}"
+            val (code, _) = RootService.runCommandSync(cmd)
+            if (code == 0) shsoDirEnsured = true
+            code == 0
+        }
     }
 
     /**

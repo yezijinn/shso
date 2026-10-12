@@ -82,6 +82,53 @@
 
 ## 待办
 
+### A128. 冷启动列表被 ROOT 探测阻塞、列举无超时与构建配置残留（2026-10-12）
+
+需求：冷启动进入目录后列表要等 ROOT 探测落定才出内容；同时复核外部建议末尾的 OPEN 项。
+
+- [x] **BUG-PERF-197**：`listDirectory` 在 `RootService.isRootGranted == null` 时无条件
+  `awaitRootState()`（50ms 轮询、上限 3s），而探测本身要跑一次 `su -c id`（Magisk 首次授权或
+  未放行时最长 1.5s 超时）。列举是只读操作，本地读得出来就没必要等 ROOT —— 改为先本地列举、
+  能拿到条目就直接返回；本地拿不到条目（受保护的 `/data/adb/…`、未授存储权限时 FUSE 把有权目录
+  也呈现成空目录）才等探测。写入路径保留原口径，`preferRoot()` 不再被列举调用。
+- [x] **BUG-PERF-198**：`FilePage` 缺「ROOT 落定后重读」effect，而 `HomePage` 有。首帧列举与探测
+  并发时受保护目录读到的是空或失败，探测落定后两列不会自动更新（用户看到「有 ROOT 却一直空」，
+  只能手动刷新）。新增 effect，只在「上一次已知未授权 → 本次已授权」这一次跃迁上刷新两列，
+  避免冷启动时与各列首屏列举重复跑一轮 su。
+- [x] **BUG-PERF-199**：列举的 `runCommandSync` 未传 `timeoutMs`，沿用默认 120s；su 停在 Magisk
+  授权弹窗上时列表挂满两分钟。新增 `LIST_TIMEOUT_MS = 15_000L` 并显式传入。
+- [x] **BUG-CONSIST-200**：`docs/在线编译.md` 的主流程称「CI 使用调试密钥签名」，而
+  `build-apk.yml` 强制要求 `KEYSTORE_BASE64` / `KEYSTORE_PASSWORD`（GitHub 不把上游 Secrets 复制
+  到 Fork），外部用户按其文档操作会在「写入 Release 签名密钥」步失败。改为缺密钥时回退
+  `-PuseDebugSigning=true`，编译步按上一步的输出决定是否传该参数；文档订正签名描述，并补
+  「安装时提示签名冲突」一条说明两个 Secret 与调试签名的差别。
+- [x] **BUG-CONSIST-201**：`gradle/libs.versions.toml` 保留 20 条未被任何 `*.gradle.kts` 引用的
+  声明（jetbrains-compose-*、jetbrains-lifecycle-*、navigation3、materialKolor、aboutlibraries，
+  以及 dokka / baselineprofile / composeHotReload 等插件，与 BUG-CONSIST-195 同源的模板残留），
+  `gradle.properties` 另留着两条只对 Dokka 插件生效的属性。删除未引用项，
+  `androidx-lifecycle-runtime-compose` 的内联版本改为 `version.ref`；新增护栏断言「每条
+  library / plugin 都在构建脚本中被引用、每个 version 都有 version.ref」。
+- [x] **BUG-CONSIST-202**：`CONTRIBUTING.md` / `CONTRIBUTING.en.md` 的技术栈表仍写 compose-bom
+  2026.08.00，实际为 2026.09.00。改齐，并加护栏断言三份文档的 compose-bom 版本与版本目录一致。
+- [x] **BUG-PERF-203 记 BY_DESIGN**：双列各挂 `LaunchedEffect(pane.currentDirectory)`，冷启动并发
+  两次 su 列举。批量 stat 后单次列举 0.1s 量级、su 往返约 20ms，右列改为聚焦才加载会先呈现空列，
+  代价大于收益；两列内容同屏可见，并发只改变完成顺序、不减少总工作量。维持现状。
+- [x] **BUG-CONC-204**（原 AI-1-BUG-PERF-183）：`shsoDirEnsured` 是 `@Volatile`
+  布尔，「读标记 → 跑 su → 置位」非原子，冷启动时主页与文件页两列同时调 `ensureShsoDir`
+  会各发一次 `mkdir` su（`mkdir -p` 幂等，正确性无损，但 su 在 Magisk 侧串行，挤占同时发起的列举）。
+  加 `Mutex` + 锁内二次检查，失败时不置位以保留「失败即下次重来」的语义。
+- [x] 单测 625 通过 / 0 失败 / 1 跳过；`assembleRelease` + `verifyReleasePayload` 通过。
+- [x] 真机（root，PACM00 / Android 10）：同一条 su 命令对 `/data/adb/shso`（10 项）、
+  `/sdcard/Download`（188 项）、`/system/etc`（98 项）三目录逐一返回，退出码均 0，三段合计 612ms
+  （含 3 次 adb 往返）；安装本版后冷启动切「文件」页，两列 400ms 内已出内容，`uiautomator`
+  导出的层级里 `/storage/emulated/0` 的目录项完整渲染、无读取失败提示，`logcat` 无本应用 FATAL。
+  并发 su 采样（设备侧 `ps` 轮询，150 次采样、间隔约 70ms）冷启动窗口内峰值并发 4 个 su，
+  其中 3 个来自应用（两列列举 + 一次建立目录），未见建立目录并发多次；采样间隔大于单次 su
+  存活时间，该数据只作辅助。
+- [x] 不带密钥的分支实测：`-PuseDebugSigning=true` + 指向不存在文件的 `KEYSTORE_FILE` 可正常
+  编译，产物签名者为 `CN=Android Debug`，即 CI 缺 Secret 时的回退路径可用。
+- [x] 提交 `740b72a`（代码）、`3ea9b0c`（构建配置与文档）。
+
 ### A127. 目录列表加载慢：元数据通道逐文件 fork stat（BUG-PERF-196）（2026-10-12）
 
 需求：进入目录后文件列表加载过慢。逐段计时排除 su 往返（≈20ms）、名称通道（`find -print0`，30ms 量级）、
