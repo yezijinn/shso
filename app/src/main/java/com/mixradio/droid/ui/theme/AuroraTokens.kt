@@ -13,7 +13,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 /**
- * 极光玻璃主题的设计令牌（design-spec.md 附录 C）。
+ * 极光玻璃主题的设计令牌（来源见本文件各常量的行内注释）。
  *
  * 使用约定：
  * 1. 页面/组件里**禁止**再写 `Color(0xFF...)` 字面量，一律引用本对象的常量
@@ -253,4 +253,5 @@ fun AuroraTextStyleSet.shrunk(deltaSp: Float): AuroraTextStyleSet = copy(
     title2 = title2.copy(fontSize = (title2.fontSize.value - deltaSp).sp),
     title3 = title3.copy(fontSize = (title3.fontSize.value - deltaSp).sp),
     title4 = title4.copy(fontSize = (title4.fontSize.value - deltaSp).sp),
+    monospace = monospace.copy(fontSize = (monospace.fontSize.value - deltaSp).sp),
 )

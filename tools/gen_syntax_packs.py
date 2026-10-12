@@ -439,6 +439,17 @@ add(id="solidity", exts=["sol"], line="//", block=("/*","*/"), strings=['"', "'"
     type="address bool string bytes bytes1 bytes4 bytes8 bytes16 bytes32 uint uint8 uint32 uint64 uint128 uint256 int int8 int32 int64 int128 int256 fixed ufixed".split(),
     builtin="true false msg block tx now this super".split())
 
+def zip_entry(name):
+    """构造时间戳固定的 ZIP 条目。
+
+    zipfile.writestr 传字符串名时取当前本地时间作 mod time，同一份输入会产出字节不同的
+    归档；固定为 ZIP 纪元（1980-01-01）后，归档可哈希校验、可复现。
+    """
+    info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = 0o644 << 16
+    return info
+
 def main():
     repo = os.path.dirname(os.path.abspath(__file__))          # tools/
     repo_root = os.path.dirname(repo)
@@ -461,9 +472,9 @@ def main():
     # 语法包压缩档（应用整体导入用）：index.json 在根、语法文件在根。
     zip_path = os.path.join(repo_root, "syntax-packs.zip")
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("index.json", json.dumps(index, ensure_ascii=False, indent=2) + "\n")
+        z.writestr(zip_entry("index.json"), json.dumps(index, ensure_ascii=False, indent=2) + "\n")
         for entry in index:
-            z.writestr(entry["grammar"], open(os.path.join(OUT, entry["grammar"]), encoding="utf-8").read())
+            z.writestr(zip_entry(entry["grammar"]), open(os.path.join(OUT, entry["grammar"]), encoding="utf-8").read())
 
     print(f"生成 {len(written)} 个语法包；压缩档 {zip_path}（{os.path.getsize(zip_path)/1024:.1f} KB）")
     total_ext = sum(len(e) for _, e, _ in written)

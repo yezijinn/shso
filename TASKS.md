@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A139） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A140） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
 | 单元测试 | 652 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
@@ -81,6 +81,45 @@
 ---
 
 ## 待办
+
+### A140. 依赖供应链 / CI 加固 / 主题与工具链保鲜（2026-10-12）
+
+`docs/AI-1-BUG.md` 推进到第 343 轮，新开 7 条（211~217）：主题字段完整性、悬空文档引用、
+依赖 CVE、CI 注入面、混淆映射归档、工具链可重现性、行尾一致性。逐条读实码复核后全部处置。
+
+- [x] **AI-1-BUG-213（P2 SEC）zip4j 2.11.1 落在 CVE-2023-22899 影响范围内**：
+      该漏洞语义是「解密 WinZip AES 加密 ZIP 时不总是校验 MAC」——被篡改或损坏的密文
+      可能被静默解出错误内容而非报错拒绝，而项目确有 AES 加密 ZIP + 中文密码的解密路径。
+      升到 2.11.6（修复版为 2.11.3，最新 2.11.6）。同轮核验 commons-compress 1.27.1 /
+      zstd-jni 1.5.7-16 / tukaani-xz 1.9 均无已知 CVE。
+- [x] **AI-1-BUG-214（P3 SEC）`publish-release.yml` 的 tag 输入直接插值进 `run:`**：
+      GitHub Actions 在 shell 执行前做文本替换，表单值含 `$(...)` / 反引号会被展开执行，
+      而该 job 持有 Release 签名密钥；与已修复的 `build-apk.yml` 属同类不一致。
+      改为经 `env: INPUT_TAG` 注入，脚本内只引用变量。
+- [x] **AI-1-BUG-215（P3）release 经 R8 混淆而 mapping 未归档**：混淆映射既不随 Release
+      上传也未作 artifact 保存，线上堆栈无法还原，且 R8 每次构建的映射不同、事后无法重建。
+      两个 workflow 各加一步 `upload-artifact` 归档
+      `app/build/outputs/mapping/release/mapping.txt`（不进 Release Assets，避免降低逆向门槛）。
+- [x] **AI-1-BUG-216（P3）`gen_syntax_packs.py` 产出的 zip 不可重现**：
+      `writestr(名字, 数据)` 取当前本地时间作条目时间戳，同一份输入每次产出字节不同的归档。
+      改为构造固定时间（1980-01-01）的 `ZipInfo`。实测连续两次生成 sha256 一致，
+      并与仓库原包逐成员比对内容完全相同（63 项，仅时间戳字段不同）。
+- [x] **AI-1-BUG-217（P3）仓库无 `.gitattributes`，行尾取决于各机 `core.autocrlf`**：
+      生成器显式写 LF 而 checkout 端可能转 CRLF，同一仓库在不同机器上字节不一致，
+      也使 `syntax-packs/*.json` 长期呈现 62 项假 modified。新增 `.gitattributes`
+      固定文本类型为 LF、批处理为 CRLF、二进制免转换。
+- [x] **AI-1-BUG-211（P3）`AuroraTextStyleSet.shrunk()` 漏掉 `monospace` 字段**：
+      `copy` 手写 14 个字段而数据类有 15 个，漏传不报错——一旦按 KDoc 用于全局缩字号，
+      编辑器正文 / 行号 / 统计行不会随之缩小。补上该字段。
+- [x] **AI-1-BUG-212（P3）注释引用不存在的 `design-spec.md` 附录 C**：该文件从未进入仓库，
+      引用落空。改为指向本文件各常量的行内注释。
+- [x] **回归**：`testDebugUnitTest` 652 tests / 0 failures / 1 skipped；
+      `assembleRelease` 与 `verifyReleasePayload` 通过。产物 2908305 字节。
+- [x] **真机验证（root，PACM00 / Android 10 / 1080×2280）**：构造 WinZip AES-256 加密 ZIP
+      推到 `/sdcard/Download/`，经文件页「自动解压文件」正确弹出密码框，输入密码后解出
+      `内层文件.txt`（33 字节），内容逐字节与源一致——升级后的解密与完整性校验路径正常。
+- [x] **外部建议复核**：`docs/AI-1-BUG.md` 第 332~343 轮的 7 条 OPEN 全部处置；
+      `docs/AI-2-BUG.md` 止于 §8.5，其 13 条 OPEN 经比对已在 A6x~A12x 闭环，无新增。
 
 ### A139. 多用户路径 / 编辑历史回收 / CI 与构建脚本输入（2026-10-12）
 

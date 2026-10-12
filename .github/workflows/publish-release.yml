@@ -33,9 +33,11 @@ jobs:
         # 北京时间 00:00–08:00 之间 `date +%Y%m%d` 会取到前一天。
         env:
           TZ: Asia/Shanghai
+          # 经 env 传入，避免 input 含 $() / 反引号时被 run 脚本的 shell 展开执行
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
-          T="${{ github.event.inputs.tag }}"
+          T="$INPUT_TAG"
           if [ -z "$T" ]; then T="$(date +%Y%m%d)"; fi
           if [[ ! "$T" =~ ^[0-9]{6,8}$ ]]; then
             echo "::error::标签格式非法：$T（必须为纯数字 YYYYMMDD）"
@@ -154,6 +156,16 @@ jobs:
           } > "$NOTES"
           echo "--- 生成的说明 ---"
           cat "$NOTES"
+
+      # 映射表不随 Release 分发（避免降低逆向门槛），仅作 Actions artifact 归档，
+      # 供线上崩溃堆栈还原；R8 每次构建的映射不同，事后无法重建。
+      - name: 归档混淆映射表
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: mapping-${{ steps.tag.outputs.tag }}
+          path: app/build/outputs/mapping/release/mapping.txt
+          if-no-files-found: warn
+          retention-days: 90
 
       - name: 创建 GitHub Release（纯日期标签）
         env:

@@ -1,0 +1,33 @@
+# 固定行尾，使跨机器 / 跨 CI 的文件字节确定：生成器输出可与仓库内容逐字节比对，
+# 也不再依赖各开发者的 core.autocrlf 取值。
+* text=auto eol=lf
+
+# 文本源码与文档：一律 LF
+*.kt       text eol=lf
+*.kts      text eol=lf
+*.java     text eol=lf
+*.py       text eol=lf
+*.sh       text eol=lf
+*.json     text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.xml      text eol=lf
+*.toml     text eol=lf
+*.md       text eol=lf
+*.pro      text eol=lf
+*.properties text eol=lf
+gradlew    text eol=lf
+
+# Windows 批处理必须 CRLF
+*.bat      text eol=crlf
+
+# 二进制：禁止任何转换
+*.png      binary
+*.webp     binary
+*.jpg      binary
+*.jpeg     binary
+*.jar      binary
+*.jks      binary
+*.keystore binary
+*.apk      binary
+*.zip      binary
