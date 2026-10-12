@@ -53,6 +53,15 @@ import com.mixradio.droid.ui.theme.AuroraTypography
 import com.mixradio.droid.ui.theme.auroraBackground
 import kotlinx.coroutines.launch
 
+/**
+ * 「左右滑屏可切换菜单」提示是否已在本次进程启动中弹过。
+ *
+ * 该提示按「每次冷启动一次」计，故用进程级标记而不是 remember/rememberSaveable ——
+ * Activity 因转屏、深色模式切换等原因重建时不应再弹。
+ */
+@Volatile
+private var swipeHintShown = false
+
 class MainActivity : ComponentActivity() {
 
     // 外部唤起（「打开方式」/「分享」）的待处理请求。Intent 本身不可比较，
@@ -260,6 +269,14 @@ fun MainContainer(
     // 外部唤起：解析 URI → 投递到 Hub → 切到文件页（页面消费后跳目录并高亮）。
     // 解析是阻塞 IO（不透明 URI 需拷贝），放在 IO 线程。
     val appContext = LocalContext.current.applicationContext
+
+    // 冷启动提示：勾选「左右提示」时每次冷启动弹一次；未勾选则永不弹
+    LaunchedEffect(appSettings.showSwipeHint) {
+        if (!appSettings.showSwipeHint || swipeHintShown) return@LaunchedEffect
+        swipeHintShown = true
+        Toast.makeText(appContext, "左右滑屏可切换菜单", Toast.LENGTH_SHORT).show()
+    }
+
     LaunchedEffect(externalRequest) {
         val request = externalRequest ?: return@LaunchedEffect
         // 多文件分享（SEND_MULTIPLE）只处理首个：下游的定位与动作分派都是单目标设计，
@@ -347,7 +364,7 @@ fun MainContainer(
             }
         }
 
-        if (!WindowInsets.isImeVisible) {
+        if (!WindowInsets.isImeVisible && !appSettings.hideDockBar) {
             DockBar(
                 selectedPage = pagerState.currentPage,
                 onTabSelected = { targetPage ->

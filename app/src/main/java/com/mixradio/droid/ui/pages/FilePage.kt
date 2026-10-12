@@ -108,6 +108,7 @@ import com.mixradio.droid.ui.components.ImageViewerDialog
 import com.mixradio.droid.ui.components.InstallConfirmDialog
 import com.mixradio.droid.ui.components.TextEditorDialog
 import com.mixradio.droid.ui.components.applyFileViewSettings
+import com.mixradio.droid.ui.components.dockBarBottomPadding
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraTokens
 
@@ -1734,7 +1735,7 @@ fun FilePage(
             // 参考 MPManager（activity_main.xml:73-104）的 dual pane —— 两个 weight=1
             // 的面板并排，各自独立导航，顶栏只显示**聚焦列**的路径。
             //
-            // 底部仍预留 56.dp 给全局 DockBar：DockBar 由 MainActivity 提供，
+            // 底部仍预留 dockBarBottomPadding 给全局 DockBar：DockBar 由 MainActivity 提供，
             // 是全局页签栏，不属于任何一列；不预留会让文件行透过导航栏显示出来。
             // 系统导航条 inset 已由 Scaffold 的 innerPadding 承担，此处不再叠加
             // navigationBarsPadding，否则会多出一道重复计算的空白带。
@@ -1754,11 +1755,15 @@ fun FilePage(
             }
 
             // 全局底栏（顶部 / 底部 / 新建 / 同步 / 刷新）。
-            // 底部再预留 56.dp 给全局 DockBar（MainActivity 提供的页签栏）：
+            // 底部再预留 dockBarBottomPadding（可见时 56.dp，启用「隐藏底栏」后为 0）：
             // DockBar 是浮层，不预留就会透过它看到底栏按钮。
             // 系统导航条 inset 已由 Scaffold 的 innerPadding 承担，此处不再叠加
             // navigationBarsPadding，否则多出一道重复计算的空白带。
-            Box(modifier = Modifier.fillMaxWidth().padding(bottom = 56.dp)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = dockBarBottomPadding(appSettings.hideDockBar))
+            ) {
                 PaneBottomBar(Modifier.fillMaxWidth())
             }
         }

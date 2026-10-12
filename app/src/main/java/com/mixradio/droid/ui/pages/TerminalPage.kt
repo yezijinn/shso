@@ -485,8 +485,9 @@ fun TerminalPage(
                     start = 14.dp,
                     end = 14.dp,
                     top = 4.dp,
-                    // 仅给底部 DockBar(约 58dp) 让位，按钮行紧贴 DockBar 上沿，无额外大留白
-                    bottom = if (isImeVisible) 0.dp else 58.dp
+                    // 仅给底部 DockBar(约 58dp) 让位，按钮行紧贴 DockBar 上沿，无额外大留白；
+                    // 启用「隐藏底栏」后 DockBar 不再绘制，此处一并归零
+                    bottom = if (isImeVisible || appSettings.hideDockBar) 0.dp else 58.dp
                 ),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {

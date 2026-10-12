@@ -62,6 +62,7 @@ import com.mixradio.droid.R
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.PermissionChecker
 import com.mixradio.droid.data.RootService
+import com.mixradio.droid.ui.components.dockBarBottomPadding
 import com.mixradio.droid.ui.theme.AuroraAccentBar
 import com.mixradio.droid.ui.theme.AuroraArrowPreference
 import com.mixradio.droid.ui.theme.AuroraTextStyles
@@ -371,7 +372,7 @@ fun SettingsPage(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(bottom = 56.dp)
+                .padding(bottom = dockBarBottomPadding(appSettings.hideDockBar))
         ) {
             Column(
                 modifier = Modifier
@@ -400,6 +401,9 @@ fun SettingsPage(
 
             // 无空行直连：权限区后紧跟三个开关项
             SettingsFileBehaviorGroup(appSettings = appSettings)
+
+            // 界面开关：隐藏底栏 / 左右提示
+            SettingsInterfaceGroup(appSettings = appSettings)
 
             // 检查更新
             // 右侧胶囊与权限行一致；点击胶囊/整行触发检查，亮起 3 秒后自动回关

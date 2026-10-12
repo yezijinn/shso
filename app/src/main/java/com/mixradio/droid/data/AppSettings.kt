@@ -73,6 +73,14 @@ class AppSettings private constructor(context: Context) {
     var editorWordWrap by mutableStateOf(prefs.getBoolean(KEY_EDITOR_WORD_WRAP, false))
         private set
 
+    /** 隐藏底部四页签栏，各页内容占满屏幕高度 */
+    var hideDockBar by mutableStateOf(prefs.getBoolean(KEY_HIDE_DOCK_BAR, false))
+        private set
+
+    /** 冷启动时提示「左右滑屏可切换菜单」 */
+    var showSwipeHint by mutableStateOf(prefs.getBoolean(KEY_SHOW_SWIPE_HINT, true))
+        private set
+
     // 书签（永久存储，按添加顺序）
     private val bookmarkPaths: MutableSet<String> = LinkedHashSet(loadBookmarks())
 
@@ -185,6 +193,16 @@ class AppSettings private constructor(context: Context) {
         prefs.edit { putBoolean(KEY_SHOW_HIDDEN_FILES, enable) }
     }
 
+    fun updateHideDockBar(enable: Boolean) {
+        hideDockBar = enable
+        prefs.edit { putBoolean(KEY_HIDE_DOCK_BAR, enable) }
+    }
+
+    fun updateShowSwipeHint(enable: Boolean) {
+        showSwipeHint = enable
+        prefs.edit { putBoolean(KEY_SHOW_SWIPE_HINT, enable) }
+    }
+
     fun updateFileSortMode(mode: Int) {
         fileSortMode = mode
         prefs.edit { putInt(KEY_FILE_SORT_MODE, mode) }
@@ -257,6 +275,8 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_EDITOR_SHOW_LINE_NUMBER = "editor_show_line_number"
         private const val KEY_EDITOR_WORD_WRAP = "editor_word_wrap"
         private const val KEY_EDITOR_FONT_SIZE = "editor_font_size"
+        private const val KEY_HIDE_DOCK_BAR = "hide_dock_bar"
+        private const val KEY_SHOW_SWIPE_HINT = "show_swipe_hint"
     
         private const val DEFAULT_TERMINAL_COLOR = 0xFF00E676L
 

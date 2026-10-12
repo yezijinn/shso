@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mixradio.droid.ui.theme.AuroraTokens
@@ -49,10 +50,18 @@ val DOCK_TABS = listOf(
 )
 
 /**
+ * 各页为 DockBar 预留的底部高度：底栏可见时等于其内容高度，启用「隐藏底栏」后为 0。
+ *
+ * 页面侧必须经此换算，不得各处写死 56.dp —— 隐藏底栏后仍留空带就白隐藏了。
+ * 系统导航条 inset 由各页 Scaffold 的 innerPadding 承担，与本值无关。
+ */
+fun dockBarBottomPadding(hideDockBar: Boolean): Dp = if (hideDockBar) 0.dp else 56.dp
+
+/**
  * 底部四 Tab 导航（主页 / 终端 / 文件 / 设置），透明玻璃叠层。
  *
- * 约束：高度固定 56.dp，页面侧的底部预留必须与之相等（`FilePage` 列表的
- * `padding(bottom = 56.dp)`）。改动本值需同步所有预留，否则文件行会透过导航栏穿帮。
+ * 约束：高度固定 56.dp，页面侧的底部预留必须与之相等（见 [dockBarBottomPadding]）。
+ * 改动本值需同步所有预留，否则文件行会透过导航栏穿帮。
  */
 @Composable
 fun DockBar(

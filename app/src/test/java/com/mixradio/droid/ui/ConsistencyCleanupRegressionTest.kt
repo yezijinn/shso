@@ -53,6 +53,39 @@ class ConsistencyCleanupRegressionTest {
     }
 
     @Test
+    fun `隐藏底栏与左右提示两个开关必须真正生效`() {
+        // 两个开关都跨了「设置存储 → MainActivity → 各页布局」三层，任一层漏接，
+        // 表现都是「开关点得动但界面没变化」：隐藏底栏漏掉页面预留就只剩一个空白带，
+        // 左右提示漏掉门控就成了关不掉的骚扰。
+        val settings = src("data/AppSettings.kt")
+        assertTrue(settings.contains("KEY_HIDE_DOCK_BAR = \"hide_dock_bar\""))
+        assertTrue(settings.contains("KEY_SHOW_SWIPE_HINT = \"show_swipe_hint\""))
+        assertTrue("隐藏底栏默认关", settings.contains("prefs.getBoolean(KEY_HIDE_DOCK_BAR, false)"))
+        assertTrue("左右提示默认开", settings.contains("prefs.getBoolean(KEY_SHOW_SWIPE_HINT, true)"))
+
+        val main = src("MainActivity.kt")
+        assertTrue("底栏须受开关门控", main.contains("!WindowInsets.isImeVisible && !appSettings.hideDockBar"))
+        assertTrue("提示文案须与开关同源", main.contains("左右滑屏可切换菜单"))
+        // 冷启动一次：进程级标记，转屏导致 Activity 重建时不得重弹
+        assertTrue(main.contains("private var swipeHintShown = false"))
+
+        val dock = src("ui/components/DockBar.kt")
+        assertTrue(
+            "预留高度须由开关换算",
+            dock.contains("fun dockBarBottomPadding(hideDockBar: Boolean): Dp")
+        )
+        listOf("ui/pages/HomePage.kt", "ui/pages/FilePage.kt", "ui/pages/SettingsPage.kt").forEach { rel ->
+            val s = src(rel)
+            assertTrue("$rel 须经底栏预留换算", s.contains("dockBarBottomPadding(appSettings.hideDockBar)"))
+            assertFalse("$rel 不得再写死底栏预留", s.contains("padding(bottom = 56.dp)"))
+        }
+        assertTrue(
+            "终端页底部留白须随开关归零",
+            src("ui/pages/TerminalPage.kt").contains("if (isImeVisible || appSettings.hideDockBar) 0.dp else 58.dp")
+        )
+    }
+
+    @Test
     fun `保存分支的编码状态必须在主线程取快照`() {
         // 保存是 IO 挂起调用，期间用户可继续打字。编码 / 行尾 / BOM 与正文同为 Compose state，
         // 在 Dispatchers.IO 内读既不保证可见顺序，也可能写出的不是「点击保存那一刻」的组合。

@@ -152,6 +152,30 @@ fun SettingsFileBehaviorGroup(
 }
 
 /**
+ * 设置页界面开关：隐藏底栏 / 左右提示。
+ *
+ * 全部走 AppSettings 单一来源（AppSettings 已 @Stable）。
+ * 父 Composable 重组时本节点可通过稳定性检查跳过（参数全 stable）。
+ */
+@Composable
+fun SettingsInterfaceGroup(
+    appSettings: AppSettings,
+) {
+    AuroraSwitchPreference(
+        title = "隐藏底栏",
+        summary = "隐藏底部的主页 / 终端 / 文件 / 设置，每一页占满屏幕高度",
+        checked = appSettings.hideDockBar,
+        onCheckedChange = { appSettings.updateHideDockBar(it) }
+    )
+    AuroraSwitchPreference(
+        title = "左右提示",
+        summary = "冷启动时提示「左右滑屏可切换菜单」",
+        checked = appSettings.showSwipeHint,
+        onCheckedChange = { appSettings.updateShowSwipeHint(it) }
+    )
+}
+
+/**
  * 触发各权限项系统 Intent 的具体实现（保留在父 Composable 调用环境）。
  * 抽出后 SettingsPage 顶层仅传入回调引用，避免意图逻辑与 UI 节点强耦合。
  */
