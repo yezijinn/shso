@@ -40,6 +40,28 @@ class ReleaseGateRegressionTest {
     }
 
     @Test
+    fun `缺外部密钥时配置期不得要求签名凭据`() {
+        // signingConfigs 块在配置期求值，且不受 useDebugSigning 约束。此前无条件读
+        // storeFile/storePassword，而 getSigningPassword 在既无环境变量也无 local.properties
+        // 时直接 error —— Fork 未继承 Secrets 时，CI 传了 -PuseDebugSigning=true 也照样在
+        // 配置阶段中止（连 :app:help 都跑不起来），工作流的回退分支形同虚设。
+        val text = File("../app/build.gradle.kts").readText()
+        val block = text.substringAfter("signingConfigs {").substringBefore("buildTypes {")
+        val guardAt = block.indexOf("if (!useDebugSigning)")
+        assertTrue("release 签名配置必须按 useDebugSigning 跳过凭据读取", guardAt > 0)
+        listOf("getSigningFile()", "getSigningPassword(").forEach { call ->
+            val at = block.indexOf(call)
+            assertTrue("release 签名块必须调用 $call", at > 0)
+            assertTrue("$call 必须在 if (!useDebugSigning) 之内，否则无凭据环境配置期即失败", at > guardAt)
+        }
+        // 回退调试签名时 release 配置为空，debug 构建类型不能继续引用它
+        assertTrue(
+            "debug 构建类型需在回退路径改用 AGP 自带的 debug 签名配置",
+            text.contains("if (useDebugSigning) signingConfigs.getByName(\"debug\")")
+        )
+    }
+
+    @Test
     fun `安装暂存副本必须在启动时清扫`() {
         val text = File("src/main/java/com/mixradio/droid/data/RootService.kt").readText()
         val start = text.indexOf("private fun sweepExecutionTempFiles()")

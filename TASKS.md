@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A133） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A134） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 642 tests / 0 failures / 1 skipped |
+| 单元测试 | 643 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -76,11 +76,40 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909817 字节，三端 sha256 一致（`8aeb624d…`）；双端 tag 与 Release 的目标提交均已对齐 A133 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909817 字节，三端 sha256 一致（`27a279ce…`）；双端 tag 与 Release 的目标提交均已对齐 A134 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 
 ---
 
 ## 待办
+
+### A134. 缺密钥回退签名的配置期失效（2026-10-12）
+
+此前把 `docs/AI-1-BUG.md` 第 245 轮的 `AI-1-BUG-CONSIST-185` 判为「已有裁定（BUG-CONSIST-200）维持」，
+复审后判定为**误置**：BUG-CONSIST-200 只补了工作流一侧，构建脚本一侧从未改过，
+回退分支实际从未生效。立案 1 条（P2），修复并加护栏。
+
+- [x] **BUG-CONSIST-223（P2）配置期强制读签名凭据**：`signingConfigs.create("release")` 在配置期
+      整体求值且不受 `useDebugSigning` 约束，无条件调用 `getSigningFile()` 与两次
+      `getSigningPassword()`；后者在既无环境变量也无 `local.properties` 时 `error()`。Fork 未继承
+      Secrets 时工作流虽传 `-PuseDebugSigning=true`，构建仍在配置阶段中止（`:app:help` 都跑不起来）。
+      改为把凭据读取放进 `if (!useDebugSigning)`；`debug` 构建类型的签名配置按同一开关分流，
+      回退路径取 AGP 自带 debug 配置。
+- [x] **复现（修复前）**：临时摘掉 `local.properties` 的 `signing.*` 三项、清空
+      `KEYSTORE_PASSWORD` / `KEY_ALIAS_PASSWORD`、`KEYSTORE_FILE` 指向不存在文件 →
+      `:app:help -PuseDebugSigning=true` 在配置阶段 2 秒内 FAILURE「签名密码未配置」。
+      本地长期测不出，是 `local.properties` 的兜底密码掩盖了这条无凭据路径。
+- [x] **验证（修复后）**：同前复现环境 `assembleRelease -PuseDebugSigning=true` → BUILD SUCCESSFUL，
+      产物 `apksigner --print-certs` 为 `CN=Android Debug`；恢复 `local.properties` 后常规
+      `assembleRelease verifyReleasePayload` → BUILD SUCCESSFUL，产物签名 `CN=Jinn`（release 密钥未受影响）。
+- [x] **回归**：`testDebugUnitTest` 643 tests / 0 failures / 1 skipped（新增护栏 1 条：
+      契约断言 release 签名块内的 `getSigningFile()` / `getSigningPassword()` 必须在
+      `if (!useDebugSigning)` 之内，且 `debug` 构建类型有回退分支）。
+- [x] **真机验证（root，PACM00 / Android 10 / 1080×2280 / density 480）**：新构建 release APK
+      （2909817 字节）`su -c 'pm install -r -t'` 覆盖安装 Success；`dumpsys package` 报
+      `versionCode=20261012 / versionName=Jinn`；冷启动后 `mResumedActivity` 为本应用
+      `MainActivity`，`logcat -b crash` 无本应用记录。
+- [x] **外部建议复核**：`docs/AI-1-BUG.md` 止于第 259 轮 TERMINAL，无新增；`docs/AI-2-BUG.md`
+      止于 §8.5，无新增；`BUG.md` 唯一 OPEN 仍为 `BUG-PERF-030`（A109 裁定维持）。
 
 ### A133. 解压顶层剥离与语法包直链导入（2026-10-12）
 

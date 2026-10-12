@@ -87,15 +87,21 @@ android {
 
     signingConfigs {
         create("release") {
-            // 真实签名密钥位于全局凭据目录（与 GLOBAL/credentials/JinnKeyStores 保持一致）
-            storeFile = getSigningFile()
-            // 密码通过环境变量或 local.properties 读取，不再硬编码
-            storePassword = getSigningPassword("KEYSTORE_PASSWORD", "signing.storePassword")
-            keyAlias = "com.mixradio.droid"
-            keyPassword = getSigningPassword("KEY_ALIAS_PASSWORD", "signing.keyPassword")
-            enableV1Signing = false
-            enableV2Signing = true
-            enableV3Signing = true
+            // 本块在**配置期**求值，且不受 useDebugSigning 约束：无条件读凭据会让
+            // 「缺外部密钥、回退调试签名」的构建在配置阶段就 error 中止
+            // （Fork 未继承 Secrets 时 `-PuseDebugSigning=true` 也救不回来）。
+            // 故仅在实际使用外部密钥时读取签名文件与密码。
+            if (!useDebugSigning) {
+                // 真实签名密钥位于全局凭据目录（与 GLOBAL/credentials/JinnKeyStores 保持一致）
+                storeFile = getSigningFile()
+                // 密码通过环境变量或 local.properties 读取，不再硬编码
+                storePassword = getSigningPassword("KEYSTORE_PASSWORD", "signing.storePassword")
+                keyAlias = "com.mixradio.droid"
+                keyPassword = getSigningPassword("KEY_ALIAS_PASSWORD", "signing.keyPassword")
+                enableV1Signing = false
+                enableV2Signing = true
+                enableV3Signing = true
+            }
         }
     }
 
@@ -114,7 +120,9 @@ android {
         }
         debug {
             applicationIdSuffix = ""
-            signingConfig = signingConfigs.getByName("release")
+            // 有外部密钥时 debug 与 release 同签名（便于覆盖安装）；回退调试密钥时
+            // release 配置未填凭据，不能再用，改用 AGP 自带的 debug 配置。
+            signingConfig = if (useDebugSigning) signingConfigs.getByName("debug") else signingConfigs.getByName("release")
         }
     }
 
