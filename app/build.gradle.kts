@@ -117,6 +117,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // AGP 默认写入 META-INF/version-control-info.textproto（构建时的 git revision 等），
+            // 产物无需此元数据；构建信息由发布 tag 与 Release 记录承担。
+            vcsInfo {
+                include = false
+            }
         }
         debug {
             applicationIdSuffix = ""
@@ -158,10 +163,9 @@ android {
                 "DebugProbesKt.bin",
                 "kotlin/**",
                 "kotlin-tooling-metadata.json",
-                "assets/**",
-                "assets/dexopt/**",
-                // commons-codec 的语音匹配词典（120 个 txt，约 96KB），本应用不使用。
-                "org/apache/commons/codec/language/bm/**",
+                // commons-codec 的语音匹配资源（bm/ 词典 120 个 txt + 同目录的 dmrules.txt），
+                // 本应用不使用语音匹配（无 Metaphone / Soundex 调用），整目录排除。
+                "org/apache/commons/codec/language/**",
                 // jcodings（joni → regex-lib-oniguruma 的传递依赖）的 648 个编码转换表（约 2.9MB），
                 // 仅在转录遗留编码时需要；Monarch 语法匹配只用 UTF-8/ASCII-8BIT（内建编码，不查表）。
                 "tables/**"
@@ -235,14 +239,24 @@ val verifyReleasePayload = tasks.register("verifyReleasePayload") {
             return@doLast
         }
         val problems = mutableListOf<String>()
+        // 运行时必需、不得被任何排除规则波及的 assets（Sora 主题由 SoraMonarchGrammars 常量引用）。
+        val requiredAssets = setOf("assets/sora-themes/shso-dark.json")
+        val seenAssets = mutableSetOf<String>()
         ZipFile(apk).use { zip ->
             zip.entries().asSequence().forEach { e ->
                 val name = e.name
+                if (name in requiredAssets) seenAssets += name
                 if (name.startsWith("assets/sora-grammars/") || name.contains("syntax-packs")) {
                     problems += "内嵌语法包文件：$name"
                 }
                 if (name.startsWith("tables/")) {
                     problems += "无关数据表：$name"
+                }
+                if (name.startsWith("org/apache/commons/codec/language/")) {
+                    problems += "未被使用的语音匹配资源：$name"
+                }
+                if (name == "META-INF/version-control-info.textproto") {
+                    problems += "构建信息元数据：$name"
                 }
                 if (e.size in 1L..2_000_000L && (name.endsWith(".json") || name.contains("grammar", true))) {
                     val text = zip.getInputStream(e).use { it.readBytes().decodeToString() }
@@ -250,6 +264,7 @@ val verifyReleasePayload = tasks.register("verifyReleasePayload") {
                 }
             }
         }
+        (requiredAssets - seenAssets).forEach { problems += "缺少必需资源：$it" }
         if (problems.isNotEmpty()) {
             throw GradleException(
                 "release 产物校验失败：\n" + problems.joinToString("\n") { "  - $it" } +

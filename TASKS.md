@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A137） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A138） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
 | 单元测试 | 645 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
@@ -76,11 +76,49 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909817 字节，三端 sha256 一致（`5ee7c51c…`）；双端 tag 与 Release 的目标提交均已对齐 A137 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2908305 字节，三端 sha256 一致（`6297e1ec…`）；双端 tag 与 Release 的目标提交均已对齐 A138 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 
 ---
 
 ## 待办
+
+### A138. 打包配置与产物元数据（2026-10-12）
+
+`docs/AI-1-BUG.md` 推进到第 318 轮，新开「产物级验证」维度——不再只读构建脚本，
+而是解包 release APK 把「配置声明」与「真实产物」逐项对表。三条 CONFIRMED OPEN
+全部落于 `app/build.gradle.kts`。先独立复现（对未修复的 APK 解包），三条均属实。
+
+- [x] **BUG-BUILD-231（P3）packaging 的 assets 排除是空操作**：`assets/**` 与
+      `assets/dexopt/**` 两条排除从未命中任何条目——AGP 的 assets 合并发生在资源
+      打包之前，packaging 排除只作用于 JAR/AAR 的 `resources`，对 `assets/` 无效；
+      而 `baseline.prof` / `baseline.profm` 由 AGP 的 profile installer 单独注入，
+      根本不在可排除的集合里。两条规则删掉，改为在 `verifyReleasePayload` 里正向断言
+      「必需 assets 必须在产物中」（`assets/sora-themes/shso-dark.json` 由
+      `SoraMonarchGrammars` 常量引用，被任何排除规则波及即构建失败）。
+- [x] **BUG-BUILD-232（P3）语音匹配资源排除不彻底**：只排除 `…/language/bm/**`，
+      同目录的 `dmrules.txt`（3545 字节）仍在包内。`commons-codec` 的
+      `bm/` + `dmrules.txt` 只服务 Metaphone / Soundex 一族，源码侧零引用
+      （`grep` `Metaphone|Soundex|ColognePhonetic|Nysiis|MatchRating|Caverphone`
+      在 `app/src/main/java` 无命中）。规则扩为整目录
+      `org/apache/commons/codec/language/**`，并在校验任务里加负向断言。
+- [x] **BUG-SEC-233（P3）产物携带构建期 git revision**：AGP 默认写入
+      `META-INF/version-control-info.textproto`（120 字节，含构建时的 git revision），
+      release 构建类型内加 `vcsInfo { include = false }` 关闭。量小、无直接实害，
+      但私有 fork 场景下会把源码头暴露进产物，与项目既有的 META-INF 激进裁剪口径一致。
+- [x] **复核（未改动）**：ABI 集合（仅 arm64-v8a）、ProGuard 保留、zstd 取 aar 变体、
+      `app-metadata.properties`、`META-INF/services/**`（ChromeOS 与 CharsetProvider
+      的 SPI 注册）逐项解包核对，均与配置声明一致。
+- [x] **回归**：`testDebugUnitTest` 645 tests / 0 failures / 1 skipped；
+      `assembleRelease` 与 `verifyReleasePayload` 通过（无语法包、无数据表）。
+      产物由 2909817 降至 2908305 字节（−1512）。
+- [x] **真机验证（root，PACM00 / Android 10 / 1080×2280 / density 480）**：新包
+      `pm install -r -t` 返回 Success，启动进入终端页无崩溃，`logcat` 无应用侧 FATAL；
+      滑屏切文件页 → `Download` → 打开 `c0.xml` 进编辑器，语法配色与工具栏正常
+      ——反证 `assets/sora-themes/shso-dark.json` 运行时可用（该资产正是校验断言的正向目标）。
+- [x] **外部建议复核**：`docs/AI-1-BUG.md` 第 318 轮 3 条 OPEN 全部处置，剩余
+      PERF-182、CONSIST-118、COMPAT-093（BY_DESIGN）、CONC-148（WONTFIX）维持；
+      `docs/AI-2-BUG.md` 止于 §8.5，其列出的 12 条历史项经逐条回溯均已在 A62~A135
+      各轮闭环或裁定，无新增。
 
 ### A137. 提取失败窗口补漏 + 三条假绿护栏（2026-10-12）
 
