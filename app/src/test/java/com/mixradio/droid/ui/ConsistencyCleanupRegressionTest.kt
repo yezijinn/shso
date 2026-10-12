@@ -80,15 +80,18 @@ class ConsistencyCleanupRegressionTest {
             "预留高度须由开关换算",
             dock.contains("fun dockBarBottomPadding(hideDockBar: Boolean): Dp")
         )
-        listOf("ui/pages/HomePage.kt", "ui/pages/FilePage.kt", "ui/pages/SettingsPage.kt").forEach { rel ->
+        listOf(
+            "ui/pages/HomePage.kt", "ui/pages/FilePage.kt",
+            "ui/pages/SettingsPage.kt", "ui/pages/TerminalPage.kt"
+        ).forEach { rel ->
             val s = src(rel)
             assertTrue("$rel 须经底栏预留换算", s.contains("dockBarBottomPadding(appSettings.hideDockBar)"))
-            assertFalse("$rel 不得再写死底栏预留", s.contains("padding(bottom = 56.dp)"))
+            // 终端页原先按开关写死 58.dp（与底栏真实高度 56.dp 差 2dp，且底栏改高度时不会跟随）。
+            assertFalse(
+                "$rel 不得自行按开关写死底栏预留",
+                Regex("hideDockBar[^\\n]*else\\s+\\d+\\.dp").containsMatchIn(s)
+            )
         }
-        assertTrue(
-            "终端页底部留白须随开关归零",
-            src("ui/pages/TerminalPage.kt").contains("if (isImeVisible || appSettings.hideDockBar) 0.dp else 58.dp")
-        )
     }
 
     @Test

@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A134） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A135） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
 | 单元测试 | 643 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
@@ -76,11 +76,30 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909817 字节，三端 sha256 一致（`27a279ce…`）；双端 tag 与 Release 的目标提交均已对齐 A134 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909817 字节，三端 sha256 一致（`b123c9e0…`）；双端 tag 与 Release 的目标提交均已对齐 A135 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 
 ---
 
 ## 待办
+
+### A135. 终端页底栏预留的第二份真值（2026-10-12）
+
+继续复审被搁置的 `AI-1-BUG-CONSIST-184`，判定同为**误置**：此前只看开关为真那一半（确实归零），
+开关为假时该页并未走统一换算。立案 1 条（P3），修复并加护栏。
+
+- [x] **BUG-CONSIST-224（P3）终端页底部预留写死 58dp**：`DockBar.kt` 约定「高度固定 56.dp，
+      页面侧预留必须与之相等，不得各处写死」，`HomePage` / `FilePage` / `SettingsPage` 均经
+      `dockBarBottomPadding()`，仅 `TerminalPage` 按开关自行判断并写死 58.dp。偏差 2dp 肉眼难辨，
+      风险在底栏改高度时只有这一页不跟随。改为 `if (isImeVisible) 0.dp else dockBarBottomPadding(...)`。
+- [x] **回归**：`testDebugUnitTest` 643 tests / 0 failures / 1 skipped。原先的护栏只断言「终端页须
+      按开关归零」，反把写死值锁成了期望；已改为断言四个页面统一走换算函数、且不得出现
+      `hideDockBar … else <数字>.dp`。
+- [x] **真机验证（root，PACM00 / Android 10 / 1080×2280 / density 480）**：设备 `shared_prefs`
+      中 `hide_dock_bar` 为 true（A129 验证残留），以 root 改写为 false 并重启进程 → 底栏四 Tab
+      出现；终端页按钮行（中断/清屏/历史/Enter/发送）下沿 y≈1959px，底栏玻璃层上沿 y≈1986px，
+      无重叠无缝隙；验证后该键改回 true，恢复设备原状态。
+- [x] **外部建议复核**：`docs/AI-1-BUG.md` 止于第 259 轮 TERMINAL、`docs/AI-2-BUG.md` 止于 §8.5，
+      均无新增；`BUG.md` 唯一 OPEN 仍为 `BUG-PERF-030`（A109 裁定维持）。
 
 ### A134. 缺密钥回退签名的配置期失效（2026-10-12）
 
