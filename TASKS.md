@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A136） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A137） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
 | 单元测试 | 645 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
@@ -76,11 +76,46 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909817 字节，三端 sha256 一致（`b123c9e0…`）；双端 tag 与 Release 的目标提交均已对齐 A135 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2909817 字节，三端 sha256 一致（`5ee7c51c…`）；双端 tag 与 Release 的目标提交均已对齐 A137 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 
 ---
 
 ## 待办
+
+### A137. 提取失败窗口补漏 + 三条假绿护栏（2026-10-12）
+
+`docs/AI-1-BUG.md` 已推进到第 301 轮，积压 4 条 CONFIRMED OPEN：1 条逻辑 + 3 条测试
+假绿。逐条复现后全部处置。
+
+- [x] **BUG-LOGIC-227（P2）失败分支漏清「本次已落盘但未登记」的目标**：A136 的
+      `created` 只在 `copyOne` 返回成功后追加，而 `copyOne` 报失败时目标仍可能已经落盘——
+      shell 侧 cp 与 mv 都成功、随后整条命令超时/被杀（退出码 -1）。此类目标不在
+      `created` 里 → 不被回滚，残留 Download。失败分支补一条按「循环开始前是否存在」
+      gating 的清理：`if (existed) 0 else rollbackNewlyCreated(listOf(dst.absolutePath))`，
+      即「那时不存在、现在出现了，只能是本次写的」。同名覆盖刷新（`existed=true`）仍不触碰。
+- [x] **BUG-TEST-230（P3）语法包回滚用例复刻实现→假绿**：原用例在测试里重写了一遍
+      `backup != null` 的分支逻辑，生产代码改回「失败统一 delete()」测试照样通过。
+      把 `FileWrite` / `writeGrammarFile` / `rollback` 由 `private` 放开为 `internal`，
+      用例改为调用真实实现，断言「回滚后文件仍在且内容还原为导入前」。
+- [x] **BUG-TEST-229（P3）未知条目大小用例恒真**：原 `assertThrows` 首行是
+      `if (-1L < 0L) throw`，恒真。改为按生产判据
+      (`declaredSize != null && >= 0 && > 上限`) 断言「未知大小放行且不计入已消费字节」。
+- [x] **BUG-TEST-228（P3）重复归档路径用例只测 HashSet**：删掉只断言集合行为的假用例，
+      在 `ArchiveExtractorExtractTest` 新增端到端用例——`ZipOutputStream` 拒写同名字面量，
+      故用路径别名 `dup.txt` / `./dup.txt`（归一化后同一 canonicalPath），断言返回
+      `Failure` 且消息含「重复条目」。
+- [x] **回归**：`testDebugUnitTest` 645 tests / 0 failures / 1 skipped；
+      `assembleRelease` 与 `verifyReleasePayload` 通过（无语法包、无数据表）。
+- [x] **真机验证（root，PACM00 / Android 10 / 1080×2280 / density 480）**：常规路径提取
+      ARunit v30 → `/sdcard/Download/ARunit-30.APK` 38865615 字节，无 `.part-` 残留；
+      失败路径预置同名目录 `ARunit-30.APK/`（内含 `keep.txt`）后提取，弹「目标路径已是
+      目录，未提取：/storage/emulated/0/Download/ARunit-30.APK」，目录与 `keep.txt`
+      原样保留、未生成嵌套 `.part-` 文件——即 `existed=true` 分支确实不触碰既有目标。
+      本轮窗口（判失败而目标已落盘）需 su 命令中途超时或被强杀，设备侧不可控构造；
+      本机无分包应用，mid-way 失败同样不可构造，由纯函数 + 源码契约单测覆盖。
+- [x] **外部建议复核**：`docs/AI-1-BUG.md` 第 301 轮 4 条 OPEN 全部处置；剩余
+      PERF-182、CONSIST-118、COMPAT-093（BY_DESIGN）、CONC-148（WONTFIX）维持；
+      `docs/AI-2-BUG.md` 止于 §8.5 无新增；`BUG.md` 中 `BUG-PERF-030` 维持 A109 裁定。
 
 ### A136. APK 提取的失败态与目标占用（2026-10-12）
 

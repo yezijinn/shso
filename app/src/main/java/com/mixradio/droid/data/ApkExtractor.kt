@@ -175,7 +175,11 @@ object ApkExtractor {
                 // 分包应用是 base + 多个 split 的一组：中途失败若把已复制的留在原地，
                 // Download 里就是「装不上的半套」——文件确实在，装的时候才报缺分片，
                 // 用户无从归因。故本次新建的一律清除。
-                val removed = rollbackNewlyCreated(created)
+                // copyOne 报失败时当前目标也可能已经落盘：shell 侧 cp 与 mv 都成功了，随后
+                // 整条命令超时／被杀（退出码 -1），或目标体积读取异常。created 只登记成功项，
+                // 这里按循环开始前的存在性单独清一次 —— 那时不存在、现在出现了，只能是本次写的。
+                val removed = rollbackNewlyCreated(created) +
+                    (if (existed) 0 else rollbackNewlyCreated(listOf(dst.absolutePath)))
                 val tail = buildString {
                     if (removed > 0) append("；已清除本次新建的 $removed 个文件")
                     val kept = written.size - created.size

@@ -3,6 +3,7 @@
 
 package com.mixradio.droid.data
 
+import com.mixradio.droid.data.syntax.SyntaxPackStore
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -37,6 +38,7 @@ class SyntaxPackTransactionTest {
         // 回归护栏：更新语法包时目标文件本就存在，原实现把它塞进 `written`，
         // 失败后统一 `delete()` —— 原本能正常高亮的语法被删光，而清单仍指向它，
         // 用户侧表现是「某些语言突然没有高亮」且无任何提示。
+        // 调用的是生产代码的 writeGrammarFile / rollback，不是用例里复刻的同名逻辑。
         val dir = File.createTempFile("grammars", "").let {
             it.delete(); it.mkdirs(); it
         }
@@ -45,12 +47,12 @@ class SyntaxPackTransactionTest {
             val original = grammar("kotlin", "ORIGINAL")
             target.writeBytes(original)
 
-            // 模拟一次失败的导入：写入新内容后清单保存失败
-            val backup = target.readBytes()
-            target.writeBytes(grammar("kotlin", "REPLACEMENT"))
+            val written = mutableListOf<SyntaxPackStore.FileWrite>()
+            val replacement = grammar("kotlin", "REPLACEMENT")
+            SyntaxPackStore.writeGrammarFile(target, replacement, written)
+            assertEquals("写入后应是被覆盖的新内容", replacement.toList(), target.readBytes().toList())
 
-            // 回滚语义：backup 非空 → 还原旧内容
-            if (backup != null) target.writeBytes(backup) else target.delete()
+            SyntaxPackStore.rollback(written)
 
             assertTrue("回滚后文件必须仍存在", target.isFile)
             assertEquals("回滚后必须还原为导入前的内容", original.toList(), target.readBytes().toList())
@@ -66,9 +68,13 @@ class SyntaxPackTransactionTest {
         try {
             val fresh = File(dir, "python.json")
             assertFalse("导入前不存在", fresh.exists())
-            fresh.writeBytes(grammar("python", "NEW"))
-            // backup 为 null（导入前不存在）→ 删除
-            fresh.delete()
+
+            val written = mutableListOf<SyntaxPackStore.FileWrite>()
+            SyntaxPackStore.writeGrammarFile(fresh, grammar("python", "NEW"), written)
+            assertTrue("写入后应存在", fresh.isFile)
+
+            SyntaxPackStore.rollback(written)
+
             assertFalse("新建的文件在回滚后应被删除", fresh.exists())
         } finally {
             dir.deleteRecursively()

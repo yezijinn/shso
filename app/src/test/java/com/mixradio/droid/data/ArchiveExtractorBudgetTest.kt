@@ -10,13 +10,6 @@ import org.junit.Test
 class ArchiveExtractorBudgetTest {
 
     @Test
-    fun `重复归档路径集合应被识别`() {
-        val paths = HashSet<String>()
-        assertEquals(true, paths.add("/target/file.txt"))
-        assertEquals(false, paths.add("/target/file.txt"))
-    }
-
-    @Test
     fun `条目数超过上限时 fail closed`() {
         val budget = ArchiveExtractor.ExtractionBudget()
         repeat(ArchiveExtractor.MAX_EXTRACT_ENTRIES) { budget.beginEntry(0L) }
@@ -35,14 +28,14 @@ class ArchiveExtractorBudgetTest {
     }
 
     @Test
-    fun `未知条目大小不应被预算接受`() {
+    fun `未知条目大小按未知处理而不是零字节或超限`() {
+        // 7Z 的未知条目以 null 传入（部分解析器以 -1）：两者都必须按「大小未知」放行。
+        // 当成零字节会少一道校验；被 -1 撞上单条目上限则会把合法包误拒。
         val budget = ArchiveExtractor.ExtractionBudget()
-        // Unknown size is rejected by the 7Z extraction path before this budget call.
-        // A negative declared size must never be treated as a valid zero-byte entry.
-        assertThrows(IllegalStateException::class.java) {
-            if (-1L < 0L) throw IllegalStateException("7Z 条目大小未知，拒绝解压")
-            budget.beginEntry(-1L)
-        }
+        budget.beginEntry(null)
+        budget.beginEntry(-1L)
+        assertEquals("两个未知条目都应放行并计数", 2, budget.entries)
+        assertEquals("未知大小不得计入已消费字节", 0L, budget.bytes)
     }
 
     @Test

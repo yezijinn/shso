@@ -77,6 +77,25 @@ class ArchiveExtractorExtractTest {
     }
 
     @Test
+    fun `指向同一目标的重复条目必须被拒`() = runBlocking {
+        val base = java.nio.file.Files.createTempDirectory("shso-x-dup").toFile()
+        try {
+            // 两条条目前后写同一个目标：最终内容取决于包内顺序，用户拿到的是「后写的那个」，
+            // 且没有任何提示。原先的用例只断言 HashSet.add 的返回值，测的是 JDK 而非这条防线。
+            // ZipOutputStream 拒绝写入同名字面量，故用路径别名 —— 归一化后指向同一文件，
+            // 正是生产代码按 canonicalPath 判重所覆盖的情形。
+            val zip = zipOf(listOf("dup.txt" to "FIRST", "./dup.txt" to "SECOND"))
+            val parent = File(base, "out").apply { mkdirs() }
+            val r = ArchiveExtractor.extract(zip.path, parent.path)
+            assertTrue("重复条目必须被拒，实际=$r", r is ArchiveExtractor.ExtractResult.Failure)
+            val fail = r as ArchiveExtractor.ExtractResult.Failure
+            assertTrue("失败原因应指明重复条目，实际=${fail.message}", fail.message.contains("重复条目"))
+        } finally {
+            base.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `含显式顶层目录条目的归档不得解出 unnamed 占位目录`() = runBlocking {
         val base = java.nio.file.Files.createTempDirectory("shso-x-topdir").toFile()
         try {

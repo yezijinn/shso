@@ -184,15 +184,18 @@ object SyntaxPackStore {
      * 更新语法包是最常见的用法，此时目标文件本就存在，直接 `delete()` 会把上一份
      * 能正常高亮的语法删掉，而清单 [indexFile] 仍指向它 —— 用户侧表现是
      * 「某些语言突然没有高亮」，且没有任何界面提示。
+     *
+     * 与 [writeGrammarFile] / [rollback] 一并放开为 internal：回归护栏必须调用真实实现，
+     * 在用例里复刻一遍同样的几行会让生产代码改回「失败统一 delete()」时测试照样通过。
      */
-    private class FileWrite(val file: File, val backup: ByteArray?)
+    internal class FileWrite(val file: File, val backup: ByteArray?)
 
     /**
      * 写入语法文件并登记回滚信息。已存在的文件先把原内容读进内存作为备份。
      *
      * 内存占用受整包上限约束（[MAX_ZIP_BYTES]），不会出现无界增长。
      */
-    private fun writeGrammarFile(file: File, data: ByteArray, written: MutableList<FileWrite>) {
+    internal fun writeGrammarFile(file: File, data: ByteArray, written: MutableList<FileWrite>) {
         file.parentFile?.mkdirs()
         val backup = if (file.isFile) runCatching { file.readBytes() }.getOrNull() else null
         file.writeBytes(data)
@@ -200,7 +203,7 @@ object SyntaxPackStore {
     }
 
     /** 撤销一次导入：还原被覆盖的旧内容，只删除本次新建的文件。 */
-    private fun rollback(written: List<FileWrite>) {
+    internal fun rollback(written: List<FileWrite>) {
         for (w in written.asReversed()) {
             val old = w.backup
             if (old != null) {

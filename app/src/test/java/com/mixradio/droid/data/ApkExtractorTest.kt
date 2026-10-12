@@ -82,6 +82,12 @@ class ApkExtractorTest {
         val s = File("src/main/java/com/mixradio/droid/data/ApkExtractor.kt").readText()
         val failBranch = s.substringAfter("if (!one.ok) {").substringBefore("return@withContext Result(false")
         assertTrue("失败分支必须回滚本次新建的目标", failBranch.contains("rollbackNewlyCreated(created)"))
+        // 失败时当前目标也可能已落盘（shell 侧 cp+mv 都成功、随后整条命令超时或被杀），
+        // 而它按定义不在 created 里 —— 必须再按「循环开始前是否存在」清一次。
+        assertTrue(
+            "失败时循环开始前不存在的目标也须清理",
+            failBranch.contains("if (existed) 0 else rollbackNewlyCreated(listOf(dst.absolutePath))")
+        )
         assertTrue("回滚只针对本次新建", s.contains("if (!existed) created += dst.absolutePath"))
         assertTrue("拷贝必须先写同目录临时名", s.contains("\"\${dst.name}.part-\${System.nanoTime()}\""))
         assertTrue("成功后改名到目标名", s.contains("mv -f \$escapedTmp \$escapedDst") || s.contains("tmp.renameTo(dst)"))

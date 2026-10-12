@@ -5,6 +5,7 @@ package com.mixradio.droid.data
 
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -329,10 +330,18 @@ class SecondRoundSecurityAndResourceTest {
     }
 
     @Test fun `暂存目录必须使用不可预测的名字`() {
+        // 暂存名由 FileExecutionAnalyzer.stageApkForInstall 生成。原先的断言查的是
+        // ApkInstaller / RootService 是否含 UUID.randomUUID()，而这两处另有 UUID 用法，
+        // 或运算左操作数恒真 —— 把暂存名改回可预测路径，用例照样通过。
+        val analyzer = source("data/FileExecutionAnalyzer.kt")
+        val at = analyzer.indexOf("install-confirm")
+        assertTrue("应能找到 install-confirm 暂存目录", at > 0)
+        val window = analyzer.substring(at, (at + 900).coerceAtMost(analyzer.length))
         assertTrue(
             "install-confirm 下的文件名必须是 UUID，避免可预测路径",
-            apkInstaller.contains("UUID.randomUUID()") || rootService.contains("UUID.randomUUID()")
+            window.contains("UUID.randomUUID()")
         )
-        assertEquals(1, 1)
+        assertFalse("暂存名不得用可预测的时间戳", window.contains("currentTimeMillis"))
+        assertFalse("暂存名不得用可预测的纳秒值", window.contains("nanoTime"))
     }
 }
