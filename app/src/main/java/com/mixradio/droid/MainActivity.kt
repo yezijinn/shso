@@ -270,8 +270,10 @@ fun MainContainer(
     // 解析是阻塞 IO（不透明 URI 需拷贝），放在 IO 线程。
     val appContext = LocalContext.current.applicationContext
 
-    // 冷启动提示：勾选「左右提示」时每次冷启动弹一次；未勾选则永不弹
-    LaunchedEffect(appSettings.showSwipeHint) {
+    // 冷启动提示：勾选「左右提示」时每次冷启动弹一次；未勾选则永不弹。
+    // 键取 Unit 而不是 showSwipeHint —— 提示只在冷启动出现，在设置页拨动开关不该
+    // 顺带弹一条（同一进程内「关掉再打开」也就不会时而弹、时而不弹）。
+    LaunchedEffect(Unit) {
         if (!appSettings.showSwipeHint || swipeHintShown) return@LaunchedEffect
         swipeHintShown = true
         Toast.makeText(appContext, "左右滑屏可切换菜单", Toast.LENGTH_SHORT).show()

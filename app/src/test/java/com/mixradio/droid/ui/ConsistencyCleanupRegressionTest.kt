@@ -68,6 +68,12 @@ class ConsistencyCleanupRegressionTest {
         assertTrue("提示文案须与开关同源", main.contains("左右滑屏可切换菜单"))
         // 冷启动一次：进程级标记，转屏导致 Activity 重建时不得重弹
         assertTrue(main.contains("private var swipeHintShown = false"))
+        // 键不得取 showSwipeHint：那样在设置页拨动开关会顺带弹一条，
+        // 且同一进程内「关掉再打开」的行为随是否已弹过而变。
+        assertFalse(
+            "提示不得以开关为 key 重组重弹",
+            main.contains("LaunchedEffect(appSettings.showSwipeHint)")
+        )
 
         val dock = src("ui/components/DockBar.kt")
         assertTrue(
