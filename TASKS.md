@@ -77,10 +77,38 @@
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
 | 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码**）；双端同名 Release，资产 `app-release.apk` 2908305 字节，三端 sha256 一致（`CA6825CA…`）；A141 产物与 A140 逐字节相同，故资产未替换、正文未改，双端 tag 与 Release 目标提交已对齐 A141 发版代码；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 在线编译 | 实跑 `workflow_dispatch` 通过（包名 `com.sina.news`，5m19s，产物 2908313 字节，`package: name='com.sina.news'`）；签名开关 `use_debug_signing` 由签名步单点产出，单元测试步与编译步以 `-PuseDebugSigning` 同口径消费（见 § A142） |
 
 ---
 
 ## 待办
+
+### A142. 在线编译工作流签名凭据修复（2026-10-12）
+
+实跑 GitHub Actions「在线编译 APK（自定义包名）」（`workflow_dispatch`，包名 `com.sina.news`）时发现：
+工作流的「运行单元测试」步在 Gradle **配置期**中止——该步由 `8aa7301`（2026-10-11）新增，只跑
+`./gradlew testDebugUnitTest`，未注入签名相关 env，而 `app/build.gradle.kts` 的 `signingConfigs`
+在配置期无条件解析凭据。上游仓库挂了 Secret 却没接到这一步，Fork 侧根本没有 Secret 更无从取得，
+两条路径都必然失败，在线编译入口整体不可用。
+
+- [x] **BUG-BUILD-248（P1）**：签名步改为产出一处布尔输出 `use_debug_signing`（缺
+      `KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` 时为 `true` 并打 warning），不再产出 `sign_args`；
+      单元测试步与编译步都改为 `-PuseDebugSigning="$USE_DEBUG_SIGNING"` 显式传入，测试步另补
+      `KEYSTORE_FILE` / `KEYSTORE_PASSWORD` / `KEY_ALIAS_PASSWORD` 三个 env。开关只在一处产出。
+- [x] **本地对照**：`local.properties` 临时替换为只含 `sdk.dir` 后
+      `:app:testDebugUnitTest -PuseDebugSigning=true` 通过；不带该属性即复现线上那条
+      `签名密码未配置` 报错。
+- [x] **实跑回归**：run `38248296938`（提交 `4a6d4289`）5m19s 成功；产物
+      `app-release-com.sina.news` → `app-release.apk` 2908313 字节，`aapt2` 读得
+      `package: name='com.sina.news'` / `versionCode=20261012`；`apksigner` 验签通过、证书
+      `CN=Jinn`（上游 Secret 齐备，走 Release JKS 分支而非调试密钥）；37 条目，无语法包与数据表，
+      `lib` 仅 arm64-v8a。
+- [x] **真机（root）**：`su -c 'pm install -r -t'` 安装后 `am start` 正常，
+      `mResumedActivity = com.sina.news/com.mixradio.droid.MainActivity`，crash buffer 无输出；
+      验证后 `pm uninstall`，设备不留测试包。
+- [x] **发布影响**：只改 CI 工作流，不进 APK 产物；发版资产与 tag `20261012` 均不动。
+      `docs/在线编译.md` 不改——其中「未配 Secret 即用调试密钥签名」的描述本就是应有行为，
+      是工作流没实现它。
 
 ### A141. 命名与文档一致性收口（2026-10-12）
 
