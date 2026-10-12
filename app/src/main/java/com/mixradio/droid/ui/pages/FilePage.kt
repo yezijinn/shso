@@ -419,18 +419,27 @@ fun FilePage(
     // 冷启动自愈重试的延迟，避开与列举落盘的节流窗口。
     val PANE_RETRY_DELAY_MS = 400L
 
-    /** 统一切目录入口：批量破坏性任务进行中时拒绝切换。
-     *  批量删除跑在 batchScope（不被旋屏取消），期间用户仍可点顶栏快捷键、
-     *  点文件夹进入、甚至被 singleTask 的外部 Intent 改写目录。删除会继续落在**旧目录**，
-     *  而收尾刷新的是新目录 —— Toast 浮在无关列表上，用户全程不可见、不可中断、不可撤销。
+    /**
+     * 列级导航：写**被操作列**，供行点击使用。
+     *
+     * 不能走页面级重载：同一回调里 `focusedIndex = paneIndexOf(pane)` 只调度重组，
+     * 委托闭包本次回调内仍指向旧列 —— 页面级写会落到另一列（点右列目录、左列跳转）。
+     *
+     * 批量破坏性任务进行中时拒绝切换：批量删除跑在 batchScope（不被旋屏取消），
+     * 期间用户仍可点顶栏快捷键、点文件夹进入、甚至被 singleTask 的外部 Intent 改写目录。
+     * 删除会继续落在**旧目录**，而收尾刷新的是新目录 —— Toast 浮在无关列表上，
+     * 用户全程不可见、不可中断、不可撤销。
      */
-    fun navigateTo(dir: String) {
+    fun navigateTo(pane: FilePaneState, dir: String) {
         if (batchInFlight) {
             feedbackMessage = "批量操作进行中，暂不能切换目录"
             return
         }
-        currentDirectory = dir
+        pane.currentDirectory = dir
     }
+
+    /** 统一切目录入口（聚焦列）：顶栏快捷键 / 返回上级 / 跳转 / 书签。 */
+    fun navigateTo(dir: String): Unit = navigateTo(activePane, dir)
     fun refreshPane(paneIndex: Int, showToast: Boolean = false) {
         val pane = panes[paneIndex]
         // 同目录节流：删除 / 重命名 / 移动等操作常在**同一个回调里连着调多次**
@@ -1176,6 +1185,10 @@ fun FilePage(
                                                             // 首屏无旧列表时本就不可点，故用 pane.displayFileList 非空判定。
                                                             enabled = !pane.listIsStale,
                                                             onClick = {
+                                                                // 行交互先确立操作目标列：批量菜单 / 工具栏 /
+                                                                // 动作收尾读的都是页面级委托（= 聚焦列），
+                                                                // 不切焦点就会作用到另一列（lastPaneSelected 语义）。
+                                                                focusedIndex = paneIndexOf(pane)
                                                                 if (isHighlighted) pane.highlightPath = null
                                                                 if (pane.multiSelectMode) {
                                                                     // 多选模式：单击任意项（含文件夹）切换选中。
@@ -1185,8 +1198,9 @@ fun FilePage(
                                                                     if (pane.selectedPaths.contains(item.path)) pane.selectedPaths.remove(item.path)
                                                                     else pane.selectedPaths.add(item.path)
                                                                 } else if (item.isDirectory) {
-                                                                    // 非多选：文件夹单击进入
-                                                                    navigateTo(item.path)
+                                                                    // 非多选：文件夹单击进入。必须列级导航：
+                                                                    // 切焦点只调度重组，委托闭包本次回调内仍指向旧列。
+                                                                    navigateTo(pane, item.path)
                                                                 } else {
                                                                     // 非多选：单击文件弹动作菜单
                                                                     selectedItem = item
@@ -1194,6 +1208,8 @@ fun FilePage(
                                                                 }
                                                             },
                                                             onLongClick = {
+                                                                // 同上：批量菜单与多选入口读页面级委托。
+                                                                focusedIndex = paneIndexOf(pane)
                                                                 if (isHighlighted) pane.highlightPath = null
                                                                 if (pane.multiSelectMode) {
                                                                     // 多选模式：长按任意项弹批量操作菜单

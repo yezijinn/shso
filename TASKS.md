@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A145） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 657 tests / 0 failures / 1 skipped |
+| 单元测试 | 658 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.77 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -83,6 +83,37 @@
 ---
 
 ## 待办
+
+### A147. 行交互确立操作目标列：补齐 AI-1-BUG-251 的遗漏形态（2026-10-12）
+
+背景：复核 `docs/AI-1-BUG.md` 第 354 轮（AI-1-BUG-251）发现——A146 标记 FIXED 但只修了
+「选中集归属」一个形态，其 impact 明列的另两形态仍在：①非多选模式下点击**非聚焦列**的文件夹时
+`navigateTo(item.path)` 走页面级委托写聚焦列（点右列目录、左列跳转）；②非聚焦列的多选 / 批量
+出口（长按弹批量菜单、模式菜单「进入多选模式」）读页面级委托（= 聚焦列）名单，名单张冠李戴
+（左列有多选时，右列长按弹菜单的标题计数与删除 / 移动 / 拷贝 / 重命名执行的都是左列名单）。
+
+- [x] **修复（`FilePage.kt`）**：`onClick` / `onLongClick` 首部一律
+      `focusedIndex = paneIndexOf(pane)`（确立操作目标列，与 PaneHeader 切焦点、
+      lastPaneSelected 语义一致）；`navigateTo` 拆**列级 / 页面级两重载**——列级
+      `navigateTo(pane, dir)`（承担 `batchInFlight` 拒切守卫）在前、页面级委托
+      `navigateTo(dir) = navigateTo(activePane, dir)` 在后（局部函数不可前向引用），
+      文件夹导航走列级。时序依据：同帧内切焦点只调度重组，委托闭包本次回调仍指向旧列，
+      故导航必须列级化；弹窗 / 菜单按钮回调在**切焦点后的重组**中才首次组合
+      （`PaneProp` get/set 每次调用现取 `activePane`），自动落到被点列，不需再改。
+- [x] **测试护栏（`DualPaneStateRegressionTest`）**：新增「行交互确立操作目标列」——断言列级重载
+      存在、文件夹走 `navigateTo(pane, item.path)` 且无裸 `navigateTo(item.path)`、
+      两回调首部切焦点、长按切焦点先于 `showBatchDialog = true`（按 `combinedClickable` 区间定位）。
+      全绿：658 tests / 0 failures / 1 skipped。
+- [x] **构建**：`assembleRelease` + `verifyReleasePayload` 通过；产物 2908305 字节 /
+      sha256 `1D1410F8F052CE13A0086C9E8CD5AE55D4E73A7B3D2CE121CA64F9678BC3D021`。
+- [x] **真机（root，Android 10 / 1080×2280）**：同目录双列（DataBackup：apps、configs、
+      DataBackup.apk）——① 左列聚焦点右列 data 文件夹 → 右列导航进 Android/data、左列不动、
+      焦点竖条（像素 0,184,230）迁右列；反向点左列 → 左列导航。② 右列（非聚焦）长按
+      DataBackup.apk → 模式菜单「进入多选模式」→ 仅右列进入多选（左列无着色）；左列并选
+      configs + DataBackup.apk（左 2 右 1）后右列长按 → 标题「已选 1 项」（修复前读聚焦列 2）；
+      「退出多选模式」只清右列（左列两行着色保留）；再长按左列 → 标题「已选 2 项」。
+- [ ] **发布**：同日第四次发版——tag `20261012` 重指本次提交（APK 构建提交）并强推双端；
+      双端替换资产并核验三端 sha256 = `1D1410F8…`。
 
 ### A146. 「全选」改为范围弹窗：一切 / 文件 / 图片 / 文本（2026-10-12）
 

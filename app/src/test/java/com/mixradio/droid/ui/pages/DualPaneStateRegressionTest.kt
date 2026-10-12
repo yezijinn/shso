@@ -143,6 +143,38 @@ class DualPaneStateRegressionTest {
         )
     }
 
+    @Test fun `行交互确立操作目标列`() {
+        val page = page()
+        val body = paneBody()
+        assertTrue(
+            "列级导航重载必须存在：行点击的切焦点只调度重组，同帧经页面级委托仍写旧列",
+            page.contains("fun navigateTo(pane: FilePaneState, dir: String)")
+        )
+        assertTrue(
+            "文件夹单击进入必须走列级导航 navigateTo(pane, item.path)：" +
+                "页面级写法在同一回调内写的是旧聚焦列（点右列目录、左列跳转）",
+            body.contains("navigateTo(pane, item.path)") && !body.contains("navigateTo(item.path)")
+        )
+
+        val clickableAt = body.indexOf("combinedClickable(")
+        val onClickAt = body.indexOf("onClick = {", clickableAt)
+        val longClickAt = body.indexOf("onLongClick = {", onClickAt)
+        assertTrue("应能找到行点击回调", clickableAt > 0 && onClickAt > clickableAt && longClickAt > onClickAt)
+        val clickFocusAt = body.indexOf("focusedIndex = paneIndexOf(pane)", onClickAt)
+        val longFocusAt = body.indexOf("focusedIndex = paneIndexOf(pane)", longClickAt)
+        assertTrue(
+            "行点击首部须切焦点到本列：批量菜单 / 工具栏 / 动作收尾读的都是页面级委托（= 聚焦列）",
+            clickFocusAt in onClickAt until longClickAt
+        )
+        assertTrue("行长按首部须切焦点到本列", longFocusAt in longClickAt until body.length)
+        val batchAt = body.indexOf("showBatchDialog = true", longClickAt)
+        assertTrue(
+            "长按弹批量菜单前必须先切焦点：菜单标题与动作读页面级 selectedPaths，" +
+                "不切焦点会显示并操作另一列的名单",
+            batchAt > 0 && longFocusAt < batchAt
+        )
+    }
+
     @Test fun `全选范围入口连通四类范围`() {
         val page = page()
         assertTrue(
