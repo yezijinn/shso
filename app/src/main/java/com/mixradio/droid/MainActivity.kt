@@ -318,7 +318,7 @@ fun MainContainer(
                 coroutineScope.launch { pagerState.animateScrollToPage(2) }
             }
             is ExternalOpen.Resolved.Failed -> {
-                Toast.makeText(appContext, resolved.reason, Toast.LENGTH_LONG).show()
+                Toast.makeText(appContext, resolved.reason, Toast.LENGTH_SHORT).show()
             }
         }
         onExternalRequestConsumed()

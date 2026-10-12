@@ -146,8 +146,8 @@ private val batchJobScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
  *
  * `pm install`（ROOT 静默安装）是正在落地的系统副作用，一次旋屏不该把它连同收尾一起取消：
  * 页面级 scope 被取消后抛出的 `CancellationException` 会跳过 `startInstall` 尾部的
- * 暂存副本清理（`stagedPath?.let { File(it).delete() }` 不在 `finally` 里），
- * 副本就此变成孤儿；安装本身的结论与提示也一并丢失。
+ * 暂存副本清理（清理语句不在 `finally` 里），副本就此变成孤儿；
+ * 安装本身的结论与提示也一并丢失。
  */
 private val installJobScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -708,9 +708,8 @@ fun FilePage(
             installInFlight = true
             installAlertMessage = null
             installStatusMessage = "正在安装 ${item.name}，请勿重复操作"
-            val installMode = if (installAsRootOverride == true) "root" else "system"
+            val installAsRoot = installAsRootOverride ?: (RootService.isRootGranted == true)
             val result = try {
-                val installAsRoot = installAsRootOverride ?: (RootService.isRootGranted == true)
                 val installPath = stagedPath ?: item.path
                 val currentHash = computeSha256Strict(installPath)
                 if (currentHash == null || !currentHash.equals(confirmedSha256, ignoreCase = true)) {
@@ -751,7 +750,11 @@ fun FilePage(
                 is ApkInstaller.InstallResult.Failure -> "安装失败：$resultMessage"
             }
             feedbackMessage = resultMessage
-            stagedPath?.let { File(it).delete() }
+            // 暂存副本的清理时机按安装方式分流：ROOT 静默安装在返回前已把字节读尽，
+            // 可立即删；系统安装器经 content:// URI **异步**读取，startActivity 返回只
+            // 代表安装器已被拉起，此刻删除会让它读到不存在的文件（「解析软件包出现问题」）。
+            // 系统安装这条路的副本交给启动清扫（install-confirm 下 mtime 超 1 小时）回收。
+            if (installAsRoot) stagedPath?.let { File(it).delete() }
         }
     }
 
@@ -915,7 +918,7 @@ fun FilePage(
 
     LaunchedEffect(feedbackMessage) {
         feedbackMessage?.let {
-            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
+            Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
             feedbackMessage = null
         }
     }

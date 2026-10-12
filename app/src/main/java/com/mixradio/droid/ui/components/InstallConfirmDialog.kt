@@ -98,6 +98,19 @@ fun InstallConfirmDialog(
         }
     }
 
+    // ROOT 探测是**异步**的（FilePage 在 pendingInstallItem 变化后才 probe）。
+    // 本弹窗很可能在探测结果回来之前就完成首次组合，上面那句 `lockedInstallAsRoot =
+    // willInstallAsRoot` 会把「尚未探测」的旧值（首次进入应用恒为 false）锁死；而那个
+    // effect 的 key 不含 willInstallAsRoot，结果回来也不会重跑。表现为：明明是 ROOT
+    // 静默安装却显示「系统安装器」，并把 false 交给 startInstall —— 分包应用被判成
+    // 「无 ROOT」而必然安装失败（冷启动后经外部唤起安装必现）。
+    // 故在交出所有权之前，锁定值必须跟随探测结果同步，保证「所见即所装」。
+    LaunchedEffect(willInstallAsRoot, show, fileItem?.path) {
+        if (show && fileItem != null && !stagedConsumed) {
+            lockedInstallAsRoot = willInstallAsRoot
+        }
+    }
+
     // 组合被销毁（旋转 / 分屏 / 离开页面）时清理未被交出的暂存副本。
     // 上面的 LaunchedEffect 只在 show / 目标路径变化时清理；而旋转会让 stagedPath 这个普通
     // remember 归零、旧副本的路径随之丢失，没有任何分支再去删它 —— 每旋转一次就多一份孤儿

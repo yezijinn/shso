@@ -329,7 +329,7 @@ fun SettingsPage(
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                 val clip = ClipData.newPlainText("URL", url)
                 clipboard?.setPrimaryClip(clip)
-                Toast.makeText(context, "未能调起浏览器，链接已复制到剪贴板", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "未能调起浏览器，链接已复制到剪贴板", Toast.LENGTH_SHORT).show()
             }
         }
     }

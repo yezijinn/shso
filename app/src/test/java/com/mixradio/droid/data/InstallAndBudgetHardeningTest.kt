@@ -4,6 +4,7 @@
 package com.mixradio.droid.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -67,6 +68,26 @@ class InstallAndBudgetHardeningTest {
         val set = ApkInstaller.ApkSet("/d/base.apk", listOf("/d/s1.apk", "/d/s2.apk"))
         assertEquals(listOf("/d/base.apk", "/d/s1.apk", "/d/s2.apk"), set.orderedWrites)
         assertTrue(set.isSplit)
+    }
+
+    // ========================================================================
+    // pm install-create 会话模式
+    // ========================================================================
+
+    @Test fun `分包会话创建不得带 -p`() {
+        // `pm install-create` 的 `-p` 是 INHERIT_PACKAGE，它不校验「将要安装的包名」，而是把
+        // 会话置成 MODE_INHERIT_EXISTING —— 基础包从**已安装**的包继承。真机实测
+        // （Android 10，ColorOS）：拿 WhatsApp 整套分包（base + split1..3）建会话，
+        // 四个分片全部 streamed 成功，commit 仍报
+        // INSTALL_FAILED_INVALID_APK: Missing existing base package；去掉 `-p` 后同一批
+        // 文件 commit 直接 Success。带 `-p` 等于「首次安装分包应用必失败」。
+        val s = File("src/main/java/com/mixradio/droid/data/ApkInstaller.kt").readText()
+        val createAt = s.indexOf("val createCmd = \"pm install-create")
+        assertTrue("应能找到会话创建命令", createAt > 0)
+        val line = s.substring(createAt, s.indexOf('\n', createAt))
+        assertTrue("会话创建须带 -r -d -t -S: $line", line.contains("-r -d -t -S"))
+        assertFalse("会话创建不得带 -p: $line", line.contains(" -p "))
+        assertFalse("不得再把 -p 拼进创建命令", s.contains("pkgArg"))
     }
 
     // ========================================================================

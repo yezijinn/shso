@@ -31,7 +31,7 @@ import java.util.Locale
  * 方案参考 MP-Manager RootManager：
  * - 单 APK：先 `cp` 到 /data/local/tmp 再 `pm install -r`，装完清理——从原路径直接
  *   `pm install` 在部分 ROM 上会因 SELinux/存储权限失败，拷 tmp 是最稳路径。
- * - split/XAPK：`pm install-create -r -S <总大小>` → 逐个 `pm install-write -S <size>
+ * - split/XAPK：`pm install-create -r -d -t -S <总大小>` → 逐个 `pm install-write -S <size>
  *   <session> split<i> <path>` → `pm install-commit`；session id 从输出 `[<id>]` 解析。
  * - XAPK 本质是 zip：解出 base.apk + split_config.*.apk 落位 /data/local/tmp，
  *   OBB 数据拷到 /sdcard/Android/obb/<包名>/。
@@ -149,6 +149,9 @@ object ApkInstaller {
                     val staged = stageApkForInstall(context, path)?.first
                     if (staged == null) {
                         // 暂存失败就不能装：宁可不装，也不能装一份可能被替换过的字节。
+                        // 已暂存成功的兄弟分片一并清掉 —— 这条提前返回绕过了下方的统一清理，
+                        // 不清就会在 cache/install-confirm 里留下一整份套件。
+                        stagedHere.forEach { runCatching { File(it).delete() } }
                         return@withContext InstallResult.Failure(
                             "无法校验分包 ${File(path).name}，已中止安装以防装入被替换的文件"
                         )
@@ -673,9 +676,8 @@ object ApkInstaller {
          * 写入会话的顺序：**基础包必须排在第一位**。
          *
          * AOSP 侧并不要求顺序（`PackageInstallerSession.validateApkInstallLocked` 对
-         * 包名/版本/签名做的是与顺序无关的一致性断言），但基础包先写有两个实际好处：
-         * 一是 `pm install-create -p` 需要包名，基础包的 manifest 才是权威来源；
-         * 二是真机实测（Android 10 真机）基础包写入后才认得出 session 的包名，
+         * 包名/版本/签名做的是与顺序无关的一致性断言），但基础包先写有实际好处：
+         * 真机实测（Android 10 真机）基础包写入后才认得出 session 的包名，
          * 先写分包会让错误信息里缺少包名线索。
          */
         val orderedWrites: List<String> get() = all
@@ -793,8 +795,7 @@ object ApkInstaller {
      * 把基础包排到首位，其余保持原顺序。
      *
      * XAPK 的条目顺序由打包者决定，`base.apk` 未必在最前。会话流需要基础包在首位：
-     * 一是 `pm install-create -p` 的包名取自基础包 manifest；
-     * 二是 `MODE_FULL_INSTALL` 漏写基础包会在 commit 时报
+     * `MODE_FULL_INSTALL` 漏写基础包会在 commit 时报
      * `INSTALL_FAILED_INVALID_APK: Full install must include a base package`。
      *
      * 判不出基础包时（多个候选或全都不是）保持原顺序交由 AOSP 的一致性断言裁决，
@@ -854,22 +855,12 @@ object ApkInstaller {
     private suspend fun installSplitApks(context: Context, apkPaths: List<String>): InstallResult =
         withContext(Dispatchers.IO) {
             if (apkPaths.isEmpty()) return@withContext InstallResult.Failure("没有可安装的 APK")
-
-            val basePath = apkPaths[0]
-            val baseInfo = archiveInfo(context.packageManager, File(basePath))
-            val basePkg = baseInfo?.packageName?.takeIf { it.isNotBlank() }
-            if (apkPaths.size > 1 && basePkg == null) {
-                // 基础包读不出包名：不带 -p 继续（commit 阶段仍会做一致性断言），
-                // 但要在日志与文档口径上明确「未锁定包名」。
-                Log.w(TAG, "install-create 未锁定包名：基础包 manifest 解析失败 ${basePath}")
-            }
-            installSplitApksInternal(context, apkPaths, basePkg)
+            installSplitApksInternal(context, apkPaths)
         }
 
     private suspend fun installSplitApksInternal(
         context: Context,
-        apkPaths: List<String>,
-        expectedPackageName: String?
+        apkPaths: List<String>
     ): InstallResult = withContext(Dispatchers.IO) {
         // 1. 拷贝所有分片到 /data/local/tmp（sdcard 直读可能受限）
         val token = UUID.randomUUID().toString()
@@ -887,11 +878,21 @@ object ApkInstaller {
                 tmpFiles.add(tmp)
             }
 
-            // 2. 计算总大小并创建会话。带 -p 锁包名：可以在 commit 之前就把
-            // 「装错套件」这类错误暴露出来，错误信息里也带包名。
+            // 2. 计算总大小并创建会话。
+            //
+            // **不得带 `-p`**：`pm install-create` 的 `-p` 是 `INHERIT_PACKAGE`，它不校验
+            // 「将要安装的包名」，而是把会话置成 `MODE_INHERIT_EXISTING` —— 语义是「新分片
+            // 叠加在**已安装**的包上」，基础包从既有安装继承。真机实测（Android 10，ColorOS）：
+            // 用 WhatsApp 整套分包（base + split1..3）、`-p com.whatsapp` 建会话，四个分片
+            // 全部 streamed 成功，commit 仍报
+            // `INSTALL_FAILED_INVALID_APK: Missing existing base package`；去掉 `-p` 同一批
+            // 文件同样写入后 commit 直接 `Success`。即首次安装分包应用会 100% 失败，
+            // 且错误信息指向用户无从理解的「既有基础包缺失」。
+            // 整套安装必须是 `MODE_FULL_INSTALL`（不带 `-p` 的默认值）。
+            //
+            // `-t` 与单文件安装路径（`pm install -r -d -t`）保持一致，允许 testOnly 包。
             val totalSize = apkPaths.sumOf { File(it).length() }
-            val pkgArg = expectedPackageName?.let { " -p ${RootService.escapeShellArg(it)}" } ?: ""
-            val createCmd = "pm install-create -r -d -S $totalSize$pkgArg"
+            val createCmd = "pm install-create -r -d -t -S $totalSize"
             val (createCode, createOut) = RootService.runCommandSync(createCmd, INSTALL_TIMEOUT_MS)
             if (createCode != 0) {
                 return@withContext InstallResult.Failure("创建安装会话失败: ${createOut.trim()}")

@@ -561,7 +561,7 @@ private fun TextEditorDialogContent(
     }
 
     LaunchedEffect(toastMessage) {
-        toastMessage?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show(); toastMessage = null }
+        toastMessage?.let { Toast.makeText(context, it, Toast.LENGTH_SHORT).show(); toastMessage = null }
     }
 
     val dialogHeight = (LocalConfiguration.current.screenHeightDp * 0.9f).dp

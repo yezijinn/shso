@@ -334,7 +334,7 @@ fun TerminalPage(
             } else {
                 // 空闲时点「Enter」必须有回应：静默返回会让用户以为终端坏了。
                 // 按键语义（提交输入框内容）交给「发送」，这里不代劳。
-                Toast.makeText(context, "当前没有运行中的进程，「Enter」仅用于向交互进程发送空行", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "当前没有运行中的进程，「Enter」仅用于向交互进程发送空行", Toast.LENGTH_SHORT).show()
             }
             return
         }
@@ -347,7 +347,7 @@ fun TerminalPage(
         } else {
             // 除终端里的提示外再给一次 Toast：命令没发出去是用户必须立刻知道的事，
             // 只在输出区留一行容易被滚动位置错过。
-            Toast.makeText(context, "上一条命令仍在运行，本次未发送", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "上一条命令仍在运行，本次未发送", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -356,19 +356,19 @@ fun TerminalPage(
         // 无输出时直接说明，不去写剪贴板：写入空串会让用户以为复制成功，
         // 粘贴出来却是空的，反而更困惑。
         if (textToCopy.isBlank()) {
-            Toast.makeText(context, "当前没有可复制的输出", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "当前没有可复制的输出", Toast.LENGTH_SHORT).show()
             return
         }
         try {
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
             if (clipboard == null) {
-                Toast.makeText(context, "复制失败", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "复制失败", Toast.LENGTH_SHORT).show()
                 return
             }
             clipboard.setPrimaryClip(ClipData.newPlainText("TerminalOutput", textToCopy))
-            Toast.makeText(context, "终端输出已复制到剪贴板", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "终端输出已复制到剪贴板", Toast.LENGTH_SHORT).show()
         } catch (_: Exception) {
-            Toast.makeText(context, "复制失败", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "复制失败", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -597,7 +597,7 @@ fun TerminalPage(
                     modifier = Modifier
                         .clickable {
                             if (cmdHistory.isEmpty()) {
-                                Toast.makeText(context, "暂无命令历史", Toast.LENGTH_LONG).show()
+                                Toast.makeText(context, "暂无命令历史", Toast.LENGTH_SHORT).show()
                             } else {
                                 showCmdHistory = true
                             }

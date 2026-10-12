@@ -16,9 +16,9 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A129） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A131） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 626 tests / 0 failures / 1 skipped |
+| 单元测试 | 630 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.76 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -81,6 +81,38 @@
 ---
 
 ## 待办
+
+### A131. Toast 时长统一 + APK 安装链路审查（2026-10-12）
+
+需求：所有 Toast 统一为短时长；审查 APK 安装逻辑是否有缺陷。共立案 5 条，全部修复并加护栏。
+
+- [x] **BUG-CONSIST-209（P3）Toast 统一 LENGTH_SHORT**：全库 22 处 `Toast.makeText` 一律 `LENGTH_LONG`
+      （3.5s），改为 `Toast.LENGTH_SHORT`（2s）；`grep LENGTH_LONG app/src` 零命中。
+      涉及 MainActivity(2) / SettingsPagePartials(10) / TerminalPage(7) / TextEditorDialog(1) /
+      FilePage(1) / SettingsPage(1)。
+- [x] **BUG-LOGIC-205（P1）`pm install-create` 不得带 `-p`**：`-p` 是 INHERIT_PACKAGE（会话置
+      `MODE_INHERIT_EXISTING`，基础包从已装包继承），不是校验包名。真机 A/B（Android 10 / ColorOS）：
+      WhatsApp 整套分包（base + split1..3，92567061 B）带 `-p` 时 4/4 streamed 成功、commit 报
+      `Missing existing base package`；去掉 `-p` 后 commit `Success`，`pm path` 返回 base + 3 split。
+      改为 `pm install-create -r -d -t -S $totalSize`，并删除无用的 basePkg 推导与相关 KDoc 表述。
+- [x] **BUG-EDGE-206（P2）暂存副本清理时机**：`startInstall` 尾部无条件删除暂存副本，而系统安装器经
+      `content://` **异步**读取（`startActivity` 返回只代表已拉起）→ 无 ROOT 安装读不到文件。
+      改为 `if (installAsRoot) stagedPath?.let { File(it).delete() }`，非 ROOT 路交启动清扫回收。
+- [x] **BUG-EDGE-207（P3）分包暂存失败漏清理**：提前 `return` 绕过统一清理，`cache/install-confirm`
+      留一整份套件；补删除已暂存兄弟分片。
+- [x] **BUG-CONSIST-208（P2）ROOT 探测时序**：弹窗 `lockedInstallAsRoot` 在首次组合即锁定，承载 effect
+      的 key 不含 `willInstallAsRoot`，探测结果回来不重跑 → 冷启动外部唤起安装时锁成 false（显示
+      「系统安装器」，并把 false 交给 `startInstall` 使分包安装必然失败）。补
+      `LaunchedEffect(willInstallAsRoot, show, fileItem?.path)` 在交出所有权前同步锁定值。
+- [x] **真机验证（root，PACM00 / Android 10 / 1080×2280 / density 480）**：`am force-stop` 后经 VIEW
+      intent 唤起，修复前弹窗显示「系统安装器」、修复后显示「ROOT 静默安装（无系统安装器确认）」；
+      点「确认安装」后 `pm path com.whatsapp` 返回 base + 3 split；`pm uninstall com.whatsapp` 复原，
+      临时文件已清。Magisk 策略 uid=10263 policy=2 已核实。
+- [x] **回归**：`testDebugUnitTest` 630 tests / 0 failures / 1 skipped；`assembleRelease
+      verifyReleasePayload` 通过（无语法包、无数据表）。新增护栏 3 条
+      （`分包会话创建不得带 -p`、`暂存副本不得在系统安装器拉起后立即删除`、`ROOT 探测结果到达后必须同步安装方式显示`）。
+- [x] **外部建议复核**：`docs/AI-1-BUG.md`（止于第 241 轮 TERMINAL）与 `docs/AI-2-BUG.md`（§8.5）无新增；
+      `BUG.md` 唯一 OPEN 仍为 `BUG-PERF-030`（A109 裁定维持）。
 
 ### A130. A129 改动面全量回读与台账收口（2026-10-12）
 
