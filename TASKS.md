@@ -16,7 +16,7 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A145） |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A147） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
 | 单元测试 | 658 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
@@ -69,7 +69,7 @@
 | 已知环境坑 | Magisk 授权策略可用 `magisk --sqlite <文件>` 批量写入（`policies` 表 `policy=2` 为允许），避免弹窗阻塞自动化；直接内联 SQL 会被 mksh 的引号规则拆坏，必须落文件 |
 | 已知环境坑 | Compose 页面在本机 `uiautomator dump` 里 `content-desc` 与 `text` 常为空或为**上一个页面**的缓存，坐标易失效 → 复杂交互改用截图确认，或在 shell 层复刻判定链验证 |
 | 已知环境坑 | 屏幕会自行熄灭导致截图全黑；长时间真机操作前先 `svc power stayon true` + `input keyevent KEYCODE_WAKEUP` |
-| 已知环境坑 | 真机回显截图 480×1070（设备 1080×2280），`input tap` 坐标须按 ×2.25 / ×2.1308 换算；按截图目测坐标直点会点错条目（实测点到 `_精灵输入法`）。软键盘弹出后对话框上移，须重新截图定位 |
+| 已知环境坑 | 真机回显截图 480×1013（设备 1080×2280），PIL 读到的是 1080×2280 原图；`input tap` 坐标**双轴均按 ×2.25 换算**（此前把 y 轴记成 ×2.1308 属误记，换算结果系统性偏上、越靠近屏幕底部偏得越多）。设备底部 144px 为系统导航条（480dpi 下 48dp），y≥2136 的点击落入导航条——实测按旧系数点底栏「同步」（算得 y=2148）把应用点回桌面，底栏按钮实际中心约 y=2077。软键盘弹出后对话框上移，须重新截图定位 |
 | `/data/adb/shso` 是 0777 但 **SELinux 拦住第三方**（目录标签 `adb_data_file`）。实测：`shell` 域与 app 域（`run-as` → `u:r:runas_app`，派生自 `untrusted_app`）对该目录的 list / unlink / symlink / write **全部 Permission denied**，dmesg 有对应 `avc: denied { getattr }`；只有 `su`(magisk 域) 能写 |
 | `/data/local/tmp` 子目录默认 `root:root 755`，adb（shell 身份）**无法写入** → 需 `su -c 'chmod 777'` 后再 push |
 | 已知环境坑 | 应用进程的 environ **不含 `TMPDIR`**（`su -c` 也不补），而 `adb shell` 自带 `TMPDIR=/data/local/tmp` → 依赖 `$TMPDIR` 的脚本「adb 下正常、应用内失败」。执行环境须显式 `export TMPDIR` |
@@ -77,7 +77,7 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码** `0635d02`）；双端同名 Release，资产 `app-release.apk` 2908305 字节，三端 sha256 一致（`53D6B60A…`）；同日第三次发版已重指 tag、替换双端资产并同步正文（8142 字符），双端 Release 目标提交均已对齐 `0635d02`（见 § A146）；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261012`（纯数字，与 `versionCode` 对齐，**指向当次发版代码** `b9d42f1`）；双端同名 Release，资产 `app-release.apk` 2908305 字节，三端 sha256 一致（`1D1410F8…`）；同日第四次发版已重指 tag、替换双端资产并同步正文（增补 1 条，8364 字符），双端 Release 目标提交均已对齐 `b9d42f1`（见 § A147）；旧版发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 | 在线编译 | 实跑 `workflow_dispatch` 通过（包名 `com.sina.news`，5m19s，产物 2908313 字节，`package: name='com.sina.news'`）；签名开关 `use_debug_signing` 由签名步单点产出，单元测试步与编译步以 `-PuseDebugSigning` 同口径消费（见 § A142） |
 
 ---
@@ -112,8 +112,10 @@
       DataBackup.apk → 模式菜单「进入多选模式」→ 仅右列进入多选（左列无着色）；左列并选
       configs + DataBackup.apk（左 2 右 1）后右列长按 → 标题「已选 1 项」（修复前读聚焦列 2）；
       「退出多选模式」只清右列（左列两行着色保留）；再长按左列 → 标题「已选 2 项」。
-- [ ] **发布**：同日第四次发版——tag `20261012` 重指本次提交（APK 构建提交）并强推双端；
-      双端替换资产并核验三端 sha256 = `1D1410F8…`。
+- [x] **发布**：同日第四次发版——tag `20261012` 重指 `b9d42f1`（即本次代码提交）并强推双端；
+      双端替换资产（GitHub 覆盖上传，Gitee 删旧附件 3373731 后新传 3374060）、PATCH 正文
+      （增补 1 条，8364 字符）与 `target_commitish`；核验三端 sha256 一致（`1D1410F8…`，
+      2908305 字节），双端 tag 引用与 Release 目标提交均指向 `b9d42f1`。
 
 ### A146. 「全选」改为范围弹窗：一切 / 文件 / 图片 / 文本（2026-10-12）
 
