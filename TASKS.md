@@ -83,6 +83,25 @@
 
 ## 待办
 
+### A143. 发版完整性核验与外部建议收口（2026-10-12）
+
+`docs/AI-1-BUG.md` 无新增（止于第 349 轮），`docs/AI-2-BUG.md` 止于 §8.5、无变更。
+第 349 轮列出的三条（218/219/220）已由 A141 的 `8e6718a` 处置，逐条复核确认闭环；
+台账唯一 OPEN 仍为 `BUG-PERF-030`（A109 裁定维持，见 §2.12）。
+
+- [x] **A141 改名复核**：`RootService` / `ExecuteConfirmDialog` / `FilePage` 为纯标识符改名，
+      调用点与默认值等价、无行为变化；全库 `asRoot` 零命中（`hasRootAccess` 是子串误命中）。
+- [x] **构建与回归**：`testDebugUnitTest` 652 tests / 0 failures / 1 skipped；`assembleRelease` +
+      `verifyReleasePayload` 通过；产物 2908305 字节、sha256 `CA6825CA…`，与双端发布资产逐字节相同。
+- [x] **依赖解析核验**：`releaseRuntimeClasspath` 实测 zip4j 2.11.6（CVE-2023-22899 修复版确在产物内）、
+      commons-compress 1.27.1、zstd-jni 1.5.7-16、xz 1.9、sora-editor 0.23.6。
+- [x] **发布完整性**：GitHub 与 Gitee 的 `20261012` Release 目标提交均为 `8e6718a`（= 发版代码提交），
+      资产 `app-release.apk` 各一份且 sha256 与本地重建一致；更早的 tag 与 Release 保留、无残留发行程序。
+- [x] **真机（root）**：`su -c 'pm install -r -t'` 覆盖安装成功，`am start` 后
+      `mResumedActivity = com.mixradio.droid/.MainActivity`，crash buffer 无该包记录；
+      设备上装的是正式版，不卸载、不动用户数据。
+- [x] **发布影响**：无代码改动，tag `20261012`、Release 资产与正文均不动。
+
 ### A142. 在线编译工作流签名凭据修复（2026-10-12）
 
 实跑 GitHub Actions「在线编译 APK（自定义包名）」（`workflow_dispatch`，包名 `com.sina.news`）时发现：
