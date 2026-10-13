@@ -1,6 +1,6 @@
 # shso
 
-[![Release](https://img.shields.io/badge/Release-20260929-00e5ff.svg?style=flat-square)](https://github.com/yezijinn/shso/releases)
+[![Release](https://img.shields.io/badge/Release-20261013-00e5ff.svg?style=flat-square)](https://github.com/yezijinn/shso/releases)
 [![License](https://img.shields.io/badge/License-GPL%20v3-blue.svg?style=flat-square)](LICENSE)
 [![Android](https://img.shields.io/badge/Android-8.0%2B%20%28API%2026%2B%29-3DDC84.svg?style=flat-square&logo=android&logoColor=white)](https://developer.android.com)
 [![ROOT](https://img.shields.io/badge/ROOT-Magisk%20%7C%20KernelSU%20%7C%20APatch-orange.svg?style=flat-square)](https://github.com/topjohnwu/Magisk)
@@ -28,7 +28,7 @@ Android ROOT 环境下的图形化执行工具：运行 `.sh` 脚本与 `.so` / 
 |---|---|
 | `README.md`（本文件） | 功能、运行环境、构建、执行方式、版本规则 |
 | `docs/PROJECT.md` | 技术栈、目录结构、架构与构建约束、已知注意点 |
-| [`更新日志.md`](更新日志.md) | 变更清单（新增 / 修复 / 优化，一行一条） |
+| [`更新日志.md`](更新日志.md) | 变更清单（新增 / 变更 / 修复 / 优化 / 安全，一行一条） |
 | `docs/在线编译.md` | 用 GitHub Actions 自定义包名编译 APK |
 | `CONTRIBUTING.md` | 仓库开发约定与场景导航 |
 | `docs/文档规范.md` | Markdown 写作准则与文档职责边界 |
@@ -81,7 +81,7 @@ Android ROOT 环境下的图形化执行工具：运行 `.sh` 脚本与 `.so` / 
 - **文件管理**：目录浏览/记忆/快捷入口· 文件页搜索(名称子串/命中数)· 提取 APK(命名/分包/-splitN/媒体库刷新)· 分包与 XAPK 整体安装· 权限/账户选择器 200+(选应用回填 uid)· 书签预置 /data/adb· 范围全选(全部/仅文件/仅图片/仅文本，入口选中后变「取消全选」)· 单文件动作(编辑/重命名/拷贝/移动/删除/权限/解压/添加 shso)· 图片浏览· 字体预览· 新建文件· 悬浮导航· 后台长任务前台服务
 - **终端**：ANSI 解析(16/256 色·真彩·加粗·退格·行内擦除·OSC 标题与超链接消化)· 长命令运行状态与流式回显· 命令历史(50 条/内存不落盘)· 终端设置· 自动跟随· 日志滑动窗口· 旋转保状态· Toast 统一 SHORT· 重启终端代际清理
 - **安装与解压**：分包与 XAPK 整体安装(写前校验 SHA-256)· 分包名合法性校验· Zip Slip 防护· 解压目标不可写禁用· 14 种压缩格式
-- **工程与性能**：安装包体积 2.76MB· R8 keep 收窄· 编译期零警告· 消除 lint Error/告警· 依赖升级· 命名统一· 注释规范化· 文档/命名规范· 历史遗留清理· 编辑历史每文件独立存储
+- **工程与性能**：安装包体积 2.77MB· R8 keep 收窄· 编译期零警告· 消除 lint Error/告警· 依赖升级· 命名统一· 注释规范化· 文档/命名规范· 历史遗留清理· 编辑历史每文件独立存储
 - **其他**：文本对比(逐行/重复)· 压缩包解压· 图片浏览与字体预览· 添加到 shso(独立存储/自动删除/自动执行)· 执行引擎(RootService/前台服务)· 设置(权限区/行为开关/关于)· 外部唤起(其他应用「打开方式/分享」直达)
 
 ### 主页
