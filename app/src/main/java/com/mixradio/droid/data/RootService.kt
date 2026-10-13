@@ -681,14 +681,19 @@ object RootService {
             withContext(Dispatchers.Main) { appendOutputDirect("[执行失败: ${e.message}]\n") }
             return -1
         }
-        // 关闭子进程 stdin：本通道只读输出、从不喂输入（交互输入走 processWriter 那条链路）。
-        runCatching { process.outputStream.close() }
+        // 长开 stdin 并发布 writer：终端一次性命令同样可能是交互式脚本
+        // （read / 二次确认 / 菜单选择）。原先在这里 close 会导致脚本的 read 立刻拿到
+        // EOF 而自行走完（表现出「遇到交互阶段直接结束」），与文件页「执行」链路不一致。
+        // 写入口复用 [sendInput] —— 它在发送前按 [isTerminalBusy] 判定，
+        // 而本函数起进程后会把 writer 发布到 [processWriter]，故 busy 判据自然成立。
+        val terminalWriter = OutputStreamWriter(process.outputStream, Charsets.UTF_8)
         // 先记下 su 的 pid：超时时用它反查进程组并整组回收。
         val suPid = pidOfProcess(process)
 
         // 槽位归属自检：起进程期间可能已被 kill/新任务抢走，此时不得再写全局句柄，
         // 否则会覆盖别人的 activeProcess/currentTaskName，并 cancel 掉对方的发布循环。
         if (slotToken != 0L && terminalSlotOwner.get() != slotToken) {
+            runCatching { terminalWriter.close() }
             runCatching { process.destroyForcibly() }
             withContext(Dispatchers.Main) {
                 appendOutputDirect("\n[shso] 任务槽位已被接管，本次命令已取消\n")
@@ -703,7 +708,7 @@ object RootService {
             taskStartTime = System.currentTimeMillis()
             lastExitCode = null
             activeProcess = process
-            processWriter = null
+            processWriter = terminalWriter
             processPid = suPid
         }
         // 复用任务用的批量发布通道：它按 isTaskRunning 存活，命令结束即自行退出并 flush 残留。
@@ -770,6 +775,10 @@ object RootService {
             }
             // 仅当没有更新的命令/任务接管时清理：否则会把新任务的状态误清成「待命中」。
             if (terminalCommandGeneration.get() == generation) {
+                // 命令已结束：关闭写端，让脚本侧的 read 拿到干净的 EOF，
+                // 同时避免 writer 与 Process 句柄泄漏。必须清 null —— 留着会让后续
+                // 空闲期的 sendInput 写进已关闭的流，报「Stream closed」。
+                runCatching { terminalWriter.close() }
                 isTaskRunning = false
                 currentTaskName = null
                 currentTaskPath = null
@@ -1336,8 +1345,11 @@ object RootService {
      * 不占用新槽位）。
      */
     private fun isTerminalBusy(): Boolean =
-        // 槽位已被同步占用（命令在途、尚未置 isTaskRunning）同样算忙
-        terminalSlotOwner.get() != 0L || (isTaskRunning && processWriter == null)
+        // 已有可写进程时**不算忙**：此时输入应直写该进程（无论它是脚本任务还是终端一次性命令）。
+        // 原判据把「槽位被占」一票否决，而运行中的一次性命令本身就持有槽位直到结束，
+        // 于是交互输入全程被判忙而拒绝 —— 表现为「输入发了却进不了脚本下一步」。
+        !(isTaskRunning && processWriter != null) &&
+            (terminalSlotOwner.get() != 0L || isTaskRunning)
 
     /** 说明为何拒绝本次终端输入。 */
     private suspend fun reportTerminalBusy() {
@@ -1358,6 +1370,28 @@ object RootService {
         // 与协程内的分支判断保持一致：终端只有一个「当前活动进程」槽位，不接受并发命令
         //（并发时中断 / 结束进程只能作用到最新一条，先启动的那条会变成无法回收的孤儿）。
         // 这里同步返回受理结果，调用方据此决定要不要清空输入框。
+        // 已有可写进程：一律优先直写它（交互态），**不占槽位、不当新命令派发**。
+        // 这是「输入发送了也进不了脚本下一步」的根因所在：此前带文本的输入只在
+        // isTaskRunning && writer != null 时直写，而槽位判定又先把它挡在门外。
+        val existingWriter = processWriter
+        if (isTaskRunning && existingWriter != null) {
+            scope.launch(Dispatchers.IO) {
+                try {
+                    withContext(Dispatchers.Main) {
+                        appendOutputDirect(if (text.isEmpty()) "\n" else "$text\n")
+                    }
+                    synchronized(interactiveWriteLock) {
+                        existingWriter.write(text + "\n")
+                        existingWriter.flush()
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        appendOutputDirect("[发送失败: ${e.message}]\n")
+                    }
+                }
+            }
+            return true
+        }
         if (text.isNotEmpty() && isTerminalBusy()) {
             scope.launch { reportTerminalBusy() }
             return false

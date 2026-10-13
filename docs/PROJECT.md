@@ -126,6 +126,11 @@ stat 失败或路径非法时禁止动作分派。
    同一时刻只受理一条命令——并发会让先启动的那条失去回收句柄，故被拒绝时提示用户先中断。
    状态清理按**代际计数**判定（`terminalCommandGeneration`，新命令与新任务启动都自增），
    避免旧命令退出时把后来者误清成「待命中」；命令超 5s 自动拉起前台保活服务（秒回命令不闪通知）。
+   **两条执行通道都必须保持子进程 stdin 长开并登记 `processWriter`**：关闭 stdin 会让脚本的
+   `read` 立即读到 EOF 而被当作空值放行，表现为「交互式脚本跑到输入处直接结束」。
+   `executeFile` 与 `runTerminalCommand` 均不得调用 `process.outputStream.close()`（收尾除外）。
+   `isTerminalBusy` 必须把「已有可写进程」判为**不忙**，否则运行中的命令持有槽位令牌期间
+   交互输入会被全程拒绝（输入发了却推不动脚本）。
 4. stdout / stderr 由独立协程按 16ms tick 收集、**≥250ms 发布节流**（`HyperCore.startBatchFlushLoop`），
    防止重组风暴；命令/任务结束时先停发布循环并等积压刷完（`stopBatchFlushLoop`）再写
    「退出码 / 已结束」文案，保证日志顺序不倒挂。
