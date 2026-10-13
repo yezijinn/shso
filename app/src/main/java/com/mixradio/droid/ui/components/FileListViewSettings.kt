@@ -162,10 +162,11 @@ internal fun FileShortcutButton(
 }
 
 /**
- * 「文件列表设置」弹窗：字号一行（字号—拖动条—数值）/ 显示隐藏文件开关 / 四种排序方式（纯文本）/ 全选 + 新建文件（同一行）。
+ * 「文件列表设置」弹窗：字号一行（字号—拖动条—数值）/ 显示隐藏文件开关 / 四种排序方式（纯文本）/ 全选文件 + 新建文件（同一行）。
  * 绑定传入的 AppSettings，任何入口的修改即时写入同一份偏好。
  *
- * @param onSelectRequest 打开「全选范围」弹窗（一切 / 文件 / 图片 / 文本）；为 null 表示该入口不支持多选（如文件选择器），不渲染该项。
+ * @param onSelectRequest 无选中项时打开「全选范围」弹窗（全部 / 仅文件 / 仅图片 / 仅文本），有选中项时即「取消全选」；为 null 表示该入口不支持多选（如文件选择器），不渲染该项。
+ * @param selectionActive 选中集是否非空：决定该入口显示「全选文件」还是「取消全选」，与 [onSelectRequest] 的分支同源。
  * @param onSearchRequest 打开名称过滤栏（仅文件页提供）；为 null 表示该入口不提供（如文件选择器复用本弹窗时不渲染）。
  * @param onExtractApkRequest 打开「提取 APK」；为 null 表示该入口不提供（如文件选择器复用本弹窗时不渲染）。
  */
@@ -175,6 +176,7 @@ internal fun FileListSettingsDialog(
     onDismissRequest: () -> Unit,
     onNewFileRequest: () -> Unit,
     onSelectRequest: (() -> Unit)? = null,
+    selectionActive: Boolean = false,
     onSearchRequest: (() -> Unit)? = null,
     onExtractApkRequest: (() -> Unit)? = null
 ) {
@@ -302,7 +304,7 @@ internal fun FileListSettingsDialog(
             }
 
             // 功能入口（2 列栅格，固定顺序）：
-            //   新建文件  全选
+            //   新建文件  全选文件（有选中项时显示「取消全选」，见 selectionActive）
             //   搜索文件  提取APK
             // 仅文件页提供搜索 / 全选 / 提取；文件选择器只暴露「新建文件」。
             // null 入口渲染为占位空格，保住 2×2 栅格布局。
@@ -331,7 +333,7 @@ internal fun FileListSettingsDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 ActionCell("新建文件", onNewFileRequest, Modifier.weight(1f))
-                ActionCell("全选", onSelectRequest, Modifier.weight(1f))
+                ActionCell(if (selectionActive) "取消全选" else "全选文件", onSelectRequest, Modifier.weight(1f))
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -356,9 +358,9 @@ internal class FileSelectScope(
 )
 
 /**
- * 把当前展示列表拆成四种全选范围，顺序固定：一切 / 文件（不选文件夹）/ 图片 / 文本。
+ * 把当前展示列表拆成四种全选范围，顺序固定：全部 / 仅文件 / 仅图片 / 仅文本。
  *
- * 纯函数，便于单测。「一切」含文件夹（与「文件（不选文件夹）」的区别即在于此），
+ * 纯函数，便于单测。「全部」含文件夹（与「仅文件」的区别即在于此），
  * 图片 / 文本按 [FileItem.isViewableImage] / [FileItem.isEditableText] 判定，
  * 两者都只可能是文件，天然不含文件夹。
  */
@@ -376,10 +378,10 @@ internal fun buildFileSelectScopes(list: List<FileItem>): List<FileSelectScope> 
         if (item.isEditableText) texts += item.path
     }
     return listOf(
-        FileSelectScope("一切", "项（含文件夹）", all),
-        FileSelectScope("文件（不选文件夹）", "个文件（不含文件夹）", files),
-        FileSelectScope("图片", "张图片", images),
-        FileSelectScope("文本", "个文本文件", texts)
+        FileSelectScope("全部", "项（含文件夹）", all),
+        FileSelectScope("仅文件", "个文件（不含文件夹）", files),
+        FileSelectScope("仅图片", "张图片", images),
+        FileSelectScope("仅文本", "个文本文件", texts)
     )
 }
 

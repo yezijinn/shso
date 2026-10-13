@@ -1785,8 +1785,12 @@ fun FilePage(
     }
 
     if (showFileSettingsDialog) {
+        // 「全选文件 / 取消全选」共用同一判据：选中集非空即显示取消态，
+        // 文案与点击分支同源，不会各自漂移。
+        val selectAllActive = multiSelectMode && selectedPaths.isNotEmpty()
         FileListSettingsDialog(
             appSettings = appSettings,
+            selectionActive = selectAllActive,
             onDismissRequest = { showFileSettingsDialog = false },
             onNewFileRequest = {
                 // 预填：文件名 = 今天日期到毫秒的纯数字；扩展名 = txt
@@ -1797,10 +1801,18 @@ fun FilePage(
                 showNewFileDialog = true
             },
             onSelectRequest = {
-                // 全选先选范围（一切 / 文件 / 图片 / 文本）。关闭设置弹窗再开范围弹窗，
-                // 不叠成两层；与搜索、提取 APK 等入口的动作方式一致。
                 showFileSettingsDialog = false
-                showSelectScopeDialog = true
+                if (selectAllActive) {
+                    // 取消全选：清空聚焦列的选中集并退出多选，收尾口径与范围弹窗退单类一致。
+                    val count = selectedPaths.size
+                    selectedPaths.clear()
+                    multiSelectMode = false
+                    feedbackMessage = "已取消选择 $count 项"
+                } else {
+                    // 全选文件先选范围（全部 / 仅文件 / 仅图片 / 仅文本）。关闭设置弹窗再开范围弹窗，
+                    // 不叠成两层；与搜索、提取 APK 等入口的动作方式一致。
+                    showSelectScopeDialog = true
+                }
             },
             onSearchRequest = {
                 // 搜索入口从文件页顶部移入此处：打开名称过滤栏（仅过滤当前目录）。

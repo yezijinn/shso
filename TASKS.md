@@ -12,13 +12,13 @@
 
 ---
 
-## 当前状态速览（2026-10-12）
+## 当前状态速览（2026-10-13）
 
 | 项 | 值 |
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步（tag `20261012` → 见 § A147） |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 658 tests / 0 failures / 1 skipped |
+| 单元测试 | 659 tests / 0 failures / 1 skipped |
 | lint | 0 errors |
 | release 体积 | 2.77 MB（zstd 原生库 475 KB 压缩后占比回归 + commons-compress 全量 keep），`verifyReleasePayload` 红线通过 |
 | 目录列举 | 三态（成功 / 不存在 / 失败）+ **存在性证据**（`test -d`）先于列举，「真空」不再与「失败」混淆 |
@@ -50,6 +50,7 @@
 | 逐列状态 | 左右列各自持有目录、列表、过滤、多选、刷新代次（`FilePaneState`）；目录失效回退与静默空列表自愈均按列独立触发 |
 | 列表刷新 | **不再清空列表**（消除刷新期空白）；保留期间由 `enabled = !listIsStale` 真正禁用交互并降透明度；同目录刷新 120ms 节流 |
 | 列表性能 | `FileItem` 类型判定构造期一次算好（不再每帧重算正则）；选中判定走 HashSet（`derivedStateOf` 缓存、随选择实时重算，见 § A145）；搜索 250ms 防抖；主页行用 derivedStateOf 隔离；目录元数据批量 stat（不逐条目 fork） |
+| 列表设置入口 | 「全选文件 / 取消全选」双态由**单点判据** `multiSelectMode && selectedPaths.isNotEmpty()` 驱动（文案与点击分支同源，无错位窗口）；范围四类改为 全部 / 仅文件 / 仅图片 / 仅文本（见 § A148） |
 | 代码结构 | 无重复分支/无用中间层：`preferRoot` 已扁平、`pathExistsQuiet`/`uniqueFile`/`isExtractable` 已删 |
 | 脚本执行 | `.sh` 归一化改为**字节级保守判定**（`ShNormalization`）：含字节偏移自引用（`$0`/`${0}`/`${BASH_SOURCE`，配 `tail…+N`／含变量形式 `+$skip`、`head -c`、`dd skip=`、`sed -n 'N,'`）或内嵌压缩魔数即直跑原字节，仅普通文本脚本去 BOM/CR（上限 16 MiB，超限直跑）；app 侧不可读时由 `decideAsRoot` 先 `stat` 取大小再按实际长度以 root 读头部判定；`.so` 权限先记录后还原，还原排在执行之后；执行环境统一补 `TMPDIR`（root 侧 `/data/local/tmp`，非 Root 侧应用私有 `cacheDir`），终端命令同样注入 |
 | 归档格式 | 14 种：tar 系（`.tar.gz/.tar.xz/.tar.bz2/.tar.lz4/.tar.zst/.tgz/.tzst/.tar`）+ 单文件（`.gz/.xz/.bz2/.lz4/.zst/.zip`）；`.tzst` 为 tar+zstd 别名 |
@@ -83,6 +84,41 @@
 ---
 
 ## 待办
+
+### A148. 「全选」入口改名与取消全选切换（2026-10-13）
+
+需求：「文件 设置 - 全选」这个入口的「全选」二字改为「全选文件」；已经触发过全选之后，
+该按钮文本变为「取消全选」并实现取消功能。同期把「全选范围」弹窗四类范围的文案与实际
+语义对齐（一律改为「全部 / 仅文件 / 仅图片 / 仅文本」——旧文案「一切 / 文件（不选文件夹）」
+既与入口「全选文件」的措辞不齐，也把「含不含文件夹」写进了括号里）。
+
+- [x] **入口文案与双态切换（`FileListViewSettings.kt` / `FilePage.kt`）**：`FileListSettingsDialog`
+      新增 `selectionActive: Boolean = false`（排在 `onSelectRequest` 之后，默认值保证文件选择器
+      复用场景零改动——该场景 `onSelectRequest` 为 null，`ActionCell` 本就渲染占位空格，标签
+      取不到也不会显示）。入口文案改为
+      `ActionCell(if (selectionActive) "取消全选" else "全选文件", onSelectRequest, …)`。
+      判据**单点计算**：`val selectAllActive = multiSelectMode && selectedPaths.isNotEmpty()`，
+      文案与点击分支共用同一变量，不存在「显示取消态却走全选」的错位窗口。
+      取消分支 `selectedPaths.clear()` + `multiSelectMode = false` + toast「已取消选择 N 项」，
+      与范围弹窗「退空即退出多选」收尾同口径；未激活时仍先关设置弹窗、再开范围弹窗（不叠两层，
+      与搜索 / 提取 APK 的入口动作方式一致）。
+- [x] **范围文案（`FileListViewSettings.kt`）**：`buildFileSelectScopes` 四类标签改为
+      全部 / 仅文件 / 仅图片 / 仅文本，数量后缀与 KDoc 同步（「全部」含文件夹）。
+- [x] **测试护栏（`DualPaneStateRegressionTest`）**：「全选范围入口连通四类范围」里的旧文案断言
+      更新为双态标签；新增「全选文件入口按选中态切换为取消全选」——断言判据单点
+      （`val selectAllActive` + `selectionActive = selectAllActive`）、取消分支顺序
+      （clear → 退多选 → 在「打开范围弹窗」分支之前）。全绿：659 tests / 0 failures / 1 skipped。
+- [x] **构建**：`python build_apk.py`（2026-10-13）——`versionCode=20261013` / `versionName=Jinn`，
+      `verifyReleasePayload` 通过，V2+V3 签名，产物 2908309 字节 /
+      sha256 `F9909D3A17D7D2562D0E7FBE7FFA9127FFF13860B12ACDCBB964E96735815633`。
+- [x] **真机（root，Android 10 / 1080×2280）**：根目录 `/storage/emulated/0`（29 项 / 2 文件 /
+      0 图片 / 2 文本）——① 设置弹窗第二格首帧显示「全选文件」；② 点开范围弹窗四标签
+      全部 / 仅文件 / 仅图片 / 仅文本，零项范围（仅图片 0 项）置灰不可点；③ 选「全部」→
+      toast「已全选 29 项（含文件夹）」；④ 重开设置第二格变「取消全选」；⑤ 点击 → toast
+      「已取消选择 29 项」，列表着色复原；⑥ 仅选「仅文件 2 项」（部分选中）后重开设置同样显示
+      「取消全选」→ 点击 toast「已取消选择 2 项」；⑦ 再开恢复「全选文件」。另核内置文件选择器
+      复用的同一弹窗：仅渲染「新建文件」，其余三格占位，无「全选文件 / 取消全选」外泄。
+- [ ] **文档与发版**：更新日志.md（20261013 段落）、README（列表设置与能力行）、BUG.md；发布见文末核验。
 
 ### A147. 行交互确立操作目标列：补齐 AI-1-BUG-251 的遗漏形态（2026-10-12）
 

@@ -192,8 +192,27 @@ class DualPaneStateRegressionTest {
         )
         val settings = File("src/main/java/com/mixradio/droid/ui/components/FileListViewSettings.kt").readText()
         assertTrue(
-            "设置弹窗里的入口文案应为「全选」，两处入口都要指向范围弹窗",
-            settings.contains("ActionCell(\"全选\", onSelectRequest")
+            "设置弹窗入口文案应随选中态切换：无选中项为「全选文件」、有选中项为「取消全选」",
+            settings.contains("ActionCell(if (selectionActive) \"取消全选\" else \"全选文件\", onSelectRequest")
+        )
+    }
+
+    @Test fun `全选文件入口按选中态切换为取消全选`() {
+        val page = page()
+        assertTrue(
+            "文案与点击分支必须共用同一判据 selectAllActive：两处各取一次态，" +
+                "边界上会出现「显示全选文件却执行取消」的错位",
+            page.contains("val selectAllActive = multiSelectMode && selectedPaths.isNotEmpty()") &&
+                page.contains("selectionActive = selectAllActive")
+        )
+        val branchAt = page.indexOf("if (selectAllActive)", page.indexOf("onSelectRequest = {"))
+        val clearAt = page.indexOf("selectedPaths.clear()", branchAt)
+        val exitAt = page.indexOf("multiSelectMode = false", branchAt)
+        val scopeAt = page.indexOf("showSelectScopeDialog = true", branchAt)
+        assertTrue(
+            "取消分支必须清空选中集再退出多选，且两步都要在「打开范围弹窗」分支之前：" +
+                "只清空不退模式会留一个空的多选会话，工具栏与批量出口仍在",
+            branchAt > 0 && clearAt > branchAt && exitAt > clearAt && scopeAt > exitAt
         )
     }
 

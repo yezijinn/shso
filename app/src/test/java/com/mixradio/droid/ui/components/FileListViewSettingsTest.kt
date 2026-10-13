@@ -122,7 +122,7 @@ class FileListViewSettingsTest {
         val scopes = buildFileSelectScopes(list)
 
         assertEquals(
-            listOf("一切", "文件（不选文件夹）", "图片", "文本"),
+            listOf("全部", "仅文件", "仅图片", "仅文本"),
             scopes.map { it.label }
         )
         assertEquals(
