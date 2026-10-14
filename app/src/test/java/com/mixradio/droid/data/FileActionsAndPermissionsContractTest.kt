@@ -53,6 +53,15 @@ class FileActionsAndPermissionsContractTest {
         assertTrue("分享", filePage.contains("OpenWith.share("))
     }
 
+    /** 文件菜单每个功能按钮都应在点击后立即刷新文件列表。 */
+    @Test
+    fun everyMenuItemRefreshesList() {
+        val rowIdx = filePage.indexOf("fun ActionTextRow(")
+        assertTrue("缺少 ActionTextRow", rowIdx > 0)
+        val body = filePage.substring(rowIdx, (rowIdx + 900).coerceAtMost(filePage.length))
+        assertTrue("ActionTextRow 点击后必须调用 refresh()", body.contains("refresh()"))
+    }
+
     /** 「打开方式」需共享副本并声明 provider 路径。 */
     @Test
     fun openWithSharesCacheCopy() {

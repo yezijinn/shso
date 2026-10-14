@@ -1979,7 +1979,12 @@ fun FilePage(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(enabled = enabled, onClick = onClick)
+                .clickable(enabled = enabled) {
+                    onClick()
+                    // 文件菜单的功能按钮统一附带「立即刷新文件列表」：
+                    // 任何动作（含打开子弹窗）点击后都重列一次当前目录，避免列表停留在旧状态。
+                    refresh()
+                }
                 .minimumInteractiveComponentSize()
                 .padding(vertical = 11.dp, horizontal = 8.dp)
         ) {
