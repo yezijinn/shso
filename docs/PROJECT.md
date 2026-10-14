@@ -131,9 +131,10 @@ stat 失败或路径非法时禁止动作分派。
    `executeFile` 与 `runTerminalCommand` 均不得调用 `process.outputStream.close()`（收尾除外）。
    `isTerminalBusy` 必须把「已有可写进程」判为**不忙**，否则运行中的命令持有槽位令牌期间
    交互输入会被全程拒绝（输入发了却推不动脚本）。
-   **执行环境必须补 PATH**（`pathExportFragment`）：Android 原生不带 `curl` / `wget` / `python` /
-   `node`，联网型与加密型脚本会按 127 退出且日志只剩一行 `not found`。已安装的工具目录
-   （Termux、Magisk 内置工具箱等）追加到 PATH **末尾**，系统目录仍优先；
+   **执行环境必须补 PATH**（`pathExportFragment`）：Android 原生不带 `bash` / `curl` / `wget` /
+   `xz` / `zip`，联网型与加密型脚本会按 127 退出且日志只剩一行 `not found`。
+   随包内置的 POSIX 环境（`EmbeddedEnv`，见下方「内置 POSIX 环境」）**前置**到 PATH，
+   再追加已安装的工具目录（Termux、Magisk 内置工具箱等）到**末尾**；
    追加前须逐个 `[ -d ]` 判定存在性——不存在却整体拼进去会留下空条目，
    而空条目等价于当前目录，命令解析会先在当前目录找可执行文件，属注入面。
 4. stdout / stderr 由独立协程按 16ms tick 收集、**≥250ms 发布节流**（`HyperCore.startBatchFlushLoop`），
@@ -262,6 +263,14 @@ UI 层全部使用 `androidx.compose.material3` + `material-icons-extended`，
   `kotlin-stdlib-jdk8` 等），`settings.gradle.kts` 因此把 Google 官方 Maven Central 镜像
   （`maven-central.storage-download.googleapis.com`）作为通用回退源（内容与中央仓库一致）。
 - 产物体积：编辑器引擎使 release APK 由约 1.84MB 增至约 3.40MB（2026-09-12 实测，含 oniguruma 编码表；剔除 `tables/**` 后回落至 2.09MB）；**语法包不入 APK**。
+- 内置 POSIX 环境：`assets/env.bin`（gzip tar，约 6.1MB 压缩后）含 bash 5.3 / busybox /
+  curl 及其依赖库与根证书，首次使用时由 `data/EmbeddedEnv.kt` 解压到 `filesDir/env`。
+  **资产名不得带 `.gz` 后缀** —— 打包工具会把 `.gz` 资产自动解压并改名，按名读取会失败。
+  解压后 `bin/` 下为每个 busybox applet 建符号链接，`RootService` 执行前把 `bin` 前置到
+  `PATH` 并设置 `LD_LIBRARY_PATH`（内置二进制 RUNPATH 指向不存在的 Termux 前缀）与
+  证书变量。落点为应用私有目录：Android 10+ 的 W^X 只限制应用 uid 执行数据目录文件，
+  而脚本一律经 `su` 以 root 执行，root 不受该限制（真机实测）。
+  安装包由约 2.8MB 增至约 8.8MB。
 
 ## 构建与产物
 

@@ -117,6 +117,29 @@ object RootService {
     }
 
     /**
+     * 判定脚本是否要求 bash 解释器（shebang 解释器路径末段为 bash）。
+     *
+     * 设备原生不含 bash；内置环境就绪后据此选择解释器。
+     * 读取失败一律按「非 bash」处理，退回系统 sh，与旧行为一致。
+     */
+    private fun usesBashShebang(path: String, useRoot: Boolean): Boolean = runCatching {
+        // 先走 app 域直读（无 su 往返）；读不到再按需 root 读，避免每次执行都多一次 su
+        val head: ByteArray? = runCatching {
+            java.io.File(path).takeIf { it.isFile }?.inputStream()?.use { ins ->
+                val buf = ByteArray(256)
+                val n = ins.read(buf)
+                if (n <= 0) null else buf.copyOf(n)
+            }
+        }.getOrNull() ?: if (useRoot) readFileHeadAsRoot(path, 256) else null
+        val firstLine = head?.let { String(it, Charsets.ISO_8859_1).lineSequence().firstOrNull() }
+            ?: return@runCatching false
+        if (!firstLine.startsWith("#!")) return@runCatching false
+        // `#!/usr/bin/env bash` 与 `#!/bin/bash` 都要命中：逐个 token 看末段
+        firstLine.removePrefix("#!").trim().split(Regex("\\s+"))
+            .any { it.substringAfterLast('/') == "bash" }
+    }.getOrDefault(false)
+
+    /**
      * app 域读不到脚本（典型 `/data/adb/shso`，父目录 0700 且被 SELinux 拦）时的 root 侧判定。
      *
      * 先用 `stat -L -c %s` 取大小：超过完整扫描上限直接判 DIRECT，**不读文件**。
@@ -321,14 +344,25 @@ object RootService {
             "/data/adb/modules/busybox-ndk/system/bin:/data/adb/magisk:/sbin/.magisk/busybox"
 
     /**
-     * 生成 PATH 增强片段：把存在的候选目录追加到既有 PATH 末尾。
+     * 生成 PATH 增强片段：前置内置环境目录，再追加存在的候选目录。
      *
-     * 逐个判定而非整体拼接 —— 目录不存在时整体拼进去会让 PATH 里留下空条目，
-     * 空条目等价于当前目录，命令解析会先在当前目录找可执行文件，属注入面。
+     * 内置环境（bash / busybox / curl 及依赖）随 APK 分发并解压到应用私有目录，
+     * 解决 Android 原生缺 `bash` / `curl` / `wget` / `xz` / `zip` 导致脚本 127 退出的问题；
+     * 其 `bin` 前置到 PATH，脚本调用这些命令时优先命中内置版本。
+     *
+     * 追加部分逐个判定目录存在性而非整体拼接 —— 目录不存在时整体拼进去会让 PATH 里
+     * 留下空条目，空条目等价于当前目录，命令解析会先在当前目录找可执行文件，属注入面。
      */
-    private fun pathExportFragment(): String =
-        "for d in \$(echo " + escapeShellArg(EXTRA_PATH_DIRS) + " | tr ':' ' '); do " +
+    private fun pathExportFragment(): String {
+        // 内置环境：首次调用做解压（缓存），失败时返回空串，行为退回旧版系统 PATH。
+        val embedded = runCatching {
+            EmbeddedEnv.ensure(com.mixradio.droid.ShsoApplication.appContext)
+            EmbeddedEnv.exportFragment()
+        }.getOrDefault("")
+        return embedded +
+            "for d in \$(echo " + escapeShellArg(EXTRA_PATH_DIRS) + " | tr ':' ' '); do " +
             "[ -d \"\$d\" ] && PATH=\"\$PATH:\$d\"; done; export PATH; "
+    }
 
     fun initSettings(settings: AppSettings) {
         appSettings = settings
@@ -1020,6 +1054,19 @@ object RootService {
                 ShNormalization.Decision(ShNormalization.Plan.DIRECT, "非 .sh")
             }
             val needsNormalize = normalizationPlan.plan == ShNormalization.Plan.NORMALIZE
+            // 解释器选择：脚本 shebang 指向 bash 时用内置 bash，其余用系统 sh（mksh）。
+            // 设备原生没有 bash，而 Termux 打包的脚本常带 `#!/data/data/com.termux/files/usr/bin/bash`
+            // 且正文用了 bash 独有的数组 / `[[ ]]` / `local -a` 等；用 mksh 跑会半途报错。
+            // 未内置 bash（资产缺失）时退回 sh，行为与旧版一致。
+            runCatching { EmbeddedEnv.ensure(com.mixradio.droid.ShsoApplication.appContext) }
+            val bashPath = EmbeddedEnv.bashPath
+            val shInterp: String = if (bashPath != null && usesBashShebang(filePath, useRoot)) {
+                escapeShellArg(bashPath)
+            } else {
+                // 显式走系统 sh：内置 env/bin 前置到 PATH 后，裸 `sh` 会命中 busybox ash，
+                // 与既有 mksh 语义不同；非 bash 脚本保持系统 sh，避免行为漂移。
+                "/system/bin/sh"
+            }
             val runShCmd: String = if (needsNormalize && normalizedShFile != null) {
                 val tmp = normalizedShFile
                 val t = escapeShellArg(tmp.absolutePath)
@@ -1035,8 +1082,8 @@ object RootService {
                 // 归一化产出为空但原文件非空 → 读取本身失败，此时必须回落原路径让真实报错浮现，
                 // 不能拿空脚本假装执行成功。原文件本就为空则保留「空脚本 = 空操作」的旧语义。
                 "$prepare" +
-                    "if [ -s $t ] || [ ! -s $escapedFile ]; then sh $t; else sh $escapedFile; fi"
-            } else "sh $escapedFile"
+                    "if [ -s $t ] || [ ! -s $escapedFile ]; then $shInterp $t; else $shInterp $escapedFile; fi"
+            } else "$shInterp $escapedFile"
             try {
                 // 开跑前清掉上一轮的记录并作废内存值，确保随后读到的 pgid 一定来自本次执行。
                 runCatching { runPgidFile?.delete() }
