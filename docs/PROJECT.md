@@ -271,6 +271,14 @@ UI 层全部使用 `androidx.compose.material3` + `material-icons-extended`，
   证书变量。落点为应用私有目录：Android 10+ 的 W^X 只限制应用 uid 执行数据目录文件，
   而脚本一律经 `su` 以 root 执行，root 不受该限制（真机实测）。
   安装包由约 2.8MB 增至约 8.8MB。
+- 可选「扩展环境包」（`data/EnvPack.kt`，设置页入口）：GNU 工具 / git / python /
+  openssl / rsync / ssh 等体积大（约 35MB），不随 APK 分发，按需从发布附件下载后解压到
+  `filesDir/envpack`。下载源 **Gitee 优先、GitHub 备选**；**资产挂在非发布标签 `envpack-1` 下**
+  —— 非发布 tag 不得用纯数字，否则会与发布版本混淆、并被更新检查误读成发布日期。
+  下载后先校验 SHA-256 再解压；已存在内容版本标记不一致时整体重建。
+  安装后由 `RootService.pathExportFragment()` 接入 PATH / `LD_LIBRARY_PATH`，并设置
+  `PREFIX` / `PYTHONHOME` / `GIT_EXEC_PATH` / `GIT_TEMPLATE_DIR` / `OPENSSL_CONF` /
+  `SSL_CERT_FILE`（Termux 系二进制按固定前缀找资源，必须用变量重定向到包根）。
 
 ## 构建与产物
 

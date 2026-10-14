@@ -60,6 +60,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.mixradio.droid.R
 import com.mixradio.droid.data.AppSettings
+import com.mixradio.droid.data.EnvPack
 import com.mixradio.droid.data.PermissionChecker
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.ui.components.dockBarBottomPadding
@@ -260,6 +261,7 @@ fun SettingsPage(
         }
     }
     var showAboutDialog by remember { mutableStateOf(false) }
+    var showPackRemove by remember { mutableStateOf(false) }
 
     // 检查更新状态（updateState / updateChecking / updateJobScope 均为文件级，见上）
 
@@ -422,8 +424,69 @@ fun SettingsPage(
                 }
             )
 
+            // 扩展环境包：未安装点击下载；下载/解压中显示进度；已安装点击可删除
+            val packState = EnvPack.state
+            AuroraArrowPreference(
+                title = "扩展环境包",
+                summary = when (packState) {
+                    EnvPack.State.NotInstalled -> "下载 GNU 工具、git、python、openssl 等（约 35 MB）"
+                    EnvPack.State.Downloading -> "下载中 ${EnvPack.progress}%"
+                    EnvPack.State.Extracting -> "解压中…"
+                    EnvPack.State.Installed -> "已安装，点击可删除"
+                    is EnvPack.State.Failed -> "${packState.message}，点击重试"
+                },
+                statusSwitch = packState is EnvPack.State.Downloading || packState is EnvPack.State.Extracting,
+                statusSwitchEnabled = true,
+                onClick = {
+                    when (packState) {
+                        is EnvPack.State.Installed -> showPackRemove = true
+                        EnvPack.State.Downloading, EnvPack.State.Extracting -> {}
+                        else -> EnvPack.startDownload(context)
+                    }
+                }
+            )
+
             Spacer(modifier = Modifier.height(24.dp))
 
+            }
+        }
+    }
+
+    if (showPackRemove) {
+        AuroraWindowDialog(
+            show = true,
+            title = "提示",
+            onDismissRequest = { showPackRemove = false }
+        ) {
+            Text(
+                text = "确认删除扩展环境包？删除后相关命令将不可用。",
+                style = AuroraTextStyles.body2,
+                color = AuroraTokens.Text
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
+            ) {
+                Text(
+                    text = "稍后",
+                    style = AuroraTextStyles.body2,
+                    color = AuroraTokens.TextSecondary,
+                    modifier = Modifier
+                        .clickable { showPackRemove = false }
+                        .minimumInteractiveComponentSize()
+                )
+                Text(
+                    text = "删除",
+                    style = AuroraTextStyles.body2,
+                    color = AuroraTokens.Error,
+                    modifier = Modifier
+                        .clickable {
+                            showPackRemove = false
+                            EnvPack.remove(context)
+                        }
+                        .minimumInteractiveComponentSize()
+                )
             }
         }
     }

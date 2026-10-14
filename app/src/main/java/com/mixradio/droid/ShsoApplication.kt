@@ -6,6 +6,7 @@ package com.mixradio.droid
 import android.app.Application
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.EmbeddedEnv
+import com.mixradio.droid.data.EnvPack
 
 class ShsoApplication : Application() {
     override fun onCreate() {
@@ -17,6 +18,8 @@ class ShsoApplication : Application() {
         Thread {
             runCatching { EmbeddedEnv.ensure(this) }
         }.apply { name = "shso-env-prepare"; isDaemon = true }.start()
+        // 可选扩展环境包：仅标记是否已安装，不触发下载。
+        runCatching { EnvPack.ensureLoaded(this) }
     }
 
     companion object {

@@ -359,7 +359,9 @@ object RootService {
             EmbeddedEnv.ensure(com.mixradio.droid.ShsoApplication.appContext)
             EmbeddedEnv.exportFragment()
         }.getOrDefault("")
-        return embedded +
+        // 扩展环境包（可选下载）：已安装时把其目录前置到 PATH，GNU 工具与 git/python 优先命中。
+        val pack = runCatching { EnvPack.exportFragment() }.getOrDefault("")
+        return embedded + pack +
             "for d in \$(echo " + escapeShellArg(EXTRA_PATH_DIRS) + " | tr ':' ' '); do " +
             "[ -d \"\$d\" ] && PATH=\"\$PATH:\$d\"; done; export PATH; "
     }
