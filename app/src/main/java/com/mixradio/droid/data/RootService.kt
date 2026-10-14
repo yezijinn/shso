@@ -307,6 +307,9 @@ object RootService {
     @Volatile
     private var activeFlushLoop: Job? = null
 
+    /** 运行期基础设施（证书软链 / 临时目录）是否已尝试补齐，保证只跑一次。 */
+    private val preparedRuntime = AtomicBoolean(false)
+
     /**
      * 终端一次性命令的终止兜底上限。
      *
@@ -390,6 +393,51 @@ object RootService {
     fun initSettings(settings: AppSettings) {
         appSettings = settings
         sweepExecutionTempFiles()
+        // 执行前补齐运行期基础设施：证书路径 / 临时目录。失败不影响主流程。
+        prepareExecutionRuntime()
+    }
+
+    /**
+     * 执行前补齐运行期基础设施，保证脚本运行环境完整无缺。
+     *
+     * 仅做**幂等**的 root 侧一次性建链，失败静默跳过（无 root 时本应用的环境变量仍由
+     * [EmbeddedEnv.exportFragment] 注入，脚本级 HTTPS / TMPDIR 照样可用）。
+     *
+     * 1) 内置 curl 的**编译期硬编码** CA 路径指向 Termux 前缀
+     *    `/data/data/com.termux/files/usr/etc/tls/cert.pem`，设备未装 Termux 时该路径
+     *    不存在 → `curl` 任何 HTTPS 请求都报 `cert 77 (error adding trust anchors)`，
+     *    表现为「联网脚本执行不了 / 环境缺失」。把该路径软链到内置 env 自带的 `etc/cert.pem`，
+     *    则无论脚本是否显式设置 `SSL_CERT_FILE`，bundled curl 都能校验证书。
+     *    这是联网型 / 下载型 / 对暗号脚本能否跑通的关键前置。
+     *
+     * 2) `/data/local/tmp` 各机型恒存在且 root 可写，但个别 ROM 清理策略会误删；
+     *    执行引擎把它当作 root 侧 TMPDIR，缺失会让 `mktemp` / 自解压脚本失败。
+     *
+     * 3) `/tmp` 在 Android 上通常不存在（根文件系统只读，无法创建），部分脚本
+     *    （`curl -o /tmp/...`、`mktemp /tmp/...`）会因此失败。尽力把 `/tmp` 软链到
+     *    `/data/local/tmp`；只读根文件系统创建失败则跳过（属已知系统限制，非应用缺陷）。
+     */
+    private fun prepareExecutionRuntime() {
+        if (!preparedRuntime.compareAndSet(false, true)) return
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val certSrc = EmbeddedEnv.certFile ?: return@launch
+                val certDstDir = "/data/data/com.termux/files/usr/etc/tls"
+                val certDst = "$certDstDir/cert.pem"
+                val cmd = StringBuilder()
+                // 证书路径软链：源存在才建，已存在且指向相同则跳过（避免重复 ln 报错）。
+                cmd.append("[ -e ").append(escapeShellArg(certSrc)).append(" ] && ")
+                cmd.append("mkdir -p ").append(escapeShellArg(certDstDir)).append(" 2>/dev/null; ")
+                cmd.append("[ -e ").append(escapeShellArg(certDst)).append(" ] || ")
+                cmd.append("ln -s ").append(escapeShellArg(certSrc)).append(' ')
+                    .append(escapeShellArg(certDst)).append(" 2>/dev/null; ")
+                // 根 TMPDIR 兜底
+                cmd.append("mkdir -p ").append(escapeShellArg(ROOT_TMP_DIR)).append(" 2>/dev/null; ")
+                // /tmp 尽力软链（只读根文件系统会失败，忽略）
+                cmd.append("[ -e /tmp ] || ln -s ").append(escapeShellArg(ROOT_TMP_DIR)).append(" /tmp 2>/dev/null; ")
+                runCommandSync(cmd.toString(), timeoutMs = 15_000L, reclaimOnTimeout = false)
+            }
+        }
     }
 
     /** 启动清扫只在本进程首次初始化时执行一次。 */
@@ -953,6 +1001,9 @@ object RootService {
         isSo: Boolean,
         useRoot: Boolean
     ) {
+        // 执行前补齐运行期基础设施（证书软链 / 临时目录），保证脚本环境完整。
+        prepareExecutionRuntime()
+
         val parentDir = File(filePath).parent ?: "/data/adb/shso"
 
         if (isTaskRunning) {
