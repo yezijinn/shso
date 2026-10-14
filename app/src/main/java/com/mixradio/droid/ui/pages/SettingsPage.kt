@@ -3,12 +3,7 @@
 
 package com.mixradio.droid.ui.pages
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
-import android.os.Build
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
@@ -44,7 +39,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.core.net.toUri
 import com.mixradio.droid.BuildConfig
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -63,6 +57,7 @@ import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.EnvPack
 import com.mixradio.droid.data.PermissionChecker
 import com.mixradio.droid.data.RootService
+import com.mixradio.droid.data.UrlOpener
 import com.mixradio.droid.ui.components.dockBarBottomPadding
 import com.mixradio.droid.ui.theme.AuroraAccentBar
 import com.mixradio.droid.ui.theme.AuroraArrowPreference
@@ -133,12 +128,6 @@ private val UPDATE_SOURCES = listOf(
         Regex("""yezijinn/shso/(?:tree|releases/tag)/([^"'<>?#\s]+)""", RegexOption.IGNORE_CASE)
     ),
 )
-
-/**
- * 会声明处理 `http/https` 但并非浏览器的应用（精确包名）。用于「去更新 / 访问 Github」
- * 挑选浏览器时排除——例如 GitHub 客户端接管 github.com 后走应用内 WebView。
- */
-private val NON_BROWSER_HANDLERS = setOf("com.github.android")
 
 /**
  * 抓取远端最大的发布日标签，返回 (最新日期, 成功源)；**Gitee 优先、GitHub 备选**。
@@ -291,49 +280,8 @@ fun SettingsPage(
     }
 
     fun openInBrowserOnly(url: String) {
-        try {
-            val uri = url.toUri()
-            val browserIntent = Intent(Intent.ACTION_VIEW, "http://".toUri()).apply {
-                addCategory(Intent.CATEGORY_BROWSABLE)
-            }
-            val resolveInfos = context.packageManager.queryIntentActivities(browserIntent, 0)
-            // 只按**精确包名**排除已知的链接拦截类应用（GitHub 客户端会接管 github.com，
-            // 但它是应用内浏览器，不是浏览器）。不能用 `contains("github")` 之类的子串启发式：
-            // 它会连 `com.github.android` 之外的无关包一并排除，也会漏掉包名不含该词的拦截类应用。
-            val browserPackages = resolveInfos.map { it.activityInfo.packageName }
-                .filterNot { it in NON_BROWSER_HANDLERS }
-
-            val targetIntent = Intent(Intent.ACTION_VIEW, uri).apply {
-                addCategory(Intent.CATEGORY_BROWSABLE)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-
-            if (browserPackages.isNotEmpty()) {
-                val preferred = browserPackages.firstOrNull {
-                    it.contains("browser") || it.contains("chrome") || it.contains("edge") || it.contains("firefox")
-                } ?: browserPackages.first()
-                targetIntent.setPackage(preferred)
-                context.startActivity(targetIntent)
-            } else {
-                val chooser = Intent.createChooser(targetIntent, "选择浏览器打开").apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                context.startActivity(chooser)
-            }
-        } catch (_: Exception) {
-            try {
-                val generalIntent = Intent(Intent.ACTION_VIEW, url.toUri()).apply {
-                    addCategory(Intent.CATEGORY_BROWSABLE)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                context.startActivity(generalIntent)
-            } catch (_: Exception) {
-                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                val clip = ClipData.newPlainText("URL", url)
-                clipboard?.setPrimaryClip(clip)
-                Toast.makeText(context, "未能调起浏览器，链接已复制到剪贴板", Toast.LENGTH_SHORT).show()
-            }
-        }
+        // 交给统一的链接打开器：优先系统浏览器，探测不到则由系统解析（不再自建可能为空的选择器）
+        UrlOpener.openUrl(context, url)
     }
 
     Scaffold(

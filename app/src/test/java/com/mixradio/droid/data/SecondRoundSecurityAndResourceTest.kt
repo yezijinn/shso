@@ -253,12 +253,7 @@ class SecondRoundSecurityAndResourceTest {
         )
     }
 
-    @Test fun `心跳与迟到输出必须按代际自检`() {
-        assertTrue(
-            "旧任务卡在管道读上时协程与 finally 都不执行，心跳挂全局 isTaskRunning " +
-                "会继续往新任务日志插计时行",
-            rootService.contains("terminalCommandGeneration.get() == heartbeatGeneration")
-        )
+    @Test fun `迟到输出必须按代际自检`() {
         assertTrue(
             "迟到的孤儿输出会绕过 clearBatchQueue 混进新任务日志；必须 continue 而非 break，" +
                 "否则管道写端填满会让子孙进程永久阻塞",

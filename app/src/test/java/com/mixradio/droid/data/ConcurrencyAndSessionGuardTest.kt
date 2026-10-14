@@ -273,11 +273,14 @@ class ConcurrencyAndSessionGuardTest {
     @Test
     fun `浏览器挑选不得使用子串启发式`() {
         // `!pkg.contains("github")` 会误伤包名恰好含该词的无关应用，也漏掉包名不含该词的
-        // 链接拦截类应用。改为精确包名集合。
-        val s = source("ui/pages/SettingsPage.kt")
+        // 链接拦截类应用。改为精确包名集合；逻辑已收敛到 UrlOpener。
+        val s = source("data/UrlOpener.kt")
         assertFalse("不得用子串启发式排除应用", s.contains("""!pkg.contains("github")"""))
         assertTrue("须按精确包名排除", s.contains("private val NON_BROWSER_HANDLERS = setOf(\"com.github.android\")"))
         assertTrue(s.contains(".filterNot { it in NON_BROWSER_HANDLERS }"))
+        // 「去更新」必须走统一打开器，避免再自建可能为空的选择器
+        val settings = source("ui/pages/SettingsPage.kt")
+        assertTrue(settings.contains("UrlOpener.openUrl("))
     }
 
     @Test

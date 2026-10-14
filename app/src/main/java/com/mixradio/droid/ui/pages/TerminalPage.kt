@@ -713,9 +713,9 @@ fun TerminalPage(
             }
 
             AuroraSwitchPreference(
-                title = "shso 终端提示",
-                checked = appSettings.showShsoBanner,
-                onCheckedChange = { appSettings.setShsoBanner(it) }
+                title = "执行脚本前自动清屏",
+                checked = appSettings.autoClearBeforeRun,
+                onCheckedChange = { appSettings.updateAutoClearBeforeRun(it) }
             )
         }
     }

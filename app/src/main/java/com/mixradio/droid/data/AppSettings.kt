@@ -39,7 +39,8 @@ class AppSettings private constructor(context: Context) {
     var terminalTextColor by mutableLongStateOf(prefs.getLong(KEY_TERMINAL_TEXT_COLOR, DEFAULT_TERMINAL_COLOR))
         private set
 
-    var showShsoBanner by mutableStateOf(prefs.getBoolean(KEY_SHOW_SHSO_BANNER, true))
+    /** 执行脚本前自动清空终端输出（默认开启，避免上一次的残留干扰观察本次结果）。 */
+    var autoClearBeforeRun by mutableStateOf(prefs.getBoolean(KEY_AUTO_CLEAR_BEFORE_RUN, true))
         private set
 
     var fileListFontSize by mutableFloatStateOf(prefs.getFloat(KEY_FILE_LIST_FONT_SIZE, DEFAULT_FILE_LIST_FONT_SIZE))
@@ -144,9 +145,9 @@ class AppSettings private constructor(context: Context) {
         prefs.edit { putLong(KEY_TERMINAL_TEXT_COLOR, argb) }
     }
 
-    fun setShsoBanner(enable: Boolean) {
-        showShsoBanner = enable
-        prefs.edit { putBoolean(KEY_SHOW_SHSO_BANNER, enable) }
+    fun updateAutoClearBeforeRun(enable: Boolean) {
+        autoClearBeforeRun = enable
+        prefs.edit { putBoolean(KEY_AUTO_CLEAR_BEFORE_RUN, enable) }
     }
 
     fun updateFileListFontSize(size: Float) {
@@ -258,7 +259,7 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_FILE_LIST_FONT_SIZE = "file_list_font_size"
         private const val KEY_SHOW_HIDDEN_FILES = "show_hidden_files"
         private const val KEY_FILE_SORT_MODE = "file_sort_mode"
-        private const val KEY_SHOW_SHSO_BANNER = "show_shso_banner"
+        private const val KEY_AUTO_CLEAR_BEFORE_RUN = "auto_clear_before_run"
         private const val KEY_REMEMBER_DIRECTORY = "remember_directory"
         /** 旧键（无序 StringSet）：仅用于首次迁移，迁移后删除。 */
         private const val KEY_BOOKMARKS = "bookmarks"

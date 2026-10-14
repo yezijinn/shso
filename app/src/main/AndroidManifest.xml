@@ -22,6 +22,22 @@
          未授权时前台服务通知不会在通知抽屉展示，仅出现在任务管理器，故在设置页引导用户授予。 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- 打开链接时列举可处理的浏览器/应用（「去更新」跳转等）。
+         Android 11+ 的包可见性过滤会让 queryIntentActivities 只返回可见包；
+         显式声明 http/https 的 VIEW 意图即可看到对应应用，不必依赖 QUERY_ALL_PACKAGES。 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+    </queries>
+
     <application
         android:name="com.mixradio.droid.ShsoApplication"
         android:allowBackup="false"

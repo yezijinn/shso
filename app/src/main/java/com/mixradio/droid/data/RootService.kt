@@ -940,8 +940,11 @@ object RootService {
 
         lastExecutedPath = filePath
 
+        // 执行脚本前自动清屏（终端设置可关）：脚本反复执行时，上一次的输出会让本次结果难辨。
+        if (appSettings?.autoClearBeforeRun == true) {
+            outputLog = ""
+        }
         HyperCore.clearBatchQueue()
-        val showShsoBanner = appSettings?.showShsoBanner ?: true
 
         isTaskRunning = true
         currentTaskName = fileName
@@ -957,8 +960,6 @@ object RootService {
             }
         } catch (_: Exception) {
         }
-
-        appendOutputDirect("[shso] 执行身份: ${if (useRoot) "Root" else "非 Root"}\n")
 
         val fileFlushLoop = HyperCore.startBatchFlushLoop(scope, { isTaskRunning }) { flushedText ->
             appendOutputDirect(flushedText)
@@ -999,27 +1000,6 @@ object RootService {
         // isTaskRunning / currentTaskName 清掉 —— 脚本在跑，UI 却显示「待命中」。
         executionJob?.cancel()
         executionJob = null
-
-        // 心跳：脚本长时间无输出时，输出区会整段静止，用户无法区分「正在跑」与「已卡死」。
-        // 每 10s 追加一行计时；脚本一旦产出内容即停止打扰（满屏心跳会淹没真实日志）。
-        // 标志跨线程读写，用 AtomicBoolean 而非局部 @Volatile（后者不能修饰局部变量）。
-        val producedAnyOutput = java.util.concurrent.atomic.AtomicBoolean(false)
-        val heartbeatGeneration = terminalCommandGeneration.get()
-        val heartbeatJob = scope.launch(Dispatchers.Main) {
-            var elapsed = 0L
-            // 代际自检：新任务/新终端命令都会自增该计数。旧任务若因子孙进程持有管道而永远读不到
-            // EOF，它的协程与 finally 都不执行，心跳就挂在下方的全局 isTaskRunning 上继续给
-            // **新任务**追加计时行；比对代际可让它在 1s 内自杀（`executionJob === myJob` 在此处
-            // 取不到 myJob，而代际计数与执行协程在同一处自增，等价且更简单）。
-            while (isActive && isTaskRunning && terminalCommandGeneration.get() == heartbeatGeneration) {
-                delay(1000)
-                elapsed += 1000
-                if (producedAnyOutput.get()) return@launch
-                if (elapsed % 10_000L == 0L) {
-                    appendOutputDirect("[shso] 仍在执行，已运行 ${formatElapsed(elapsed)}…\n")
-                }
-            }
-        }
 
         executionJob = scope.launch(Dispatchers.IO) {
             // 本次执行的身份：pgid 回填与状态清理都必须按它自检，否则会写到别人的槽位。
@@ -1308,9 +1288,6 @@ object RootService {
                             // 排空管道 —— 提前 break 会让后代进程的写端填满而永久阻塞。
                             // 本协程此时已被取消（cancel 与 Job 赋值同处临界区）。
                             if (executionJob !== myJob) continue
-                            if (ExecutionFeedback.hasVisibleOutput(String(buffer, 0, count))) {
-                                producedAnyOutput.set(true)
-                            }
                             val chunk = String(buffer, 0, count)
                             HyperCore.queueLogChunk(chunk)
                         }
@@ -1318,7 +1295,6 @@ object RootService {
                 }
 
                 val exitCode = process.waitFor()
-                val elapsedMs = System.currentTimeMillis() - taskStartTime
                 HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
                 // 本次执行仍是当前任务（代际判断）才写「退出」文案；被新任务/重启取代后由对方写
                 withContext(Dispatchers.Main) {
@@ -1328,40 +1304,23 @@ object RootService {
                     // 恒不相等 —— 于是本块整体被跳过：退出码永不显示、发布循环不停止、
                     // isTaskRunning 与 lastExitCode 不复位（任务早已结束，UI 却仍显示「运行中」）。
                     if (executionJob === myJob) {
-                        // 先停发布循环并等它把积压刷完，再写「退出」文案：
-                        // 否则循环里最后 ≤250ms 的输出会落在文案之后（看起来像退出码打在输出前面）。
+                        // 先停发布循环并等它把积压刷完
                         HyperCore.stopBatchFlushLoop(fileFlushLoop)
                         HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
                         lastExitCode = exitCode
-                        heartbeatJob.cancel()
-                        if (appSettings?.showShsoBanner != false) {
-                            if (!producedAnyOutput.get()) {
-                                appendOutputDirect("\n[shso] 脚本执行完成，未产生任何输出\n")
-                            }
-                            appendOutputDirect(
-                                "[shso] 任务已退出，退出码: $exitCode，用时 ${formatElapsed(elapsedMs)}\n"
-                            )
-                        }
                     }
                 }
             } catch (e: Exception) {
                 // 被取消（kill/restart/覆盖）时协程会抛 CancellationException，走到这里。
-                // 「异常终止」文案仅在协程未取消、且仍是当前任务时输出；
-                // flush/清理统一交给 finally 处理，避免取消路径上挂起引发二次抛错。
+                // 取消路径不输出文案；flush/清理统一交给 finally 处理，避免取消路径上挂起引发二次抛错。
                 if (coroutineContext[Job]?.isCancelled != true) {
                     withContext(Dispatchers.Main) {
                         if (executionJob === myJob) {
                             lastExitCode = -1
-                            if (appSettings?.showShsoBanner != false) {
-                                appendOutputDirect("\n[shso] 异常终止: ${e.message}\n")
-                            }
                         }
                     }
                 }
             } finally {
-                // 心跳挂在 scope 上而非 executionJob 下，取消执行协程停不掉它；
-                // 不在这里收掉就会在任务结束后继续往输出区插计时行。
-                heartbeatJob.cancel()
                 // 任何取消路径（kill/restart/覆盖启动）必然走到这里；
                 // 但只有本次仍是当前执行协程（执行 Job 未被替换）时才清理 Compose 状态。
                 // 关键：executionJob 在协程外已切换到新值（覆盖启动先 cancel 再赋新 job），
@@ -1605,9 +1564,7 @@ object RootService {
                     // 同上：不能用裸 executionJob === targetJob，终端命令路径下它恒真，
                     // 于是「结束 A 失败」的提示会写进期间新启动的 B 的日志。
                     if (stillOwnsExecution(targetJob, targetSlot)) {
-                        if (appSettings?.showShsoBanner != false) {
-                            appendOutputDirect("\n[shso] 结束进程失败: ${e.message}\n")
-                        }
+                        appendOutputDirect("\n[shso] 结束进程失败: ${e.message}\n")
                     }
                 }
             } finally {
@@ -1624,7 +1581,7 @@ object RootService {
                     // 停掉 B 的发布循环，`isTaskRunning=false` 让顶栏显示「待命中」、
                     // 「中断/结束进程」被禁用 —— B 还在跑，但用户失去了唯一的出口。
                     if (stillOwnsExecution(targetJob, targetSlot)) {
-                        // 停发布循环并等积压刷完，再写「已结束」文案，保证日志顺序
+                        // 停发布循环并等积压刷完
                         HyperCore.stopBatchFlushLoop(targetFlushLoop)
                         HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
                         isTaskRunning = false
@@ -1632,9 +1589,6 @@ object RootService {
                         currentTaskPath = null
                         lastExitCode = 137
                         processPid = 0
-                        if (appSettings?.showShsoBanner != false) {
-                            appendOutputDirect("\n[shso] 用户已手动结束进程\n")
-                        }
                     }
                 }
             }
