@@ -145,7 +145,7 @@ python build_apk.py              # 一条命令完成构建：签名 + 版本规
 - `allowBackup=false`，不要开启。
 - 发布流程：`python build_apk.py` 出产物，确认 `versionCode` 等于构建当日（东八区）；推
   `origin main` 与 `gitee main`，用命令自身的退出码判断失败并重试（别用管道，退出码会被
-  `tail` 吞掉），推完用 `git ls-remote` 复核远端 tip；打纯数字 tag 并推双远端；两端建同名
+  `tail` 吞掉），推完用 `git ls-remote` 核对远端 tip；打纯数字 tag 并推双远端；两端建同名
   Release（Gitee 没有 clobber，同名附件要先删再传）；最后从两端各下载一次，`sha256`
   与本地一致才算完成。
 - 发布标签不能带 `v` 前缀：客户端只认纯数字，Gitee 的 `releases/tag/<纯数字>` 带 `v` 必然

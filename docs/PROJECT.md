@@ -55,7 +55,7 @@ shso-main/
         │   ├── AnsiParser.kt         # ANSI/OSC 增量解析（私有模式 / 退格 / 行内擦除）
         │   ├── HyperCore.kt          # banner / 日志批处理（发布节流）/ 滑动窗口 / 环境信息
         │   ├── AppSettings.kt        # 设置状态（shso_settings）
-        │   ├── FileItem.kt           # 文件条目模型
+        │   ├── FileItem.kt           # 文件条目数据结构
         │   └── security/             # shell 转义工具（ShellEscapes）
         └── ui/
             ├── theme/        # AuroraTokens / AuroraGlass / AuroraComponents / AuroraBackground
@@ -115,8 +115,8 @@ stat 失败或路径非法时禁止动作分派。
 1. `su -c` 启动子进程并注入环境（PATH / `TERM=xterm-256color` / LANG）；
    `.so` 与二进制执行前只补执行位（root 补 `a+x`、非 root 补 `u+x`），不改读写位，执行后按执行前记录的原权限还原；
    `.sh` 一律经 `sh` 运行且不改动用户文件权限。
-   脚本任务**保持 stdin 打开**（支持交互输入）；`runCommandSync` 与终端「一次性命令」启动后立即关闭 stdin，
-   避免读 stdin 的命令一直阻塞到超时。
+   脚本任务与终端「一次性命令」**均保持 stdin 长开**（支持交互输入）；只有内部同步命令
+   `runCommandSync` 启动后关闭 stdin，避免它们读 stdin 时一直阻塞到超时。
 2. 中断（SIGINT）与「结束进程」按进程组发信号（`kill -<sig> -- -<pgid>`），
    回收 `su` 之下的子孙进程；发信号前校验目标确为进程组组长且不是本应用所在组。
    「重启终端」走同一条整组回收路径——只杀 `su` 会把 `sh -c …` 与脚本进程留成 init 名下的孤儿。
@@ -126,7 +126,7 @@ stat 失败或路径非法时禁止动作分派。
    同一时刻只受理一条命令——并发会让先启动的那条失去回收句柄，故被拒绝时提示用户先中断。
    状态清理按**代际计数**判定（`terminalCommandGeneration`，新命令与新任务启动都自增），
    避免旧命令退出时把后来者误清成「待命中」；命令超 5s 自动拉起前台保活服务（秒回命令不闪通知）。
-   **两条执行通道都必须保持子进程 stdin 长开并登记 `processWriter`**：关闭 stdin 会让脚本的
+   **两条执行通道都必须保持子进程 stdin 长开并保留 `processWriter`**：关闭 stdin 会让脚本的
    `read` 立即读到 EOF 而被当作空值放行，表现为「交互式脚本跑到输入处直接结束」。
    `executeFile` 与 `runTerminalCommand` 均不得调用 `process.outputStream.close()`（收尾除外）。
    `isTerminalBusy` 必须把「已有可写进程」判为**不忙**，否则运行中的命令持有槽位令牌期间
@@ -267,17 +267,19 @@ UI 层全部使用 `androidx.compose.material3` + `material-icons-extended`，
   curl / zip 及其依赖库与根证书，首次使用时由 `data/EmbeddedEnv.kt` 解压到 `filesDir/env`。
   **资产名不得带 `.gz` 后缀** —— 打包工具会把 `.gz` 资产自动解压并改名，按名读取会失败。
   解压后 `bin/` 下为每个 busybox applet 建符号链接，`RootService` 执行前把 `bin` 前置到
-  `PATH` 并设置 `LD_LIBRARY_PATH`（内置二进制 RUNPATH 指向不存在的 Termux 前缀）与
-  证书变量。落点为应用私有目录：Android 10+ 的 W^X 只限制应用 uid 执行数据目录文件，
+  `PATH` 并导出证书变量；`TermuxPrefix` 在 Termux 前缀下建指向内置各库的符号链接，
+  内置二进制靠自身 RUNPATH 解析依赖（**不再导出 `LD_LIBRARY_PATH`**，导出会被所有子进程继承、
+  令内置 `libz` 等顶替系统库依赖）。
+  落点为应用私有目录：Android 10+ 的 W^X 只限制应用 uid 执行数据目录文件，
   而脚本一律经 `su` 以 root 执行，root 不受该限制（真机实测）。
   内置内容变化时须同步提升 `EmbeddedEnv.ENV_VERSION`（不一致即整体重建）。
-  安装包由约 2.8MB 增至约 8.8MB。
+  安装包由约 2.8MB 增至约 9.4MB。
 - 可选「扩展环境包」（`data/EnvPack.kt`，**终端设置入口**）：GNU 工具 / git / python /
   openssl / rsync / ssh 等体积大（约 35MB），不随 APK 分发，按需从发布附件下载后解压到
   `filesDir/envpack`。下载源 **Gitee 优先、GitHub 备选**；**资产挂在非发布标签 `envpack-1` 下**
   —— 非发布 tag 不得用纯数字，否则会与发布版本混淆、并被更新检查误读成发布日期。
   下载后先校验 SHA-256 再解压；已存在内容版本标记不一致时整体重建。
-  安装后由 `RootService.pathExportFragment()` 接入 PATH / `LD_LIBRARY_PATH`，并设置
+  安装后由 `RootService.pathExportFragment()` 接入 PATH / 库前缀，并设置
   `PREFIX` / `PYTHONHOME` / `GIT_EXEC_PATH` / `GIT_TEMPLATE_DIR` / `OPENSSL_CONF` /
   `SSL_CERT_FILE`（Termux 系二进制按固定前缀找资源，必须用变量重定向到包根）。
 
@@ -333,7 +335,7 @@ LGPL-2.1 允许以 GPL-3.0 组合）：
 ## 执行方式
 
 命令与脚本一律直通执行：终端输入直接派发，文件执行仅校验扩展名。
-原有的静态策略审查、运行时守卫、安全档位与审计日志均已移除，设置页不再有对应入口。
+原有的静态策略检查、运行时守卫、安全档位与审计日志均已移除，设置页不再有对应入口。
 
 - **命令派发**：交互态写入常驻 shell；一次性命令走 `ProcessBuilder("su", "-c", ...)`，
   带流式回吐与可中断能力。
