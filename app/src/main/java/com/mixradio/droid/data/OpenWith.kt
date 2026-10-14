@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package com.mixradio.droid.data
 
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.webkit.MimeTypeMap
@@ -11,7 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * 「打开方式」：把文件交给系统解析并列出可处理它的已安装应用。
+ * 「打开方式」/「分享」：把文件交给系统解析并列出可处理的已安装应用。
  *
  * 目标文件可能位于应用读不到的受保护路径（`/data/adb` 等），故先把内容复制到
  * 应用私有缓存再以 `content://`（FileProvider）共享；直接传 `file://` 在 Android 7+
@@ -21,14 +22,45 @@ object OpenWith {
 
     private const val DIR = "open-with"
 
-    /**
-     * @return 是否成功调起（false = 无应用可处理或复制失败）
-     */
+    /** 「打开方式」：按文件类型列出可打开它的应用。 */
     suspend fun open(
         context: Context,
         path: String,
         displayName: String,
         extension: String,
+    ): Boolean = launchChooser(context, path, displayName, extension, title = "打开方式") { uri, mime ->
+        Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mime)
+        }
+    }
+
+    /** 「分享」：把文件发送给其他应用（部分应用只认 SEND 而非 VIEW）。 */
+    suspend fun share(
+        context: Context,
+        path: String,
+        displayName: String,
+        extension: String,
+    ): Boolean = launchChooser(context, path, displayName, extension, title = "分享") { uri, mime ->
+        Intent(Intent.ACTION_SEND).apply {
+            type = mime
+            putExtra(Intent.EXTRA_STREAM, uri)
+            // 部分接收方按 clipData 取 URI 与授权，补一份更稳
+            clipData = ClipData.newUri(context.contentResolver, sanitize(displayName), uri)
+        }
+    }
+
+    /**
+     * 复制到缓存 → 生成 content:// → 交由系统选择器。
+     *
+     * @param buildIntent 用 (uri, mime) 构造具体意图（VIEW 或 SEND）。
+     */
+    private suspend fun launchChooser(
+        context: Context,
+        path: String,
+        displayName: String,
+        extension: String,
+        title: String,
+        buildIntent: (android.net.Uri, String) -> Intent,
     ): Boolean = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, DIR).apply { mkdirs() }
         val safeName = sanitize(displayName).ifEmpty { "file" }
@@ -43,11 +75,10 @@ object OpenWith {
         val uri = runCatching { FileProvider.getUriForFile(context, authority, dst) }.getOrNull()
             ?: return@withContext false
 
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, mime)
+        val intent = buildIntent(uri, mime).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        val chooser = Intent.createChooser(intent, "打开方式").apply {
+        val chooser = Intent.createChooser(intent, title).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         withContext(Dispatchers.Main) {

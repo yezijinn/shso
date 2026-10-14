@@ -784,6 +784,14 @@ fun FilePage(
         }
     }
 
+    // 分享：把文件发送给其他应用
+    fun shareFile(item: FileItem) {
+        actionJobScope.launch {
+            val ok = OpenWith.share(context, item.path, item.name, item.realExtension)
+            if (!ok) feedbackMessage = "分享失败：没有可接收的应用"
+        }
+    }
+
     fun startInstall(
         item: FileItem,
         installAsRootOverride: Boolean? = null,
@@ -2162,6 +2170,10 @@ fun FilePage(
                     ActionTextRow("打开方式", AuroraTokens.AccentViolet) {
                         showActionDialog = false
                         openWithApp(item)
+                    }
+                    ActionTextRow("分享", AuroraTokens.AccentViolet) {
+                        showActionDialog = false
+                        shareFile(item)
                     }
                 }
             }

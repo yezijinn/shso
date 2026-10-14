@@ -42,7 +42,7 @@ class FileActionsAndPermissionsContractTest {
     /** 文件单击菜单第二列：五个新动作齐备，且接入对应实现。 */
     @Test
     fun fileMenuSecondColumnActions() {
-        listOf("添加到压缩包", "复制 ->", "移动 ->", "解压 ->", "打开方式").forEach {
+        listOf("添加到压缩包", "复制 ->", "移动 ->", "解压 ->", "打开方式", "分享").forEach {
             assertTrue("缺少动作：$it", filePage.contains(it))
         }
         assertTrue("打包须走 ArchiveCreator", filePage.contains("ArchiveCreator.createZip("))
@@ -50,6 +50,7 @@ class FileActionsAndPermissionsContractTest {
         assertTrue("移动到另一列", filePage.contains("moveToOtherPane("))
         assertTrue("解压到另一列", filePage.contains("extractTo(item, otherPaneDirectory())"))
         assertTrue("打开方式", filePage.contains("OpenWith.open("))
+        assertTrue("分享", filePage.contains("OpenWith.share("))
     }
 
     /** 「打开方式」需共享副本并声明 provider 路径。 */
@@ -58,6 +59,8 @@ class FileActionsAndPermissionsContractTest {
         val openWith = src("data/OpenWith.kt")
         assertTrue("需用 FileProvider 共享", openWith.contains("FileProvider.getUriForFile"))
         assertTrue("需授予读权限", openWith.contains("FLAG_GRANT_READ_URI_PERMISSION"))
+        assertTrue("需支持分享（ACTION_SEND）", openWith.contains("Intent.ACTION_SEND"))
+        assertTrue("分享需携带 EXTRA_STREAM", openWith.contains("EXTRA_STREAM"))
         val paths = java.io.File("src/main/res/xml/file_provider_paths.xml").readText()
         assertTrue("需暴露 open-with 缓存目录", paths.contains("open-with/"))
     }
