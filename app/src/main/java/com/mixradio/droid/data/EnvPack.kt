@@ -82,6 +82,7 @@ object EnvPack {
         if (isInstalledOnDisk(context)) {
             dir = File(context.filesDir, DIR)
             state = State.Installed
+            runCatching { TermuxPrefix.ensure(context) }
         }
     }
 
@@ -105,7 +106,10 @@ object EnvPack {
         sb.append("export PATH=").append(escape(bin)).append(":\$PATH; ")
         sb.append("export PREFIX=").append(escape(root.absolutePath)).append("; ")
         sb.append("export TERMUX_PREFIX=").append(escape(root.absolutePath)).append("; ")
-        sb.append("export LD_LIBRARY_PATH=").append(escape(lib)).append(":\$LD_LIBRARY_PATH; ")
+        // 库路径优先靠 TermuxPrefix 前缀符号链接；仅无 root（前缀不可建）时才导出 LD_LIBRARY_PATH。
+        if (!TermuxPrefix.ready) {
+            sb.append("export LD_LIBRARY_PATH=").append(escape(lib)).append(":\$LD_LIBRARY_PATH; ")
+        }
         sb.append("export PYTHONHOME=").append(escape(root.absolutePath)).append("; ")
         // python 标准库目录随版本变化，运行时探测
         pythonLibDir(root)?.let { sb.append("export PYTHONPATH=").append(escape(it)).append("; ") }
@@ -163,6 +167,8 @@ object EnvPack {
                     dir = root
                     runCatching { File(root, "VERSION").writeText(VERSION + "\n") }
                     state = State.Installed
+                    // 把扩展包各库也链入 Termux 前缀，供其二进制解析依赖
+                    runCatching { TermuxPrefix.ensure(appCtx) }
                 } else {
                     runCatching { root.deleteRecursively() }
                     state = State.Failed("解压失败")

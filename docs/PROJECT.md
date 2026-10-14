@@ -343,6 +343,13 @@ LGPL-2.1 允许以 GPL-3.0 组合）：
   避免上一次的输出混入本次结果。
 - **不写横幅/心跳**：执行链路不再往终端输出插入任何 `[shso]` 文案——
   这类文字会占用日志窗口、与脚本输出混排、污染「复制输出」，心跳计时行还可能打断交互提示。
+- **执行经 PTY**（`RootService.wrapWithPty`）：脚本一律用内置 busybox `script -q -c` 套一层伪终端。
+  现实中的安装类脚本本体常是原生程序且**要求 stdin 是终端**（否则取终端属性失败即判「无效输入」退出），
+  无 PTY 时用户完全无法交互。PTY 同时让输出行缓冲、行为更接近真实终端。
+- **库路径不导出 `LD_LIBRARY_PATH`**（`data/TermuxPrefix.kt`）：把内置各库用 root 符号链接进
+  `/data/data/com.termux/files/usr/lib`，内置二进制靠自身 RUNPATH 解析依赖。
+  导出 `LD_LIBRARY_PATH` 会被所有子进程继承，令内置 `libz` 等顶替**系统**库的依赖，
+  引起 `CANNOT LINK EXECUTABLE`（原生载荷起不来）；仅无 root、前缀不可建时才退回导出。
 - **外部链接打开**（`data/UrlOpener.kt`）：`ACTION_VIEW` 隐式意图交由系统解析，
   能探测到浏览器时优先指定它，探测不到则走系统默认路径（不再自建可能为空的选择器）；
   清单声明 `http`/`https` 的 `VIEW` 意图保证应用可见性，查询用真实链接 + `MATCH_ALL`。

@@ -260,7 +260,7 @@ class SyncCommandReclaimTest {
         val text = source.readText()
         assertTrue(
             "非 Root 分支必须经 setsid 起进程",
-            text.contains("ProcessBuilder(setsid.absolutePath, \"sh\", \"-c\", execCmd)")
+            text.contains("ProcessBuilder(setsid.absolutePath, \"sh\", \"-c\", ptyCmd)")
         )
         assertTrue(
             "setsid 不可用（极老机型）时必须退回原路径而不是拒绝执行",

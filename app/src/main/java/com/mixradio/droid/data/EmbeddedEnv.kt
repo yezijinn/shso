@@ -90,8 +90,12 @@ object EmbeddedEnv {
         val sb = StringBuilder()
         // 前置内置 bin；把原来的 PATH 接在后面，系统工具仍可用
         sb.append("export PATH=").append(escape(bin)).append(":\$PATH; ")
-        // bash / curl 的 RUNPATH 指向 Termux 前缀（不存在），必须靠 LD_LIBRARY_PATH 找库
-        sb.append("export LD_LIBRARY_PATH=").append(escape(lib)).append(":\$LD_LIBRARY_PATH; ")
+        // bash / curl / zip 的 RUNPATH 指向 Termux 前缀。**优先**靠 TermuxPrefix 的前缀符号链接解析；
+        // 仅在其不可用（无 root，无法建前缀）时才退回导出 LD_LIBRARY_PATH —— 后者会污染子进程，
+        // 让内置 libz 等顶替系统库的依赖，导致脚本里的原生程序 CANNOT LINK EXECUTABLE。
+        if (!TermuxPrefix.ready) {
+            sb.append("export LD_LIBRARY_PATH=").append(escape(lib)).append(":\$LD_LIBRARY_PATH; ")
+        }
         if (cert.isNotEmpty()) {
             sb.append("export SSL_CERT_FILE=").append(escape(cert)).append("; ")
             sb.append("export CURL_CA_BUNDLE=").append(escape(cert)).append("; ")

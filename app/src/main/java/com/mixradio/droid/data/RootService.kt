@@ -357,6 +357,9 @@ object RootService {
         // 内置环境：首次调用做解压（缓存），失败时返回空串，行为退回旧版系统 PATH。
         val embedded = runCatching {
             EmbeddedEnv.ensure(com.mixradio.droid.ShsoApplication.appContext)
+            // 建立 Termux 前缀库符号链接：让内置动态二进制无需 LD_LIBRARY_PATH 即可解析依赖，
+            // 避免该变量污染子进程、顶替系统库（见 TermuxPrefix 注释）。
+            TermuxPrefix.ensure(com.mixradio.droid.ShsoApplication.appContext)
             EmbeddedEnv.exportFragment()
         }.getOrDefault("")
         // 扩展环境包（可选下载）：已安装时把其目录前置到 PATH，GNU 工具与 git/python 优先命中。
@@ -364,6 +367,24 @@ object RootService {
         return embedded + pack +
             "for d in \$(echo " + escapeShellArg(EXTRA_PATH_DIRS) + " | tr ':' ' '); do " +
             "[ -d \"\$d\" ] && PATH=\"\$PATH:\$d\"; done; export PATH; "
+    }
+
+    /**
+     * 用内置 busybox `script` 给执行命令套一层**伪终端（PTY）**。
+     *
+     * 现实中的安装类脚本常以原生程序（自解压载荷）为主体，且**要求标准输入是终端**：
+     * 非 TTY 时 tcgetattr / open("/dev/tty") 失败，程序直接判「无效输入」退出，
+     * 用户完全无法进入交互（真机样本 TwTLoaderv 即如此，PTY 下同一脚本可正常交互）。
+     * busybox `script` 会 forkpty，把我们的 stdin/stdout 与 PTY 主端互转，满足该要求。
+     *
+     * `-q` 抑制 script 自身提示；OUTFILE 取 /dev/null（会话内容已同步到 stdout）。
+     * busybox script 不转发子进程退出码 —— 本应用不向用户展示退出码，影响可忽略。
+     */
+    private fun wrapWithPty(cmd: String): String {
+        val busybox = EmbeddedEnv.binDir?.let { File(it, "busybox") } ?: return cmd
+        if (!busybox.isFile) return cmd
+        val inner = "/system/bin/sh -c " + escapeShellArg(cmd)
+        return escapeShellArg(busybox.absolutePath) + " script -q -c " + escapeShellArg(inner) + " /dev/null"
     }
 
     fun initSettings(settings: AppSettings) {
@@ -1198,20 +1219,22 @@ object RootService {
                 // 于是「中断/结束」只能杀到外层 sh，内层脚本以应用 uid 继续跑（`sleep 600` 无尽的
                 // 典型形态），而应用本来就有权杀同 uid 的进程组，隔离后这条回收通道才成立。
                 var isolatedGroup = false
+                // 套一层 PTY：满足「要求标准输入是终端」的原生安装器（见 wrapWithPty）
+                val ptyCmd = wrapWithPty(execCmd)
                 process = if (useRoot) {
-                    ProcessBuilder("su", "-c", execCmd).redirectErrorStream(true).start()
+                    ProcessBuilder("su", "-c", ptyCmd).redirectErrorStream(true).start()
                 } else {
                     val setsid = File("/system/bin/setsid")
                     if (setsid.canExecute()) {
                         try {
-                            ProcessBuilder(setsid.absolutePath, "sh", "-c", execCmd)
+                            ProcessBuilder(setsid.absolutePath, "sh", "-c", ptyCmd)
                                 .redirectErrorStream(true).start()
                                 .also { isolatedGroup = true }
                         } catch (_: Exception) {
-                            ProcessBuilder("sh", "-c", execCmd).redirectErrorStream(true).start()
+                            ProcessBuilder("sh", "-c", ptyCmd).redirectErrorStream(true).start()
                         }
                     } else {
-                        ProcessBuilder("sh", "-c", execCmd).redirectErrorStream(true).start()
+                        ProcessBuilder("sh", "-c", ptyCmd).redirectErrorStream(true).start()
                     }
                 }
                 activeProcess = process
