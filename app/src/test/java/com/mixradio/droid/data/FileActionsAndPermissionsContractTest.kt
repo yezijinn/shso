@@ -62,6 +62,21 @@ class FileActionsAndPermissionsContractTest {
         assertTrue("ActionTextRow 点击后必须调用 refresh()", body.contains("refresh()"))
     }
 
+    /** 输出到另一列的动作必须刷新另一列（双列刷新）。 */
+    @Test
+    fun crossPaneActionsRefreshBothPanes() {
+        assertTrue("需有双列刷新工具", filePage.contains("fun refreshBothPanes()"))
+        val copyIdx = filePage.indexOf("fun copyToOtherPane(")
+        val moveIdx = filePage.indexOf("fun moveToOtherPane(")
+        val extractIdx = filePage.indexOf("fun extractTo(")
+        assertTrue("copyToOtherPane 应双列刷新",
+            filePage.substring(copyIdx, (copyIdx + 700).coerceAtMost(filePage.length)).contains("refreshBothPanes()"))
+        assertTrue("moveToOtherPane 应双列刷新",
+            filePage.substring(moveIdx, (moveIdx + 700).coerceAtMost(filePage.length)).contains("refreshBothPanes()"))
+        assertTrue("extractTo 应双列刷新",
+            filePage.substring(extractIdx, (extractIdx + 1200).coerceAtMost(filePage.length)).contains("refreshBothPanes()"))
+    }
+
     /** 「打开方式」需共享副本并声明 provider 路径。 */
     @Test
     fun openWithSharesCacheCopy() {

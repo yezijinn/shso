@@ -719,6 +719,18 @@ fun FilePage(
     // 另一列（非聚焦列）的当前目录，作为「复制 ->」「移动 ->」「解压 ->」的目标
     fun otherPaneDirectory(): String = panes[1 - focusedIndex].currentDirectory
 
+    /**
+     * 同时刷新两列。
+     *
+     * 输出到另一列的动作（复制 -> / 移动 -> / 解压 ->）会改变**目标列**的目录内容，
+     * 只刷新聚焦列会让另一列停留在旧列表；移动还会同时改变聚焦列，故两列都要重载。
+     * 节流按列独立（各 pane 自带 lastLoadedAt），不会互相抑制。
+     */
+    fun refreshBothPanes() {
+        refreshPane(focusedIndex, false)
+        refreshPane(1 - focusedIndex, false)
+    }
+
     // 解压到指定目录（沿用智能创建文件夹的行为）
     fun extractTo(item: FileItem, targetDir: String) {
         actionJobScope.launch {
@@ -740,7 +752,8 @@ fun FilePage(
                 is ArchiveExtractor.ExtractResult.Failure ->
                     feedbackMessage = result.message
             }
-            refresh()
+            // 解压目标是另一列目录，两列都要刷新
+            refreshBothPanes()
         }
     }
 
@@ -762,7 +775,8 @@ fun FilePage(
         actionJobScope.launch {
             val (ok, msg) = RootFileManager.copyToDirectory(item.path, dest)
             feedbackMessage = msg
-            if (ok) refresh()
+            // 目标在另一列：两列都刷新（本次列表也可能因排序/节流需要重排）
+            if (ok) refreshBothPanes()
         }
     }
 
@@ -772,7 +786,8 @@ fun FilePage(
         actionJobScope.launch {
             val (ok, msg) = RootFileManager.moveFile(item.path, dest)
             feedbackMessage = msg
-            if (ok) refresh()
+            // 源在聚焦列、目标在另一列：两列都刷新
+            if (ok) refreshBothPanes()
         }
     }
 
@@ -2709,7 +2724,8 @@ fun FilePage(
                                     is ArchiveExtractor.ExtractResult.Failure ->
                                         feedbackMessage = result.message
                                 }
-                                refresh()
+                                // 口令解压也可能落在另一列目录，两列都刷新
+                                refreshBothPanes()
                             }
                         },
                         colors = ButtonDefaults.buttonColors(
