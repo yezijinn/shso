@@ -131,6 +131,11 @@ stat 失败或路径非法时禁止动作分派。
    `executeFile` 与 `runTerminalCommand` 均不得调用 `process.outputStream.close()`（收尾除外）。
    `isTerminalBusy` 必须把「已有可写进程」判为**不忙**，否则运行中的命令持有槽位令牌期间
    交互输入会被全程拒绝（输入发了却推不动脚本）。
+   **执行环境必须补 PATH**（`pathExportFragment`）：Android 原生不带 `curl` / `wget` / `python` /
+   `node`，联网型与加密型脚本会按 127 退出且日志只剩一行 `not found`。已安装的工具目录
+   （Termux、Magisk 内置工具箱等）追加到 PATH **末尾**，系统目录仍优先；
+   追加前须逐个 `[ -d ]` 判定存在性——不存在却整体拼进去会留下空条目，
+   而空条目等价于当前目录，命令解析会先在当前目录找可执行文件，属注入面。
 4. stdout / stderr 由独立协程按 16ms tick 收集、**≥250ms 发布节流**（`HyperCore.startBatchFlushLoop`），
    防止重组风暴；命令/任务结束时先停发布循环并等积压刷完（`stopBatchFlushLoop`）再写
    「退出码 / 已结束」文案，保证日志顺序不倒挂。

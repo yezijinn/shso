@@ -69,6 +69,26 @@ class TerminalInteractiveStdinContractTest {
     }
 
     /**
+     * 执行环境必须补充 PATH 候选目录。
+     *
+     * Android 原生不带 curl / wget / python / node，联网型脚本会按 127 退出，
+     * 日志里只剩一行 `curl: not found`。已存在 Termux / Magisk busybox 时
+     * 应能直接用上，故执行前缀必须带 [RootService] 的 PATH 增强片段。
+     */
+    @Test
+    fun executionMustExtendPath() {
+        assertTrue(
+            "执行环境必须追加 PATH 候选目录（否则联网脚本因缺 curl/wget 而失败）",
+            source.contains("pathExportFragment()")
+        )
+        // 增强片段必须只追加确实存在的目录：空条目等价于当前目录，属注入面
+        assertTrue(
+            "PATH 增强必须逐个判定目录存在性",
+            source.contains("[ -d ")
+        )
+    }
+
+    /**
      * isTerminalBusy 必须把「有可写进程」视为不忙，
      * 否则运行中的命令持有槽位会让交互输入全程被拒。
      */

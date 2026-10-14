@@ -305,6 +305,31 @@ object RootService {
      */
     private const val ROOT_TMP_DIR = "/data/local/tmp"
 
+    /**
+     * 追加到执行环境 `PATH` 末尾的候选工具目录。
+     *
+     * Android 原生不带 `curl` / `wget` / `python` / `node` 等，而联网型与脚本型
+     * （加密、对暗号、自解压）脚本大量依赖它们；缺一个工具脚本就按 127 退出，
+     * 日志里只剩一行 `curl: not found`，用户无从判断是脚本坏了还是环境缺件。
+     *
+     * 追加而非替换：系统目录仍优先，避免用第三方实现顶掉 toybox 的同名命令。
+     * 只追加**确实存在**的目录（由 shell 侧 `[ -d ]` 逐个判定），
+     * 不存在的不进 PATH，免得每条命令都多走几次失败的 stat。
+     */
+    private const val EXTRA_PATH_DIRS =
+        "/data/data/com.termux/files/usr/bin:/data/local/tmp/bin:" +
+            "/data/adb/modules/busybox-ndk/system/bin:/data/adb/magisk:/sbin/.magisk/busybox"
+
+    /**
+     * 生成 PATH 增强片段：把存在的候选目录追加到既有 PATH 末尾。
+     *
+     * 逐个判定而非整体拼接 —— 目录不存在时整体拼进去会让 PATH 里留下空条目，
+     * 空条目等价于当前目录，命令解析会先在当前目录找可执行文件，属注入面。
+     */
+    private fun pathExportFragment(): String =
+        "for d in \$(echo " + escapeShellArg(EXTRA_PATH_DIRS) + " | tr ':' ' '); do " +
+            "[ -d \"\$d\" ] && PATH=\"\$PATH:\$d\"; done; export PATH; "
+
     fun initSettings(settings: AppSettings) {
         appSettings = settings
         sweepExecutionTempFiles()
@@ -675,7 +700,8 @@ object RootService {
         // 终端同样补 TMPDIR：终端里直接跑 Termux 打包的自解压脚本会走到脚本内的
         // 空值回退分支（硬编码 /data/data/com.termux/…），未装 Termux 时 mktemp 即失败。
         val process = try {
-            ProcessBuilder("su", "-c", pgidRecorder + "export TMPDIR=" + ROOT_TMP_DIR + "; " + command)
+            ProcessBuilder("su", "-c", pgidRecorder + pathExportFragment() +
+                "export TMPDIR=" + ROOT_TMP_DIR + "; " + command)
                 .redirectErrorStream(true).start()
         } catch (e: Exception) {
             withContext(Dispatchers.Main) { appendOutputDirect("[执行失败: ${e.message}]\n") }
@@ -1069,7 +1095,8 @@ object RootService {
                         // Android 自带 toybox sed **不支持 \xNN 转义**，实测原样输出不生效。
                         //
                         // 原文件保持不动：执行一次就把用户磁盘上的脚本改掉不可接受。
-                        "${pgidRecorder}export TERM=xterm-256color && export LANG=en_US.UTF-8 && " +
+                        "${pgidRecorder}${pathExportFragment()}" +
+                            "export TERM=xterm-256color && export LANG=en_US.UTF-8 && " +
                             "export TMPDIR=$tmpDir && cd $escapedParent && $runShCmd"
                     } else {
                         // .so / ELF：直接执行需要 +x。
@@ -1093,7 +1120,7 @@ object RootService {
                         // 此前只拼了 restoreAttrCmd（还原），从未执行保存：属性文件恒为空，
                         // finally 读到的 mode 为 null，**还原被静默跳过**，
                         // 用户的 .so 就永久停留在 a+x 放宽后的权限上（实测 600 → 711 不再回退）。
-                        "$pgidRecorder" + saveAttrCmd +
+                        "$pgidRecorder" + pathExportFragment() + saveAttrCmd +
                             "export TERM=xterm-256color && export LANG=en_US.UTF-8 && export TMPDIR=$tmpDir && " +
                             "cd $escapedParent && " +
                             // 执行前必须确认是 ELF：mksh 对 execve 返回 ENOEXEC 的文件会按 POSIX 传统
@@ -1113,7 +1140,8 @@ object RootService {
                     // 归一化同样适用于该身份：runShCmd 在无需归一化时直接交给 sh，
                     // 需要归一化时改写 app 私有临时文件再执行。旧实现硬编码直跑原文件，
                     // 于是 CRLF/BOM 脚本只在 Root 身份下被修正，非 Root 执行时 A75 缺陷原样复现。
-                    val nonRootPrefix = "export TERM=xterm-256color && export LANG=en_US.UTF-8 && " +
+                    val nonRootPrefix = pathExportFragment() +
+                        "export TERM=xterm-256color && export LANG=en_US.UTF-8 && " +
                         "export TMPDIR=$tmpDir && cd $escapedParent 2>/dev/null; "
                     if (isSo) {
                         // .so 绝不能当脚本喂给 sh：mksh 对 execve 返回 ENOEXEC 的文件会隐式回退为
