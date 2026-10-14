@@ -4,7 +4,6 @@ package com.mixradio.droid.data
 
 import android.content.Context
 import java.io.File
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 让内置动态二进制（bash / curl / zip / 扩展包工具）在**不导出 `LD_LIBRARY_PATH`** 的前提下找到依赖库。
@@ -28,8 +27,6 @@ internal object TermuxPrefix {
 
     private const val PREFIX = "/data/data/com.termux/files/usr"
 
-    private val ensured = AtomicBoolean(false)
-
     /** 前缀库是否已就绪（就绪后调用方**不要**再导出 LD_LIBRARY_PATH）。 */
     @Volatile
     var ready: Boolean = false
@@ -40,7 +37,9 @@ internal object TermuxPrefix {
      */
     fun ensure(context: Context): Boolean {
         if (ready) return true
-        if (RootService.isRootGranted != true) return false
+        // 仅在**明确无 root** 时放弃；root 状态尚未探测完（null，如冷启动首次执行）仍尝试建立，
+        // 否则首跑会退回导出 LD_LIBRARY_PATH 的旧路径，脚本里的原生程序会 CANNOT LINK。
+        if (RootService.isRootGranted == false) return false
         synchronized(this) {
             if (ready) return true
             val libDirs = buildList {
@@ -64,7 +63,6 @@ internal object TermuxPrefix {
             }
             val (code, _) = RootService.runCommandSync(sb.toString(), timeoutMs = 20_000L)
             ready = code == 0
-            ensured.set(true)
             return ready
         }
     }
