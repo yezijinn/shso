@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
@@ -74,6 +75,8 @@ import com.mixradio.droid.data.ParsedAnsiResult
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.ui.components.ColorWheelDialog
 import com.mixradio.droid.ui.components.dockBarBottomPadding
+import com.mixradio.droid.data.EnvPack
+import com.mixradio.droid.ui.theme.AuroraArrowPreference
 import com.mixradio.droid.ui.theme.AuroraSwitchPreference
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraThinSlider
@@ -179,6 +182,7 @@ fun TerminalPage(
 
     var showTerminalSettings by remember { mutableStateOf(false) }
     var showColorDialog by remember { mutableStateOf(false) }
+    var showPackRemove by remember { mutableStateOf(false) }
 
     val terminalDefaultColor = remember(appSettings.terminalTextColor) {
         Color(appSettings.terminalTextColor)
@@ -717,6 +721,67 @@ fun TerminalPage(
                 checked = appSettings.autoClearBeforeRun,
                 onCheckedChange = { appSettings.updateAutoClearBeforeRun(it) }
             )
+
+            // 扩展环境包：未安装点击下载；下载/解压中显示进度；已安装点击可删除
+            val packState = EnvPack.state
+            AuroraArrowPreference(
+                title = "扩展环境包",
+                summary = when (packState) {
+                    EnvPack.State.NotInstalled -> "下载 GNU 工具、git、python、openssl 等（约 35 MB）"
+                    EnvPack.State.Downloading -> "下载中 ${EnvPack.progress}%"
+                    EnvPack.State.Extracting -> "解压中…"
+                    EnvPack.State.Installed -> "已安装，点击可删除"
+                    is EnvPack.State.Failed -> "${packState.message}，点击重试"
+                },
+                statusSwitch = packState is EnvPack.State.Downloading || packState is EnvPack.State.Extracting,
+                statusSwitchEnabled = true,
+                onClick = {
+                    when (packState) {
+                        is EnvPack.State.Installed -> showPackRemove = true
+                        EnvPack.State.Downloading, EnvPack.State.Extracting -> {}
+                        else -> EnvPack.startDownload(context)
+                    }
+                }
+            )
+        }
+    }
+
+    if (showPackRemove) {
+        AuroraWindowDialog(
+            show = true,
+            title = "提示",
+            onDismissRequest = { showPackRemove = false }
+        ) {
+            Text(
+                text = "确认删除扩展环境包？删除后相关命令将不可用。",
+                style = AuroraTextStyles.body2,
+                color = AuroraTokens.Text
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
+            ) {
+                Text(
+                    text = "稍后",
+                    style = AuroraTextStyles.body2,
+                    color = AuroraTokens.TextSecondary,
+                    modifier = Modifier
+                        .clickable { showPackRemove = false }
+                        .minimumInteractiveComponentSize()
+                )
+                Text(
+                    text = "删除",
+                    style = AuroraTextStyles.body2,
+                    color = AuroraTokens.Error,
+                    modifier = Modifier
+                        .clickable {
+                            showPackRemove = false
+                            EnvPack.remove(context)
+                        }
+                        .minimumInteractiveComponentSize()
+                )
+            }
         }
     }
 

@@ -263,15 +263,16 @@ UI 层全部使用 `androidx.compose.material3` + `material-icons-extended`，
   `kotlin-stdlib-jdk8` 等），`settings.gradle.kts` 因此把 Google 官方 Maven Central 镜像
   （`maven-central.storage-download.googleapis.com`）作为通用回退源（内容与中央仓库一致）。
 - 产物体积：编辑器引擎使 release APK 由约 1.84MB 增至约 3.40MB（2026-09-12 实测，含 oniguruma 编码表；剔除 `tables/**` 后回落至 2.09MB）；**语法包不入 APK**。
-- 内置 POSIX 环境：`assets/env.bin`（gzip tar，约 6.1MB 压缩后）含 bash 5.3 / busybox /
-  curl 及其依赖库与根证书，首次使用时由 `data/EmbeddedEnv.kt` 解压到 `filesDir/env`。
+- 内置 POSIX 环境：`assets/env.bin`（gzip tar，约 6.5MB 压缩后）含 bash 5.3 / busybox /
+  curl / zip 及其依赖库与根证书，首次使用时由 `data/EmbeddedEnv.kt` 解压到 `filesDir/env`。
   **资产名不得带 `.gz` 后缀** —— 打包工具会把 `.gz` 资产自动解压并改名，按名读取会失败。
   解压后 `bin/` 下为每个 busybox applet 建符号链接，`RootService` 执行前把 `bin` 前置到
   `PATH` 并设置 `LD_LIBRARY_PATH`（内置二进制 RUNPATH 指向不存在的 Termux 前缀）与
   证书变量。落点为应用私有目录：Android 10+ 的 W^X 只限制应用 uid 执行数据目录文件，
   而脚本一律经 `su` 以 root 执行，root 不受该限制（真机实测）。
+  内置内容变化时须同步提升 `EmbeddedEnv.ENV_VERSION`（不一致即整体重建）。
   安装包由约 2.8MB 增至约 8.8MB。
-- 可选「扩展环境包」（`data/EnvPack.kt`，设置页入口）：GNU 工具 / git / python /
+- 可选「扩展环境包」（`data/EnvPack.kt`，**终端设置入口**）：GNU 工具 / git / python /
   openssl / rsync / ssh 等体积大（约 35MB），不随 APK 分发，按需从发布附件下载后解压到
   `filesDir/envpack`。下载源 **Gitee 优先、GitHub 备选**；**资产挂在非发布标签 `envpack-1` 下**
   —— 非发布 tag 不得用纯数字，否则会与发布版本混淆、并被更新检查误读成发布日期。

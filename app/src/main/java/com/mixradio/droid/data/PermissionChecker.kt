@@ -31,6 +31,9 @@ object PermissionChecker {
     /** su 探测超时，防止 Magisk 授权弹窗长时间卡住检测。 */
     private const val ROOT_CHECK_TIMEOUT_MS = 1500L
 
+/** 可见第三方应用少于该数量即视为「获取应用列表」受限。 */
+private const val MIN_VISIBLE_APPS = 10
+
     /**
      * 「访问存储空间」是否已获得。
      *
@@ -110,7 +113,21 @@ object PermissionChecker {
     }
 
     /**
-     * 真实验证 ROOT（su）可用性：在 IO 线程执行带超时的 `su -c id`。
+     * 是否能枚举本机已安装应用（清单已声明 QUERY_ALL_PACKAGES）。
+     *
+     * 个别 ROM 把「获取应用列表」做成可关闭的权限；被关闭时 PackageManager 只返回
+     * 系统应用与自身，第三方应用不可见（「提取 APK」「打开方式」等随之失效）。
+     * 以可见应用数量粗略判定，数量过少即视为受限。
+     */
+    fun canListInstalledApps(context: Context): Boolean = try {
+        val self = context.packageName
+        val others = context.packageManager.getInstalledApplications(0).count { it.packageName != self }
+        others >= MIN_VISIBLE_APPS
+    } catch (_: Exception) {
+        false
+    }
+
+    /** 真实验证 ROOT（su）可用性：在 IO 线程执行带超时的 `su -c id`。
      *
      * 输出包含 uid=0 且退出码为 0 视为已获得；失败、异常或超时（如未放行导致
      * Magisk/KernelSU 弹授权窗）一律视为未获得。超时后强制销毁进程，避免挂起。

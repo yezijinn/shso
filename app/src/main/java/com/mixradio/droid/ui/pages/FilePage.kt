@@ -79,6 +79,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.ApkInstaller
+import com.mixradio.droid.data.ArchiveCreator
 import com.mixradio.droid.data.ArchiveExtractor
 import com.mixradio.droid.data.ExternalMode
 import com.mixradio.droid.data.ExternalAction
@@ -95,6 +96,7 @@ import com.mixradio.droid.data.computeSha256Strict
 import com.mixradio.droid.data.syntax.SyntaxPackTags
 import com.mixradio.droid.data.RootFileManager
 import com.mixradio.droid.data.RootFileManager.DirectoryListing
+import com.mixradio.droid.data.OpenWith
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.displayPath
 import com.mixradio.droid.ui.components.ApkExtractDialog
@@ -333,6 +335,8 @@ fun FilePage(
     var showExtractPasswordDialog by remember { mutableStateOf(false) }
     var extractPasswordInput by remember { mutableStateOf("") }
     var extractTargetItem by remember { mutableStateOf<FileItem?>(null) }
+    // 「解压 ->」时记录目标目录；为 null 时按当前列目录解压
+    var extractPasswordTargetDir by remember { mutableStateOf<String?>(null) }
     var showMoveDialog by remember { mutableStateOf(false) }
     var moveFiles by remember { mutableStateOf<List<String>?>(null) }
     var showConflictDialog by remember { mutableStateOf(false) }
@@ -709,6 +713,74 @@ fun FilePage(
                     feedbackMessage = result.message
             }
             refresh()
+        }
+    }
+
+    // 另一列（非聚焦列）的当前目录，作为「复制 ->」「移动 ->」「解压 ->」的目标
+    fun otherPaneDirectory(): String = panes[1 - focusedIndex].currentDirectory
+
+    // 解压到指定目录（沿用智能创建文件夹的行为）
+    fun extractTo(item: FileItem, targetDir: String) {
+        actionJobScope.launch {
+            isExtracting = true
+            val result = try {
+                ArchiveExtractor.extract(archivePath = item.path, targetParent = targetDir)
+            } finally {
+                isExtracting = false
+            }
+            when (result) {
+                is ArchiveExtractor.ExtractResult.Success ->
+                    feedbackMessage = "已解压到: ${result.targetDir}"
+                is ArchiveExtractor.ExtractResult.NeedPassword -> {
+                    extractTargetItem = item
+                    extractPasswordInput = ""
+                    extractPasswordTargetDir = targetDir
+                    showExtractPasswordDialog = true
+                }
+                is ArchiveExtractor.ExtractResult.Failure ->
+                    feedbackMessage = result.message
+            }
+            refresh()
+        }
+    }
+
+    // 添加到压缩包：同目录生成 <名>.zip
+    fun addToArchive(item: FileItem) {
+        val parent = File(item.path).parent ?: currentDirectory
+        val base = item.name.substringBeforeLast('.', item.name).ifEmpty { item.name }
+        val zipPath = if (parent == "/") "/$base.zip" else "$parent/$base.zip"
+        actionJobScope.launch {
+            val (ok, msg) = ArchiveCreator.createZip(listOf(item.path), zipPath)
+            feedbackMessage = msg
+            if (ok) refresh()
+        }
+    }
+
+    // 复制到另一列目录
+    fun copyToOtherPane(item: FileItem) {
+        val dest = otherPaneDirectory()
+        actionJobScope.launch {
+            val (ok, msg) = RootFileManager.copyToDirectory(item.path, dest)
+            feedbackMessage = msg
+            if (ok) refresh()
+        }
+    }
+
+    // 移动到另一列目录
+    fun moveToOtherPane(item: FileItem) {
+        val dest = otherPaneDirectory()
+        actionJobScope.launch {
+            val (ok, msg) = RootFileManager.moveFile(item.path, dest)
+            feedbackMessage = msg
+            if (ok) refresh()
+        }
+    }
+
+    // 打开方式：复制到私有缓存后交给系统列出可处理的应用
+    fun openWithApp(item: FileItem) {
+        actionJobScope.launch {
+            val ok = OpenWith.open(context, item.path, item.name, item.realExtension)
+            if (!ok) feedbackMessage = "没有可打开该文件的应用"
         }
     }
 
@@ -1918,11 +1990,14 @@ fun FilePage(
             title = item.name,
             onDismissRequest = { showActionDialog = false }
         ) {
-            Column(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                // 左列：原有动作
+                Column(modifier = Modifier.weight(1f)) {
                 // 纯文字紧凑行：无矩形底色、无圆角
                 ActionTextRow("添加到shso", AuroraTokens.Accent) {
                     showActionDialog = false
@@ -2061,6 +2136,33 @@ fun FilePage(
                     showActionDialog = false
                     deleteTargetItem = item
                     showDeleteDialog = true
+                }
+                }
+
+                // 右列：新增动作（输出到另一列目录 / 打包 / 打开方式）
+                Column(modifier = Modifier.weight(1f)) {
+                    ActionTextRow("添加到压缩包", AuroraTokens.Accent) {
+                        showActionDialog = false
+                        addToArchive(item)
+                    }
+                    ActionTextRow("复制 ->", AuroraTokens.Text) {
+                        showActionDialog = false
+                        copyToOtherPane(item)
+                    }
+                    ActionTextRow("移动 ->", AuroraTokens.Accent) {
+                        showActionDialog = false
+                        moveToOtherPane(item)
+                    }
+                    if (item.isArchive) {
+                        ActionTextRow("解压 ->", AuroraTokens.Accent) {
+                            showActionDialog = false
+                            extractTo(item, otherPaneDirectory())
+                        }
+                    }
+                    ActionTextRow("打开方式", AuroraTokens.AccentViolet) {
+                        showActionDialog = false
+                        openWithApp(item)
+                    }
                 }
             }
         }
@@ -2577,9 +2679,10 @@ fun FilePage(
                                 isExtracting = true
                                 val result = ArchiveExtractor.extract(
                                     archivePath = targetItem.path,
-                                    targetParent = currentDirectory,
+                                    targetParent = extractPasswordTargetDir ?: currentDirectory,
                                     password = pwd
                                 )
+                                extractPasswordTargetDir = null
                                 isExtracting = false
                                 when (result) {
                                     is ArchiveExtractor.ExtractResult.Success ->

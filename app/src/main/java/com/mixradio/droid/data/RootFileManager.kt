@@ -1031,6 +1031,126 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
     }
 
     /**
+     * 把源文件/文件夹**复制**到目标目录（与 [moveFile] 同口径，但保留源）。
+     *
+     * 供文件页「复制 ->」使用。目标同名冲突按 [onConflict] 处理（默认覆盖）。
+     */
+    suspend fun copyToDirectory(
+        sourcePath: String,
+        destinationDirectory: String,
+        onConflict: MoveDestinationConflict = MoveDestinationConflict.OVERWRITE
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (isUnsafePath(sourcePath) || isUnsafePath(destinationDirectory)) {
+            return@withContext Pair(false, "路径包含非法字符")
+        }
+        val source = File(sourcePath)
+        val sourceName = source.name
+        if (sourceName.isEmpty() || sourceName == "." || sourceName == "..") {
+            return@withContext Pair(false, "源文件名无效")
+        }
+        val sourceNormalized = sourcePath.trimEnd('/').ifEmpty { "/" }
+        val destinationNormalized = destinationDirectory.trimEnd('/').ifEmpty { "/" }
+        if (sourceNormalized == destinationNormalized) {
+            return@withContext Pair(false, "目标目录不能与源路径相同")
+        }
+        if (destinationNormalized.startsWith("$sourceNormalized/")) {
+            return@withContext Pair(false, "不能复制到自身或子目录")
+        }
+
+        fun localType(path: String): Int = try {
+            val file = File(path)
+            when {
+                file.isDirectory -> 2
+                file.isFile -> 1
+                file.exists() -> 3
+                else -> 0
+            }
+        } catch (_: Exception) {
+            0
+        }
+
+        fun rootType(path: String): Int {
+            val escaped = RootService.escapeShellArg(path)
+            val (code, output) = RootService.runCommandSync(
+                "if [ -d $escaped ]; then echo dir; elif [ -f $escaped ]; then echo file; elif [ -e $escaped ]; then echo other; fi"
+            )
+            if (code != 0) return 0
+            return when (output.trim()) {
+                "dir" -> 2
+                "file" -> 1
+                "other" -> 3
+                else -> 0
+            }
+        }
+
+        val sourceType = localType(sourcePath).let { local ->
+            if (local != 0) local else if (RootService.isRootGranted == true) rootType(sourcePath) else 0
+        }
+        if (sourceType == 0) return@withContext Pair(false, "源文件不存在或不可访问")
+        if (sourceType == 3) return@withContext Pair(false, "源路径不是普通文件或文件夹")
+
+        val destinationType = localType(destinationDirectory).let { local ->
+            if (local != 0) local else if (RootService.isRootGranted == true) rootType(destinationDirectory) else 0
+        }
+        if (destinationType != 2) return@withContext Pair(false, "目标路径不是文件夹或不可访问")
+
+        val destinationPath = if (destinationNormalized == "/") "/$sourceName" else "$destinationNormalized/$sourceName"
+        fun destExists(): Boolean =
+            localType(destinationPath) != 0 ||
+                (RootService.isRootGranted == true && rootType(destinationPath) != 0)
+
+        fun renamedDestPath(): String {
+            val dot = sourceName.lastIndexOf('.')
+            val newName = if (dot > 0) "${sourceName.substring(0, dot)}_new${sourceName.substring(dot)}" else "${sourceName}_new"
+            return if (destinationNormalized == "/") "/$newName" else "$destinationNormalized/$newName"
+        }
+
+        val occupied = destExists()
+        if (occupied) {
+            when (onConflict) {
+                MoveDestinationConflict.OVERWRITE -> {
+                    val destType = localType(destinationPath).let {
+                        if (it == 0 && RootService.isRootGranted == true) rootType(destinationPath) else it
+                    }
+                    if (destType == 2 && !delete(destinationPath).first) {
+                        return@withContext Pair(false, "无法覆盖目标同名目录")
+                    }
+                }
+                MoveDestinationConflict.RENAME -> {
+                    if (localType(renamedDestPath()) != 0 ||
+                        (RootService.isRootGranted == true && rootType(renamedDestPath()) != 0)
+                    ) {
+                        return@withContext Pair(false, "自动改名后的目标也已存在")
+                    }
+                }
+                MoveDestinationConflict.SKIP ->
+                    return@withContext Pair(false, "目标文件夹中已存在同名项目（跳过）")
+            }
+        }
+        val finalPath = if (occupied && onConflict == MoveDestinationConflict.RENAME) renamedDestPath() else destinationPath
+
+        // 先尝试 app 域直拷（源可读时最省）
+        runCatching {
+            if (sourceType == 2) {
+                source.copyRecursively(File(finalPath), overwrite = true)
+            } else {
+                source.copyTo(File(finalPath), overwrite = true)
+            }
+            if (localType(finalPath) != 0) return@withContext true to "已复制到 $finalPath"
+        }
+
+        if (RootService.isRootGranted == true) {
+            val escapedSource = RootService.escapeShellArg(sourcePath)
+            val escapedDest = RootService.escapeShellArg(finalPath)
+            val cmd = if (sourceType == 2) "cp -a $escapedSource $escapedDest" else "cp -p $escapedSource $escapedDest"
+            val (code, output) = RootService.runCommandSync("$cmd && test -e $escapedDest")
+            if (code == 0) return@withContext true to "已复制到 $finalPath"
+            if (output.isNotBlank()) return@withContext Pair(false, "复制失败: ${output.trim()}")
+        }
+        Pair(false, "复制失败")
+    }
+
+    /**
      * 探测目标目录中是否已存在与源同名的项目（供 UI 在移动前弹出冲突决策）。
      */
     suspend fun moveDestinationCollides(sourcePath: String, destinationDirectory: String): Boolean = withContext(Dispatchers.IO) {

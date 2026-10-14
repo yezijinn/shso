@@ -41,10 +41,12 @@ fun SettingsPermissionsGroup(
     backgroundStart: Boolean,
     root: Boolean?,
     install: Boolean,
+    appList: Boolean,
     onRequestStorage: () -> Unit,
     onRequestBattery: () -> Unit,
     onRequestBackground: () -> Unit,
     onRequestInstall: () -> Unit,
+    onRequestAppList: () -> Unit,
 ) {
     val context = LocalContext.current
 
@@ -88,6 +90,14 @@ fun SettingsPermissionsGroup(
         }
     } }
 
+    val onAppList = androidx.compose.runtime.remember<() -> Unit>(appList) { {
+        if (appList) {
+            Toast.makeText(context, "已可获取应用列表", Toast.LENGTH_SHORT).show()
+        } else {
+            onRequestAppList()
+        }
+    } }
+
     AuroraArrowPreference(
         title = "存储空间",
         summary = "允许读取外部存储,所有文件访问权限",
@@ -112,6 +122,12 @@ fun SettingsPermissionsGroup(
         statusSwitch = root == true,
         statusSwitchEnabled = root != null,
         onClick = onRoot
+    )
+    AuroraArrowPreference(
+        title = "获取应用列表",
+        summary = "读取已安装应用（提取安装包、打开方式等）",
+        statusSwitch = appList,
+        onClick = onAppList
     )
     AuroraArrowPreference(
         title = "安装应用",
@@ -244,6 +260,22 @@ internal object SettingsPermissionIntents {
             } catch (_: Exception) {
                 Toast.makeText(context, "无法打开安装未知应用设置", Toast.LENGTH_SHORT).show()
             }
+        }
+    }
+
+    /**
+     * 打开应用详情页，「获取应用列表」在部分 ROM 归入应用权限，用户可在此放行。
+     * QUERY_ALL_PACKAGES 为普通权限（安装即授予），不能运行时申请，故只能引导到系统页面。
+     */
+    fun openAppListSettings(context: android.content.Context) {
+        try {
+            context.startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = "package:${context.packageName}".toUri()
+                }
+            )
+        } catch (_: Exception) {
+            Toast.makeText(context, "无法打开应用详情设置页面", Toast.LENGTH_SHORT).show()
         }
     }
 }

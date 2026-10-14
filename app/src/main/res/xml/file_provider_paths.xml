@@ -7,4 +7,7 @@
          content:// URI。按最小权限移除；按整棵 cache 暴露同样不可取（会让应用私有的其它缓存文件
          也可被外部按 URI 读取）。 -->
     <cache-path name="cache" path="install-confirm/" />
+    <!-- 「打开方式」共享副本：目标文件（可能位于 /data/adb 等受保护路径）先复制到该目录，
+         再以 content:// 交给外部应用。仅暴露此子目录，其余缓存不外露。 -->
+    <cache-path name="openwith" path="open-with/" />
 </paths>
