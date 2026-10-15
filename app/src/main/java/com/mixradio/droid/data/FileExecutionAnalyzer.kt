@@ -38,15 +38,15 @@ suspend fun analyzeExecution(item: FileItem): ExecutionInfo = withContext(Dispat
         detectContentViaRoot(item.path, item.extension)
     }
 
-    val sha = computeSha256(item.path, file, readable)
-
+    // SHA-256 一律由 InstallConfirmDialog 用暂存副本（computeSha256Strict）填充，
+    // 避免对 root-only 大文件走 su sha256sum 卡至超时；此处给占位，弹窗随后覆盖。
     ExecutionInfo(
         name = item.name,
         path = item.path,
         typeLabel = typeLabel,
         sizeLabel = item.formattedSize,
         modifiedLabel = item.formattedDate.ifEmpty { "—" },
-        sha256 = sha,
+        sha256 = "",
         // 执行一律走 RootService（su -c），无论当前是否已授权，结果都以 Root 权限运行
         rootLabel = "是（将以 Root 权限执行）",
         contentLabel = contentLabel
@@ -165,30 +165,6 @@ private fun detectContentViaRoot(path: String, ext: String): Pair<String, String
         classifyFileTypeLine(line, ext)
     } catch (_: Exception) {
         fallback
-    }
-}
-
-/** SHA-256：本地可读直接算；超大文件（>50MB）跳过；否则经 su sha256sum 计算。 */
-private fun computeSha256(path: String, file: File, readable: Boolean): String {
-    val limit = 50L * 1024 * 1024
-    return try {
-        if (readable && file.length() <= limit) {
-            val md = MessageDigest.getInstance("SHA-256")
-            file.inputStream().use { fis ->
-                val buf = ByteArray(8192)
-                var n: Int
-                while (fis.read(buf).also { n = it } != -1) md.update(buf, 0, n)
-            }
-            md.digest().joinToString("") { "%02X".format(it) }
-        } else if (readable) {
-            "文件过大 (>50MB) 未计算"
-        } else {
-            val (_, out) = RootService.runCommandSync("sha256sum " + RootService.escapeShellArg(path))
-            val match = Regex("""^\s*([0-9a-fA-F]{64})""").find(out)
-            match?.groupValues?.get(1)?.uppercase(Locale.ROOT) ?: "计算失败（无 Root 或无法读取）"
-        }
-    } catch (e: Exception) {
-        "计算失败：${e.message?.take(40) ?: "未知错误"}"
     }
 }
 
