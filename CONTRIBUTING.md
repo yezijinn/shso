@@ -1,5 +1,3 @@
-> 语言 / Language: [English](CONTRIBUTING.en.md)
-
 # shso — 开发约定
 
 Android ROOT 环境下的图形化脚本与原生程序执行工具。Kotlin + AndroidX Compose

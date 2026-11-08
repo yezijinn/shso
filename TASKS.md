@@ -18,7 +18,7 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步；最新 tag `20261014` → `796de4c`（2026-10-14 发版提交），其后 HEAD `41b78e3`（A150）只在 `main`；`20261013` 与 `b3d7739` 见 § A149 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 725 tests / 0 failures / 0 errors / 1 skipped（A151 `testDebugUnitTest`，XML 汇总与源码 `@Test` 计数一致） |
+| 单元测试 | 717 tests / 0 failures / 0 errors / 1 skipped（A151 `testDebugUnitTest`，XML 汇总与源码 `@Test` 计数一致） |
 | lint | 0 errors（A151 `lintRelease` BUILD SUCCESSFUL） |
 | release 体积 | **33,438,105 字节**（约 33.4 MB，十进制），sha256 `418FBF2E6DD49651CA613F5D3CF5E050A03C266A0A0059A991D84FF8DBE362C1`；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
 | 执行环境 | **全量内置**（A151）：`assets/env.bin` VERSION 6 携带完整 aarch64 工具链 —— bash / busybox（358 applet）/ curl / GNU 与 coreutils / git（客户端）/ python3 / openssl / ssh / rsync，首次启动解压到私有目录；归档内 `bin/sh` 不由 busybox 提供（busybox sh applet 直跑会 SIGSEGV，applets 亦不含 sh），前缀缺 sh 时由 `TermuxPrefix` 建链指向 `/system/bin/sh`，真机已验证；Termux 前缀符号链接避免 `LD_LIBRARY_PATH` 污染；`GIT_PAGER=cat` 规避未内置分页器导致的 `fatal: unable to execute pager`；可下载扩展包已删除，不再有「按设计缺失」的工具 |
@@ -68,7 +68,7 @@
 - [x] **失效项归档**：SEC-003（linkName 越界）、EDGE-004（冷启动
       抢跑 su）、CONSIST-040（ready 短路致库不进前缀）三条随 EnvPack 删除全部不适用，
       相关引用已从代码与文档清理。
-- [x] **旧编号记录清理**：两份旧编号台账删除，剩余引用改指 `BUG.md` / `TASKS.md` 的现存结论。
+- [x] **旧编号记录清理**：两份旧编号台账删除，剩余引用改指 `TASKS.md` 的现存结论。
 - [x] **258 结论订正**：原判「旧 ID 全仓无定义」不成立 —— 旧编号在历史台账中均有已修记录；
       真实问题是同一缺陷两套编号并行、无迁移注记，即「引用未统一」。相关改动（只引现行
       `BUG-*` ID）保留不动。
@@ -77,7 +77,7 @@
       现常量为 `"6"`、体积红线 20 MB / 60 MB、注释现值 29.1 MB，
       与 `EmbeddedEnv.ENV_VERSION = "6"` 三处一致（构建实跑见下项，已通过）。
 - [x] **构建与真机复测**：`testDebugUnitTest` / `lintRelease` / `assembleRelease` /
-      `verifyReleasePayload` 四项 BUILD SUCCESSFUL（725 tests / 0 failures / 0 errors /
+      `verifyReleasePayload` 四项 BUILD SUCCESSFUL（717 tests / 0 failures / 0 errors /
       1 skipped；lint 0 errors；verify 输出「内置环境完整」），APK 33,438,105 字节（约 33.4 MB）/ sha256
       `418FBF2E6DD49651CA613F5D3CF5E050A03C266A0A0059A991D84FF8DBE362C1`；
       仅授权设备 127.0.0.1:16384（Redmi K70 / 23113RKC6C）`adb install` 成功，MainActivity 前台稳定；首解后
@@ -115,74 +115,31 @@
       全通、Python 3.14.6（sqlite3/ssl/email/asyncio）正常、解压后 77 MB 且无 `env.old` 残留，
       日志无 FATAL EXCEPTION / CANNOT LINK / SIGSEGV。
 
+- [x] **死代码清理**：删除执行反馈遗留的 `ExecutionFeedback` / `formatElapsed` 与其单测（功能已移除，
+      仅测试引用）、`FilePage` 中未被调用的 `ListScrollBar` 组件；单测数 725 → 717，
+      构建与真机执行复验通过。
+
 - [x] **文档收敛**：写作与命名规范合并为 `docs/规范.md`；在线编译并入 `docs/PROJECT.md`；
-      `大文件只读方案`、`B站专栏`、两份 archive 归档删除；`BUG.md` 只留开放项与判定口径，
-      `TASKS.md` 只留现行状态与最近三轮，合计由约 1.06 MB 降至约 40 KB。
+      `大文件只读方案`、`B站专栏`、两份 archive 归档删除；缺陷与任务记录合并为一份，
+      只留现行状态与最近三轮，合计由约 1.06 MB 降至约 40 KB。
 
-### A150. 死状态清理、章程引据收口与执行矩阵真机复核（2026-10-15）
+### A150. 死状态清理、引用收口与执行矩阵复核（2026-10-15）
 
-历史台账登记 5 条（254~258），其中 254（主线程冷启动同步 su）与 256（弹窗路径对原件算
-SHA-256 被丢弃）已由 `41b78e3` 当日修复关闭。剩余两条纯清理项处置如下，并对「脚本执行
-完整性」这一最高优先级目标做端到端复测。
+- 删除 `lastExitCode` 死状态（UI 从不展示），发布循环前注释改为描述实际影响。
+- 缺陷编号曾新旧两套并行且无迁移记注，统一为只引现行 `BUG-*`；测试探针变量 `EXIT_RELAY`
+  不再当作生产不变量。
+- 真机执行矩阵（root / Android 10）：`tests/suite.sh` 经应用入口 pass=35 fail=1，
+  失败项 `xz_roundtrip` 因 busybox 的 xz 仅支持解压，判为兼容性观察项；`read` 交互、
+  终端命令链、工具在场 7 项均通过。
+- 构建与装机：690 tests / 0 failures / 1 skipped；lint 0 errors；产物 9,407,253 字节；
+  装机后 `versionCode=20261015`，崩溃缓冲为空。
 
-- [x] **BUG-LOGIC-257（P3）`lastExitCode` 零读取死状态**：全树 grep 仅 1 处声明 + 8 处赋值
-      + 1 处注释引用，UI 从不展示退出码；`RootService` 发布循环前的注释（`lastExitCode` 旁，
-      现行 `RootService.kt:1374-1375`）仍以「退出码永不显示」
-      描述影响、暗示存在消费点。删除符号本体与全部赋值，注释订正为「发布循环不停 /
-      isTaskRunning 不复位」；catch 分支顺带补 `stopBatchFlushLoop` + flush（原先只写死状态，
-      行为等价且更完整）。`TASKS.md` 旧段落同步订正。
-- [x] **BUG-CONSIST-258（P3）章程幽灵引据**：三份章程成对引用旧/新 ID
-      （旧编号；章程原文见历史审计记录），旧 ID 在历史台账中确有已修条目、与现行 ID
-      记录同一批修复（A151 复核订正：原「全仓无定义」判断有误，实为编号未收口）；且 `EXIT_RELAY` 系
-      A111 真机测试脚本的探针变量（uid 2000 侧退出码 7 透传 setsid 链），非生产符号，章程却
-      把它当生产不变量写。三份统一改为只引现行 `BUG-*` ID，退出码中继改述为
-      `process.exitValue` / `waitFor` 链，与 `RootService.kt:384` KDoc 一致。
-      章程侧三处引用经复核为正确，不改。
-- [x] **P0 疑云证伪（执行引擎无回归）**：终端输入的命令一度全部报
-      `/system/bin/sh: <cmd>: inaccessible or not found`（rc=127），按 P0 立案排查。
-      三步取证后判定为**取证工具缺陷**：① 落盘诊断显示应用下发的命令串与预期逐字节一致；
-      ② 同串经 `execv`/`su -c` 在设备上 rc=0；③ `adb input text 'echo\ X'` 的反斜杠被 mksh
-      解释为词内转义，`echo\ X` 成为单个词，127 是 shell 的正确行为。键入不含反斜杠的
-      `curl --version` 后 curl 真实执行并输出诊断。执行引擎无回归，未立案。
-- [x] **真机执行矩阵验收（root，PACM00 / Android 10）**：`tests/suite.sh` 经应用「立即执行」
-      入口跑完 **pass=35 fail=1**（shell 直跑同脚本 pass=24 fail=12 —— 差 11 项全由应用侧
-      PATH / 证书 / TMPDIR 注入补齐：bash/curl 在场、PATH 含 env/bin、bash 数组/关联数组/
-      进程替换/heredoc、zip 回环、busybox sha256、bash shebang 两种写法）。唯一失败
-      `xz_roundtrip`：内置 busybox 的 xz applet 仅支持解压（`Usage: xz -d [-cfk]`，无压缩入口），
-      而应用自身 `.xz` 解压走 Java tukaani-xz 库不经 shell，压缩型脚本属扩展环境包范畴 ——
-      判 COMPAT/BY_DESIGN 观察项（A151 注：扩展包已下线、工具链全量内置，本判据仍成立，
-      仅「扩展包范畴」一说失效）。另验 read 交互（smoke.sh 输出 SMOKE_OK + 退出码行 +
-      状态回「待命中」）、终端命令链（curl 实跑输出诊断）、`HAVE` 工具 7 项。
-- [x] **构建与装机**：`testDebugUnitTest` 690 tests / 0 failures / 1 skipped；
-      `assembleRelease` + `verifyReleasePayload` 通过；`lintRelease` 0 errors；
-      产物 9407253 字节 / sha256 `DC3DD465295F3DDC0DEC9E861A43C1935BE1628C20EDD41875DFABD31804DFA9`；
-      `adb install -r` 成功，`versionCode=20261015` / `versionName=Jinn`，冷启动
-      `mResumedActivity` 为本应用 MainActivity，crash buffer 无记录。
+### A149. 更新日志分类归一、措辞整理与覆盖式发版（2026-10-13）
 
-### A149. 更新日志分类归一、文档净化与全量重编译覆盖发版（2026-10-13）
-
-背景：按「日期版本号 + 六类分组（新增 / 变更 / 弃用 / 移除 / 修复 / 安全，同日固定顺序）」的
-更新日志约定复查全仓对外文档，并按净化口径清理过程性措辞；随后对发布产物做一次全量
-重编译与覆盖式发版核对（无代码变更）。
-
-- [x] **更新日志.md**：头部格式约定补入「安全」；6 个日期节的分类顺序归一
-      （20261011 / 20261003 / 20261002 / 20260928 / 20260922 / 20260913，其中 20261003 两段
-      「修复」合并，写后复检零违例）；一处指向已废弃协作文件的引用改为实际挂链对象
-      「CONTRIBUTING」。
-- [x] **README.md**：Release 徽章日期 `20260929` → `20261013`；文档表「变更清单」括注补齐
-      「新增 / 变更 / 修复 / 优化 / 安全」；能力行安装包体积 2.76MB → 2.77MB。对外文档禁用词
-      全量扫描，命中均为子串误报（如 `fillMaxWidth` 内含 `llM`），无需改写。
-- [x] **单测门禁与全量编译**：`gradlew testDebugUnitTest --rerun`（659 tests / 0 failures /
-      1 skipped）→ `python build_apk.py --clean` 通过（V2+V3 签名、arm64-v8a、
-      `verifyReleasePayload` 通过），产物 2908309 字节 /
-      sha256 `E17346CEE4832977E0081B75689CCD2788BB2F18C8D3A09AD8339A766CFABC98`。
-- [x] **真机冒烟（root，Android 10）**：`adb install -r` 成功；`am start` 后 `MainActivity`
-      前台挂起，`versionCode=20261013` / `versionName=Jinn`，logcat 无 FATAL。
-- [x] **发版（覆盖式，无代码变更）**：tag `20261013` 仍指 `b3d7739`；双端 Release 正文收紧为
-      167 字符（20261013 段落精简版，符合发版说明 ≤200 字），资产覆盖上传
-      （GitHub `--clobber` / Gitee 删附件 3376305 后新传 3377634），回下载核算双端 sha256
-      与本地一致（`E17346CE…`）；双端 Release 目标提交仍为 `b3d7739`。
-
+- `更新日志.md` 分类顺序归一（新增 / 变更 / 弃用 / 移除 / 修复 / 安全），悬空引用改指真实文件。
+- `README.md` 徽章、体积与能力措辞同步；对外文档禁用词扫描无实命中。
+- 全量重编译 659 tests / 0 failures / 1 skipped，`build_apk.py --clean` 通过，产物 2,908,309 字节。
+- 覆盖式发版：tag `20261013` 仍指 `b3d7739`，双端正文 167 字符、资产覆盖上传，回下载 sha256 一致。
 
 > 更早轮次（A1~A148）的逐条过程与证据见 git 历史，本文只保留现行状态与最近三轮。
 ## 已定结论（避免反复推翻）
@@ -274,6 +231,35 @@ adb -s $DEVICE shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.
 | 任务 1~A148 的全量过程与证据 | git 历史（`TASKS.md` 旧版本） |
 
 ---
+
+## 缺陷台账
+
+只记现行开放项与已判定口径；已修条目的证据由 git 历史与 `更新日志.md` 承担。
+
+﻿### 开放项
+
+| ID | 级别 | 维度 | 位置 | 症状 | 现状与原因 |
+|---|---|---|---|---|---|
+| BUG-PERF-030 | P2 | 性能 | `ui/pages/TerminalPage.kt`、`AnsiParser` | 语法解析在非终端页仍全额发生；裁剪后仍走全量重解析 | 离屏终端页已停止解析（A106）。剩余分支为架构取舍：终端输出需完整保留供「复制输出」，改为增量重解析会引入跨块状态机，收益不抵复杂度，A109 裁定维持 |
+| BUG-COMPAT-184 | P2 | 兼容 | `RootService.wrapWithPty` | busybox `script` 伪终端下，`select` 菜单与 `while-read` 循环构造会卡住 | 2026-10-14 真机复核：非交互 13 类（自解压 / 联网 curl / openssl / git / python / ssh / trap / 大输出 / bash shebang / 后台 wait / 环境变量 / ELF .so）全 PASS，`read` 密码范式 PASS，纯管道正常。仅 `select` / `while-read` 构造受限，属 busybox PTY 行规局限，不自研 PTY |
+
+### 已判定口径
+
+| 现象 | 判定 | 依据 |
+|---|---|---|
+| 双列各挂一个列举 effect，冷启动并发两次 su | 设计如此 | 单次列举已降至 0.1s 量级，su 往返约 20ms；右列懒加载会先呈现空列，代价更大 |
+| 无 root 时功能退化（写系统目录、静默安装等） | 设计如此 | 无 root 时回退 `java.io.File` 与系统安装器，入口按实测可写性禁用 |
+| 动作按钮无 `contentDescription` | 不修 | 按钮为文字字符而非 Icon，补标签属全局 UX 改造 |
+| 更新检查两源行为不一致（Gitee 优先 / GitHub 备选） | 设计如此 | 按统一约定实现；Gitee 取 `/api/v5/.../tags`，GitHub 取 `/tags` HTML |
+| 超 32MB 文本禁编辑、只读态禁搜索 | 设计如此 | 全文入 Sora 内存会 OOM；只读态未载入全文，查找入口已提示先「编辑」 |
+| 语法包不入 APK、需用户导入 | 设计如此 | 体积优先；`verifyReleasePayload` 强制拦截随包语法定义 |
+| 解压符号链接 TOCTOU | 已知残留 | 已做词法剥离 + `canonicalFile` 二次校验；彻底消除需无跟随写入原语，超出当前实现 |
+| ZIP 中央目录整体加载 | 已知可接受 | 条目数在加载前用尾部 EOCD 零分配探针取得，内存峰值受条目预算约束 |
+| 多文件分享只消费首项 | 已知限制 | 系统 `ACTION_SEND` 单 `EXTRA_STREAM` 语义；批量走 `ACTION_SEND_MULTIPLE` 未开放 |
+| 执行链路不写横幅 / 审计日志 | 设计如此 | 守卫与审计子系统已整体移除，命令直通执行 |
+
+新增条目按一行表格登记：`BUG-<维度>-<序号>` / P0~P3 / 维度 / 文件与符号 / 用户可感知现象 / 一句话结论。
+新增前先查重，重复即合并；修复后移出开放项，明细写 `更新日志.md`。
 
 ## 相关文档
 

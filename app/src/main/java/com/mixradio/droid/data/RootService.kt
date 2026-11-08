@@ -1950,38 +1950,3 @@ internal fun buildProcessGroupKillCommand(signal: Int, pgid: Int, myPid: Int): S
         "kill -$signal -- -\$P"
 }
 
-/**
- * 执行反馈的纯判定逻辑（便于 JVM 单测；`RootService` 是 object，单测无法加载）。
- */
-internal object ExecutionFeedback {
-
-    /**
-     * 一段输出是否算「有内容」。
-     *
-     * 纯空白（空行、缩进、裸换行）不携带任何信息，不能据此认为脚本真的干了活 ——
-     * 否则静默脚本会被误判成有输出、收尾时又不给提示，用户依旧一头雾水。
-     */
-    fun hasVisibleOutput(text: String): Boolean = text.any { !it.isWhitespace() }
-
-    /** 分块读取时任一块有内容即整体算有输出（读取循环按块累积，不能只看最后一块）。 */
-    fun anyChunkHasContent(chunks: List<String>): Boolean = chunks.any { hasVisibleOutput(it) }
-}
-
-/**
- * 把耗时格式化为人类可读文本（**顶层纯函数**，便于 JVM 单测）。
- *
- * 结束行带耗时是「这脚本到底跑了没有」最直接的证据：静默脚本的输出区本来一片空白，
- * 有了耗时与退出码，至少能确认它真的执行过且执行了多久。
- */
-internal fun formatElapsed(ms: Long): String = when {
-    ms < 0 -> "0秒"
-    ms < 1000 -> "${ms}毫秒"
-    ms < 60_000 -> String.format(java.util.Locale.ROOT, "%.1f秒", ms / 1000.0)
-    else -> {
-        val totalSec = ms / 1000
-        val min = totalSec / 60
-        val sec = totalSec % 60
-        val hour = min / 60
-        if (hour > 0) "${hour}小时${min % 60}分${sec}秒" else "${min}分${sec}秒"
-    }
-}

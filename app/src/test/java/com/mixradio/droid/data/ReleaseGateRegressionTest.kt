@@ -129,7 +129,7 @@ class ReleaseGateRegressionTest {
             .find(catalog)?.groupValues?.get(1)
         assertTrue("版本目录必须声明 androidx-compose-bom", version != null)
 
-        listOf("../CONTRIBUTING.md", "../CONTRIBUTING.en.md", "../docs/PROJECT.md").forEach { path ->
+        listOf("../CONTRIBUTING.md", "../docs/PROJECT.md").forEach { path ->
             val text = File(path).readText()
             val declared = Regex("compose-bom\\s+([0-9][0-9.]*)")
                 .findAll(text).map { it.groupValues[1] }.toList()
