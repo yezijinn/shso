@@ -114,9 +114,9 @@ Aurora 令牌（`AuroraTokens` / `AuroraGlass` / `AuroraComponents`），
 | 改执行引擎 / ROOT 逻辑 | `docs/PROJECT.md` § RootService（执行引擎） |
 | 改 UI 页面 / 组件 | `docs/PROJECT.md` § UI 形态（改动必守） |
 | 文档该改哪一份 | `docs/PROJECT.md` § 文档维护约定 |
-| 文档写作规范与格式 | `docs/文档规范.md` |
-| 命名与代码风格 | `docs/命名规范.md` |
-| 在线编译 / 自定义包名问题 | `docs/在线编译.md` |
+| 文档写作规范与格式 | `docs/规范.md` § 一 |
+| 命名与代码风格 | `docs/规范.md` § 三 |
+| 在线编译 / 自定义包名问题 | `docs/PROJECT.md` § 在线编译 |
 | 发布 / 打标签 | 标签必须为纯数字 `YYYYMMDD`（禁 `v` 前缀）；双远端 `origin`(GitHub) + `gitee` 同名 tag / Release；规则见 `README.md` § 版本规则 |
 | 加依赖 / 改版本 | `gradle/libs.versions.toml`（禁止在模块内硬编码版本；例外：`app/build.gradle.kts` 中已有的 3 个直引坐标） |
 

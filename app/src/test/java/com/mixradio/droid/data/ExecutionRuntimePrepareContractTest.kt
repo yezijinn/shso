@@ -55,4 +55,22 @@ class ExecutionRuntimePrepareContractTest {
         val count = Regex("""prepareExecutionRuntime\(\)""").findAll(rootService).count()
         assertTrue("执行前须调用；实际调用 $count 次", count >= 2)
     }
+
+    /**
+     * 首跑竞态不得永久消耗 CAS：调用方先于后台解压运行时 certFile 为空，
+     * 此时若把标记永久置 true，证书与 TMPDIR 兜底再也不会补。
+     */
+    @Test
+    fun prepareMustNotLoseRetryWhenEnvNotReady() {
+        val start = rootService.indexOf("private fun prepareExecutionRuntime()")
+        assertTrue("找不到准备入口", start > 0)
+        val body = rootService.substring(start, minOf(rootService.length, start + 4_000))
+        // 先 ensure 内置环境，再取证书路径：并发首跑自然等到解压完成
+        val ensureAt = body.indexOf("EmbeddedEnv.ensure")
+        val certAt = body.indexOf("EmbeddedEnv.certFile")
+        assertTrue("取证书前必须先确保内置环境就绪", ensureAt in 0 until certAt)
+        assertTrue("未跑到 su 时必须归还标记，留给下次执行补跑", body.contains("preparedRuntime.set(false)"))
+        // 归还标记不能退化成每条命令都发 su：必须由「是否跑到 su」的返回值决定
+        assertTrue("需按是否真正执行过 su 决定是否归还", body.contains("prepareExecutionRuntimeNow()"))
+    }
 }

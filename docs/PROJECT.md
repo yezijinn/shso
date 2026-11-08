@@ -4,9 +4,7 @@
 
 - 功能与用法：[`README.md`](../README.md)
 - 变更记录：[`更新日志.md`](../更新日志.md)
-- 编写规范：[`docs/文档规范.md`](文档规范.md)
-- 命名规范：[`docs/命名规范.md`](命名规范.md)
-- 在线编译：`docs/在线编译.md`
+- 写作与命名规范：[`docs/规范.md`](规范.md)
 
 任务看板 `TASKS*.md` 属过程记录，不在本文档维护范围。
 
@@ -35,7 +33,7 @@ shso-main/
 ├── README.md                     # 用户向文档
 ├── 更新日志.md                   # 变更清单（README 不内嵌）
 ├── docs/PROJECT.md               # 本文档
-├── docs/在线编译.md               # GitHub Actions 自定义包名编译
+├── docs/规范.md                  # 文档写作与代码命名规范
 ├── settings.gradle.kts           # 自包含工程：仅 include(":app")
 ├── gradle/libs.versions.toml     # 唯一版本管理入口
 ├── gradle.properties             # 8G JVM、R8 gradual、Dokka V2 实验开关
@@ -133,7 +131,7 @@ stat 失败或路径非法时禁止动作分派。
    交互输入会被全程拒绝（输入发了却推不动脚本）。
    **执行环境必须补 PATH**（`pathExportFragment`）：Android 原生不带 `bash` / `curl` / `wget` /
    `xz` / `zip`，联网型与加密型脚本会按 127 退出且日志只剩一行 `not found`。
-   随包内置的 POSIX 环境（`EmbeddedEnv`，见下方「内置 POSIX 环境」）**前置**到 PATH，
+   随包内置的 POSIX 环境（`EmbeddedEnv`，见 § 外部依赖的内置环境条目）**前置**到 PATH，
    再追加已安装的工具目录（Termux、Magisk 内置工具箱等）到**末尾**；
    追加前须逐个 `[ -d ]` 判定存在性——不存在却整体拼进去会留下空条目，
    而空条目等价于当前目录，命令解析会先在当前目录找可执行文件，属注入面。
@@ -246,8 +244,20 @@ OBB 落位要跨「拷贝 → 原子改名 → APK 安装 → 失败回滚」多
 
 超过 `ChunkedFileReader.MAX_LOAD_BYTES`（32MB）的文件无法全文入内存，退回只读浏览，
 由稀疏行索引接管渲染，内存为 O(行数 / 1024) + O(窗口)，与文件体积无关。
-关键类型：`data/SparseLineIndex.kt`（`SparseLineIndex` / `ChunkedDocument` / `IndexedLineProvider`）、
-`data/FileSizeClass.kt`。方案与阈值见 [`docs/大文件只读方案.md`](大文件只读方案.md)。
+
+| 组件 | 位置 | 职责 |
+|---|---|---|
+| `SparseLineIndex` | `data/SparseLineIndex.kt` | 单次扫描，仅存每 1024 行的字节起始偏移 |
+| `ChunkedDocument` | 同上 | 256KB 块、16 块 LRU，缓存**原始字节** |
+| `IndexedLineProvider` | 同上 | 从最近索引点按块读取、整段解码后切出目标行 |
+| `FileSizeClass` | `data/FileSizeClass.kt` | 体积四档（5 / 50 / 200 MB），HUGE 只读并禁编辑 |
+| `IndexedChunkedView` | `ui/components/TextEditorDialog.kt` | `LazyColumn` 虚拟滚动 |
+
+- 缓存原始字节而非解码字符串：UTF-16 跨块不会截断多字节字符。
+- 缓存用 `LinkedHashMap(accessOrder)` 而非 `android.util.LruCache`，保持 JVM 单测可跑。
+- 索引用稀疏 1024 行粒度：全量 `LongArray` 按 8B/行，1 亿行需约 800MB。
+- 只读态未载入全文，查找入口先拦截并提示先「编辑」；不实现分块搜索与分块回写。
+- 真机：49.59 MiB / 500002 行打开即「已索引 · 只读·虚拟滚动」，EOF 处 Java Heap 17.3MB。
 
 ## 外部依赖
 
@@ -263,9 +273,10 @@ UI 层全部使用 `androidx.compose.material3` + `material-icons-extended`，
   `kotlin-stdlib-jdk8` 等），`settings.gradle.kts` 因此把 Google 官方 Maven Central 镜像
   （`maven-central.storage-download.googleapis.com`）作为通用回退源（内容与中央仓库一致）。
 - 产物体积：编辑器引擎使 release APK 由约 1.84MB 增至约 3.40MB（2026-09-12 实测，含 oniguruma 编码表；剔除 `tables/**` 后回落至 2.09MB）；**语法包不入 APK**。
-- 内置 POSIX 环境：`assets/env.bin`（gzip tar，约 6.5MB 压缩后）含 bash 5.3 / busybox /
-  curl / zip 及其依赖库与根证书，首次使用时由 `data/EmbeddedEnv.kt` 解压到 `filesDir/env`。
-  **资产名不得带 `.gz` 后缀** —— 打包工具会把 `.gz` 资产自动解压并改名，按名读取会失败。
+- 内置完整环境：`assets/env.bin`（gzip tar，约 35.2MB 压缩后）含 bash 5.3 / busybox /
+  curl / zip / GNU 工具 / git / python3 / openssl / ssh / rsync 及其依赖库与根证书，
+  首次启动由 `data/EmbeddedEnv.kt` 解压到 `filesDir/env`，无需下载或手动安装。
+  资产内容本身是 gzip tar；`app/build.gradle.kts` 对 `.bin` 关闭二次压缩，避免 APK 再次 deflate。
   解压后 `bin/` 下为每个 busybox applet 建符号链接，`RootService` 执行前把 `bin` 前置到
   `PATH` 并导出证书变量；`TermuxPrefix` 在 Termux 前缀下建指向内置各库的符号链接，
   内置二进制靠自身 RUNPATH 解析依赖（**不再导出 `LD_LIBRARY_PATH`**，导出会被所有子进程继承、
@@ -273,15 +284,10 @@ UI 层全部使用 `androidx.compose.material3` + `material-icons-extended`，
   落点为应用私有目录：Android 10+ 的 W^X 只限制应用 uid 执行数据目录文件，
   而脚本一律经 `su` 以 root 执行，root 不受该限制（真机实测）。
   内置内容变化时须同步提升 `EmbeddedEnv.ENV_VERSION`（不一致即整体重建）。
-  安装包由约 2.8MB 增至约 9.4MB。
-- 可选「扩展环境包」（`data/EnvPack.kt`，**终端设置入口**）：GNU 工具 / git / python /
-  openssl / rsync / ssh 等体积大（约 35MB），不随 APK 分发，按需从发布附件下载后解压到
-  `filesDir/envpack`。下载源 **Gitee 优先、GitHub 备选**；**资产挂在非发布标签 `envpack-1` 下**
-  —— 非发布 tag 不得用纯数字，否则会与发布版本混淆、并被更新检查误读成发布日期。
-  下载后先校验 SHA-256 再解压；已存在内容版本标记不一致时整体重建。
-  安装后由 `RootService.pathExportFragment()` 接入 PATH / 库前缀，并设置
-  `PREFIX` / `PYTHONHOME` / `GIT_EXEC_PATH` / `GIT_TEMPLATE_DIR` / `OPENSSL_CONF` /
-  `SSL_CERT_FILE`（Termux 系二进制按固定前缀找资源，必须用变量重定向到包根）。
+  安装包约 39.8MB（含完整内置环境，env.bin 不再二次压缩）。
+  归档剔除运行期无用内容（`share/misc/magic.mgc`、`bin/scalar`、Python 构建配置、pkgconfig/aclocal），
+  由 `tools/build_env_bin.py` 的剔除清单保证可复现。
+- 无下载 / 安装 / 删除步骤：环境随 APK 内置，启动即在后台解压，终端设置内不设相关入口。
 
 ## 构建与产物
 
@@ -304,6 +310,18 @@ python build_apk.py             # Windows 脚本（含 --skip-check）
 - 产物体积参考（20260922，2.14MB）：dex 1.84MB（87%）/ `resources.arsc` 109KB /
   `res/` 86KB / `assets/` 72KB / `lib/` 10KB。继续瘦身只能从 dex 入手。
   `build_apk.py` 每次构建后打印该构成，并校验 ABI 白名单。
+
+## 在线编译（自定义包名）
+
+无需本地 SDK：Fork 仓库 → `Actions` → 「在线编译 APK（自定义包名）」→ `Run workflow` →
+填 `package_name` → 完成后在任务页下载 artifact（zip），解压得 `app-release.apk`。
+
+- 包名规则：全小写、至少两段、每段字母开头；拒绝 `com.mixradio.*`。
+- 只覆盖 `applicationId`，`namespace` 与源码包名不变，`R` / `BuildConfig` 与 `import` 不受影响；
+  FileProvider authority 与跳设置页 Uri 均基于 `${applicationId}` / `context.packageName` 自动跟随。
+- 签名：仓库未配置 `KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` 两个 Secret 时用调试密钥签名，
+  与官方包签名不同，覆盖安装会被系统拒绝（需先卸载）。
+- 产物保留 30 天；首次运行需在 Actions 页确认启用工作流。
 
 ## 许可证
 
@@ -447,7 +465,7 @@ LGPL-2.1 允许以 GPL-3.0 组合）：
 
 ## 文档维护约定
 
-各文档职责边界以 `docs/文档规范.md` § 文档职责边界 为准，本文件不重复。统一遵循该规范：结论先行、表格优先、无 emoji 与过程叙事、数据标注出处。
+各文档职责边界见 [`docs/规范.md`](规范.md) § 二，此处不重复。统一遵循该规范：结论先行、表格优先、无 emoji 与过程叙事、数据标注出处。
 
 - 改动功能后的同步顺序：代码 → 单测 → `更新日志.md` → `README.md` / 本文件
   （仅当影响用法或约束时）→ 提交。

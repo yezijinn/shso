@@ -24,6 +24,7 @@ gradlew    text eol=lf
 # 二进制：禁止任何转换
 *.png      binary
 *.webp     binary
+*.bin      binary
 *.jpg      binary
 *.jpeg     binary
 *.jar      binary

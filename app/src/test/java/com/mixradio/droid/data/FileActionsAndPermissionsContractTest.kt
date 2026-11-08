@@ -20,12 +20,15 @@ class FileActionsAndPermissionsContractTest {
     private val filePage = src("ui/pages/FilePage.kt")
     private val manifest = java.io.File("src/main/AndroidManifest.xml").readText()
 
-    /** 扩展环境包入口已从设置页移入终端设置。 */
+    /** 环境一律来自内置 EmbeddedEnv，不再提供可下载的扩展环境包入口。 */
     @Test
-    fun envPackEntryMovedToTerminalSettings() {
-        assertFalse("设置页不应再有环境包入口", settingsPage.contains("EnvPack"))
-        assertTrue("终端设置需含环境包入口", terminalPage.contains("扩展环境包"))
-        assertTrue("终端设置需调用下载", terminalPage.contains("EnvPack.startDownload("))
+    fun envComesFromEmbeddedEnvOnly() {
+        assertFalse("设置页不应有环境包入口", settingsPage.contains("EnvPack"))
+        assertFalse("终端设置不应再有环境包入口", terminalPage.contains("EnvPack"))
+        assertTrue(
+            "内置环境需在启动时准备",
+            src("ShsoApplication.kt").contains("EmbeddedEnv.ensure(")
+        )
     }
 
     /** 「获取应用列表」权限行位于「安装应用」上一行。 */

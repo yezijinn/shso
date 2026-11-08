@@ -10,6 +10,27 @@ package com.mixradio.droid.data.security
 internal object ShellEscapes {
 
     /**
+     * Shell 参数白名单：仅字母/数字/下划线/点/斜杠/连字符/冒号可原样拼接。
+     *
+     * 这些字符在 shell 中都是字面量，含其一的路径（`/data/data/<pkg>/files/env/bin`）
+     * 不必加引号；一旦出现空格、`$`、`*`、`;` 等字符就必须走单引号分支，
+     * 否则会被拆词或解释成通配、变量、命令分隔符 —— 命令注入的入口。
+     */
+    private val SAFE_ARG = Regex("^[a-zA-Z0-9_./\\-:]+$")
+
+    /**
+     * 生成可直接拼入 shell 命令的参数。
+     *
+     * 白名单命中即原样返回；否则整体用单引号包裹，内部单引号按 `'\''` 收尾重开，
+     * 这是 POSIX shell 中唯一无歧义的转义方式（反斜杠在单引号内不生效）。
+     * 空串一律返回 `''`：不引用的空参数会**消失**，导致后续参数整体左移。
+     */
+    fun escapeShellArg(arg: String): String {
+        if (arg.isEmpty()) return "''"
+        return if (SAFE_ARG.matches(arg)) arg else "'" + arg.replace("'", "'\\''") + "'"
+    }
+
+    /**
      * 生成 `pkill -f` 可用的**字面量**匹配串。
      *
      * `escapeShellArg` 只防 shell 解释，对 `pkill -f` 无效 —— 后者把参数当**扩展正则**（ERE）

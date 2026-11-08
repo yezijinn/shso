@@ -240,10 +240,12 @@ fun MainContainer(
         coroutineScope.launch {
             try {
                 val granted = PermissionChecker.hasRootAccess()
-                lastRootProbeAt = System.currentTimeMillis()
+                // 先落状态，再**仅 granted 时**记时间戳：失败/超时同样返回 false，
+                // 若照此刷新节流窗口，用户授权后回到前台会被 1.5s 节流直接吞掉。
                 rootGranted = granted
-                // 同步给 RootService：终端引擎横幅的「当前权限」行据此输出 ROOT/无ROOT 真实文案
+                // 同步给 RootService：只更新全局 ROOT 状态，终端不再输出权限横幅
                 RootService.reportRootState(granted)
+                if (granted) lastRootProbeAt = System.currentTimeMillis()
             } finally {
                 rootProbeInFlight = false
             }

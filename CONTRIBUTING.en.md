@@ -117,12 +117,13 @@ the FilePage list wrapper's `weight(1f).fillMaxWidth().padding(bottom = 56.dp)`.
 | Features and user-facing docs | `README.md` (no changelog; changes go to `更新日志.md`) |
 | Record a change | `更新日志.md` (one line each: added / fixed / improved) |
 | Tech stack, structure, architecture | `docs/PROJECT.md` |
-| Change execution engine / ROOT logic | `docs/PROJECT.md` § RootService |
-| Change UI pages / components | `docs/PROJECT.md` § UI Form |
-| Which document to update | `docs/PROJECT.md` § Documentation Conventions |
-| Documentation writing rules | `docs/文档规范.md` |
-| Naming and code style | `docs/命名规范.md` |
-| Online build / custom package name | `docs/在线编译.md` |
+| Change execution engine / ROOT logic | `docs/PROJECT.md` § RootService（执行引擎） |
+| Change UI pages / components | `docs/PROJECT.md` § UI 形态（改动必守） |
+| Which document to update | `docs/PROJECT.md` § 文档维护约定 |
+| Documentation writing rules | `docs/规范.md` § 一 |
+| Naming and code style | `docs/规范.md` § 三 |
+| Online build / custom package name | `docs/PROJECT.md` § 在线编译 |
+| Release / tagging | Plain numeric `YYYYMMDD` tag (no `v`); same tag and Release on `origin`(GitHub) + `gitee`; rules in `README.md` § 版本规则 |
 | Add dependency / change version | `gradle/libs.versions.toml` (no hardcoded versions in modules; exception: the 3 direct coordinates already in `app/build.gradle.kts`) |
 
 ## Common Commands

@@ -156,6 +156,29 @@ class ReleaseGateRegressionTest {
         return keys
     }
 
+    /** 发布红线不得空跑：产物缺失必须中断构建，而不是打印「跳过」后成功。 */
+    @Test
+    fun `发布校验缺产物必须失败`() {
+        val text = File("../app/build.gradle.kts").readText()
+        val start = text.indexOf("val verifyReleasePayload")
+        assertTrue("找不到 verifyReleasePayload 任务", start > 0)
+        val body = text.substring(start, minOf(text.length, start + 3_000))
+        assertTrue("独立校验必须先生成当前 release APK", body.contains("dependsOn(\"packageRelease\")"))
+        assertFalse("产物缺失不得打印跳过后成功", body.contains("未找到 release APK，跳过"))
+        assertTrue("缺产物必须抛 GradleException 中断构建", body.contains("throw GradleException"))
+        assertTrue("必须以真实 release 产物为输入", body.contains("resolveReleaseApk()"))
+    }
+
+    /** 内置环境是 gzip 流，aapt2 再 deflate 只是白做一次压缩/解压。 */
+    @Test
+    fun `内置环境资产不得二次压缩`() {
+        val text = File("../app/build.gradle.kts").readText()
+        assertTrue("需声明 androidResources.noCompress", text.contains("androidResources {"))
+        val block = text.substringAfter("androidResources {").substringBefore("}")
+        assertTrue("需对 .bin 关闭压缩", block.contains("noCompress"))
+        assertTrue("需覆盖 bin 扩展名", block.contains("\"bin\""))
+    }
+
     @Test
     fun `OBB 锁脚本不得按固定字段号解析 procfs stat`() {
         val script = ApkInstaller.buildObbLockAcquireScript("'/x.lock'", "'t|1|2|3'", "'/x.q'")

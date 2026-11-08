@@ -208,7 +208,7 @@ fun SettingsPage(
         scope.launch {
             val granted = PermissionChecker.hasRootAccess()
             permissionRootGranted = granted
-            // 回写 RootService：统一 ROOT 状态来源，保证终端 banner 与设置页开关一致
+            // 回写 RootService：统一 ROOT 状态来源，供探测缓存与 root 路径清理读取
             RootService.reportRootState(granted)
         }
         permissionInstallGranted = context.packageManager.canRequestPackageInstalls()

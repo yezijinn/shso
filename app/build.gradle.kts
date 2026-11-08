@@ -1,9 +1,13 @@
 // Copyright 2026, shso contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import java.io.BufferedInputStream
+import java.io.IOException
+import java.io.InputStream
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.zip.GZIPInputStream
 import java.util.zip.ZipFile
 
 plugins {
@@ -172,6 +176,17 @@ android {
             )
         }
     }
+
+    /**
+     * 资产压缩策略：`assets/env.bin` 本身就是 gzip 流，aapt2 再 deflate 一遍只会让首次
+     * 解压多做一次无谓的 inflate。`noCompress` 按**扩展名**生效，`.bin` 一律原样入库。
+     *
+     * 资产名与压缩开关无关：本工程没有「`.gz` 资产会被打包工具解压改名」这类配置，
+     * 读取路径始终是 `assets/env.bin`（见 EmbeddedEnv.ASSET）。
+     */
+    androidResources {
+        noCompress += "bin"
+    }
 }
 
 dependencies {
@@ -220,24 +235,129 @@ dependencies {
  * 约定：**APK 不携带任何语法高亮包**——语法由用户在线下载后导入（见 ui/components/SyntaxPackDialog.kt），
  * 编译产物中只允许存在配色主题。同时禁止把无关的数据表打进包（jcodings 的 648 个编码转换表曾贡献 1.24MB）。
  * 体积不做上限限制（约定：编译 APK 不限制体积）。
+ * 内置 POSIX 环境（assets/env.bin）另有存在性、必需条目、完整工具链、版本与体积下限校验，见下方常量。
  */
 val releaseApkFile = layout.buildDirectory.file("outputs/apk/release/app-release.apk")
 
+/**
+ * 定位约定的 release APK。
+ *
+ * 只认 Gradle 当前变体的标准产物路径，避免把目录中的历史 APK 当作本次结果。
+ * 返回 null 表示产物不存在 —— 调用方必须中断构建，不得静默跳过校验。
+ */
+fun resolveReleaseApk(): File? = releaseApkFile.get().asFile.takeIf(File::isFile)
+
+/**
+ * 内置 POSIX 环境归档（assets/env.bin，gzip tar）的发布红线，解压侧见 EmbeddedEnv.kt。
+ *
+ * 拦的是「静默出包」：资产被删、被占位文件顶替、被 aapt 排除规则命中，
+ * 或重新打包时漏了二进制/证书，都必须在编译期失败。
+ *
+ * envArchiveVersion 需与归档内 VERSION 条目一致（当前为 "5"）。它和
+ * EmbeddedEnv.ENV_VERSION（当前 "5"，仅作设备解压标记，不读归档内 VERSION）相互独立：
+ * 归档重新生成时改这里，解压标记变更时改那边。两者必须同步递增，
+ * 否则旧设备不会重解压，遗留的 bin/sh -> busybox 链接继续把脚本带崩。
+ */
+val envAssetPath = "assets/env.bin"
+val envArchiveVersion = "5"
+/** APK 内体积下限（现值约 35.2 MB）：低于 20 MB 只可能是占位或误裁。 */
+val envAssetMinBytes = 20_000_000L
+/** 解包后正文总量下限（现值约 84 MB）：防止只剩空条目的归档。 */
+val envContentMinBytes = 60_000_000L
+
+/**
+ * 完整内置工具链的必需条目名（缺一即编译失败）。
+ *
+ * 名称按归档内实际路径写全（均在 bin/ 下）。其中 bin/python3 之类是软链，
+ * 正文长度恒为 0，因此这一组只校验名称存在，不套用普通文件的大小下限。
+ */
+val envRequiredToolchainNames = setOf(
+    "bin/git", "bin/python3", "bin/openssl", "bin/ssh", "bin/rsync",
+    "bin/sed", "bin/tar", "bin/wget", "bin/grep", "bin/find",
+)
+
+/** tar 条目：名称、正文字节数、正文前 64 字节（读 VERSION 这类小文件足够）、是否软链。 */
+data class TarEntryHead(val name: String, val size: Long, val head: ByteArray, val symlink: Boolean = false)
+
+/** 跳过指定字节数，数据不足即视为归档截断。 */
+fun skipFully(input: InputStream, count: Long) {
+    var left = count
+    val buf = ByteArray(8192)
+    while (left > 0) {
+        val n = input.read(buf, 0, minOf(left, buf.size.toLong()).toInt())
+        if (n < 0) throw IOException("tar 数据块不足，归档被截断")
+        left -= n
+    }
+}
+
+/**
+ * 流式读取 gzip tar 的条目头，不把 13 MB 正文整体载入内存。
+ *
+ * 只处理 ustar 与 GNU 长文件名（类型 'L'）：本归档条目名均为短路径，无 pax 头。
+ * 软链（类型 '2'）也计入名称集合：其正文长度为 0，链接目标在头部 linkname 字段，
+ * 这里只需名称即可判定工具链是否齐全。
+ */
+fun readTarEntries(raw: InputStream): List<TarEntryHead> {
+    val out = ArrayList<TarEntryHead>()
+    GZIPInputStream(BufferedInputStream(raw)).use { gz ->
+        val header = ByteArray(512)
+        var pendingName: String? = null
+        while (true) {
+            val read = gz.readNBytes(header, 0, 512)
+            if (read == 0) break
+            if (read < 512) throw IOException("tar 头部不足 512 字节，归档被截断")
+            if (header.all { it == 0.toByte() }) break // 全零块 = 归档结束
+            val rawName = header.copyOfRange(0, 100).toString(Charsets.UTF_8).substringBefore('\u0000')
+            val size = header.copyOfRange(124, 136).toString(Charsets.US_ASCII)
+                .trim('\u0000', ' ').toLongOrNull(8) ?: 0L
+            val type = header[156].toInt().toChar()
+            val padded = (size + 511) / 512 * 512
+            if (type == 'L') {
+                val body = ByteArray(size.toInt())
+                var filled = 0
+                while (filled < body.size) {
+                    val n = gz.read(body, filled, body.size - filled)
+                    if (n < 0) throw IOException("tar 长文件名正文被截断")
+                    filled += n
+                }
+                pendingName = body.toString(Charsets.UTF_8).substringBefore('\u0000')
+                skipFully(gz, padded - size)
+                continue
+            }
+            val name = (pendingName ?: rawName).removePrefix("./")
+            pendingName = null
+            val head = ByteArray(minOf(size, 64L).toInt())
+            var filled = 0
+            while (filled < head.size) {
+                val n = gz.read(head, filled, head.size - filled)
+                if (n < 0) throw IOException("tar 正文被截断：$name")
+                filled += n
+            }
+            // 普通文件、目录与软链都纳入名称集合；软链正文长度为 0，
+            // 体积统计只认普通文件，名称集合用于工具链存在性校验。
+            val isSymlink = type == '2'
+            if (type == '0' || type == '\u0000' || type == '5' || isSymlink) {
+                out += TarEntryHead(name, size, head, isSymlink)
+            }
+            skipFully(gz, padded - head.size)
+        }
+    }
+    return out
+}
+
 val verifyReleasePayload = tasks.register("verifyReleasePayload") {
     group = "verification"
-    description = "校验 release APK 不携带语法包/无关数据表"
+    description = "校验 release APK 不携带语法包/无关数据表，且内置 POSIX 环境与工具链完整"
+    dependsOn("packageRelease")
     // 校验逻辑在 doLast 里读取 APK 内容，闭包会引用脚本对象，故声明为配置缓存不兼容
     // （仅在执行 assembleRelease 时触发，代价是本次构建不复用配置缓存）。
     notCompatibleWithConfigurationCache("校验任务读取 APK 内容，闭包引用脚本对象")
-    // 不在 inputs 声明 APK 文件：声明为输入会在 APK 尚未产出时（如 Android Studio “Generate Signed APK”
-    // 向导指定了自定义输出路径，或生成的是 AAB 而非 APK）触发 “Input file does not exist” 校验失败。
-    // 文件缺失由 doLast 内的存在性检查兜底（打印“跳过”后 return）。
+    // APK 由 packageRelease 先生成；校验只认标准路径，避免读取目录中的历史产物。
     doLast {
-        val apk = releaseApkFile.get().asFile
-        if (!apk.exists()) {
-            println("verifyReleasePayload: 未找到 release APK，跳过")
-            return@doLast
-        }
+        val apk = resolveReleaseApk() ?: throw GradleException(
+            "verifyReleasePayload: 未找到 release APK（${releaseApkFile.get().asFile}）。" +
+                "该校验只认真实产物，不会以「跳过」收尾；请先执行 :app:assembleRelease 再重试。"
+        )
         val problems = mutableListOf<String>()
         // 运行时必需、不得被任何排除规则波及的 assets（Sora 主题由 SoraMonarchGrammars 常量引用）。
         val requiredAssets = setOf("assets/sora-themes/shso-dark.json")
@@ -263,15 +383,76 @@ val verifyReleasePayload = tasks.register("verifyReleasePayload") {
                     if ("\"tokenizer\"" in text) problems += "内嵌语法定义（含 tokenizer 字段）：$name"
                 }
             }
+            // 内置 POSIX 环境：存在性、体积红线、必需条目、工具链、归档版本
+            val envEntry = zip.getEntry(envAssetPath)
+            if (envEntry == null) {
+                problems += "缺少内置 POSIX 环境：$envAssetPath"
+            } else if (envEntry.size < envAssetMinBytes) {
+                problems += "内置环境体积异常：${envEntry.size} 字节 < 红线 $envAssetMinBytes（疑似占位或误裁）"
+            } else {
+                val envEntries = runCatching { readTarEntries(zip.getInputStream(envEntry)) }.getOrElse {
+                    problems += "内置环境无法解析（gzip/tar 损坏）：${it.message}"
+                    emptyList()
+                }
+                if (envEntries.isNotEmpty()) {
+                    // 软链长度为 0，不参与体积与大小下限统计；名称集合另行保留全部条目。
+                    val sizes = envEntries.filterNot { it.symlink }.associate { it.name to it.size }
+                    val names = envEntries.mapTo(mutableSetOf<String>()) { it.name }
+                    val total = envEntries.sumOf { it.size }
+                    if (total < envContentMinBytes) {
+                        problems += "内置环境解包体积异常：$total 字节 < 红线 $envContentMinBytes（疑似缺二进制）"
+                    }
+                    // 运行时被 EmbeddedEnv / 脚本直接引用的二进制与证书
+                    mapOf(
+                        "bin/bash" to 400_000L,
+                        "bin/busybox" to 800_000L,
+                        "bin/curl" to 100_000L,
+                        "bin/zip" to 50_000L,
+                        "etc/cert.pem" to 50_000L,
+                        "share/applets.txt" to 500L,
+                        "lib/libcrypto.so.3" to 1_000_000L,
+                        "lib/libcurl.so" to 300_000L,
+                        "lib/libssl.so.3" to 300_000L,
+                    ).forEach { (name, min) ->
+                        val size = sizes[name]
+                        when {
+                            size == null && name !in names -> problems += "内置环境缺少必需条目：$name"
+                            // 名称在但只以软链/目录形态存在，体积下限无从满足，同样视为异常。
+                            size == null -> problems += "内置环境条目不是普通文件：$name（无法满足体积下限 $min）"
+                            size < min -> problems += "内置环境条目异常：$name 仅 $size 字节（期望 ≥ $min）"
+                        }
+                    }
+                    // 完整工具链存在性：软链条目只校验名称（bin/python3 等），
+                    // 普通文件的大小下限由上一节负责。
+                    (envRequiredToolchainNames - names).sorted().forEach {
+                        problems += "内置环境缺少工具链条目：$it"
+                    }
+                    val libCount = envEntries.count { it.name.startsWith("lib/") && ".so" in it.name }
+                    if (libCount < 10) problems += "内置环境共享库过少：$libCount 个（期望 ≥ 10）"
+                    val version = envEntries.firstOrNull { it.name == "VERSION" }?.head
+                        ?.toString(Charsets.UTF_8)?.substringBefore('\n')?.trim()
+                    when {
+                        version.isNullOrEmpty() -> problems += "内置环境缺少 VERSION 条目或内容为空"
+                        !version.matches(Regex("\\d+")) -> problems += "内置环境 VERSION 非法：$version"
+                        version != envArchiveVersion ->
+                            problems += "内置环境版本不符：归档 $version，期望 $envArchiveVersion（归档重打包后同步 envArchiveVersion）"
+                    }
+                    // sh 必须来自 TermuxPrefix 的 /system/bin/sh：归档里出现 bin/sh（无论实体还是
+                    // 指向 busybox 的软链）都会让 #!/.../bin/sh 脚本直接 SIGSEGV。
+                    if ("bin/sh" in names) {
+                        problems += "内置环境不得包含 bin/sh（应交由 TermuxPrefix 链 /system/bin/sh）"
+                    }
+                }
+            }
         }
         (requiredAssets - seenAssets).forEach { problems += "缺少必需资源：$it" }
         if (problems.isNotEmpty()) {
             throw GradleException(
                 "release 产物校验失败：\n" + problems.joinToString("\n") { "  - $it" } +
-                    "\n语法高亮包必须由用户导入，不得随 APK 分发。"
+                    "\n语法高亮包必须由用户导入，不得随 APK 分发；内置环境必须完整随包。"
             )
         }
-        println("verifyReleasePayload: 通过（无语法包、无数据表）")
+        println("verifyReleasePayload: 通过（无语法包、无数据表、内置环境完整）")
     }
 }
 

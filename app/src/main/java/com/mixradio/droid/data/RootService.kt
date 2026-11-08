@@ -24,7 +24,6 @@ import java.io.OutputStreamWriter
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
-import java.util.regex.Pattern
 
 object RootService {
 
@@ -33,12 +32,17 @@ object RootService {
     var appSettings: AppSettings? = null
 
     /**
-     * Shell 参数白名单：仅含字母/数字/下划线/点/斜杠/连字符/冒号时视为安全，
-     * 可直接原样拼接；含空格或其他字符一律用单引号包裹（内部单引号按 `'\''` 转义），
+     * 生成可安全拼入 shell 命令的参数（防注入）。
+     *
+     * 白名单：仅含字母/数字/下划线/点/斜杠/连字符/冒号时视为安全，可直接原样拼接；
+     * 含空格或其他字符一律用单引号包裹（内部单引号按 `'\''` 转义），
      * 杜绝注入，也保证含空格路径不被拆词。
-     * 参考 MP-Manager RootManager.escapeShellArg 的 SAFE_ARG 方案。
+     *
+     * 实现只有一份，在 [com.mixradio.droid.data.security.ShellEscapes]：纯字符串函数，
+     * 不该挂在带 Android 静态初始化的本类上。此处仅保留 `RootService.` 调用前缀。
      */
-    private val SAFE_ARG = Pattern.compile("^[a-zA-Z0-9_./\\-:]+$")
+    fun escapeShellArg(arg: String): String =
+        com.mixradio.droid.data.security.ShellEscapes.escapeShellArg(arg)
 
     /** root 侧读脚本头部的等待上界：超出即认为 su 卡住，放弃本次判定。 */
     private const val ROOT_HEAD_TIMEOUT_MS = 5_000L
@@ -48,12 +52,6 @@ object RootService {
 
     /** 直接子进程退出后，继续等待后代补输出的宽限轮数（约 300ms）。 */
     private const val OUTPUT_IDLE_POLLS_AFTER_EXIT = 6
-
-    /** 生成可安全拼入 shell 命令的参数（防注入）。 */
-    fun escapeShellArg(arg: String): String {
-        if (arg.isEmpty()) return "''"
-        return if (SAFE_ARG.matcher(arg).matches()) arg else "'" + arg.replace("'", "'\\''") + "'"
-    }
 
     /**
      * 生成 `pkill -f` 可用的**字面量**匹配串。
@@ -190,9 +188,6 @@ object RootService {
     var outputLog by mutableStateOf("")
         private set
 
-    var lastExitCode by mutableStateOf<Int?>(null)
-        private set
-
     var processPid by mutableIntStateOf(0)
         private set
 
@@ -307,7 +302,12 @@ object RootService {
     @Volatile
     private var activeFlushLoop: Job? = null
 
-    /** 运行期基础设施（证书软链 / 临时目录）是否已尝试补齐，保证只跑一次。 */
+    /**
+     * 运行期基础设施（证书软链 / 临时目录）的**派出标记**，保证同一时刻只有一次准备任务。
+     *
+     * 置 true 仅表示「已派发」，不代表已完成：未跑到 su 时（内置环境尚在解压、证书路径未就绪）
+     * 会归还为 false，由下一次执行入口补跑，见 [prepareExecutionRuntime]。
+     */
     private val preparedRuntime = AtomicBoolean(false)
 
     /**
@@ -358,16 +358,24 @@ object RootService {
      */
     private fun pathExportFragment(): String {
         // 内置环境：首次调用做解压（缓存），失败时返回空串，行为退回旧版系统 PATH。
-        val embedded = runCatching {
-            EmbeddedEnv.ensure(com.mixradio.droid.ShsoApplication.appContext)
+        // 三步各自兜底：解压失败不该连带跳过 PATH 注入，前缀建立失败也不该丢掉内置 PATH。
+        val ctx = com.mixradio.droid.ShsoApplication.appContext
+        val envReady = runCatching { EmbeddedEnv.ensure(ctx) }.getOrDefault(false)
+        if (envReady) {
             // 建立 Termux 前缀库符号链接：让内置动态二进制无需 LD_LIBRARY_PATH 即可解析依赖，
             // 避免该变量污染子进程、顶替系统库（见 TermuxPrefix 注释）。
-            TermuxPrefix.ensure(com.mixradio.droid.ShsoApplication.appContext)
-            EmbeddedEnv.exportFragment()
-        }.getOrDefault("")
-        // 扩展环境包（可选下载）：已安装时把其目录前置到 PATH，GNU 工具与 git/python 优先命中。
-        val pack = runCatching { EnvPack.exportFragment() }.getOrDefault("")
-        return embedded + pack +
+            val prefixReady = runCatching { TermuxPrefix.ensure(ctx) }.getOrDefault(false)
+            // 建链失败不阻断执行（仍有 LD_LIBRARY_PATH 兜底），但必须留痕：
+            // 静默失败会让前缀长期不可用，表现为「内置工具跑不起来」却查无实据。
+            if (!prefixReady) {
+                android.util.Log.w(
+                    "shso-env",
+                    "Termux 前缀未就绪 root=${isRootGranted} bin=${EmbeddedEnv.binDir} lib=${EmbeddedEnv.libDir}"
+                )
+            }
+        }
+        val embedded = if (envReady) runCatching { EmbeddedEnv.exportFragment() }.getOrDefault("") else ""
+        return embedded +
             "for d in \$(echo " + escapeShellArg(EXTRA_PATH_DIRS) + " | tr ':' ' '); do " +
             "[ -d \"\$d\" ] && PATH=\"\$PATH:\$d\"; done; export PATH; "
     }
@@ -416,28 +424,50 @@ object RootService {
      * 3) `/tmp` 在 Android 上通常不存在（根文件系统只读，无法创建），部分脚本
      *    （`curl -o /tmp/...`、`mktemp /tmp/...`）会因此失败。尽力把 `/tmp` 软链到
      *    `/data/local/tmp`；只读根文件系统创建失败则跳过（属已知系统限制，非应用缺陷）。
+     *
+     * ## 不丢重试机会
+     *
+     * [preparedRuntime] 只表示「补跑任务已派出」，不代表 root 侧建链已完成。首跑时内置环境
+     * 仍在后台解压（[EmbeddedEnv.ensure] 未返回），`certFile` 为空 —— 若此时就把标记永久
+     * 置 true，证书与 TMPDIR 兜底将永不再补，联网脚本全程 cert 77。故：
+     *  - 协程内先 `ensure` 内置环境，成功后再取证书路径（并发首跑时自然等到解压完成）；
+     *  - 未真正跑到 su（环境未就绪 / 证书缺失）时归还标记，下一次执行入口重新补跑；
+     *  - 真正跑过一次 su 后标记保持 true（su 退出码不作为重试依据），幂等且不会每条命令都发 su。
      */
     private fun prepareExecutionRuntime() {
         if (!preparedRuntime.compareAndSet(false, true)) return
         scope.launch(Dispatchers.IO) {
-            runCatching {
-                val certSrc = EmbeddedEnv.certFile ?: return@launch
-                val certDstDir = "/data/data/com.termux/files/usr/etc/tls"
-                val certDst = "$certDstDir/cert.pem"
-                val cmd = StringBuilder()
-                // 证书路径软链：源存在才建，已存在且指向相同则跳过（避免重复 ln 报错）。
-                cmd.append("[ -e ").append(escapeShellArg(certSrc)).append(" ] && ")
-                cmd.append("mkdir -p ").append(escapeShellArg(certDstDir)).append(" 2>/dev/null; ")
-                cmd.append("[ -e ").append(escapeShellArg(certDst)).append(" ] || ")
-                cmd.append("ln -s ").append(escapeShellArg(certSrc)).append(' ')
-                    .append(escapeShellArg(certDst)).append(" 2>/dev/null; ")
-                // 根 TMPDIR 兜底
-                cmd.append("mkdir -p ").append(escapeShellArg(ROOT_TMP_DIR)).append(" 2>/dev/null; ")
-                // /tmp 尽力软链（只读根文件系统会失败，忽略）
-                cmd.append("[ -e /tmp ] || ln -s ").append(escapeShellArg(ROOT_TMP_DIR)).append(" /tmp 2>/dev/null; ")
-                runCommandSync(cmd.toString(), timeoutMs = 15_000L, reclaimOnTimeout = false)
-            }
+            val done = runCatching { prepareExecutionRuntimeNow() }.getOrDefault(false)
+            // 未完成（本次没跑到 su）→ 归还标记，让后续执行入口补跑；已跑到 su 则永久保持。
+            if (!done) preparedRuntime.set(false)
         }
+    }
+
+    /**
+     * 真正执行 root 侧建链。返回 false 表示「本次未跑到 su」，调用方据此归还 [preparedRuntime]。
+     *
+     * 已跑到 su 即返回 true，不看退出码：su 被拒绝时反复重试只会每条命令弹一次授权框。
+     */
+    private fun prepareExecutionRuntimeNow(): Boolean {
+        val ctx = com.mixradio.droid.ShsoApplication.appContext
+        // 首跑竞态：环境可能仍在后台解压，ensure 返回后 certFile 才可用。
+        if (!runCatching { EmbeddedEnv.ensure(ctx) }.getOrDefault(false)) return false
+        val certSrc = EmbeddedEnv.certFile ?: return false
+        val certDstDir = "/data/data/com.termux/files/usr/etc/tls"
+        val certDst = "$certDstDir/cert.pem"
+        val cmd = StringBuilder()
+        // 证书路径软链：源存在才建，已存在且指向相同则跳过（避免重复 ln 报错）。
+        cmd.append("[ -e ").append(escapeShellArg(certSrc)).append(" ] && ")
+        cmd.append("mkdir -p ").append(escapeShellArg(certDstDir)).append(" 2>/dev/null; ")
+        cmd.append("[ -e ").append(escapeShellArg(certDst)).append(" ] || ")
+        cmd.append("ln -s ").append(escapeShellArg(certSrc)).append(' ')
+            .append(escapeShellArg(certDst)).append(" 2>/dev/null; ")
+        // 根 TMPDIR 兜底
+        cmd.append("mkdir -p ").append(escapeShellArg(ROOT_TMP_DIR)).append(" 2>/dev/null; ")
+        // /tmp 尽力软链（只读根文件系统会失败，忽略）
+        cmd.append("[ -e /tmp ] || ln -s ").append(escapeShellArg(ROOT_TMP_DIR)).append(" /tmp 2>/dev/null; ")
+        runCommandSync(cmd.toString(), timeoutMs = 15_000L, reclaimOnTimeout = false)
+        return true
     }
 
     /** 启动清扫只在本进程首次初始化时执行一次。 */
@@ -573,9 +603,15 @@ object RootService {
     /**
      * 上报最新 ROOT 探测结果（MainActivity 每次前台 ON_RESUME 探测后调用）。
      *
-     * 横幅已移除，这里只更新权限状态本身。
+     * 终端不输出权限横幅，这里只记录权限状态本身。
+     *
+     * @param authoritative 是否来自权威探测（带超时的 `id` 判定，见 [checkRoot]）。
+     *   `false` 表示前台弱探测：超时、授权窗未回、进程启动失败都会返回 false，
+     *   这种「探测失败」不得把已确认的 true 降级 —— 否则一次忙等就把可用 root 抹成不可用，
+     *   终端门禁与 TermuxPrefix 建链随之永久停摆。
      */
-    fun reportRootState(granted: Boolean) {
+    fun reportRootState(granted: Boolean, authoritative: Boolean = false) {
+        if (!authoritative && !granted && isRootGranted == true) return
         isRootGranted = granted
     }
 
@@ -589,9 +625,9 @@ object RootService {
 
         withContext(Dispatchers.Main) {
             isRootGranted = granted
-            // 若当前输出仍是纯横幅且无任务运行时，原位刷新横幅的 ROOT 权限行，
-            // 保证引擎横幅与本次探测结果一致（与 MainActivity 路径 reportRootState 行为对齐）。
-            reportRootState(granted)
+            // 与 MainActivity 走同一入口：把本次探测结果写回全局状态，
+            // 供缓存判断与 root 路径清理读取。本函数是权威探测（id + 超时），允许降级。
+            reportRootState(granted, authoritative = true)
         }
         granted
     }
@@ -837,7 +873,6 @@ object RootService {
             currentTaskName = displayName
             currentTaskPath = null
             taskStartTime = System.currentTimeMillis()
-            lastExitCode = null
             activeProcess = process
             processWriter = terminalWriter
             processPid = suPid
@@ -914,7 +949,6 @@ object RootService {
                 currentTaskName = null
                 currentTaskPath = null
                 taskStartTime = 0L
-                lastExitCode = exitCode
                 activeProcess = null
                 processWriter = null
                 processPid = 0
@@ -1022,7 +1056,6 @@ object RootService {
         currentTaskName = fileName
         currentTaskPath = filePath
         taskStartTime = System.currentTimeMillis()
-        lastExitCode = null
 
         // 拉起前台保活服务：切到后台后维持进程前台优先级，长脚本/下载/编译可持续运行。
         // 服务自行轮询 isTaskRunning，任务结束（完成/结束/重启）后自动 stopForeground+stopSelf。
@@ -1321,7 +1354,7 @@ object RootService {
                 }
 
                 // 脚本是否产出过内容：静默脚本（只做 rm/touch、无任何 echo）在终端里
-                // 除横幅与退出码外一片空白，用户会以为没执行。收尾时据此补一句说明。
+                // 只留下退出码，用户会以为没执行。收尾时据此补一句说明。
                 //
                 // 读取循环**不做无条件的阻塞读**。native 阻塞读不响应协程取消：当脚本把
                 // stdout 交给后台后代、而该后代逃逸到 init 名下长期持有写端时，read 永不返回
@@ -1370,18 +1403,19 @@ object RootService {
 
                 val exitCode = process.waitFor()
                 HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
-                // 本次执行仍是当前任务（代际判断）才写「退出」文案；被新任务/重启取代后由对方写
+                // 本次执行仍是当前任务（代际判断）才停发布循环；被新任务/重启取代后由对方停。
+                // busybox script 不转发子进程退出码，且本应用不向用户展示退出码，
+                // 故 exitCode 只作调试参考，不写入任何状态。
                 withContext(Dispatchers.Main) {
                     // 必须比 myJob（协程入口处捕获的引用），不能比 coroutineContext[Job]：
                     // 后者在 withContext 块内是 kotlinx 为该次上下文创建的 ScopeCoroutine，
                     // 与 launch 返回并赋给 executionJob 的那个 Job 并非同一对象，
-                    // 恒不相等 —— 于是本块整体被跳过：退出码永不显示、发布循环不停止、
-                    // isTaskRunning 与 lastExitCode 不复位（任务早已结束，UI 却仍显示「运行中」）。
+                    // 恒不相等 —— 于是本块整体被跳过：发布循环不停止、
+                    // isTaskRunning 不复位（任务早已结束，UI 却仍显示「运行中」）。
                     if (executionJob === myJob) {
                         // 先停发布循环并等它把积压刷完
                         HyperCore.stopBatchFlushLoop(fileFlushLoop)
                         HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
-                        lastExitCode = exitCode
                     }
                 }
             } catch (e: Exception) {
@@ -1390,7 +1424,8 @@ object RootService {
                 if (coroutineContext[Job]?.isCancelled != true) {
                     withContext(Dispatchers.Main) {
                         if (executionJob === myJob) {
-                            lastExitCode = -1
+                            HyperCore.stopBatchFlushLoop(fileFlushLoop)
+                            HyperCore.flushBatchQueueImmediate { appendOutputDirect(it) }
                         }
                     }
                 }
@@ -1661,7 +1696,6 @@ object RootService {
                         isTaskRunning = false
                         currentTaskName = null
                         currentTaskPath = null
-                        lastExitCode = 137
                         processPid = 0
                     }
                 }
@@ -1788,7 +1822,7 @@ object RootService {
         // 否则收尾判据退化为「存在任意终端命令」，会误清新命令的状态与发布循环。
         val targetSlot = terminalSlotOwner.get()
 
-        // 无任何活动实体时**只复位横幅，不发信号**。
+        // 无任何活动实体时**只复位状态，不发信号**。
         // `runPgid` 在任务收尾时不清零，因此跑完任意命令后它仍非零；而那个进程组早已回收，
         // 该 pgid 可能已被内核复用给无关进程组，而 `buildProcessGroupKillCommand` 的
         // 「组内有存活成员」校验会被复用组满足 → 以 root 整组 SIGKILL 一个完全无关的进程组。
@@ -1800,10 +1834,9 @@ object RootService {
                 currentTaskName = null
                 currentTaskPath = null
                 taskStartTime = 0L
-                lastExitCode = null
                 processPid = 0
                 // 空闲态点「重启终端」必须有回应：静默返回会让用户以为按钮坏了。
-                // 横幅已移除，这里给一句明确反馈。
+                // 追加一句说明，让用户知道终端无需重启。
                 appendOutputDirect("[shso] 当前没有运行中的进程，终端已是最新状态\n")
             }
             return
@@ -1813,7 +1846,7 @@ object RootService {
             try {
                 targetJob?.cancel()
                 // 与「结束进程」同源：必须先整组回收。只杀 su 本身的话，`sh -c …` 与脚本进程
-                // 会变成 init 名下的孤儿继续跑（重启后横幅已复位、UI 显示待命中，用户以为停了）。
+                // 会变成 init 名下的孤儿继续跑（重启后状态已复位、UI 显示待命中，用户以为停了）。
                 if (targetPgid > 1) {
                     killProcessGroup(9, targetPgid, targetUsesRoot)
                 }
@@ -1835,15 +1868,14 @@ object RootService {
             } catch (_: Exception) {
             } finally {
                 withContext(Dispatchers.Main) {
-                    // 仅当本次仍是当前执行协程时才清理状态并恢复横幅。
+                    // 仅当本次仍是当前执行实体时才清理任务状态。
                     // 走 stillOwnsExecution 而非 `executionJob === targetJob`：后者对终端命令恒真，
-                    // 会在「重启一条命令」时把期间新启动的命令状态误清成「待命中」并覆盖其横幅。
+                    // 会在「重启一条命令」时把期间新启动的命令状态误清成「待命中」。
                     if (stillOwnsExecution(targetJob, targetSlot)) {
                         isTaskRunning = false
                         currentTaskName = null
                         currentTaskPath = null
                         taskStartTime = 0L
-                        lastExitCode = null
                         processPid = 0
                         runPgid = 0
                         execUsesRoot = true
