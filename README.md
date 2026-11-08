@@ -1,6 +1,6 @@
 # shso
 
-[![Release](https://img.shields.io/badge/Release-20261014-00e5ff.svg?style=flat-square)](https://github.com/yezijinn/shso/releases)
+[![Release](https://img.shields.io/badge/Release-20261108-00e5ff.svg?style=flat-square)](https://github.com/yezijinn/shso/releases)
 [![License](https://img.shields.io/badge/License-GPL%20v3-blue.svg?style=flat-square)](LICENSE)
 [![Android](https://img.shields.io/badge/Android-8.0%2B%20%28API%2026%2B%29-3DDC84.svg?style=flat-square&logo=android&logoColor=white)](https://developer.android.com)
 [![ROOT](https://img.shields.io/badge/ROOT-Magisk%20%7C%20KernelSU%20%7C%20APatch-orange.svg?style=flat-square)](https://github.com/topjohnwu/Magisk)
@@ -81,7 +81,7 @@ Android ROOT 环境下的图形化执行工具：运行 `.sh` 脚本与 `.so` / 
 - **执行环境**：内置完整环境（bash 5.3 + busybox 全工具箱 + curl / zip + GNU 工具 / git / python3 / openssl / ssh / rsync + 根证书，随 APK 内置、首次启动解压到私有目录，无需下载）· 脚本经伪终端（PTY）执行以支持交互 · 命令搜索路径前置内置环境
 - **终端**：ANSI 解析(16/256 色·真彩·加粗·退格·行内擦除·OSC 标题与超链接消化)· 长命令运行状态与流式回显· 命令历史(50 条/内存不落盘)· 终端设置· 自动跟随· 日志滑动窗口· 旋转保状态· Toast 统一 SHORT· 重启终端代际清理
 - **安装与解压**：分包与 XAPK 整体安装(写前校验 SHA-256)· 分包名合法性校验· Zip Slip 防护· 解压目标不可写禁用· 14 种压缩格式
-- **工程与性能**：安装包体积约 39.8MB（含内置 POSIX 环境）· R8 keep 收窄· 编译期零警告· 消除 lint Error/告警· 依赖升级· 命名统一· 注释规范化· 文档/命名规范· 历史遗留清理· 编辑历史每文件独立存储
+- **工程与性能**：安装包体积约 33.4MB（含内置 POSIX 环境）· R8 keep 收窄· 编译期零警告· 消除 lint Error/告警· 依赖升级· 命名统一· 注释规范化· 文档/命名规范· 历史遗留清理· 编辑历史每文件独立存储
 - **其他**：文本对比(逐行/重复)· 压缩包解压· 图片浏览与字体预览· 添加到 shso(独立存储/自动删除/自动执行)· 执行引擎(RootService/前台服务)· 设置(权限区/行为开关/关于)· 外部唤起(其他应用「打开方式/分享」直达)
 
 ### 主页

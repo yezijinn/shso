@@ -83,12 +83,12 @@ class EmbeddedEnvContractTest {
     /** 版本号与资产同步：内置内容变化（如不再生成 bin/sh）后版本递增。 */
     @Test
     fun versionMustMatchAsset() {
-        assertTrue("环境版本应为 5", envSrc.contains("ENV_VERSION = \"5\""))
-        assertEquals("归档内 VERSION 必须与 ENV_VERSION 同步", "5", assetMeta().version)
+        assertTrue("环境版本应为 6", envSrc.contains("ENV_VERSION = \"6\""))
+        assertEquals("归档内 VERSION 必须与 ENV_VERSION 同步", "6", assetMeta().version)
         val script = java.io.File("../tools/build_env_bin.py").readText()
         assertTrue(
-            "合并工具的默认版本需同步为 5",
-            script.contains("--version\", default=\"5\"")
+            "合并工具的默认版本需同步为 6",
+            script.contains("--version\", default=\"6\"")
         )
     }
 

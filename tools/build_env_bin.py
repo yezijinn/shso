@@ -60,9 +60,24 @@ REQUIRED = (
 EXCLUDE_NAMES = frozenset({
     "share/misc/magic.mgc",
     "bin/scalar",
+    # git 服务端 / dumb-http 辅助程序：本应用只做客户端，且每个约 2 MB。
+    # 保留 git-remote-http（http/https 传输实际走它）。
+    "libexec/git-core/git-daemon",
+    "libexec/git-core/git-http-backend",
+    "libexec/git-core/git-http-fetch",
+    "libexec/git-core/git-http-push",
+    "libexec/git-core/git-imap-send",
+    # 仅用于本地化消息替换；环境固定 LANG=en_US.UTF-8，缺它不影响输出。
+    "libexec/git-core/git-sh-i18n--envsubst",
+    # 无内置 pip wheel，ensurepip 本就无法引导；pydoc_data 仅 `pydoc` 使用。
+    "lib/python3.14/ensurepip/__init__.py",
+    "lib/python3.14/ensurepip/__main__.py",
+    "lib/python3.14/ensurepip/_uninstall.py",
 })
 EXCLUDE_PREFIXES = (
     "lib/python3.14/config-",
+    "lib/python3.14/pydoc_data/",
+    "lib/python3.14/ensurepip/",
     "share/aclocal/",
     "lib/pkgconfig/",
     "share/pkgconfig/",
@@ -378,7 +393,7 @@ def main(argv=None):
     parser.add_argument("--base", default="app/src/main/assets/env.bin")
     parser.add_argument("--overlay", help="要并入的工具链归档；省略则仅按剔除清单重建（裁剪模式）")
     parser.add_argument("--out", default="app/src/main/assets/env.bin")
-    parser.add_argument("--version", default="5")
+    parser.add_argument("--version", default="6")
     args = parser.parse_args(argv)
 
     if not os.path.isfile(args.base):

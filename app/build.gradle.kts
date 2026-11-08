@@ -253,16 +253,16 @@ fun resolveReleaseApk(): File? = releaseApkFile.get().asFile.takeIf(File::isFile
  * 拦的是「静默出包」：资产被删、被占位文件顶替、被 aapt 排除规则命中，
  * 或重新打包时漏了二进制/证书，都必须在编译期失败。
  *
- * envArchiveVersion 需与归档内 VERSION 条目一致（当前为 "5"）。它和
- * EmbeddedEnv.ENV_VERSION（当前 "5"，仅作设备解压标记，不读归档内 VERSION）相互独立：
+ * envArchiveVersion 需与归档内 VERSION 条目一致（当前为 "6"）。它和
+ * EmbeddedEnv.ENV_VERSION（当前 "6"，仅作设备解压标记，不读归档内 VERSION）相互独立：
  * 归档重新生成时改这里，解压标记变更时改那边。两者必须同步递增，
  * 否则旧设备不会重解压，遗留的 bin/sh -> busybox 链接继续把脚本带崩。
  */
 val envAssetPath = "assets/env.bin"
-val envArchiveVersion = "5"
-/** APK 内体积下限（现值约 35.2 MB）：低于 20 MB 只可能是占位或误裁。 */
+val envArchiveVersion = "6"
+/** APK 内体积下限（现值约 29.1 MB）：低于 20 MB 只可能是占位或误裁。 */
 val envAssetMinBytes = 20_000_000L
-/** 解包后正文总量下限（现值约 84 MB）：防止只剩空条目的归档。 */
+/** 解包后正文总量下限（现值约 71.5 MB）：防止只剩空条目的归档。 */
 val envContentMinBytes = 60_000_000L
 
 /**

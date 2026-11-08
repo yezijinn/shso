@@ -273,8 +273,8 @@ UI 层全部使用 `androidx.compose.material3` + `material-icons-extended`，
   `kotlin-stdlib-jdk8` 等），`settings.gradle.kts` 因此把 Google 官方 Maven Central 镜像
   （`maven-central.storage-download.googleapis.com`）作为通用回退源（内容与中央仓库一致）。
 - 产物体积：编辑器引擎使 release APK 由约 1.84MB 增至约 3.40MB（2026-09-12 实测，含 oniguruma 编码表；剔除 `tables/**` 后回落至 2.09MB）；**语法包不入 APK**。
-- 内置完整环境：`assets/env.bin`（gzip tar，约 35.2MB 压缩后）含 bash 5.3 / busybox /
-  curl / zip / GNU 工具 / git / python3 / openssl / ssh / rsync 及其依赖库与根证书，
+- 内置完整环境：`assets/env.bin`（gzip tar，约 29.1MB 压缩后）含 bash 5.3 / busybox /
+  curl / zip / GNU 工具 / git（客户端）/ python3 / openssl / ssh / rsync 及其依赖库与根证书，
   首次启动由 `data/EmbeddedEnv.kt` 解压到 `filesDir/env`，无需下载或手动安装。
   资产内容本身是 gzip tar；`app/build.gradle.kts` 对 `.bin` 关闭二次压缩，避免 APK 再次 deflate。
   解压后 `bin/` 下为每个 busybox applet 建符号链接，`RootService` 执行前把 `bin` 前置到
@@ -284,9 +284,11 @@ UI 层全部使用 `androidx.compose.material3` + `material-icons-extended`，
   落点为应用私有目录：Android 10+ 的 W^X 只限制应用 uid 执行数据目录文件，
   而脚本一律经 `su` 以 root 执行，root 不受该限制（真机实测）。
   内置内容变化时须同步提升 `EmbeddedEnv.ENV_VERSION`（不一致即整体重建）。
-  安装包约 39.8MB（含完整内置环境，env.bin 不再二次压缩）。
-  归档剔除运行期无用内容（`share/misc/magic.mgc`、`bin/scalar`、Python 构建配置、pkgconfig/aclocal），
-  由 `tools/build_env_bin.py` 的剔除清单保证可复现。
+  安装包约 33.4MB（含完整内置环境，env.bin 不再二次压缩）。
+  归档剔除运行期无用内容（`share/misc/magic.mgc`、`bin/scalar`、Python 构建配置与 `pydoc_data`、
+  pkgconfig/aclocal，以及 git 服务端与 dumb-http 辅助程序 `git-daemon` / `git-http-backend` /
+  `git-http-fetch` / `git-http-push` / `git-imap-send`），由 `tools/build_env_bin.py` 的剔除清单
+  保证可复现；`git-remote-http` 保留，http/https 传输不受影响。
 - 无下载 / 安装 / 删除步骤：环境随 APK 内置，启动即在后台解压，终端设置内不设相关入口。
 
 ## 构建与产物

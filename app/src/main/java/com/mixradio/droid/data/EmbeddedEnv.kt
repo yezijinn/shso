@@ -50,7 +50,7 @@ object EmbeddedEnv {
     private const val STAGING_NAME = "env.tmp"
 
     /** 环境版本。改动内置内容时同步 +1（与归档内 VERSION 一致）。 */
-    private const val ENV_VERSION = "5"
+    private const val ENV_VERSION = "6"
 
     /** busybox applet 清单（归档内 share/applets.txt）。 */
     private const val APPLETS_FILE = "share/applets.txt"
