@@ -96,6 +96,7 @@ import com.mixradio.droid.data.MoveDestinationConflict
 import com.mixradio.droid.data.computeSha256Strict
 import com.mixradio.droid.data.syntax.SyntaxPackTags
 import com.mixradio.droid.data.RootFileManager
+import com.mixradio.droid.data.RootFileManager.BatchDeleteResult
 import com.mixradio.droid.data.RootFileManager.DirectoryListing
 import com.mixradio.droid.data.OpenWith
 import com.mixradio.droid.data.RootService
@@ -121,13 +122,12 @@ import com.mixradio.droid.ui.theme.AuroraTokens
 import com.mixradio.droid.ui.theme.AuroraWindowDialog
 import com.mixradio.droid.ui.theme.auroraTextFieldColors
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -2397,19 +2397,25 @@ fun FilePage(
                             val targets = batchPaths
                             batchScope.launch {
                                 var ok = 0
-                                val failures = ArrayList<String>()
-                                var interrupted = false
+                                var failures: List<String> = emptyList()
                                 try {
-                                    targets.forEach { p ->
-                                        // 每项入口检查取消：RootFileManager.delete 内部
-                                        // 各自 withContext(IO)，取消只在这里才被观察。
-                                        if (!currentCoroutineContext().isActive) {
-                                            interrupted = true
-                                            return@forEach
-                                        }
-                                        val (s, reason) = RootFileManager.delete(p)
-                                        if (s) ok++ else failures += "${File(p).name}（$reason）"
-                                    }
+                                    // 一次调用跑完整批：内部先整批本地试删，只有本地删不掉的
+                                    // 项才进 su，且按 UTF-8 字节分段、每段一条 `rm -rf` 带整段路径。
+                                    // 逐项调 delete() 时每项一个 su 进程（145~173ms/次），
+                                    // 400 项约 1 分钟，而真正的 unlink 占比不到 1%。
+                                    val result: BatchDeleteResult = RootFileManager.deleteBatch(targets)
+                                    ok = result.deleted.size
+                                    failures = result.failureLines()
+                                } catch (e: CancellationException) {
+                                    // 取消信号不是「删除失败」，必须原样抛出（finally 仍会跑）。
+                                    // batchJobScope 从不 cancel，本支属防御；宽 catch 会把它
+                                    // 吞成「失败 1 个」，反而掩盖真实的取消。
+                                    throw e
+                                } catch (e: Exception) {
+                                    // batchJobScope 没有 CoroutineExceptionHandler：
+                                    // 异常逃出协程会直接终结进程。旧实现逐项调 delete() 有同样暴露，
+                                    // 这里显式兜住并如实上报，不让一次批量删除带崩应用。
+                                    failures = listOf(e.message ?: "未知错误")
                                 } finally {
                                     // NonCancellable：收尾必须跑到有明确结论为止。
                                     // 放在可取消的上下文里时，withContext(Main) 的块体
@@ -2418,8 +2424,7 @@ fun FilePage(
                                     withContext(NonCancellable + Dispatchers.Main) {
                                         batchInFlight = false
                                         feedbackMessage = buildString {
-                                            if (interrupted) append("删除被中断：已完成 $ok 个项目，")
-                                            else append("已删除 $ok 个项目")
+                                            append("已删除 $ok 个项目")
                                             if (failures.isNotEmpty()) {
                                                 append("；失败 ${failures.size} 个：")
                                                 append(failures.take(2).joinToString("；"))

@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import com.mixradio.droid.data.security.ShellEscapes
 import java.io.File
 import java.nio.file.Files
 
@@ -1182,6 +1183,10 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
             EditHistoryManager.forget(path)
             return true to "删除成功"
         }
+        // 本地能删就先删：unlink/rmdir 只有一次系统调用，而每次 su 是 145~173ms。
+        // 语义不变 —— File.delete() 不递归、不跟随软链；非空目录/受保护路径立即失败，
+        // 下面照旧走 su 与 Java 兜底。与 deleteBatch 阶段 1 同一条判据。
+        if (deleteLocalOnce(path)) return@withContext removed()
         // ROOT 已授权时优先用 su 删除（可操作受保护/系统路径）；
         // 未授权或 su 失败时回退标准 File API（授予「所有文件访问」后可操作 /sdcard）。
         if (preferRoot()) {
@@ -1404,5 +1409,318 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
         } catch (_: Exception) {
         }
         Pair(false, "创建文件夹失败")
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // 批量删除
+    //
+    // 旧调用路径：FilePage 逐项 RootFileManager.delete()，每项一次
+    // ProcessBuilder("su","-c")，145~173ms/项，400 项约 1 分钟；
+    // 而真正的 unlink 成本不到 1ms —— 99% 的时间花在反复启动 su 上。
+    // 这里把「应用自己能删的项」全部本地摘掉，剩余项按 UTF-8 字节分段，
+    // 每段一条 rm 带整段路径，su 次数从 N 降到段数。
+    // ────────────────────────────────────────────────────────────────────
+
+    /**
+     * 单段命令的 **UTF-8 字节**上限（量整条命令，不是路径之和）。
+     *
+     * `su -c` 对单条命令在 4090 字节附近会整段丢弃（`TermuxPrefix` 同源结论，
+     * 见其打包处注释；那边取 3000，本命令无段头，取 2900 留 1KB 以上余量）。
+     * 中文 1 字 3 字节，用 `String.length` 会低估到三分之一，必须按 UTF-8 字节累加。
+     *
+     * **本实现不看 rc**：脚本最后一句是 echo，rc 恒 0；命令被丢弃时 rc 可能是 0 或 255。
+     * 只认段末完成标记，两种表现都落到「未完成」，口径统一。
+     */
+    internal const val DELETE_SEGMENT_MAX_BYTES = 2900
+
+    /** 段完成标记：**整行**精确比对。缺标记 = 整段没执行（su 拒绝 / 超时 / 命令被丢弃）。 */
+    internal const val DELETE_SEGMENT_DONE_MARKER = "SHSO_BATCH_OK"
+
+    /** 残留回捞前缀。传入路径都是绝对路径，`F:` 不会与路径本身混淆（见 [parseDeleteSegmentOutput]）。 */
+    private const val DELETE_SEGMENT_REMAIN_PREFIX = "F:"
+
+    /** 段超时基线 + 每项增量，封顶与 [RootService.runCommandSync] 默认值齐平。 */
+    private const val DELETE_SEGMENT_TIMEOUT_BASE_MS = 15_000L
+    private const val DELETE_SEGMENT_TIMEOUT_PER_PATH_MS = 300L
+    private const val DELETE_SEGMENT_TIMEOUT_MAX_MS = 120_000L
+
+    /**
+     * 连续失败多少段就停发后续段。
+     *
+     * 取 2 而不是 1：一段超时往往只是段内有大目录，su 本身没坏，
+     * 一失败就停会把后面几百个普通文件误判为「未完成」。
+     * 取 2 也就把「su 挂死」的最坏等待封在 2 个段超时内。
+     */
+    private const val DELETE_SEGMENT_MAX_CONSECUTIVE_FAILURES = 2
+
+    /** 段命令的固定开销（不含路径）。由构造函数反测，脚本改动后不会与常量漂移。 */
+    internal val deleteSegmentOverheadBytes: Int by lazy {
+        // 占位路径 "/" 与其前导空格共 2 字节
+        buildDeleteSegmentCommand(listOf("/")).toByteArray(Charsets.UTF_8).size - 2
+    }
+
+    /** 段超时：真正耗时的不是命令本身，而是段内可能有多个大目录要递归。 */
+    internal fun deleteSegmentTimeoutMs(pathCount: Int): Long =
+        (DELETE_SEGMENT_TIMEOUT_BASE_MS + DELETE_SEGMENT_TIMEOUT_PER_PATH_MS * pathCount.coerceAtLeast(1))
+            .coerceAtMost(DELETE_SEGMENT_TIMEOUT_MAX_MS)
+
+    /**
+     * 批量删除结果：**三档失败必须分开**，不能压成「成功/失败」。
+     *
+     * - [deleted]     已确认不存在（本地试删 / su 回捞未见 / 兜底成功，任一路径）；
+     * - [remaining]   su 明确回捞到「仍在」，且兜底也没删掉；
+     * - [unprocessed] 段命令没跑完（su 被拒 / 超时 / 命令被整段丢弃）或单项超长，
+     *                 **状态未知**：不许计成功，也不该当成用户的错；
+     * - [rejected]    上游 [isUnsafePath] 拒掉的路径，连尝试都没有。
+     *
+     * 「删除失败 / 路径包含非法字符」与 [delete] 逐字一致，
+     * 避免同一操作在两个入口叫不同名字。
+     */
+    data class BatchDeleteResult(
+        val deleted: List<String> = emptyList(),
+        val remaining: List<String> = emptyList(),
+        val unprocessed: List<String> = emptyList(),
+        val rejected: List<String> = emptyList(),
+    ) {
+        val failedCount: Int get() = remaining.size + unprocessed.size + rejected.size
+
+        /** 逐项失败明细，沿用 FilePage 旧文案格式「名称（原因）」。 */
+        fun failureLines(): List<String> {
+            val out = ArrayList<String>(failedCount)
+            remaining.forEach { out += "${File(it).name}（删除失败）" }
+            unprocessed.forEach { out += "${File(it).name}（未完成）" }
+            rejected.forEach { out += "${File(it).name}（路径包含非法字符）" }
+            return out
+        }
+    }
+
+    /** 单段输出解析结果：[done] 是否见到完成标记，[remaining] 为本段仍存在的路径。 */
+    internal data class DeleteSegmentParse(val done: Boolean, val remaining: Set<String>)
+
+    /**
+     * 批量删除：先整批本地试删，只剩本地删不掉的项才进 su，且**分段批量**执行。
+     *
+     * 三个阶段，语义与逐项调用 [delete] **等价**：
+     * 1. 本地 `File.delete()`：unlink / rmdir，**不递归、不跟随软链**；
+     * 2. 剩余项分段进 su，一条 `rm -rf -- "$@"` 带走整段全部路径；
+     * 3. su 之后仍未确认删除的项落回 Java 兜底（软链守卫 + 递归），
+     *    与 [delete] 尾段同一条路径 —— 非 ROOT 设备删非空目录必须靠它。
+     *
+     * 失败原因的**表达能力会真实退化**：没有逐项 errno 了，
+     * 只剩「删除失败 / 未完成 / 路径包含非法字符」三档，取舍见施工文档 §8.1。
+     */
+    suspend fun deleteBatch(paths: List<String>): BatchDeleteResult = withContext(Dispatchers.IO) {
+        val unique = paths.distinct()
+        if (unique.isEmpty()) return@withContext BatchDeleteResult()
+
+        val deleted = ArrayList<String>(unique.size)
+        val remaining = ArrayList<String>()
+        val unprocessed = ArrayList<String>()
+        val rejected = ArrayList<String>()
+
+        // 唯一的「计成功」出口：历史回收与计数必须同时发生。
+        // 任何新增的成功路径只要绕过它，就会留下永不回收的历史键（键名即绝对路径）。
+        fun markDeleted(p: String) {
+            EditHistoryManager.forget(p)
+            deleted += p
+        }
+
+        // ── 阶段 1：整批本地试删（零 fork）─────────────────────────────
+        // 旧实现只要已授权 ROOT 就无条件先 su：连 /sdcard 上应用自己就能 unlink
+        // 的文件也各起一个 su 进程。这一段把「本来就能做」的项全部摘出去。
+        val pending = ArrayList<String>(unique.size)
+        for (p in unique) {
+            if (isUnsafePath(p)) {
+                rejected += p
+                continue
+            }
+            // 与 delete() 一致：标记失效不看删除结果 —— 失败也只多跑一次幂等 mkdir。
+            // 必须**逐路径**调：函数体是 `if (path == DEFAULT_SHSO_DIR)` 条件判定，
+            // 批入口只调一次、传第一个路径，会在 shso 目录不在首位时漏。
+            invalidateShsoDirIfAffected(p)
+            if (deleteLocalOnce(p)) markDeleted(p) else pending += p
+        }
+
+        // ── 阶段 2：分段批量 su ───────────────────────────────────────
+        // 空批连首次 ROOT 状态探测都省掉。
+        val stillThere = ArrayList<String>()
+        if (pending.isNotEmpty() && preferRoot()) {
+            val sendable = ArrayList<String>(pending.size)
+            for (p in pending) {
+                // 单项本身装不进一段：发出去只会被 su 整段丢弃，直接判未完成。
+                if (deletePathFitsOneSegment(p)) sendable += p else unprocessed += p
+            }
+            var consecutiveFailures = 0
+            for (segment in planDeleteSegments(sendable)) {
+                if (consecutiveFailures >= DELETE_SEGMENT_MAX_CONSECUTIVE_FAILURES) {
+                    unprocessed += segment
+                    continue
+                }
+                val (_, out) = RootService.runCommandSync(
+                    buildDeleteSegmentCommand(segment),
+                    timeoutMs = deleteSegmentTimeoutMs(segment.size)
+                )
+                val parsed = parseDeleteSegmentOutput(out, segment)
+                if (!parsed.done) {
+                    // 缺完成标记 = 这一段根本没执行：su 停在授权窗、被拒、超时被杀，
+                    // 或命令超长被整段丢弃。判「未完成」，**绝不**计成功。
+                    // 退出码在这里没有信息量：脚本最后一句是 echo，恒为 0。
+                    unprocessed += segment
+                    consecutiveFailures++
+                    continue
+                }
+                consecutiveFailures = 0
+                for (p in segment) {
+                    if (p in parsed.remaining) stillThere += p else markDeleted(p)
+                }
+            }
+        } else {
+            // 未授权 / 探测超时：与 delete() 一样直接落 Java 兜底。
+            stillThere += pending
+        }
+
+        // ── 阶段 3：Java 兜底（与 delete() 尾段同一语义）────────────────
+        for (p in stillThere) {
+            if (deleteLocalRecursively(p)) markDeleted(p) else remaining += p
+        }
+        // 「未完成」状态未知：兜底能删掉算成功；删不掉**仍归未完成**。
+        // 绝不因为应用侧 exists() 为 false 就断言已删 —— 受保护路径本地恒 false，
+        // 而 deleteRecursively() 对不存在的路径恰好返回 true（见 deleteLocalRecursively
+        // 的分支写法：不存在时走 f.delete()，不会走到递归）。
+        val stillUnprocessed = ArrayList<String>()
+        for (p in unprocessed) {
+            if (deleteLocalRecursively(p)) markDeleted(p) else stillUnprocessed += p
+        }
+
+        // 结果按入参顺序输出，UI 明细与测试断言都稳定
+        val order = unique.withIndex().associate { (i, p) -> p to i }
+        fun sorted(xs: List<String>): List<String> = xs.sortedBy { order[it] ?: Int.MAX_VALUE }
+        BatchDeleteResult(
+            deleted = sorted(deleted),
+            remaining = sorted(remaining),
+            unprocessed = sorted(stillUnprocessed),
+            rejected = sorted(rejected),
+        )
+    }
+
+    /**
+     * 单段删除命令：一条 `rm -rf` 带走整批路径，回捞与标记全用 shell 内建（零 fork）。
+     *
+     * 每条都有依据：
+     * - 命令体只用一条 rm 带整批路径；若写成逐项循环的 rm，su 内仍每项 fork 一个 rm。
+     * - `--` 终止选项解析：路径可能以 `-` 开头。
+     * - `2>/dev/null` 只吞 rm 的诊断：`runCommandSync` 是 `redirectErrorStream(true)`
+     *   （`RootService.kt:671`），不吞的话
+     *   `rm: /proc/version: Operation not permitted` 会混进输出。
+     * - **顺序即正确性**：全部 `F:` 行都打印在标记**之前**，故「标记在 ⇒ 回捞完整」。
+     *   输出被 4M 上限截断、或读线程未退出时，缺的是标记，不会缺 `F:` 行。
+     * - 完成标记**无条件**打印且是最后一句：命令被整段丢弃时不会有它。
+     * - 路径侧一律 [ShellEscapes.escapeShellArg]，与 `RootService.escapeShellArg` 同一实现。
+     */
+    internal fun buildDeleteSegmentCommand(paths: List<String>): String {
+        require(paths.isNotEmpty()) { "空段无意义" }
+        val sb = StringBuilder(64 + paths.size * 32)
+        sb.append("set --")
+        for (p in paths) sb.append(' ').append(ShellEscapes.escapeShellArg(p))
+        sb.append('\n')
+        sb.append("rm -rf -- \"\$@\" 2>/dev/null\n")
+        sb.append("for p in \"\$@\"; do\n")
+        sb.append("if [ -e \"\$p\" ] || [ -L \"\$p\" ]; then printf 'F:%s\\n' \"\$p\"; fi\n")
+        sb.append("done\n")
+        sb.append("echo ").append(DELETE_SEGMENT_DONE_MARKER).append('\n')
+        return sb.toString()
+    }
+
+    /** 单项在命令里的字节成本：转义后长度 + 1 个前导空格。 */
+    private fun deletePathCostBytes(path: String): Int =
+        ShellEscapes.escapeShellArg(path).toByteArray(Charsets.UTF_8).size + 1
+
+    /**
+     * 按 UTF-8 字节装箱：每段命令总字节 ≤ [DELETE_SEGMENT_MAX_BYTES]，**顺序不变**。
+     *
+     * 纯词法函数，不碰文件系统，便于 JVM 单测（中文路径 / 超长单项 / 空集）。
+     * 单项超上限时仍单独成段返回 —— 这里绝不静默丢路径，是否可发送由调用方判。
+     */
+    internal fun planDeleteSegments(paths: List<String>): List<List<String>> {
+        if (paths.isEmpty()) return emptyList()
+        val overhead = deleteSegmentOverheadBytes
+        val out = ArrayList<List<String>>()
+        var current = ArrayList<String>()
+        var bytes = overhead
+        for (p in paths) {
+            val cost = deletePathCostBytes(p)
+            if (current.isNotEmpty() && bytes + cost > DELETE_SEGMENT_MAX_BYTES) {
+                out += current
+                current = ArrayList()
+                bytes = overhead
+            }
+            current += p
+            bytes += cost
+        }
+        if (current.isNotEmpty()) out += current
+        return out
+    }
+
+    /** 单项单独成段时是否装得下。超长路径无法经 `su -c` 送达，调用方直接判未完成。 */
+    internal fun deletePathFitsOneSegment(path: String): Boolean =
+        deleteSegmentOverheadBytes + deletePathCostBytes(path) <= DELETE_SEGMENT_MAX_BYTES
+
+    /**
+     * 解析单段输出。完成标记按**整行**比对，避免 `XSHSO_BATCH_OK` 之类子串误判成功；
+     * 残留只认本段真正发过的路径，别的段的 `F:` 行不会污染本段结果。
+     *
+     * 路径含 `F:` 不会混淆：只剥一层前缀，剩余部分必须精确等于发过的路径。
+     * 路径以 `SHSO_BATCH_OK` 结尾也不会：它只能以 `F:` 行出现，不会是裸标记行。
+     */
+    internal fun parseDeleteSegmentOutput(output: String, sent: List<String>): DeleteSegmentParse {
+        val sentSet = sent.toHashSet()
+        var done = false
+        val remaining = LinkedHashSet<String>()
+        for (line in output.lineSequence()) {
+            if (line == DELETE_SEGMENT_DONE_MARKER) {
+                done = true
+                continue
+            }
+            if (!line.startsWith(DELETE_SEGMENT_REMAIN_PREFIX)) continue
+            val path = line.substring(DELETE_SEGMENT_REMAIN_PREFIX.length)
+            if (path in sentSet) remaining += path
+        }
+        return DeleteSegmentParse(done, remaining)
+    }
+
+    /**
+     * 本地单次删除：`unlink(2)` / `rmdir(2)`。
+     *
+     * **不递归、不跟随软链**：`File.delete()` 对软链删的是链接本身；对非空目录
+     * 立即 ENOTEMPTY 失败（交给 su 或递归兜底）。因此这里不可能像
+     * `deleteRecursively()` 那样顺着目录链接清空别人的树。
+     */
+    private fun deleteLocalOnce(path: String): Boolean = try {
+        File(path).delete()
+    } catch (_: Exception) {
+        false
+    }
+
+    /**
+     * Java 兜底：**分支顺序即安全性**，与 [delete] 尾段同义。
+     *
+     * 不能简化成 `File(path).deleteRecursively()`：
+     * 标准库实现是 `(it.delete() || !it.exists()) && …`，
+     * 对**不存在**的路径返回 **true**。受保护路径（应用 stat 不到）恰好命中这一条，
+     * 于是「根本没删」会被记成成功，「缺标记绝不许多成功」的判据当场失效。
+     * 先判链接、再判目录、其余单次 delete，即可让「返回 true」只出现在
+     * 「应用确实完成了删除」这一种情形。
+     */
+    private fun deleteLocalRecursively(path: String): Boolean = try {
+        val f = File(path)
+        if (Files.isSymbolicLink(f.toPath())) {
+            f.delete()                 // 删链接本身，不动目标
+        } else if (f.isDirectory) {
+            f.deleteRecursively()      // 真实目录才递归
+        } else {
+            f.delete()                 // 其余（含不存在）：单次 delete，不存在返回 false
+        }
+    } catch (_: Exception) {
+        false
     }
 }
