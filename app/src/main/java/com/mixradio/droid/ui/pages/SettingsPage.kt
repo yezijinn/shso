@@ -253,6 +253,7 @@ fun SettingsPage(
         }
     }
     var showAboutDialog by remember { mutableStateOf(false) }
+    var showStorageBreakdown by remember { mutableStateOf(false) }
 
     // 检查更新状态（updateState / updateChecking / updateJobScope 均为文件级，见上）
 
@@ -358,6 +359,13 @@ fun SettingsPage(
 
             // 界面开关：隐藏底栏 / 左右提示
             SettingsInterfaceGroup(appSettings = appSettings)
+
+            // 存储组成：全屏页列出本应用在本机占用的全部空间
+            AuroraArrowPreference(
+                title = "存储组成",
+                summary = "查看 APK 与运行期数据占用明细",
+                onClick = { showStorageBreakdown = true }
+            )
 
             // 检查更新
             // 右侧胶囊与权限行一致；点击胶囊/整行触发检查，亮起 3 秒后自动回关
@@ -522,6 +530,10 @@ fun SettingsPage(
                 }
             }
         }
+    }
+
+    if (showStorageBreakdown) {
+        StorageBreakdownDialog(onDismissRequest = { showStorageBreakdown = false })
     }
 
     if (showAboutDialog) {
