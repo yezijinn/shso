@@ -48,6 +48,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import android.os.SystemClock
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -60,6 +61,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -195,7 +199,16 @@ private var isMoving by mutableStateOf(false)
 @Composable
 fun FilePage(
     appSettings: AppSettings,
-    onExecuteFileAndNavigate: (path: String, runAsRoot: Boolean?) -> Unit
+    onExecuteFileAndNavigate: (path: String, runAsRoot: Boolean?) -> Unit,
+    /**
+     * 本页是否为当前可见页。
+     *
+     * HorizontalPager 常驻全部 4 页，切到别的 tab 只是把本页移出视口，不销毁也不重组。
+     * 不传可见性，就永远不知道「用户切回来了」，列表停在切走前那份。
+     * 由调用方按 pagerState.settledPage 传入，用于「不可见→可见」时重列两列。
+     * 默认 true：未传该参数的调用方语义与改动前一致，不会凭空多一次列举。
+     */
+    isVisible: Boolean = true
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -587,12 +600,35 @@ fun FilePage(
     }
 
 
-    fun refresh(showToast: Boolean = false): Unit = refreshPane(focusedIndex, showToast)
+    /**
+     * 刷新聚焦列；两列停在**同一目录**时一并刷另一列。
+     *
+     * 页面级动作（删除 / 重命名 / 拷贝 / 新建…）都经由它。双列可被「同步」或手动导航
+     * 停到同一路径，此时聚焦列的增删改同样改变了另一列的条目 —— 不刷就留一份旧列表。
+     * 两列目录不同时另一列不受影响；每次刷新都是一次完整列举（一次 su 往返），
+     * 白刷就是纯浪费，故不做无条件双列。
+     * 比较前先过 [ExternalOpen.normalizeSdCardAlias] 归一 /sdcard 别名，字面串比会静默漏判。
+     * [showToast] 只作用于聚焦列：用户点的是这一列的「刷新」，不该弹两条「已刷新」。
+     */
+    fun refresh(showToast: Boolean = false) {
+        refreshPane(focusedIndex, showToast)
+        val otherIndex = 1 - focusedIndex
+        if (ExternalOpen.normalizeSdCardAlias(panes[otherIndex].currentDirectory) ==
+            ExternalOpen.normalizeSdCardAlias(panes[focusedIndex].currentDirectory)
+        ) {
+            refreshPane(otherIndex)
+        }
+    }
 
-
-
-    /** 刷新聚焦列。页面级动作（删除后、批量操作后）都经由它，语义即「刷当前列」。 */
-
+    /**
+     * 同时刷新两列。输出到另一列的动作（复制/移动/解压）改变的是目标列内容，
+     * 只刷聚焦列会让另一列停在旧列表。节流按列独立，不会互相抑制。
+     * 必须声明在第一个调用点（runMoveWithConflict）之前：局部函数不支持前向引用。
+     */
+    fun refreshBothPanes() {
+        refreshPane(focusedIndex, false)
+        refreshPane(1 - focusedIndex, false)
+    }
 
     /**
      * 打开新建文件对话框，预填当时时间戳 + `txt` 后缀。
@@ -653,7 +689,10 @@ fun FilePage(
             feedbackMessage = if (fail == 0) "已移动 $ok 项" else "移动完成：$ok 成功 / $fail 失败"
             selectedPaths.clear()
             multiSelectMode = false
-            refresh()
+            // 落点由 picker 任选，可能就是另一列的当前目录：两列都刷。
+            // 不做「落点串比另一列目录」：别名归一化后仍会漏，而漏刷代价
+            // （目标列留旧列表）远大于多刷一趟 su（移动本身已是 N 趟）。
+            refreshBothPanes()
         }
     }
 
@@ -720,17 +759,6 @@ fun FilePage(
     // 另一列（非聚焦列）的当前目录，作为「复制 ->」「移动 ->」「解压 ->」的目标
     fun otherPaneDirectory(): String = panes[1 - focusedIndex].currentDirectory
 
-    /**
-     * 同时刷新两列。
-     *
-     * 输出到另一列的动作（复制 -> / 移动 -> / 解压 ->）会改变**目标列**的目录内容，
-     * 只刷新聚焦列会让另一列停留在旧列表；移动还会同时改变聚焦列，故两列都要重载。
-     * 节流按列独立（各 pane 自带 lastLoadedAt），不会互相抑制。
-     */
-    fun refreshBothPanes() {
-        refreshPane(focusedIndex, false)
-        refreshPane(1 - focusedIndex, false)
-    }
 
     // 解压到指定目录（沿用智能创建文件夹的行为）
     fun extractTo(item: FileItem, targetDir: String) {
@@ -1128,6 +1156,43 @@ fun FilePage(
             }
         }
     }
+    }
+
+    // ── 从别的 tab 切回本页时重列两列 ─────────────────────────────────
+    // 只认「不可见 → 可见」这一次跃迁：首帧不列举（lastVisible 以当前 isVisible
+    // 初始化，判据不成立，不会与两列首屏列举叠加）；旋屏重建同样不列举（列表由
+    // Saver + 各自的目录 effect 恢复）；可见状态下的重组键不变、协程不重启。
+    // 与切目录 / ROOT 跃迁 / 回前台各有自己的触发条件，互不重叠。
+    val lastVisibleRef = remember { booleanArrayOf(isVisible) }
+    LaunchedEffect(isVisible) {
+        val wasVisible = lastVisibleRef[0]
+        lastVisibleRef[0] = isVisible
+        if (isVisible && !wasVisible) refreshBothPanes()
+    }
+
+    // ── 回到前台同样重列两列 ───────────────────────────────────────────
+    // 切 tab 的 effect 覆盖不到「去别的应用改了文件再回来」：那种场景下
+    // isVisible 一直是 true，不会触发。
+    // 必须先收到 ON_PAUSE：LifecycleRegistry 会向新注册的 observer 补发
+    // ON_RESUME，少了这道闸冷启动首帧与每次旋屏都会多刷一次。
+    // 只在文件页可见时刷；可见性用 rememberUpdatedState 跟随最新值
+    // （observer 只随 lifecycleOwner 重建，直接闭包会读到注册时的旧值）。
+    val visibleNow = rememberUpdatedState(isVisible)
+    val pageLifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(pageLifecycleOwner) {
+        var sawPause = false
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> sawPause = true
+                Lifecycle.Event.ON_RESUME -> if (sawPause) {
+                    sawPause = false
+                    if (visibleNow.value) refreshBothPanes()
+                }
+                else -> Unit
+            }
+        }
+        pageLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { pageLifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
 
@@ -1985,6 +2050,11 @@ fun FilePage(
     }
 
     // 纯文字紧凑菜单行：无矩形底色、无圆角，仅文字 + 点击
+    //
+    // 刷新责任**不在**这一层。旧实现在 clickable 里紧跟 onClick 列举一次，于是
+    // 只开子弹窗 / 只进多选的点击也白跑一趟（一次 su 往返），还会让整列灰一下；
+    // 真正改盘的动作收尾自己还要再刷一次 —— 同一操作两趟 su。
+    // 刷新下沉到各动作体收尾，新增动作时必须同时写出它的刷新位置。
     @Composable
     fun ActionTextRow(
         label: String,
@@ -1995,12 +2065,7 @@ fun FilePage(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(enabled = enabled) {
-                    onClick()
-                    // 文件菜单的功能按钮统一附带「立即刷新文件列表」：
-                    // 任何动作（含打开子弹窗）点击后都重列一次当前目录，避免列表停留在旧状态。
-                    refresh()
-                }
+                .clickable(enabled = enabled) { onClick() }
                 .minimumInteractiveComponentSize()
                 .padding(vertical = 11.dp, horizontal = 8.dp)
         ) {
@@ -2251,7 +2316,8 @@ fun FilePage(
                         // 移动完成后退出多选态并回到普通浏览
                         selectedPaths.clear()
                         multiSelectMode = false
-                        refresh()
+                        // 目标目录可能正是另一列的当前目录：两列都刷
+                        refreshBothPanes()
                     }
                 }
             }
@@ -2434,7 +2500,12 @@ fun FilePage(
                                         multiSelectMode = false
                                         // 刷新回批量开始时的那个目录：期间目录可能被外部
                                         // 唤起改写，而用户要确认的正是被删了哪些文件。
-                                        if (currentDirectory == frozenDir) refresh()
+                                        // 按**列**判定：删除期间用户可点另一列抢焦点，
+                                        // 那时 currentDirectory 已是别的路径，判据失效
+                                        // → 刚删完的列表一条也不刷。两列同目录时两列都刷。
+                                        panes.forEachIndexed { index, pane ->
+                                            if (pane.currentDirectory == frozenDir) refreshPane(index)
+                                        }
                                     }
                                 }
                             }
@@ -2766,6 +2837,9 @@ fun FilePage(
             onDismissRequest = {
                 showTextEditorDialog = false
                 viewerTargetItem = null
+                // 保存会改文件大小 / 修改时间：「改」是唯一没有刷新出口的动作。
+                // 关闭时才刷（不区分是否真保存）：为区分动组件回调契约不划算。
+                refresh()
             }
         )
     }
@@ -2870,7 +2944,7 @@ fun FilePage(
                     showBatchDialog = false
                     selectedPaths.clear()
                     multiSelectMode = false
-                    refresh()
+                    // 只改 UI 状态，磁盘没变：重列一趟 su 纯属浪费
                 }
             }
         }

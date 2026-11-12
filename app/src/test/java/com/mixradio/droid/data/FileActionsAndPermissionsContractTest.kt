@@ -56,13 +56,28 @@ class FileActionsAndPermissionsContractTest {
         assertTrue("分享", filePage.contains("OpenWith.share("))
     }
 
-    /** 文件菜单每个功能按钮都应在点击后立即刷新文件列表。 */
+    /**
+     * 刷新契约在去重后反转：菜单框架**不再**无条件刷新。
+     *
+     * 旧契约「每个功能按钮点击后立即刷新」造成两类浪费：
+     *  · 只开子弹窗 / 只进多选的动作也整列列举一趟（一次 su 往返），并让整列灰一下；
+     *  · 真正改盘的动作自己收尾还要再刷一次 —— 同一操作两趟 su。
+     * 新契约：框架只转发点击，刷新由动作体在收尾处按需调用，
+     * 且「写到另一列」的动作必须刷到目标列（见 crossPaneActionsRefreshBothPanes）。
+     */
     @Test
-    fun everyMenuItemRefreshesList() {
+    fun actionMenuRowDelegatesRefreshToActionBody() {
         val rowIdx = filePage.indexOf("fun ActionTextRow(")
         assertTrue("缺少 ActionTextRow", rowIdx > 0)
-        val body = filePage.substring(rowIdx, (rowIdx + 900).coerceAtMost(filePage.length))
-        assertTrue("ActionTextRow 点击后必须调用 refresh()", body.contains("refresh()"))
+        // 按「下一个块」截取，不用固定字窗：函数变长时固定窗会切进动作体
+        val end = filePage.indexOf("if (showActionDialog && selectedItem != null)", rowIdx)
+        assertTrue("应能找到动作菜单入口", end > rowIdx)
+        val body = filePage.substring(rowIdx, end)
+        assertTrue("菜单行须仍可点击（禁用态由 enabled 控制）", body.contains(".clickable(enabled = enabled)"))
+        assertFalse(
+            "菜单框架不得无条件刷新：不改磁盘的动作白跑一趟 su，改磁盘的动作重复刷",
+            body.contains("refresh()")
+        )
     }
 
     /** 输出到另一列的动作必须刷新另一列（双列刷新）。 */

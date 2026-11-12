@@ -18,9 +18,9 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步；最新 tag `20261014` → `796de4c`（2026-10-14 发版提交），其后 HEAD `41b78e3`（A150）只在 `main`；`20261013` 与 `b3d7739` 见 § A149 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 736 tests / 0 failures / 0 errors / 1 skipped（A152 `testDebugUnitTest`，XML 汇总与源码 `@Test` 计数一致；新增 17 项批量删除分段/接线护栏） |
+| 单元测试 | 743 tests / 0 failures / 0 errors / 1 skipped（A152 `testDebugUnitTest`，XML 汇总与源码 `@Test` 计数一致；新增 17 项批量删除分段/接线护栏） |
 | lint | 0 errors（A152 `lintRelease` BUILD SUCCESSFUL） |
-| release 体积 | **33,438,105 字节**（约 33.4 MB，十进制），sha256 `8E5001DA11DFF6C38082DE23E96F09A9281793F5CF98B3B616C89B8E08730701`；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
+| release 体积 | **33,438,105 字节**（约 33.4 MB，十进制），sha256 `A31263BD97768B4031939D605FE9B863C1E7A05A28C228096AD3C500254A4889`；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
 | 执行环境 | **全量内置**（A151）：`assets/env.bin` VERSION 6 携带完整 aarch64 工具链 —— bash / busybox（358 applet）/ curl / GNU 与 coreutils / git（客户端）/ python3 / openssl / ssh / rsync，首次启动解压到私有目录；归档内 `bin/sh` 不由 busybox 提供（busybox sh applet 直跑会 SIGSEGV，applets 亦不含 sh），前缀缺 sh 时由 `TermuxPrefix` 建链指向 `/system/bin/sh`，真机已验证；Termux 前缀符号链接避免 `LD_LIBRARY_PATH` 污染；`GIT_PAGER=cat` 规避未内置分页器导致的 `fatal: unable to execute pager`；可下载扩展包已删除，不再有「按设计缺失」的工具 |
 | 执行矩阵 | A151 真机（127.0.0.1:16384 / Redmi K70 23113RKC6C）安装成功、MainActivity 前台稳定；首解后 `VERSION=6`，`env.tmp`/`env.old`/`envpack` 均不存在，旧 `env/bin/sh` 缺失，前缀 `sh`/`ash`/`hush`/`mash` 全部链到 `/system/bin/sh`；应用执行绝对 shebang `#!/data/data/com.termux/files/usr/bin/sh` 输出 `ABS_SH_OK`；绝对 `python3.14`/`python3`/`python`/`env`/`sh`/`bash` 与 `libcrypto`/`libz` 链接在位，`libexec/git-core`、`share/git-core`、`etc/tls/openssl.cnf`、`lib/python3.14` 补链到位；执行链不再导出 `LD_LIBRARY_PATH`；Python 3.14.6（含 sqlite3/ssl）、git 2.56.0（含 `git init/add/commit/log`）、OpenSSL 3.6.5、OpenSSH 10.6p1、rsync 3.5.1、GNU sed/tar/wget/grep/find、zstd 1.5.7、xz 5.8.4 均执行成功；日志无 FATAL EXCEPTION / CANNOT LINK / SIGSEGV。A150 的 35/36 为非交互套件历史值（`tests/suite.sh` 不在仓库，未重跑） |
 | 真机 | `$DEVICE`（Android 10 / 1080×2280 / Magisk root） |
@@ -50,6 +50,21 @@
 ---
 
 ## 待办
+
+### A153. 文件刷新架构优化（2026-11-12）
+
+- [x] **切回自动刷两列**：MainActivity 按 `pagerState.settledPage` 传可见性，
+      FilePage 新增「不可见→可见」effect 重列左右两列（首帧/旋屏不重复列举）；
+      另补「回到前台」effect（带 ON_PAUSE 闸，防注册即补发）。
+- [x] **增删改查自动刷新**：`refresh()` 两列同目录时镜像刷新（路径过 `/sdcard` 别名归一）；
+      移动到另一列、冲突移动改双列刷新；批量删除收尾按冻结列刷；文本编辑关闭补刷新。
+- [x] **减小开销**：去掉 `ActionTextRow` 框架级无条件列举与「退出多选」误刷新；
+      `settledPage` 避免跨页动画穿过文件页白刷；不做无条件双列。
+- [x] **护栏与单测**：`FileActionsAndPermissionsContractTest` 契约随去重反转并改名；
+      新增 `FileVisibilityRefreshTest` 7 条；743 tests / 0 失败。
+- [x] **真机验证**：切 tab 增/删两向两列同时自动更新、目标列刷新、去重无灰闪、
+      反复切 tab 与回前台 0 崩溃；`settledPage` 编译通过。
+- [x] **文档**：`更新日志.md` 同日补 6 条；本表测试数/哈希同步。
 
 ### A152. 批量删除性能优化、同类浪费排查（2026-11-12）
 

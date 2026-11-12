@@ -362,7 +362,13 @@ fun MainContainer(
                         coroutineScope.launch {
                             pagerState.animateScrollToPage(1)
                         }
-                    }
+                    },
+                    // 4 页常驻组合树，切走只移出视口：不传可见性，本页永远不知道
+                    // 「用户切回来了」，列表停在切走前那份。
+                    // 用 settledPage 而非 currentPage：currentPage 随滚动位置更新，
+                    // animateScrollToPage 跨页时会穿过第 2 页，让文件页被瞬时判为可见
+                    // → 白刷两列 + 滑过时整列灰闪。settledPage 只在真正落定后变化。
+                    isVisible = pagerState.settledPage == 2
                 )
                 3 -> SettingsPage(appSettings = appSettings)
             }
