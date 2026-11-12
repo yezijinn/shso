@@ -44,7 +44,7 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261108`（纯数字，与 `versionCode` 对齐，指向当次发版代码 `aea11b3`）；双端同名 Release（GitHub / Gitee），资产 `app-release.apk` 33,438,105 字节，三端 sha256 一致（`53CB069B…`，回下载核算），正文为 `更新日志.md` 20261108 段落的精简版（≤200 字）；上一版（`20261014`）的发行程序已从双端移除（Release 与 tag 保留），已下线的扩展包 Release 一并删除。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag 61112\（纯数字，与 \ersionCode\ 对齐，指向当次发版代码 æ5845\）；双端同名 Release（GitHub / Gitee），资产 \pp-release.apk\ 33,438,105 字节，三端 sha256 一致（3BFBC62…\，回下载核算），正文为 \更新日志.md\ 20261112 段落的精简版；上一版（61108\）的发行程序已从双端移除（Release 与 tag 保留）。语法包侧：\syntaxpacks-v2\ 指向 A114 提交（APK 不内置语法） |
 | 在线编译 | 实跑 `workflow_dispatch` 通过（包名 `com.sina.news`，5m19s，产物 2908313 字节，`package: name='com.sina.news'`）；签名开关 `use_debug_signing` 由签名步单点产出，单元测试步与编译步以 `-PuseDebugSigning` 同口径消费（见 § A142） |
 
 ---
