@@ -18,9 +18,9 @@
 |---|---|
 | 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步；最新 tag `20261014` → `796de4c`（2026-10-14 发版提交），其后 HEAD `41b78e3`（A150）只在 `main`；`20261013` 与 `b3d7739` 见 § A149 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 743 tests / 0 failures / 0 errors / 1 skipped（A152 `testDebugUnitTest`，XML 汇总与源码 `@Test` 计数一致；新增 17 项批量删除分段/接线护栏） |
+| 单元测试 | 745 tests / 0 failures / 0 errors / 1 skipped（A152 `testDebugUnitTest`，XML 汇总与源码 `@Test` 计数一致；新增 19 项分段/接线/存储测量护栏） |
 | lint | 0 errors（A152 `lintRelease` BUILD SUCCESSFUL） |
-| release 体积 | **33,438,105 字节**（约 33.4 MB，十进制），sha256 `A31263BD97768B4031939D605FE9B863C1E7A05A28C228096AD3C500254A4889`；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
+| release 体积 | **33,454,489 字节**（约 33.4 MB，十进制），sha256 `E13A888BA29930715D9A138D2AC1DE0DB56C5FDB2611E68682450701B8D08C62`；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
 | 执行环境 | **全量内置**（A151）：`assets/env.bin` VERSION 6 携带完整 aarch64 工具链 —— bash / busybox（358 applet）/ curl / GNU 与 coreutils / git（客户端）/ python3 / openssl / ssh / rsync，首次启动解压到私有目录；归档内 `bin/sh` 不由 busybox 提供（busybox sh applet 直跑会 SIGSEGV，applets 亦不含 sh），前缀缺 sh 时由 `TermuxPrefix` 建链指向 `/system/bin/sh`，真机已验证；Termux 前缀符号链接避免 `LD_LIBRARY_PATH` 污染；`GIT_PAGER=cat` 规避未内置分页器导致的 `fatal: unable to execute pager`；可下载扩展包已删除，不再有「按设计缺失」的工具 |
 | 执行矩阵 | A151 真机（127.0.0.1:16384 / Redmi K70 23113RKC6C）安装成功、MainActivity 前台稳定；首解后 `VERSION=6`，`env.tmp`/`env.old`/`envpack` 均不存在，旧 `env/bin/sh` 缺失，前缀 `sh`/`ash`/`hush`/`mash` 全部链到 `/system/bin/sh`；应用执行绝对 shebang `#!/data/data/com.termux/files/usr/bin/sh` 输出 `ABS_SH_OK`；绝对 `python3.14`/`python3`/`python`/`env`/`sh`/`bash` 与 `libcrypto`/`libz` 链接在位，`libexec/git-core`、`share/git-core`、`etc/tls/openssl.cnf`、`lib/python3.14` 补链到位；执行链不再导出 `LD_LIBRARY_PATH`；Python 3.14.6（含 sqlite3/ssl）、git 2.56.0（含 `git init/add/commit/log`）、OpenSSL 3.6.5、OpenSSH 10.6p1、rsync 3.5.1、GNU sed/tar/wget/grep/find、zstd 1.5.7、xz 5.8.4 均执行成功；日志无 FATAL EXCEPTION / CANNOT LINK / SIGSEGV。A150 的 35/36 为非交互套件历史值（`tests/suite.sh` 不在仓库，未重跑） |
 | 真机 | `$DEVICE`（Android 10 / 1080×2280 / Magisk root） |
@@ -44,7 +44,7 @@
 | 已知环境坑 | 本机 toybox 0.8.0 的 `chmod` 符号模式**忽略按类别给出的 `-s`**：`u-s` / `g-s` 为空操作，清 setuid/setgid 只有 `a-s` 生效。实测 `4777` 经 `u-s,g-s,go-w` 得 `4755`（setuid 残留），经 `a-s,go-w` 得 `755` |
 | 备份 | 守卫相关全部内容备份在 `守卫模块备份`（工作区内）（基线 `d6c3b0f`） |
 | 收件箱提示 | 复制到收件箱失败的提示按实际原因区分（超单文件上限 / 文件数 256 / 总容量 2GB / 读不到文件），容量与数量类提示写明 `/storage/emulated/0/Download/shso` |
-| 发版 | tag `20261112`（纯数字，与 `versionCode` 对齐，指向当次发版代码 `3433a23`）；双端同名 Release（GitHub / Gitee），资产 `app-release.apk` 33,438,105 字节，三端 sha256 一致（`A31263BD…`，回下载核算），正文为 `更新日志.md` 20261112 段落的精简版；上一版（`20261108`）的发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
+| 发版 | tag `20261112`（纯数字，与 `versionCode` 对齐，指向当次发版代码 `cd86b8c`）；双端同名 Release（GitHub / Gitee），资产 `app-release.apk` 33,454,489 字节，三端 sha256 一致（`E13A888B…`，回下载核算），正文为 `更新日志.md` 20261112 段落的精简版；上一版（`20261108`）的发行程序已从双端移除（Release 与 tag 保留）。语法包侧：`syntaxpacks-v2` 指向 A114 提交（APK 不内置语法） |
 | 在线编译 | 实跑 `workflow_dispatch` 通过（包名 `com.sina.news`，5m19s，产物 2908313 字节，`package: name='com.sina.news'`）；签名开关 `use_debug_signing` 由签名步单点产出，单元测试步与编译步以 `-PuseDebugSigning` 同口径消费（见 § A142） |
 
 ---
