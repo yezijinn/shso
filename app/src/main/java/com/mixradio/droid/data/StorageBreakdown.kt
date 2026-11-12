@@ -218,14 +218,13 @@ object StorageBreakdown {
         if (RootService.isRootGranted != true) return label to null
         var total = 0L
         var ok = false
-        // 1) 本包 oat 目录
+        // 1) 本包 oat 目录（不存在时跳过，不影响下面 dalvik-cache 的统计）
         if (parent != null) {
-            val (c, o) = RootService.runCommandSync(
+            val (_, o) = RootService.runCommandSync(
                 "du -sb ${RootService.escapeShellArg("$parent/oat")} 2>/dev/null | cut -f1",
                 timeoutMs = 15_000L
             )
             o.lineSequence().firstOrNull()?.trim()?.toLongOrNull()?.let { total += it; ok = true }
-            if (c != 0 && !ok) return label to null
         }
         // 2) dalvik-cache 中本包条目（精确匹配包名，不把其它应用算进来）
         val (c2, o2) = RootService.runCommandSync(
@@ -251,11 +250,12 @@ object StorageBreakdown {
         } catch (_: Exception) { null }
     }
 
+    /** APK 内 asset 的压缩后体积；压缩型 asset 不能走 openFd（会抛异常）。 */
     private fun assetBytes(context: Context, name: String): Long = try {
-        context.assets.openFd(name).length
-    } catch (_: Exception) {
-        try { context.assets.open(name).use { it.available().toLong() } } catch (_: Exception) { 0L }
-    }
+        java.util.zip.ZipFile(context.applicationInfo.sourceDir).use { z ->
+            z.getEntry("assets/$name")?.compressedSize?.coerceAtLeast(0) ?: 0L
+        }
+    } catch (_: Exception) { 0L }
 
     private fun apkFileBytes(context: Context): Long = try {
         File(context.applicationInfo.sourceDir).length()
