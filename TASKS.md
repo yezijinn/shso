@@ -74,7 +74,7 @@
       改为一次调用；单文件 `delete()` 加本地优先。根因是「每个文件单独 fork 一个 su」。
 - [x] **全仓同类排查**：批量重命名 / 批量移动 / 原地拷贝 / 冲突探测 / `destinationExists`
       逐条量化并给出改法，暂不改（覆盖/冲突语义风险，另列 P1/P2）；
-      `listDirectory` 等已单次 su 的不动。清单见 `.agent-workflow/batch-perf-fix/04-final.md` §5。
+       `listDirectory` 等已单次 su 的不动。同类浪费逐条列出，暂不改的另列 P1/P2。
 - [x] **护栏与单测**：`ConcurrencyAndSessionGuardTest` 计数 4→5；新增 14 个分段纯函数单测 +
       3 个接线护栏（防退回逐项 delete / 防标记重复失效 / 防兜底裸递归）。736 tests / 0 失败。
 - [x] **真机验证**：400 个 `/sdcard` 微小文件端到端删除 1.35s（0 次 su）；400 个受保护路径
@@ -288,7 +288,7 @@ adb -s $DEVICE shell "su -c 'grep ^version= /data/adb/modules/shso_guard/module.
 | 多文件分享只消费首项 | 已知限制 | 系统 `ACTION_SEND` 单 `EXTRA_STREAM` 语义；批量走 `ACTION_SEND_MULTIPLE` 未开放 |
 | 执行链路不写横幅 / 审计日志 | 设计如此 | 守卫与审计子系统已整体移除，命令直通执行 |
 
-新增条目按一行表格登记：`BUG-<维度>-<序号>` / P0~P3 / 维度 / 文件与符号 / 用户可感知现象 / 一句话结论。
+新增条目按一行表格记：`BUG-<维度>-<序号>` / P0~P3 / 维度 / 文件与符号 / 用户可感知现象 / 一句话结论。
 新增前先查重，重复即合并；修复后移出开放项，明细写 `更新日志.md`。
 
 ## 相关文档
