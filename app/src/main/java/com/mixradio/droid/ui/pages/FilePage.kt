@@ -77,6 +77,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import com.mixradio.droid.data.AppSettings
 import com.mixradio.droid.data.ApkInstaller
 import com.mixradio.droid.data.ArchiveCreator
@@ -2961,8 +2962,9 @@ fun FilePage(
     if (showNewFileDialog) {
         AuroraWindowDialog(
             show = true,
-            title = "新建文件",
-            onDismissRequest = { showNewFileDialog = false }
+            title = "新建",
+            onDismissRequest = { showNewFileDialog = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
         ) {
             Column(
                 modifier = Modifier
@@ -3013,12 +3015,40 @@ fun FilePage(
                     Button(
                         onClick = {
                             val name = newFileName.trim()
+                            if (name.isEmpty()) {
+                                feedbackMessage = "文件名不能为空"
+                                return@Button
+                            }
+                            // 文件夹忽略扩展名输入框：只取文件名原文，不拼 .ext
+                            showNewFileDialog = false
+                            scope.launch {
+                                val (ok, msg) = RootFileManager.createFolder(currentDirectory, name)
+                                feedbackMessage = if (ok) "已创建文件夹: $name" else msg
+                                if (ok) refresh()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AuroraTokens.SurfaceHover,
+                            contentColor = AuroraTokens.Text
+                        )
+                    ) {
+                        Text("新文件夹")
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Button(
+                        onClick = {
+                            val name = newFileName.trim()
                             val ext = newFileExt.trim()
                             if (name.isEmpty()) {
                                 feedbackMessage = "文件名不能为空"
                                 return@Button
                             }
-                            val finalName = if (ext.isNotEmpty()) "$name.$ext" else name
+                            val finalName = when {
+                                ext.isEmpty() -> name
+                                // 文件名里已写了同一个扩展名（note.txt）时不重复追加，避免 note.txt.txt
+                                name.endsWith(".$ext", ignoreCase = true) -> name
+                                else -> "$name.$ext"
+                            }
                             showNewFileDialog = false
                             scope.launch {
                                 val (ok, msg) = RootFileManager.createEmptyFile(currentDirectory, finalName)
@@ -3031,7 +3061,7 @@ fun FilePage(
                             contentColor = AuroraTokens.OnAccent
                         )
                     ) {
-                        Text("创建")
+                        Text("新文件")
                     }
                 }
             }

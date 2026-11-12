@@ -163,4 +163,33 @@ class PickerAndPermissionRegressionTest {
             s.contains("""name.endsWith(".${'$'}ext", ignoreCase = true) -> name""")
         )
     }
+
+    @Test fun `新文件夹必须忽略扩展名输入框`() {
+        // 扩展名只对「新文件」有意义。曾把 .txt 拼到文件夹名后，
+        // 明明点的是「新文件夹」，磁盘上却多出一个 `<时间戳>.txt` 目录。
+        val picker = src("BuiltInFilePicker.kt")
+        val page = File("src/main/java/com/mixradio/droid/ui/pages/FilePage.kt").readText()
+        listOf("picker" to picker, "FilePage" to page).forEach { (label, s) ->
+            val at = s.indexOf("RootFileManager.createFolder(")
+            assertTrue("$label 应调用 createFolder", at > 0)
+            // 取该调用点之前的 onClick 块：文件夹名不得触碰扩展名输入框
+            val seg = s.substring(maxOf(0, at - 600), at)
+            assertFalse("$label 的文件夹名不得拼接扩展名", seg.contains("newFileExt"))
+        }
+    }
+
+    @Test fun `新建对话框必须是全宽且三键并存`() {
+        // 窄弹窗在两个输入框并排时会把扩展名压到看不见；
+        // 按钮也必须是 取消 / 新文件夹 / 新文件，不能退化成单个「创建」。
+        listOf(
+            "src/main/java/com/mixradio/droid/ui/components/BuiltInFilePicker.kt",
+            "src/main/java/com/mixradio/droid/ui/pages/FilePage.kt"
+        ).forEach { path ->
+            val s = File(path).readText()
+            assertTrue("$path 的对话框应全宽", s.contains("usePlatformDefaultWidth = false"))
+            assertTrue("$path 缺「新文件夹」", s.contains("Text(\"新文件夹\")"))
+            assertTrue("$path 缺「新文件」", s.contains("Text(\"新文件\")"))
+            assertFalse("$path 不应再出现「创建」按钮文案", s.contains("Text(\"创建\")"))
+        }
+    }
 }

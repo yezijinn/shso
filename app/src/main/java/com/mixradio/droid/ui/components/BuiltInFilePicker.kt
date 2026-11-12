@@ -575,8 +575,9 @@ if (directoryOnly) {
     if (showNewFileDialog) {
         AuroraWindowDialog(
             show = true,
-            title = "新建文件",
-            onDismissRequest = { showNewFileDialog = false }
+            title = "新建",
+            onDismissRequest = { showNewFileDialog = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
         ) {
             Column(
                 modifier = Modifier
@@ -639,6 +640,33 @@ if (directoryOnly) {
                     Button(
                         onClick = {
                             val name = newFileName.trim()
+                            if (name.isEmpty()) {
+                                newFileError = "请输入文件夹名"
+                                return@Button
+                            }
+                            // 文件夹忽略扩展名输入框：只取文件名原文，不拼 .ext
+                            scope.launch {
+                                val (ok, msg) = RootFileManager.createFolder(currentDir, name)
+                                if (ok) {
+                                    newFileError = null
+                                    showNewFileDialog = false
+                                } else {
+                                    newFileError = msg
+                                }
+                                loadDirectory(currentDir)
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AuroraTokens.SurfaceHover,
+                            contentColor = AuroraTokens.Text
+                        )
+                    ) {
+                        Text("新文件夹")
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Button(
+                        onClick = {
+                            val name = newFileName.trim()
                             val ext = newFileExt.trim()
                             if (name.isEmpty()) {
                                 newFileError = "请输入文件名"
@@ -670,7 +698,7 @@ if (directoryOnly) {
                             contentColor = AuroraTokens.OnAccent
                         )
                     ) {
-                        Text("创建")
+                        Text("新文件")
                     }
                 }
             }

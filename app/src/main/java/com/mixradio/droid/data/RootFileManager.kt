@@ -1366,4 +1366,43 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
         }
         Pair(false, "创建文件失败")
     }
+
+    /**
+     * 在指定目录新建文件夹。ROOT 已授权时优先用 su 创建（可操作受保护/系统路径）；
+     * 未授权或 su 失败时回退标准 File API（授予「所有文件访问」后可操作 /sdcard）。
+     * @return Pair(成功, 消息/最终路径)
+     */
+    suspend fun createFolder(dirPath: String, folderName: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (isUnsafePath(dirPath)) {
+            return@withContext Pair(false, "路径包含非法字符")
+        }
+        val name = folderName.trim()
+        if (name.isEmpty()) {
+            return@withContext Pair(false, "文件夹名不能为空")
+        }
+        // 文件夹名同样拒绝路径分隔符与非法字符（防止越目录写入）
+        if (isUnsafeFileName(name)) {
+            return@withContext Pair(false, "文件夹名不能包含路径分隔符或非法字符")
+        }
+
+        val base = if (dirPath.endsWith("/")) dirPath else "$dirPath/"
+        val fullPath = "$base$name"
+
+        // 已存在则中止，避免覆盖既有文件/目录
+        if (pathExists(fullPath)) {
+            return@withContext Pair(false, "已存在: $name")
+        }
+
+        if (preferRoot()) {
+            val escaped = RootService.escapeShellArg(fullPath)
+            val (code, _) = RootService.runCommandSync("mkdir -p $escaped && chmod 777 $escaped")
+            if (code == 0) return@withContext Pair(true, fullPath)
+        }
+        try {
+            val targetDir = File(fullPath)
+            if (targetDir.mkdirs()) return@withContext Pair(true, fullPath)
+        } catch (_: Exception) {
+        }
+        Pair(false, "创建文件夹失败")
+    }
 }
