@@ -20,7 +20,7 @@ val INSTALLABLE_EXTENSIONS = setOf("apk", "xapk", "apks", "aspk", "apkm")
 val TEXT_EXTENSIONS = setOf(
 
     // 纯文本
-    "txt", "log", "text", "csv", "ini", "cfg", "conf", "properties", "env",
+    "txt", "log", "text", "csv", "ini", "cfg", "conf", "properties", "prop", "env",
     // 代码
     "py", "java", "kt", "c", "cpp", "h", "hpp", "cc", "cs", "go", "rs",
     "swift", "rb", "php", "js", "ts", "jsx", "tsx",

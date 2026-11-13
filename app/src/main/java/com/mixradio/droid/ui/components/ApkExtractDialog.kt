@@ -19,11 +19,13 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,9 +40,11 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.mixradio.droid.data.ApkExtractor
 import com.mixradio.droid.data.InstalledAppInfo
+import com.mixradio.droid.data.filterInstalledApps
 import com.mixradio.droid.ui.theme.AuroraTextStyles
 import com.mixradio.droid.ui.theme.AuroraTokens
 import com.mixradio.droid.ui.theme.auroraSwitchColors
+import com.mixradio.droid.ui.theme.auroraTextFieldColors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -71,6 +75,7 @@ private var extractStatusMessage by mutableStateOf<String?>(null)
  * 「提取 APK」弹窗：列出已安装应用，点击即把其安装包导出到内部存储 `Download/`。
  *
  * - 默认只列**用户应用**，顶部开关可切换「含系统应用」
+ * - 搜索框按应用名 / 包名过滤**已加载**的列表（不触发重新枚举）
  * - 命名：基础包 `<应用名>-<versionCode>.APK`；分包应用追加 `-splitN.APK`
  * - 读取应用私有安装包需要 ROOT；无 ROOT 时仅系统分区上可直读的应用能提取
  *
@@ -88,8 +93,12 @@ internal fun ApkExtractDialog(
     var apps by remember { mutableStateOf<List<InstalledAppInfo>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var loadError by remember { mutableStateOf<String?>(null) }
+    // 搜索词用 rememberSaveable：旋屏/分屏重建后不该把用户刚敲的过滤条件清空
+    //（列表会重新枚举，但过滤条件保留，用户看到的是同一批结果）。
+    var query by rememberSaveable { mutableStateOf("") }
 
-    // 切换「含系统应用」需重新枚举 → 以 includeSystem 为 key
+    // 切换「含系统应用」需重新枚举 → 以 includeSystem 为 key。
+    // query **不进** key：敲字只需过滤已有列表，重新枚举会让每次按键都扫一遍 PackageManager。
     LaunchedEffect(includeSystem) {
         loading = true
         loadError = null
@@ -102,6 +111,9 @@ internal fun ApkExtractDialog(
             loading = false
         }
     }
+
+    // 过滤结果只依赖（列表实例, 搜索词）：列表不变时同一搜索词只算一次。
+    val filtered = remember(apps, query) { filterInstalledApps(apps, query) }
 
     Dialog(
         onDismissRequest = { if (extractingPkg == null) onDismissRequest() },
@@ -148,12 +160,43 @@ internal fun ApkExtractDialog(
                     )
                 }
 
-                // 状态行（加载 / 错误 / 上次结果）
+                // 搜索框：按应用名或包名过滤已加载列表
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        label = { Text("搜索应用名或包名") },
+                        singleLine = true,
+                        colors = auroraTextFieldColors(),
+                        modifier = Modifier.weight(1f).clip(RoundedCornerShape(0.dp))
+                    )
+                    if (query.isNotEmpty()) {
+                        Text(
+                            text = "清除",
+                            style = AuroraTextStyles.footnote1,
+                            color = AuroraTokens.Accent,
+                            fontSize = 13.sp,
+                            modifier = Modifier
+                                .clickable { query = "" }
+                                .padding(start = 12.dp, top = 12.dp, bottom = 8.dp, end = 4.dp)
+                        )
+                    }
+                }
+
+                // 状态行（加载 / 错误 / 上次结果），**有搜索词时任何分支都带命中数**
+                val countLabel = if (query.isBlank()) {
+                    "共 ${apps.size} 个应用"
+                } else {
+                    "命中 ${filtered.size} 个 / 共 ${apps.size} 个"
+                }
                 val infoLine = when {
                     loading -> "正在读取应用列表…"
                     loadError != null -> loadError
-                    extractStatusMessage != null -> extractStatusMessage
-                    else -> "共 ${apps.size} 个应用"
+                    extractStatusMessage != null -> "$extractStatusMessage · $countLabel"
+                    else -> countLabel
                 }
                 Text(
                     text = infoLine ?: "",
@@ -162,12 +205,24 @@ internal fun ApkExtractDialog(
                     modifier = Modifier.padding(vertical = 8.dp)
                 )
 
-                // 应用列表（仅此区滚动）
+                // 应用列表（仅此区滚动）。key 用 packageName —— 过滤不改变任何项的 key，
+                // LazyColumn 的复用与动画稳定；getInstalledPackages 只返回当前用户，
+                // 同一包名不会重复出现。
                 LazyColumn(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(0.dp)
                 ) {
-                    items(apps, key = { it.packageName }) { app ->
+                    if (filtered.isEmpty() && !loading && loadError == null) {
+                        item {
+                            Text(
+                                text = if (apps.isEmpty()) "没有可提取的应用" else "没有匹配的应用",
+                                style = AuroraTextStyles.footnote2,
+                                color = AuroraTokens.TextSecondary,
+                                modifier = Modifier.padding(vertical = 12.dp)
+                            )
+                        }
+                    }
+                    items(filtered, key = { it.packageName }) { app ->
                         val isExtracting = extractingPkg == app.packageName
                         Row(
                             modifier = Modifier

@@ -280,3 +280,25 @@ object ApkExtractor {
         }
     }
 }
+
+/**
+ * 「提取 APK」列表的搜索过滤：按**应用名**或**包名**做大小写不敏感的子串匹配。
+ *
+ * 纯函数，与 UI 解耦，便于 JVM 单测：
+ *  - 空串 / 全空白 → 原样返回**同一列表实例**（清空即还原，且不产生无谓重组）；
+ *  - 只读，不修改入参；label 与 packageName 同时命中不会重复出现（filter 天然满足）。
+ *
+ * 只过滤**已枚举**的列表：切换「含系统应用」才是唯一重新枚举入口，
+ * 敲字不触发 `listInstalledApps`（那里每次都要扫 PackageManager，慢且耗电）。
+ */
+internal fun filterInstalledApps(
+    apps: List<InstalledAppInfo>,
+    query: String
+): List<InstalledAppInfo> {
+    val q = query.trim()
+    if (q.isEmpty()) return apps
+    return apps.filter { app ->
+        app.label.contains(q, ignoreCase = true) ||
+            app.packageName.contains(q, ignoreCase = true)
+    }
+}

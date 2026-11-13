@@ -106,6 +106,9 @@ import com.mixradio.droid.data.OpenWith
 import com.mixradio.droid.data.RootService
 import com.mixradio.droid.data.displayPath
 import com.mixradio.droid.ui.components.ApkExtractDialog
+import com.mixradio.droid.ui.components.ArchiveBrowseDialog
+import com.mixradio.droid.ui.components.archiveWriteGeneration
+import com.mixradio.droid.ui.components.resetArchiveWriteStatus
 import com.mixradio.droid.ui.components.BookmarksDialog
 import com.mixradio.droid.ui.components.BuiltInFilePicker
 import com.mixradio.droid.ui.components.ExecuteConfirmDialog
@@ -384,6 +387,12 @@ fun FilePage(
     // 「提取 APK」弹窗（设置菜单入口）。用 rememberSaveable：提取跑在进程级作用域，
     // 旋转重建后弹窗若被复位关闭，用户既看不到「提取中」，也无从得知结果落在哪里。
     var showExtractApkDialog by rememberSaveable { mutableStateOf(false) }
+    // 压缩包免解压浏览：目标用 FileItemSaver 快照（跨旋转保留，且不随外部唤起改写 selectedItem），
+    // 开关同样 rememberSaveable —— 浏览中若被重建静默关掉，用户会以为菜单按钮没反应。
+    var showArchiveBrowseDialog by rememberSaveable { mutableStateOf(false) }
+    var archiveBrowseTarget by rememberSaveable(stateSaver = FileItemSaver) {
+        mutableStateOf<FileItem?>(null)
+    }
     var showPermissionDialog by remember { mutableStateOf(false) }
     var permissionMetadata by remember { mutableStateOf<FilePermissionMetadata?>(null) }
 
@@ -2188,6 +2197,15 @@ fun FilePage(
                         showActionDialog = false
                         startExtract(item)
                     }
+
+                    // 免解压浏览：只读 central directory / 逐条取流，不整体落盘，
+                    // 因此**不**受当前目录可写性限制（不解压、不写目标目录）。
+                    ActionTextRow("浏览压缩内容", AuroraTokens.AccentViolet) {
+                        showActionDialog = false
+                        resetArchiveWriteStatus()
+                        archiveBrowseTarget = item
+                        showArchiveBrowseDialog = true
+                    }
                 }
 
                 // 安装 APK/XAPK：普通用户即可安装（无 ROOT 走系统安装器），
@@ -2906,6 +2924,28 @@ fun FilePage(
                 // 保存会改文件大小 / 修改时间：「改」是唯一没有刷新出口的动作。
                 // 关闭时才刷（不区分是否真保存）：为区分动组件回调契约不划算。
                 refresh()
+            }
+        )
+    }
+
+    // 压缩包包内写回成功 → 刷新。用进程级代数而不是弹窗回调：写回协程可能活过本次组合
+    //（关掉弹窗或旋屏），回调闭包早已失效，列表会停在旧体积上。
+    // 首次组合只记录当前代数：进程内此前若已写过回，不该一进文件页就白刷一次（多一趟 su）。
+    var seenArchiveWriteGeneration by remember { mutableStateOf(archiveWriteGeneration) }
+    LaunchedEffect(archiveWriteGeneration) {
+        if (archiveWriteGeneration != seenArchiveWriteGeneration) {
+            seenArchiveWriteGeneration = archiveWriteGeneration
+            refresh()
+        }
+    }
+
+    // 压缩包免解压浏览：包内文本写回后原包体积/时间已变，由上面的代数统一刷新。
+    if (showArchiveBrowseDialog && archiveBrowseTarget != null) {
+        ArchiveBrowseDialog(
+            archivePath = archiveBrowseTarget!!.path,
+            onDismiss = {
+                showArchiveBrowseDialog = false
+                archiveBrowseTarget = null
             }
         )
     }

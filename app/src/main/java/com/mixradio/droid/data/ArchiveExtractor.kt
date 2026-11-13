@@ -97,6 +97,14 @@ object ArchiveExtractor {
         }
     }
 
+    /**
+     * 容器类型（**对外可见**）。
+     *
+     * 存在的唯一理由：浏览/写回必须与 [isKnownArchive] 共用同一份后缀判定表。
+     * 另写一份 `endsWith(".zip")` 的地方，迟早出现「列表判成压缩包、浏览说格式不支持」。
+     */
+    enum class ContainerKind { ZIP, SEVENZ, TAR, SINGLE }
+
     /** 压缩包/文件类型分类。 */
     private enum class Kind { ZIP, SEVENZ, TAR, SINGLE }
 
@@ -117,6 +125,15 @@ object ArchiveExtractor {
      * 且注释还停留在「rar 暂不支持解压」，与实现矛盾。现已合并为本函数。
      */
     fun isKnownArchive(name: String): Boolean = kindOf(name) != null
+
+    /** 容器类型；未知格式返回 null。与 [isKnownArchive] 同一判定表，仅做类型暴露。 */
+    fun containerKindOf(name: String): ContainerKind? = when (kindOf(name)) {
+        Kind.ZIP -> ContainerKind.ZIP
+        Kind.SEVENZ -> ContainerKind.SEVENZ
+        Kind.TAR -> ContainerKind.TAR
+        Kind.SINGLE -> ContainerKind.SINGLE
+        null -> null
+    }
 
     /**
      * 识别压缩包类型；未知格式返回 null。
@@ -299,6 +316,17 @@ object ArchiveExtractor {
 
     /** 打开 tar 归档流（按压缩格式自动包装）。 */
     private fun openTar(path: String): TarArchiveInputStream = TarArchiveInputStream(openDecompress(path))
+
+    /**
+     * 浏览用：按格式打开 tar 流。
+     *
+     * 必须复用 [openTar]（而非在浏览层再写一份后缀→解压器映射）：
+     * zstd 原生库缺失时这里同样归一成可读异常，不会以 `UnsatisfiedLinkError` 穿透到崩溃。
+     */
+    internal fun openTarStream(path: String): TarArchiveInputStream = openTar(path)
+
+    /** 浏览用：打开单文件压缩流（gz/xz/bz2/lz4/zst）。 */
+    internal fun openSingleStream(path: String): InputStream = openDecompress(path)
 
     /**
      * 自动解压主入口。
