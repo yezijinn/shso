@@ -2969,28 +2969,52 @@ fun FilePage(
                     showDeleteDialog = true
                 }
 
-                ActionTextRow("原地拷贝", AuroraTokens.Text) {
+                ActionTextRow("原地拷贝", AuroraTokens.Text, enabled = !isCopying) {
                     showBatchDialog = false
-                    scope.launch {
-                        // 文件夹不在原地拷贝范围内（单文件动作菜单同样不为文件夹提供该入口，
-                        // 递归拷贝的语义与体量都没有入口承载）。「一切」范围会把文件夹选进来，
-                        // 这里跳过并如实告知——不能让它们混在「拷贝失败」里计数。
-                        val dirPaths = displayFileList.asSequence()
-                            .filter { it.isDirectory }.map { it.path }.toHashSet()
-                        val (folders, files) = selectedPaths.toList().partition { it in dirPaths }
+                    actionJobScope.launch {
+                        isCopying = true
                         var ok = 0
                         var fail = 0
-                        files.forEach { p ->
-                            val (s) = RootFileManager.copyFile(p)
-                            if (s) ok++ else fail++
+                        var unfinished = 0
+                        var skipped = 0
+                        try {
+                            // 文件夹不在原地拷贝范围内（单文件动作菜单同样不为文件夹提供该入口，
+                            // 递归拷贝的语义与体量都没有入口承载）。「一切」范围会把文件夹选进来，
+                            // 这里跳过并如实告知 —— 不能让它们混在「拷贝失败」里计数。
+                            val dirPaths = displayFileList.asSequence()
+                                .filter { it.isDirectory }.map { it.path }.toHashSet()
+                            val (folders, files) = selectedPaths.toList()
+                                .partition { it in dirPaths }
+                            skipped = folders.size
+                            if (files.isNotEmpty()) {
+                                // 整批一条（或少数几条）su：旧写法逐项 copyFile 是 M 条 su，
+                                // 而每项仍由 shell 内的 O_EXCL 占位拿到唯一新名，语义不变。
+                                val batch = RootFileManager.copyBatch(files)
+                                ok = batch.copied.size
+                                fail = batch.failedCount
+                                unfinished = batch.unprocessedCount
+                            }
+                        } finally {
+                            // 与 runMoveWithConflict 同一收尾：动作是不可撤销的 su 副作用，
+                            // 页面级 scope 被取消时收尾仍必须落地（清选中、复位标志、刷新）。
+                            withContext(NonCancellable + Dispatchers.Main) {
+                                isCopying = false
+                                selectedPaths.clear()
+                                multiSelectMode = false
+                                // 只刷本列：原地拷贝只在本目录新增文件；refresh() 已含
+                                // 「两列停在同一目录时一并刷另一列」，无条件 refreshBothPanes()
+                                // 会在另一列停在不同目录时白跑一趟 su。
+                                refresh()
+                                feedbackMessage = buildString {
+                                    append(
+                                        if (fail == 0 && unfinished == 0) "已拷贝 $ok 个文件"
+                                        else "拷贝完成：$ok 成功 / $fail 失败"
+                                    )
+                                    if (unfinished > 0) append(" / $unfinished 未完成")
+                                    if (skipped > 0) append("，跳过 $skipped 个文件夹")
+                                }
+                            }
                         }
-                        feedbackMessage = buildString {
-                            append(if (fail == 0) "已拷贝 $ok 个文件" else "拷贝完成：$ok 成功 / $fail 失败")
-                            if (folders.isNotEmpty()) append("，跳过 ${folders.size} 个文件夹")
-                        }
-                        selectedPaths.clear()
-                        multiSelectMode = false
-                        refresh()
                     }
                 }
 

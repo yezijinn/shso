@@ -4,6 +4,7 @@
 package com.mixradio.droid.data
 
 import android.annotation.SuppressLint
+import com.mixradio.droid.data.security.ShellEscapes
 import android.content.Context
 import android.content.Intent
 import android.content.Intent.FLAG_ACTIVITY_NEW_TASK
@@ -172,42 +173,40 @@ object ApkInstaller {
 
         // 统一用规范名（.apk）落到 /data/local/tmp：pm install 对 .1 等非规范后缀可能拒绝
         val tmpApk = "$TMP_DIR/_shso_install_${UUID.randomUUID()}.apk"
-        val cleanCmd = "rm -f ${RootService.escapeShellArg(tmpApk)}"
         // -1 = runCommandSync 超时/异常。此时 `pm install` 可能**仍在运行**
         // （su 超时只代表没等到，不保证子进程已死），无条件删除会让它读到被删的
         // 文件 → 后续偶发 INSTALL_FAILED_* 或半安装态，且用户完全无法归因。
-        // 故超时场景保留临时文件并如实告知，由用户稍后自行清理。
+        // 故把清理放在脚本**末尾**：脚本被杀 = 清理不执行 = 临时文件保留，与旧语义一致。
+        // 预算里也不再需要「先 rm -f 预清理」那一条 su：临时名是 UUID，不可能有同名残留。
         var installTimedOut = false
-        try {
-            RootService.runCommandSync(cleanCmd, INSTALL_TIMEOUT_MS)
-
-            val copyCmd = "cp ${RootService.escapeShellArg(apkPath)} ${RootService.escapeShellArg(tmpApk)}"
-            val (copyCode, copyOut) = RootService.runCommandSync(copyCmd, INSTALL_TIMEOUT_MS)
-            if (copyCode != 0) {
-                return@withContext InstallResult.Failure("复制 APK 到临时目录失败: $copyOut")
-            }
-
-            // 安装（-r 覆盖安装 -d 允许降级 -t 测试包）
-            val installCmd = "pm install -r -d -t ${RootService.escapeShellArg(tmpApk)}"
-            val (installCode, installOut) = RootService.runCommandSync(installCmd, INSTALL_TIMEOUT_MS)
-
-            if (installCode == 0 && (installOut.contains("Success") || installOut.contains("success"))) {
-                InstallResult.Success("安装成功")
+        val installScript = buildString {
+            append("set -- ")
+            append(ShellEscapes.escapeShellArg(apkPath)).append(' ')
+            append(ShellEscapes.escapeShellArg(tmpApk)).append('\n')
+            append("cp \"\$1\" \"\$2\" || { echo SHSO_STAGE_FAIL; rm -f \"\$2\"; exit 3; }\n")
+            append("pm install -r -d -t \"\$2\"\n")
+            append("rc=\$?\n")
+            append("rm -f \"\$2\"\n")
+            append("exit \$rc\n")
+        }
+        val (installCode, installOut) = RootService.runCommandSync(installScript, INSTALL_TIMEOUT_MS)
+        if (installCode == -1) installTimedOut = true
+        val body = installOut.lineSequence()
+            .filterNot { it.trim() == "SHSO_STAGE_FAIL" }
+            .joinToString("\n")
+            .trim()
+        if (installOut.contains("SHSO_STAGE_FAIL")) {
+            return@withContext InstallResult.Failure("复制 APK 到临时目录失败: ${body.ifEmpty { "未知错误" }}")
+        }
+        if (installCode == 0 && (installOut.contains("Success") || installOut.contains("success"))) {
+            InstallResult.Success("安装成功")
+        } else {
+            val tail = if (installTimedOut) {
+                "（安装超时，临时文件已保留以免打断仍在进行的安装：$tmpApk）"
             } else {
-                if (installCode == -1) installTimedOut = true
-                val tail = if (installTimedOut) {
-                    "（安装超时，临时文件已保留以免打断仍在进行的安装：$tmpApk）"
-                } else {
-                    ""
-                }
-                InstallResult.Failure(
-                    "安装失败: ${installOut.trim().ifEmpty { "未知错误" }}$tail"
-                )
+                ""
             }
-        } finally {
-            if (!installTimedOut) {
-                RootService.runCommandSync(cleanCmd, INSTALL_TIMEOUT_MS)
-            }
+            InstallResult.Failure("安装失败: ${body.ifEmpty { "未知错误" }}$tail")
         }
     }
 
@@ -896,27 +895,292 @@ object ApkInstaller {
             installSplitApksInternal(context, apkPaths)
         }
 
+    /** 单段安装命令的 UTF-8 字节上限（与 `MOVE_SEGMENT_MAX_BYTES` 同口径）。 */
+    internal const val INSTALL_SEGMENT_MAX_BYTES = 2900
+
+    internal const val INSTALL_COPY_DONE_MARKER = "SHSO_SPLITCP_OK"
+    internal const val INSTALL_WRITE_DONE_MARKER = "SHSO_SPLITWR_OK"
+
+    /** 段超时：基线取 120s（旧逐项调用走 runCommandSync 默认值），每片再给 30s。 */
+    private const val INSTALL_SEGMENT_TIMEOUT_BASE_MS = 120_000L
+    private const val INSTALL_SEGMENT_TIMEOUT_PER_ITEM_MS = 30_000L
+    private const val INSTALL_SEGMENT_TIMEOUT_MAX_MS = 900_000L
+
+    internal fun installSegmentTimeoutMs(itemCount: Int): Long =
+        (INSTALL_SEGMENT_TIMEOUT_BASE_MS + INSTALL_SEGMENT_TIMEOUT_PER_ITEM_MS * itemCount.coerceAtLeast(1))
+            .coerceAtMost(INSTALL_SEGMENT_TIMEOUT_MAX_MS)
+
+    /** 一个待拷分片：[index] 是**全局**下标（分段后仍能回指原 `apkPaths`）。 */
+    internal data class InstallCopyItem(val index: Int, val source: String, val target: String)
+
+    /** 一次 `install-write`：[size] 由 root 侧 `stat -c %s` 回取，不信应用域 `File.length()`。 */
+    internal data class InstallWriteItem(val index: Int, val draft: String, val path: String, val size: Long)
+
+    /**
+     * 分片拷贝段解析。
+     *
+     * [failedIndex] 是本段内首个失败项的下标，[failedKind]：
+     *  `C` = `cp` 失败，`S` = `cp` 成功但取不回可信大小（fail-closed，不再拿 0 去写）。
+     */
+    internal data class InstallCopyParse(
+        val done: Boolean,
+        val failedIndex: Int?,
+        val failedKind: Char,
+        val sizes: LongArray
+    )
+
+    internal data class InstallWriteParse(val done: Boolean, val failedLocal: Int?)
+
+    /**
+     * 单段分片拷贝命令。
+     *
+     * 每条都有依据：
+     * - 成对 `set --` 打包，脚本内 `shift 2`，每项只 fork 一个 `cp`；
+     * - **顺带回取每片字节数**（`stat -c %s`）：`/data/local/tmp` 是 root/shell 域，
+     *   应用 uid 无法 stat 子项，`File(tmp).length()` 会退化为 0；
+     * - `stat` 失败**不得**退回 0，`stat` 返回 0 同样不得放过（`cp` 被截断而仍返回 0 时会这样）：
+     *   两者都打印 `CPS:<i>` 并判失败（fail-closed）。合法分片不可能是 0 字节；
+     * - `cp` 失败立即打印 `CPF:<段内下标>` 后补标记再 `exit 0`：
+     *   退出码无法表达「第几片失败」，而标记必须出现在每条终止路径上；
+     * - stderr 不吞：`runCommandSync` 合并了 stderr，失败文案要用它。
+     */
+    internal fun buildInstallCopySegmentCommand(items: List<InstallCopyItem>): String {
+        require(items.isNotEmpty()) { "空段无意义" }
+        val sb = StringBuilder(240 + items.size * 96)
+        sb.append("set --")
+        for (item in items) {
+            sb.append(' ').append(ShellEscapes.escapeShellArg(item.source))
+            sb.append(' ').append(ShellEscapes.escapeShellArg(item.target))
+        }
+        sb.append('\n')
+        sb.append("i=0\n")
+        sb.append("while [ \$# -ge 2 ]; do\n")
+        sb.append("if ! cp \"\$1\" \"\$2\"; then printf 'CPF:%d\\n' \$i; echo ")
+            .append(INSTALL_COPY_DONE_MARKER).append("; exit 0; fi\n")
+        sb.append("s=\$(stat -c %s \"\$2\" 2>/dev/null) || { printf 'CPS:%d\\n' \$i; echo ")
+            .append(INSTALL_COPY_DONE_MARKER).append("; exit 0; }\n")
+        sb.append("if [ \"\$s\" -le 0 ]; then printf 'CPS:%d\\n' \$i; echo ")
+            .append(INSTALL_COPY_DONE_MARKER).append("; exit 0; fi\n")
+        sb.append("printf 'SZ:%d:%s\\n' \$i \"\$s\"\n")
+        sb.append("shift 2; i=\$((i+1))\n")
+        sb.append("done\n")
+        sb.append("echo ").append(INSTALL_COPY_DONE_MARKER).append('\n')
+        return sb.toString()
+    }
+
+    /**
+     * 单段写入命令。`pm install-write` 仍**逐片一次**（协议硬要求，见 §6.2），
+     * 合并的只是 su：N 条 `su -c` → 1 条。
+     *
+     * `session` 必须是纯数字（来自 `SESSION_ID_REGEX`），否则拒绝构造 ——
+     * 它是唯一内联进命令的非转义片段。
+     */
+    internal fun buildInstallWriteSegmentCommand(
+        session: String,
+        items: List<InstallWriteItem>
+    ): String {
+        require(items.isNotEmpty()) { "空段无意义" }
+        require(session.isNotEmpty() && session.all { it.isDigit() }) { "会话 id 必须是纯数字" }
+        val sb = StringBuilder(240 + items.size * 72)
+        sb.append("set --")
+        for (item in items) {
+            sb.append(' ').append(ShellEscapes.escapeShellArg(item.draft))
+            sb.append(' ').append(ShellEscapes.escapeShellArg(item.path))
+            sb.append(' ').append(item.size)
+        }
+        sb.append('\n')
+        sb.append("i=0\n")
+        sb.append("while [ \$# -ge 3 ]; do\n")
+        sb.append("if ! pm install-write -S \"\$3\" ").append(session)
+            .append(" \"\$1\" \"\$2\"; then printf 'IWF:%d\\n' \$i; echo ")
+            .append(INSTALL_WRITE_DONE_MARKER).append("; exit 0; fi\n")
+        sb.append("shift 3; i=\$((i+1))\n")
+        sb.append("done\n")
+        sb.append("echo ").append(INSTALL_WRITE_DONE_MARKER).append('\n')
+        return sb.toString()
+    }
+
+    internal fun installCopyCostBytes(item: InstallCopyItem): Int =
+        ShellEscapes.escapeShellArg(item.source).toByteArray(Charsets.UTF_8).size +
+            ShellEscapes.escapeShellArg(item.target).toByteArray(Charsets.UTF_8).size + 2
+
+    internal fun installWriteCostBytes(item: InstallWriteItem): Int =
+        ShellEscapes.escapeShellArg(item.draft).toByteArray(Charsets.UTF_8).size +
+            ShellEscapes.escapeShellArg(item.path).toByteArray(Charsets.UTF_8).size +
+            item.size.toString().length + 2
+
+    internal val installCopyOverheadBytes: Int by lazy {
+        val probe = InstallCopyItem(0, "/", "/")
+        buildInstallCopySegmentCommand(listOf(probe)).toByteArray(Charsets.UTF_8).size -
+            installCopyCostBytes(probe)
+    }
+
+    internal val installWriteOverheadBytes: Int by lazy {
+        val probe = InstallWriteItem(0, "/", "/", 0L)
+        buildInstallWriteSegmentCommand("1", listOf(probe)).toByteArray(Charsets.UTF_8).size -
+            installWriteCostBytes(probe)
+    }
+
+    /** 按预算装箱，保序不丢项。与 `RootFileManager.chunkByBytes` 同构（跨文件不复用其 private 实现）。 */
+    private fun <T> chunkInstallItems(items: List<T>, overhead: Int, cost: (T) -> Int): List<List<T>> {
+        if (items.isEmpty()) return emptyList()
+        val out = ArrayList<List<T>>()
+        var current = ArrayList<T>()
+        var bytes = overhead
+        for (item in items) {
+            val itemCost = cost(item)
+            if (current.isNotEmpty() && bytes + itemCost > INSTALL_SEGMENT_MAX_BYTES) {
+                out += current
+                current = ArrayList()
+                bytes = overhead
+            }
+            current += item
+            bytes += itemCost
+        }
+        if (current.isNotEmpty()) out += current
+        return out
+    }
+
+    internal fun planInstallCopySegments(items: List<InstallCopyItem>): List<List<InstallCopyItem>> =
+        chunkInstallItems(items, installCopyOverheadBytes) { installCopyCostBytes(it) }
+
+    internal fun planInstallWriteSegments(items: List<InstallWriteItem>): List<List<InstallWriteItem>> =
+        chunkInstallItems(items, installWriteOverheadBytes) { installWriteCostBytes(it) }
+
+    internal fun parseInstallCopySegmentOutput(output: String, count: Int): InstallCopyParse {
+        var done = false
+        var failed: Int? = null
+        var kind = ' '
+        val sizes = LongArray(count) { -1L }
+        for (line in output.lineSequence()) {
+            if (line == INSTALL_COPY_DONE_MARKER) {
+                done = true
+                continue
+            }
+            if (line.startsWith("CPF:")) {
+                failed = line.substring(4).trim().toIntOrNull() ?: failed
+                kind = 'C'
+                continue
+            }
+            if (line.startsWith("CPS:")) {
+                failed = line.substring(4).trim().toIntOrNull() ?: failed
+                kind = 'S'
+                continue
+            }
+            if (!line.startsWith("SZ:")) continue
+            val rest = line.substring(3)
+            val digits = rest.takeWhile { it.isDigit() }
+            val index = digits.toIntOrNull() ?: continue
+            if (index !in 0 until count) continue
+            val value = rest.substring(digits.length).removePrefix(":").trim().toLongOrNull() ?: continue
+            if (value > 0L) sizes[index] = value
+        }
+        return InstallCopyParse(done, failed, kind, sizes)
+    }
+
+    internal fun parseInstallWriteSegmentOutput(output: String, count: Int): InstallWriteParse {
+        var done = false
+        var failed: Int? = null
+        for (line in output.lineSequence()) {
+            if (line == INSTALL_WRITE_DONE_MARKER) {
+                done = true
+                continue
+            }
+            if (!line.startsWith("IWF:")) continue
+            failed = line.substring(4).trim().toIntOrNull() ?: failed
+        }
+        return InstallWriteParse(done, failed)
+    }
+
+    /** 分片暂存：分段拷贝 + 回取真实大小。返回 null 表示全部成功。 */
+    private suspend fun stageSplits(
+        sources: List<String>,
+        targets: List<String>,
+        sizes: LongArray
+    ): String? {
+        val items = sources.indices.map { InstallCopyItem(it, sources[it], targets[it]) }
+        for (segment in planInstallCopySegments(items)) {
+            val (_, out) = RootService.runCommandSync(
+                buildInstallCopySegmentCommand(segment),
+                timeoutMs = installSegmentTimeoutMs(segment.size)
+            )
+            val parsed = parseInstallCopySegmentOutput(out, segment.size)
+            if (!parsed.done) return "复制分片失败：ROOT 命令未完成"
+            parsed.failedIndex?.let { local ->
+                val item = segment.getOrNull(local) ?: segment.first()
+                if (parsed.failedKind == 'S') {
+                    return "复制分片 ${item.index} 失败: 无法取回分片大小"
+                }
+                // 只回传 cp 自己的诊断，别把 SZ:/CPF:/CPS: 这些协议行塞进用户可见文案
+                val detail = out.lineSequence()
+                    .filterNot {
+                        it.startsWith("SZ:") || it.startsWith("CPF:") ||
+                            it.startsWith("CPS:") || it == INSTALL_COPY_DONE_MARKER
+                    }
+                    .joinToString("\n")
+                    .trim()
+                return "复制分片 ${item.index} 失败: ${detail.ifEmpty { "未知错误" }}"
+            }
+            segment.forEachIndexed { local, item ->
+                val size = parsed.sizes[local]
+                if (size <= 0L) return "复制分片 ${item.index} 失败: 未回传分片大小"
+                sizes[item.index] = size
+            }
+        }
+        return null
+    }
+
+    /** 分片写入：分段批量，`pm install-write` 仍逐片。返回 null 表示全部成功。 */
+    private suspend fun writeSplits(
+        session: String,
+        drafts: List<String>,
+        tmpFiles: List<String>,
+        sizes: LongArray
+    ): String? {
+        val items = drafts.indices.map { InstallWriteItem(it, drafts[it], tmpFiles[it], sizes[it]) }
+        for (segment in planInstallWriteSegments(items)) {
+            val (_, out) = RootService.runCommandSync(
+                buildInstallWriteSegmentCommand(session, segment),
+                timeoutMs = installSegmentTimeoutMs(segment.size)
+            )
+            val parsed = parseInstallWriteSegmentOutput(out, segment.size)
+            if (!parsed.done) return "写入分片失败：ROOT 命令未完成"
+            parsed.failedLocal?.let { local ->
+                val index = segment.getOrNull(local)?.index ?: segment.first().index
+                // 前面成功写过的片会各打一行 `Success: streamed N bytes`，
+                // 不过滤就会把真错误淹掉。协议行与成功行一并剔除。
+                val detail = out.lineSequence()
+                    .filterNot {
+                        it.startsWith("IWF:") || it.startsWith("Success") ||
+                            it == INSTALL_WRITE_DONE_MARKER
+                    }
+                    .joinToString("\n")
+                    .trim()
+                return "写入分片 $index（${drafts[index]}）失败: ${detail.ifEmpty { "未知错误" }}"
+            }
+        }
+        return null
+    }
+
     private suspend fun installSplitApksInternal(
         context: Context,
         apkPaths: List<String>
     ): InstallResult = withContext(Dispatchers.IO) {
-        // 1. 拷贝所有分片到 /data/local/tmp（sdcard 直读可能受限）
+        // 1. 一条 su 拷完全部分片（并在同一条命令里回取每片真实大小）
         val token = UUID.randomUUID().toString()
-        val tmpFiles = mutableListOf<String>()
+        val tmpFiles = ArrayList<String>(apkPaths.size)
+        for (i in apkPaths.indices) {
+            tmpFiles.add("$TMP_DIR/_shso_split_${token}_$i.apk")
+        }
         var sessionId: String? = null
         var committed = false
         try {
-            for ((i, path) in apkPaths.withIndex()) {
-                val tmp = "$TMP_DIR/_shso_split_${token}_$i.apk"
-                val copyCmd = "cp ${RootService.escapeShellArg(path)} ${RootService.escapeShellArg(tmp)}"
-                val (code, out) = RootService.runCommandSync(copyCmd, INSTALL_TIMEOUT_MS)
-                if (code != 0) {
-                    return@withContext InstallResult.Failure("复制分片 $i 失败: $out")
-                }
-                tmpFiles.add(tmp)
+            val sizes = LongArray(apkPaths.size) { -1L }
+            stageSplits(apkPaths, tmpFiles, sizes)?.let { error ->
+                return@withContext InstallResult.Failure(error)
             }
 
-            // 2. 计算总大小并创建会话。
+            // 2. 计算总大小并创建会话（-S 用 root 侧取回的权威值）。
             //
             // **不得带 `-p`**：`pm install-create` 的 `-p` 是 `INHERIT_PACKAGE`，它不校验
             // 「将要安装的包名」，而是把会话置成 `MODE_INHERIT_EXISTING` —— 语义是「新分片
@@ -924,12 +1188,11 @@ object ApkInstaller {
             // 用 WhatsApp 整套分包（base + split1..3）、`-p com.whatsapp` 建会话，四个分片
             // 全部 streamed 成功，commit 仍报
             // `INSTALL_FAILED_INVALID_APK: Missing existing base package`；去掉 `-p` 同一批
-            // 文件同样写入后 commit 直接 `Success`。即首次安装分包应用会 100% 失败，
-            // 且错误信息指向用户无从理解的「既有基础包缺失」。
+            // 文件同样写入后 commit 直接 `Success`。即首次安装分包应用会 100% 失败。
             // 整套安装必须是 `MODE_FULL_INSTALL`（不带 `-p` 的默认值）。
             //
             // `-t` 与单文件安装路径（`pm install -r -d -t`）保持一致，允许 testOnly 包。
-            val totalSize = apkPaths.sumOf { File(it).length() }
+            val totalSize = sizes.fold(0L) { acc, value -> acc + value }
             val createCmd = "pm install-create -r -d -t -S $totalSize"
             val (createCode, createOut) = RootService.runCommandSync(createCmd, INSTALL_TIMEOUT_MS)
             if (createCode != 0) {
@@ -941,16 +1204,11 @@ object ApkInstaller {
                 ?: return@withContext InstallResult.Failure("无法解析安装会话 ID: ${createOut.trim()}")
             sessionId = session
 
-            // 3. 写入分片。草稿名 = commit 后的规范名：基础包 base.apk、分包 split_<splitName>.apk。
+            // 3. 写入分片（一条 su；pm 仍逐片写 —— 协议要求，见施工文档 §6.2）。
+            // 草稿名 = commit 后的规范名：基础包 base.apk、分包 split_<splitName>.apk。
             val draftNames = draftNamesFor(apkPaths, splitNamesOf(context, apkPaths))
-            for ((i, tmp) in tmpFiles.withIndex()) {
-                val size = File(tmp).length()
-                val draft = draftNames[i]
-                val writeCmd = "pm install-write -S $size $session ${RootService.escapeShellArg(draft)} ${RootService.escapeShellArg(tmp)}"
-                val (writeCode, writeOut) = RootService.runCommandSync(writeCmd, INSTALL_TIMEOUT_MS)
-                if (writeCode != 0) {
-                    return@withContext InstallResult.Failure("写入分片 $i（$draft）失败: ${writeOut.trim()}")
-                }
+            writeSplits(session, draftNames, tmpFiles, sizes)?.let { error ->
+                return@withContext InstallResult.Failure(error)
             }
 
             // 4. 提交
@@ -963,14 +1221,20 @@ object ApkInstaller {
             committed = true
             InstallResult.Success("安装成功")
         } finally {
-            if (!committed) sessionId?.let { RootService.runCommandSync("pm install-abandon $it", INSTALL_TIMEOUT_MS) }
-            // 清理临时分片
-            val cleanupCmd = tmpFiles.joinToString(";") { "rm -f ${RootService.escapeShellArg(it)}" }
-            if (cleanupCmd.isNotBlank()) {
-                RootService.runCommandSync(cleanupCmd, INSTALL_TIMEOUT_MS)
+            // 清理收敛成**一条** su：
+            //  · 旧写法把 N 条 `rm -f` 用分号串成一条命令，64 片时约 64×50 = 3200 字节，
+            //    已越过 2900 预算 —— 命令会被整段丢弃，临时文件要等启动清扫（1 小时后）才被删；
+            //  · token 是本轮 UUID，通配只会命中本轮生成的文件，且命令长度恒定。
+            val cleanup = buildString {
+                if (!committed) {
+                    sessionId?.let { append("pm install-abandon ").append(it).append(" 2>/dev/null\n") }
+                }
+                append("rm -f ").append(TMP_DIR).append("/_shso_split_").append(token).append("_*.apk\n")
             }
+            RootService.runCommandSync(cleanup, INSTALL_TIMEOUT_MS)
         }
     }
+
 
     /**
      * 为会话内的每个 APK 生成**草稿名**（写入期用的临时名）。

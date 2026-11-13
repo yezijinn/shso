@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package com.mixradio.droid.data
 
+import com.mixradio.droid.data.security.ShellEscapes
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.MappedByteBuffer
+import java.nio.file.Files
 import java.nio.channels.FileChannel
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
@@ -497,22 +499,37 @@ object TextCompare {
             if (it.isEmpty() || it == sourceName) "" else ".$it"
         }
         val base = if (dir.endsWith("/")) dir else "$dir/"
-        // 逐个 `test -e` 递增探测，**不依赖 listFiles**：
-        // listFiles 在 root 通道下对 stat 失败不作成败判断（su 被拒/超时就返回空列表），
-        // 原实现 `getOrDefault(emptySet())` 把「探测失败」当成「目录为空」，
-        // 于是 outPath 与上一次的对比结果同名，末尾的 `mv` 直接无声覆盖。
-        val rootGranted = RootService.isRootGranted == true
+
+        // ROOT 已授权时**一律**问 root：一条 su 内 while 递增到空位。
+        //
+        // 为什么不先用 File(dir).isDirectory 走本地 0-su 快路径：
+        // 那只能证明「目录本身可 stat」，不证明「目录里的子项可枚举」。
+        // Android 11+ 的 FUSE 视图下二者可以分离（应用能看到目录、但看不到
+        // root 在目录里写的文件），此时本地会选中一个已被占用的名字，
+        // 末尾 writeResult 的 mv 直接把上一次的对比结果静默覆盖 ——
+        // 正是 :500-503 当年修掉的那个缺陷。省下 1 条 su 不值得把它重新打开。
+        if (RootService.isRootGranted == true) {
+            return "$base$prefix${probeOutputIndexAsRoot(base, prefix, ext)}$ext"
+        }
+        return localOutputPath(base, prefix, ext)
+    }
+
+    /**
+     * 本地探测首个空位（0 次 su）。仅在未授权 ROOT 时使用
+     * —— 与旧实现这条分支逐字同路，只是多了断链软链判定。
+     *
+     * 断链软链也算占用：结果名可预测，预置一个指向别处的悬空链接是既有的攻击面
+     * （见 [writeResult] 里对 `/data/local/tmp` 临时名的同一条推理）。
+     */
+    private fun localOutputPath(base: String, prefix: String, ext: String): String {
         var n = 0
         while (true) {
             val candidate = "$base$prefix$n$ext"
-            val exists = if (rootGranted) {
-                RootService.runCommandSync(
-                    "test -e ${RootService.escapeShellArg(candidate)}", 10_000L
-                ).first == 0
-            } else {
-                runCatching { File(candidate).exists() }.getOrDefault(false)
-            }
-            if (!exists) return candidate
+            val occupied = runCatching {
+                val file = File(candidate)
+                file.exists() || Files.isSymbolicLink(file.toPath())
+            }.getOrDefault(false)
+            if (!occupied) return candidate
             n++
             if (n >= MAX_OUTPUT_PROBE) {
                 throw CompareException("同名对比结果过多（>${MAX_OUTPUT_PROBE}），请手动指定输出名")
@@ -520,8 +537,76 @@ object TextCompare {
         }
     }
 
-    /** 同名输出文件的重名探测上限，避免异常目录导致无限递增。 */
-    private const val MAX_OUTPUT_PROBE = 1000
+    /**
+     * 单条 su 内找首个空位序号。
+     *
+     * 旧实现每条候选名 fork 一次 `su -c test -e`：目录里已有 n 个结果就是 n+1 条 su。
+     * 这里把整个递增探测放进**同一条 shell**，无论重名多少次都只 fork 一次。
+     *
+     * 序号由 Kotlin 侧回拼路径（脚本只回 `N:<数字>`）：路径可能含冒号/空格/中文，
+     * 回显会让解析多一处歧义，而序号天然免疫。
+     *
+     * 用 [ShellEscapes] 而不是 `RootService.escapeShellArg`：前者是纯 Kotlin，
+     * JVM 单测可直接加载建造函数（`RootService` 的 clinit 会碰 Android，
+     * 与 `buildMoveSegmentCommand` 同一取舍）。
+     */
+    internal fun buildOutputProbeScript(base: String, prefix: String, ext: String): String {
+        val head = ShellEscapes.escapeShellArg(base + prefix)
+        val tail = ShellEscapes.escapeShellArg(ext)
+        return buildString {
+            append("n=0\n")
+            append("while [ \$n -lt $MAX_OUTPUT_PROBE ]; do\n")
+            append("if [ ! -e $head\"\$n\"$tail ] && [ ! -L $head\"\$n\"$tail ]; then\n")
+            append("echo \"N:\$n\"\n")
+            append("echo ").append(OUTPUT_PROBE_DONE_MARKER).append('\n')
+            append("exit 0\nfi\n")
+            append("n=\$((n+1))\n")
+            append("done\n")
+            append("echo NOMATCH\n")
+            append("echo ").append(OUTPUT_PROBE_DONE_MARKER).append('\n')
+            append("exit 2")
+        }
+    }
+
+    /** 探测完成标记：缺它 = 这条 su 没送达（被拒 / 超时 / 命令整段丢弃）。 */
+    internal const val OUTPUT_PROBE_DONE_MARKER = "SHSO_PROBE_OK"
+
+    /** 探测结果：[done] 是否见到完成标记，[index] 为 null 表示名字全被占用。 */
+    internal data class OutputProbeParse(val done: Boolean, val index: Int?)
+
+    internal fun parseOutputProbeOutput(output: String): OutputProbeParse {
+        var done = false
+        var index: Int? = null
+        for (line in output.lineSequence()) {
+            if (line == OUTPUT_PROBE_DONE_MARKER) {
+                done = true
+                continue
+            }
+            if (!line.startsWith("N:")) continue
+            index = line.substring(2).trim().toIntOrNull() ?: index
+        }
+        return OutputProbeParse(done, index)
+    }
+
+    /**
+     * 一条 su 内探测。
+     *
+     * 三种结局必须分开，不能都报「同名结果过多」：
+     *  · 缺完成标记 → su 停在授权窗 / 被拒 / 超时，状态未知；
+     *  · 有标记无 `N:` → 0..MAX-1 全被占用；
+     *  · 有 `N:` → 命中。
+     * 把前两种压成同一条假事实会让用户在 su 卡住时收到错误指引。
+     */
+    private suspend fun probeOutputIndexAsRoot(base: String, prefix: String, ext: String): Int {
+        val (_, out) = RootService.runCommandSync(buildOutputProbeScript(base, prefix, ext), 10_000L)
+        val parsed = parseOutputProbeOutput(out)
+        if (!parsed.done) throw CompareException("探测对比结果文件名失败：ROOT 命令未完成")
+        return parsed.index
+            ?: throw CompareException("同名对比结果过多（>${MAX_OUTPUT_PROBE}），请手动指定输出名")
+    }
+
+    /** 同名输出文件的重名探测上限，避免异常目录导致无限递增。内部可见供单测钉住口径。 */
+    internal const val MAX_OUTPUT_PROBE = 1000
 
     /** 同后缀（忽略大小写）且不是文件自身。用于文件选择器过滤。 */
     fun sameExtensionFilter(currentPath: String): (FileItem) -> Boolean {

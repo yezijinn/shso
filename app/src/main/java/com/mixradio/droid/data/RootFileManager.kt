@@ -762,12 +762,11 @@ object RootFileManager {
         if (isUnsafePath(sourcePath)) {
             return@withContext Pair(false, "源路径包含非法字符")
         }
-        ensureShsoDir()
 
         val sourceFile = File(sourcePath)
         val sourceName = sourceFile.name
-        // 独立目录名要落进 shell 并作为路径段：控制字符、路径分隔符、".." 会改变命令语义或越目录，
-        // 统一替换为下划线；首尾的点与空格（`..`、`.`）会与目录穿越混淆，一并裁掉。
+        // 独立目录名要落进 shell 并作为路径段：控制字符、路径分隔符、".." 会改变命令语义
+        // 或越目录，统一替换为下划线；首尾的点与空格（`..`、`.`）会与目录穿越混淆，一并裁掉。
         val nameWithoutExt = sourceFile.nameWithoutExtension
             .replace("'", "")
             .map { if (it.isISOControl() || it == '/' || it == '\\') '_' else it }
@@ -776,49 +775,99 @@ object RootFileManager {
             .ifEmpty { "item" }
 
         val targetDir = if (useIndependentFolder) {
-            // 用完整 epoch 毫秒：取模 100000 只有 100 秒周期，同一分钟内多次「添加」就会撞进同一目录，
-            // 后一次的 cp 落在已存在的目录上变成嵌套副本（X/X）。
+            // 用完整 epoch 毫秒：取模 100000 只有 100 秒周期，同一分钟内多次「添加」
+            // 就会撞进同一目录，后一次的 cp 落在已存在的目录上变成嵌套副本（X/X）。
             val timestamp = System.currentTimeMillis().toString()
             "$DEFAULT_SHSO_DIR/${nameWithoutExt}_$timestamp"
         } else {
             DEFAULT_SHSO_DIR
         }
 
-        val escapedTargetDir = RootService.escapeShellArg(targetDir)
-        val createDirCmd = "mkdir -p $escapedTargetDir && chmod 777 $escapedTargetDir"
-        RootService.runCommandSync(createDirCmd)
-
         val destinationPath = "$targetDir/$sourceName"
-        // 目标已存在时必须先拒绝：`cp -r 源 目标` 在目标已存在且为**目录**时会把源拷到其**内部**
-        // （同名二次添加产生 X/X 嵌套副本），而目标是同名文件时则被静默覆盖。
-        // 与 rename「一律拒绝覆盖」同口径 —— 覆盖不是本入口的选项。
+        // 本地可见即拒（0 次 fork）。受保护目标本地恒 false，权威判定在下面那条 su 里
+        // （命中即 rc=2）—— 两层都保留，任何一层都不构成唯一防线。
         if (destinationExists(destinationPath, sourcePath)) {
             return@withContext Pair(false, "目标已存在同名文件或目录：$sourceName")
         }
-        val escapedSource = RootService.escapeShellArg(sourcePath)
-        val escapedDest = RootService.escapeShellArg(destinationPath)
 
-        // 目录必须递归 chmod：设计目的是「让其他应用也能自由读写其中的文件」，
-        // 只改顶层的话子文件/子目录仍是源权限（如 0700），第三方文件管理器照样读不到。
-        val chmodCmd = if (sourceFile.isDirectory) "chmod -R 777" else "chmod 777"
-        val copyCmd = "cp -r $escapedSource $escapedDest && $chmodCmd $escapedDest"
-        val (copyCode, copyOut) = RootService.runCommandSync(copyCmd)
+        val merged = buildAddToShsoCommand(
+            sourcePath = sourcePath,
+            targetDir = targetDir,
+            destinationPath = destinationPath,
+            independentFolder = useIndependentFolder,
+            autoDeleteSource = autoDeleteSource
+        )
 
-        if (copyCode != 0) {
-            return@withContext Pair(false, "复制文件失败: $copyOut")
-        }
-
-        if (autoDeleteSource) {
-            // 「自动删除」是一次递归删除：必须检查退出码 —— 忽略它会让删除失败也返回成功，
-            // 用户以为已删（实际源还在）。
-            val deleteCmd = "rm -rf $escapedSource"
-            val (deleteCode, deleteOut) = RootService.runCommandSync(deleteCmd)
-            if (deleteCode != 0) {
-                return@withContext Pair(false, "已复制到 shso，但删除源文件失败: ${deleteOut.trim()}")
+        val parsed: AddToShsoParse
+        val raw: String
+        if (merged.toByteArray(Charsets.UTF_8).size <= ADD_TO_SHSO_MAX_BYTES) {
+            val (_, out) = RootService.runCommandSync(merged)
+            raw = out
+            parsed = parseAddToShsoOutput(out)
+        } else {
+            // 极端超长路径（单条命令 >2900 字节）无法整段送达：退回「建目录」「拷贝」两条。
+            // 仍比旧实现少一条 —— 不覆盖判据并进了拷贝那条。
+            val (_, dirOut) = RootService.runCommandSync(
+                buildAddToShsoCommand(
+                    sourcePath = sourcePath,
+                    targetDir = targetDir,
+                    destinationPath = destinationPath,
+                    independentFolder = useIndependentFolder,
+                    autoDeleteSource = false,
+                    copy = false
+                )
+            )
+            val dirParsed = parseAddToShsoOutput(dirOut)
+            if (dirParsed.done && dirParsed.code == 0) {
+                val (_, out) = RootService.runCommandSync(
+                    buildAddToShsoCommand(
+                        sourcePath = sourcePath,
+                        targetDir = targetDir,
+                        destinationPath = destinationPath,
+                        independentFolder = false,
+                        autoDeleteSource = autoDeleteSource,
+                        ensureDir = false
+                    )
+                )
+                raw = out
+                parsed = parseAddToShsoOutput(out)
+            } else {
+                raw = dirOut
+                parsed = dirParsed
             }
         }
 
-        Pair(true, destinationPath)
+        if (!parsed.done) {
+            // 缺完成标记 = su 停在授权窗 / 被拒 / 超时被杀 / 命令整段丢弃。状态未知，绝不报成功。
+            return@withContext Pair(false, "添加失败：ROOT 命令未完成")
+        }
+        // 建目录成功后立刻置位：旧实现靠 ensureShsoDir() 顺带置位，现在由这里承担，
+        // 否则每次添加之后其他入口还会各跑一次幂等的 mkdir + chmod。
+        if (parsed.code != null && parsed.code != ADD_SHSO_MKDIR_FAILED) shsoDirEnsured = true
+
+        // 协议行（RC: / 完成标记）不得进用户文案；其余是 cp / chmod / mkdir 的真实诊断。
+        val detail = raw.lineSequence()
+            .filterNot { it.startsWith("RC:") || it == ADD_TO_SHSO_DONE_MARKER }
+            .joinToString("\n")
+            .trim()
+        when (parsed.code) {
+            0 -> return@withContext Pair(true, destinationPath)
+            ADD_SHSO_MKDIR_FAILED -> return@withContext Pair(
+                false,
+                if (detail.isEmpty()) "无法创建目标文件夹" else "无法创建目标文件夹: $detail"
+            )
+            ADD_SHSO_DEST_EXISTS ->
+                return@withContext Pair(false, "目标已存在同名文件或目录：$sourceName")
+            ADD_SHSO_DELETE_SOURCE_FAILED -> return@withContext Pair(
+                false,
+                if (detail.isEmpty()) "已复制到 shso，但删除源文件失败"
+                else "已复制到 shso，但删除源文件失败: $detail"
+            )
+            else -> return@withContext Pair(
+                false,
+                if (detail.isEmpty()) "复制文件失败" else "复制文件失败: $detail"
+            )
+        }
     }
 
 suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
@@ -883,19 +932,22 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
     }
 
     /**
-     * 目标路径是否已被**另一个**条目占用。
+     * 目标路径是否已被**另一个条目**占用 —— **仅应用可见范围的快路径**（零 fork）。
      *
-     * 应用 uid 看不到受保护路径（`File.exists` 恒 false），故已授权时改用 root 通道判定；
-     * 名称不同即视为「另一个条目」，同名（改回原名）不算冲突。
+     * 应用 uid 看不到受保护路径（`File.exists()` 对 /data/adb 下的路径恒 false），
+     * 所以这个函数只回答「本地可见的同名项」，**不构成最终判定**；
+     * 权威判定并进了 [addFileToShso] 那条唯一的 su（`[ -e "$3" ] || [ -L "$3" ]` → rc=2）。
+     *
+     * 保留函数而不内联，是因为 `newPath == oldPath` 这个例外需要一处显式表达，
+     * 且必须对两侧都 `trimEnd('/')` —— 旧实现只做字面比较，
+     * `/x/y/` 与 `/x/y` 会被误判成两个条目。
+     *
+     * `suspend` 修饰必须保留：`MoveBatchContractTest` 用它作 rename 函数体的切片右界，
+     * 去掉 `suspend` 会让 `indexOf` 返回 -1 并抛 `StringIndexOutOfBoundsException`。
      */
     private suspend fun destinationExists(newPath: String, oldPath: String): Boolean {
-        if (newPath == oldPath) return false
-        val local = runCatching { File(newPath).exists() }.getOrDefault(false)
-        if (local) return true
-        if (RootService.isRootGranted != true) return false
-        val escaped = RootService.escapeShellArg(newPath)
-        val (code, _) = RootService.runCommandSync("test -e $escaped")
-        return code == 0
+        if (newPath.trimEnd('/') == oldPath.trimEnd('/')) return false
+        return runCatching { File(newPath).exists() }.getOrDefault(false)
     }
 
     suspend fun moveFile(
@@ -1432,16 +1484,25 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
     /**
      * 按预算装箱，保序不丢项。单项超上限时仍单独成段（是否可发出由调用方判）。
      *
+     * @param limit 段字节上限。默认值保持 [MOVE_SEGMENT_MAX_BYTES]，
+     *   既有两个调用点（[planMoveSegments] / [planMoveProbeSegments]）用的是尾随 lambda，
+     *   会绑定到最后一个形参 `cost`，`limit` 取默认值，零改动。
+     *
      * 与 [planDeleteSegments] 的内联装箱同构；删除侧是禁改区，故不强行合并。
      */
-    private fun <T> chunkByBytes(items: List<T>, overhead: Int, cost: (T) -> Int): List<List<T>> {
+    private fun <T> chunkByBytes(
+        items: List<T>,
+        overhead: Int,
+        limit: Int = MOVE_SEGMENT_MAX_BYTES,
+        cost: (T) -> Int
+    ): List<List<T>> {
         if (items.isEmpty()) return emptyList()
         val out = ArrayList<List<T>>()
         var current = ArrayList<T>()
         var bytes = overhead
         for (item in items) {
             val itemCost = cost(item)
-            if (current.isNotEmpty() && bytes + itemCost > MOVE_SEGMENT_MAX_BYTES) {
+            if (current.isNotEmpty() && bytes + itemCost > limit) {
                 out += current
                 current = ArrayList()
                 bytes = overhead
@@ -1627,6 +1688,10 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
      * 把源文件/文件夹**复制**到目标目录（与 [moveFile] 同口径，但保留源）。
      *
      * 供文件页「复制 ->」使用。目标同名冲突按 [onConflict] 处理（默认覆盖）。
+     *
+     * 旧实现在保护路径上要 4~6 条 su：源/目标/目标同名项各一条类型探测、
+     * 覆盖目录时 `delete()` 又一条 `rm -rf`、Java 直拷失败后再一条 `cp` + `test -e`。
+     * 现在本地可见零 fork，不可见时那条 su 一次判完「类型 + 冲突 + 拷贝 + 回捞」。
      */
     suspend fun copyToDirectory(
         sourcePath: String,
@@ -1650,102 +1715,113 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
             return@withContext Pair(false, "不能复制到自身或子目录")
         }
 
-        fun localType(path: String): Int = try {
-            val file = File(path)
-            when {
-                file.isDirectory -> 2
-                file.isFile -> 1
-                file.exists() -> 3
-                else -> 0
-            }
-        } catch (_: Exception) {
-            0
-        }
-
-        fun rootType(path: String): Int {
-            val escaped = RootService.escapeShellArg(path)
-            val (code, output) = RootService.runCommandSync(
-                "if [ -d $escaped ]; then echo dir; elif [ -f $escaped ]; then echo file; elif [ -e $escaped ]; then echo other; fi"
-            )
-            if (code != 0) return 0
-            return when (output.trim()) {
-                "dir" -> 2
-                "file" -> 1
-                "other" -> 3
-                else -> 0
-            }
-        }
-
-        val sourceType = localType(sourcePath).let { local ->
-            if (local != 0) local else if (RootService.isRootGranted == true) rootType(sourcePath) else 0
-        }
-        if (sourceType == 0) return@withContext Pair(false, "源文件不存在或不可访问")
-        if (sourceType == 3) return@withContext Pair(false, "源路径不是普通文件或文件夹")
-
-        val destinationType = localType(destinationDirectory).let { local ->
-            if (local != 0) local else if (RootService.isRootGranted == true) rootType(destinationDirectory) else 0
-        }
-        if (destinationType != 2) return@withContext Pair(false, "目标路径不是文件夹或不可访问")
-
-        val destinationPath = if (destinationNormalized == "/") "/$sourceName" else "$destinationNormalized/$sourceName"
-        // 目标就是源本身：OVERWRITE 会先 delete(destinationPath) 删掉源，
-        // 再从一条已不存在的路径复制。RENAME 落到 name_new，语义正确，不拦。
+        val destinationPath = joinPath(destinationNormalized, sourceName)
+        // 目标就是源本身：OVERWRITE 会先删同名目录（= 删源）再从一条已不存在的路径复制。
+        // RENAME 落到 name_new，语义正确，不拦。
         if (destinationPath == sourceNormalized && onConflict != MoveDestinationConflict.RENAME) {
             return@withContext Pair(false, "目标与源相同，不能覆盖自身")
         }
-        fun destExists(): Boolean =
-            localType(destinationPath) != 0 ||
-                (RootService.isRootGranted == true && rootType(destinationPath) != 0)
+        val renamedPath = renamedInDestination(sourceName, destinationNormalized)
 
-        fun renamedDestPath(): String {
-            val dot = sourceName.lastIndexOf('.')
-            val newName = if (dot > 0) "${sourceName.substring(0, dot)}_new${sourceName.substring(dot)}" else "${sourceName}_new"
-            return if (destinationNormalized == "/") "/$newName" else "$destinationNormalized/$newName"
+        // ── 应用域可见性：只回答「本地能看到什么」，看不到的一律交给下面那条 su ──
+        val sourceType = moveLocalType(sourcePath)
+        val destDirType = moveLocalType(destinationNormalized)
+        val destType = moveLocalType(destinationPath)
+        if (sourceType == 3) return@withContext Pair(false, "源路径不是普通文件或文件夹")
+        if (destDirType != 0 && destDirType != 2) {
+            return@withContext Pair(false, "目标路径不是文件夹或不可访问")
+        }
+        if (RootService.isRootGranted != true) {
+            // 无 ROOT 的文案与旧实现逐字一致（旧实现靠 rootType 返回 0 落到同一分支）
+            if (sourceType == 0) return@withContext Pair(false, "源文件不存在或不可访问")
+            if (destDirType == 0) return@withContext Pair(false, "目标路径不是文件夹或不可访问")
         }
 
-        val occupied = destExists()
-        if (occupied) {
+        var finalPath = destinationPath
+        var localReady = sourceType != 0 && destDirType == 2
+        if (localReady && destType != 0) {
             when (onConflict) {
-                MoveDestinationConflict.OVERWRITE -> {
-                    val destType = localType(destinationPath).let {
-                        if (it == 0 && RootService.isRootGranted == true) rootType(destinationPath) else it
-                    }
-                    if (destType == 2 && !delete(destinationPath).first) {
-                        return@withContext Pair(false, "无法覆盖目标同名目录")
-                    }
-                }
+                MoveDestinationConflict.SKIP ->
+                    return@withContext Pair(false, "目标文件夹中已存在同名项目（跳过）")
                 MoveDestinationConflict.RENAME -> {
-                    if (localType(renamedDestPath()) != 0 ||
-                        (RootService.isRootGranted == true && rootType(renamedDestPath()) != 0)
-                    ) {
+                    finalPath = renamedPath
+                    if (moveLocalType(finalPath) != 0) {
                         return@withContext Pair(false, "自动改名后的目标也已存在")
                     }
                 }
-                MoveDestinationConflict.SKIP ->
-                    return@withContext Pair(false, "目标文件夹中已存在同名项目（跳过）")
+                MoveDestinationConflict.OVERWRITE -> {
+                    // 只有目录目标需要先删：文件目标交给 cp 直接替换（不造「已删未写」的窗口）。
+                    if (destType == 2) {
+                        if (deleteLocalRecursively(destinationPath)) {
+                            // 与被删目录走同一套回收：旧实现由 delete() 间接触发这两件事。
+                            // 必须在这里就记账 —— 本地删成功后可能回落 su 拷贝，
+                            // 那时脚本看到的 `$f` 已不存在，不会再打覆盖标记。
+                            invalidateShsoDirIfAffected(destinationPath)
+                            EditHistoryManager.forget(destinationPath)
+                        } else {
+                            // 应用域删不掉（SELinux / 权限）：交给下面那条 su 的 rm -rf
+                            localReady = false
+                        }
+                    }
+                }
             }
         }
-        val finalPath = if (occupied && onConflict == MoveDestinationConflict.RENAME) renamedDestPath() else destinationPath
+        if (localReady) {
+            val copiedLocally = runCatching {
+                if (sourceType == 2) {
+                    source.copyRecursively(File(finalPath), overwrite = true)
+                } else {
+                    source.copyTo(File(finalPath), overwrite = true)
+                }
+                // copyRecursively / copyTo 对「合并进已存在目录」都不保证，
+                // 仍以「落点现在可见」为判据。
+                moveLocalType(finalPath) != 0
+            }.getOrDefault(false)
+            if (copiedLocally) return@withContext true to "已复制到 $finalPath"
+        }
 
-        // 先尝试 app 域直拷（源可读时最省）
-        runCatching {
-            if (sourceType == 2) {
-                source.copyRecursively(File(finalPath), overwrite = true)
-            } else {
-                source.copyTo(File(finalPath), overwrite = true)
+        // ── 一条 su 完成「类型复核 + 冲突策略 + 拷贝 + 回捞」──────────────
+        if (RootService.isRootGranted != true) return@withContext Pair(false, "复制失败")
+        val (_, out) = RootService.runCommandSync(
+            buildCopyToDirectoryCommand(
+                sourcePath = sourcePath,
+                destinationDirectory = destinationNormalized,
+                destinationPath = destinationPath,
+                renamedPath = renamedPath,
+                onConflict = onConflict
+            ),
+            timeoutMs = COPY_TO_DIRECTORY_TIMEOUT_MS
+        )
+        val parsed = parseCopyToDirectoryOutput(out)
+        if (!parsed.done) {
+            // 缺完成标记 = 这条 su 没送达（被拒 / 超时 / 命令整段丢弃）：状态未知
+            return@withContext Pair(false, "复制失败：ROOT 命令未完成")
+        }
+        if (parsed.removedDirectory) {
+            // 脚本删掉了同名目录：标记失效 + 历史回收，两件事都必须发生。
+            invalidateShsoDirIfAffected(destinationPath)
+            EditHistoryManager.forget(destinationPath)
+        }
+        val detail = out.lineSequence()
+            .filterNot {
+                it.startsWith("RC:") || it.startsWith("FP:") ||
+                    it == COPY_DIR_DONE_MARKER || it == COPY_DIR_OVERWROTE_MARKER
             }
-            if (localType(finalPath) != 0) return@withContext true to "已复制到 $finalPath"
+            .joinToString("\n")
+            .trim()
+        when (parsed.code) {
+            0 -> return@withContext true to "已复制到 ${parsed.path ?: destinationPath}"
+            1 -> return@withContext Pair(false, "源文件不存在或不可访问")
+            2 -> return@withContext Pair(false, "源路径不是普通文件或文件夹")
+            3 -> return@withContext Pair(false, "目标路径不是文件夹或不可访问")
+            4 -> return@withContext Pair(false, "目标文件夹中已存在同名项目（跳过）")
+            5 -> return@withContext Pair(false, "自动改名后的目标也已存在")
+            6 -> return@withContext Pair(false, "无法覆盖目标同名目录")
+            else -> return@withContext Pair(
+                false,
+                if (detail.isEmpty()) "复制失败" else "复制失败: $detail"
+            )
         }
-
-        if (RootService.isRootGranted == true) {
-            val escapedSource = RootService.escapeShellArg(sourcePath)
-            val escapedDest = RootService.escapeShellArg(finalPath)
-            val cmd = if (sourceType == 2) "cp -a $escapedSource $escapedDest" else "cp -p $escapedSource $escapedDest"
-            val (code, output) = RootService.runCommandSync("$cmd && test -e $escapedDest")
-            if (code == 0) return@withContext true to "已复制到 $finalPath"
-            if (output.isNotBlank()) return@withContext Pair(false, "复制失败: ${output.trim()}")
-        }
-        Pair(false, "复制失败")
     }
 
     /**
@@ -2319,5 +2395,513 @@ suspend fun delete(path: String): Pair<Boolean, String> = withContext(Dispatcher
         }
     } catch (_: Exception) {
         false
+    }
+    // ────────────────────────────────────────────────────────────────────
+    // 添加到 shso：一条 su 完成「建目录 + 不覆盖判定 + 拷贝 + chmod + 可选删源」
+    //
+    // 旧路径 3~4 条 su，最贵的一条是 `destinationExists` 的 root `test -e`：
+    // 目标在 /data/adb 下应用 uid 看不到，本地判定恒 false，
+    // 于是「不覆盖」这条判据每次都要单独 fork 一个 su 才能回答一个 yes/no。
+    // 判据并入拷贝脚本后，窗口从「两条 su 之间」缩到「同一进程内」。
+    // ────────────────────────────────────────────────────────────────────
+
+    /** 单条「添加到 shso」命令的 UTF-8 字节上限（与 [MOVE_SEGMENT_MAX_BYTES] 同口径）。 */
+    internal const val ADD_TO_SHSO_MAX_BYTES = 2900
+
+    /** 完成标记：**整行**精确比对。缺它 = 这条 su 没送达（被拒 / 超时 / 命令整段丢弃）。 */
+    internal const val ADD_TO_SHSO_DONE_MARKER = "SHSO_ADD_OK"
+
+    /**
+     * 目录递归放权命令。
+     *
+     * 单列为常量的两个原因：
+     *  ① 目录分支用递归版、文件分支用非递归版，两处只差一个引用，
+     *     不会再有人改一侧时漏掉 `-R`；
+     *  ② `RootFileManagerEscapingTest.复制目录必须递归改权限` 钉的是源码里的
+     *     字面量 `"chmod -R 777"`。旧实现靠 addFileToShso 里那行三元表达式承载，
+     *     合并进 shell 之后必须仍有一处 Kotlin 字面量，否则该断言失去锚点，
+     *     只能被改成恒真的空断言。
+     */
+    internal const val CHMOD_RECURSIVE_777 = "chmod -R 777"
+
+    private const val ADD_SHSO_MKDIR_FAILED = 1
+    private const val ADD_SHSO_DEST_EXISTS = 2
+    private const val ADD_SHSO_COPY_FAILED = 3
+    private const val ADD_SHSO_DELETE_SOURCE_FAILED = 9
+
+    /** 解析结果：[code] 为 null 表示脚本没给出 `RC:` 行（按未完成处理）。 */
+    internal data class AddToShsoParse(val done: Boolean, val code: Int?)
+
+    /**
+     * 生成「添加到 shso」的命令。
+     *
+     * 全脚本只有**一个终止点**（末尾打印 `RC:` 与完成标记），不用 early exit：
+     * 任何一处提前 `exit` 只要漏打标记，调用方就会把已成功的项判成未完成。
+     *
+     * 每条都有依据：
+     * - 三条路径各走一次 `set --`，脚本内用 `$1/$2/$3` —— 深路径重复四次会直接撞上 su 的长度上限；
+     * - `[ -e "$3" ] || [ -L "$3" ]`：断链软链也算「已存在」（旧的 root `test -e` 会漏）；
+     * - 目录判定用 shell 的 `[ -d "$1" ]`（root 视角），
+     *   不用应用侧 `File.isDirectory` —— 后者对受保护源恒 false，
+     *   旧实现因此给目录用了**非递归** chmod（隐藏缺陷）；
+     * - 全脚本**不吞 stderr**：`runCommandSync` 合并了 stderr，失败文案要带真实原因；
+     * - `mkdir` 失败才判致命（rc=1），`chmod` 失败照旧忽略 —— 与旧实现「返回值丢弃」同口径，
+     *   避免「目录建成了却报『无法创建目标文件夹』」；
+     * - `rm -rf -- "$1"` 只在 `autoDeleteSource` 时**生成**（不是运行时分支），省字节也不会误删。
+     */
+    internal fun buildAddToShsoCommand(
+        sourcePath: String,
+        targetDir: String,
+        destinationPath: String,
+        independentFolder: Boolean,
+        autoDeleteSource: Boolean,
+        ensureDir: Boolean = true,
+        copy: Boolean = true
+    ): String {
+        val sb = StringBuilder(520)
+        sb.append("set --")
+            .append(' ').append(ShellEscapes.escapeShellArg(sourcePath))
+            .append(' ').append(ShellEscapes.escapeShellArg(targetDir))
+            .append(' ').append(ShellEscapes.escapeShellArg(destinationPath))
+            .append('\n')
+        sb.append("rc=0\n")
+        if (ensureDir) {
+            sb.append("mkdir -p \"\$2\" || rc=").append(ADD_SHSO_MKDIR_FAILED).append('\n')
+            sb.append("if [ \$rc = 0 ]; then chmod 777 \"\$2\"; fi\n")
+            if (independentFolder) {
+                // 基目录也要放开：只把子目录设成 777 时，
+                // 其他应用仍穿不过 0755 的 /data/adb/shso。
+                sb.append("if [ \$rc = 0 ]; then chmod 777 ")
+                    .append(ShellEscapes.escapeShellArg(DEFAULT_SHSO_DIR)).append("; fi\n")
+            }
+        }
+        if (copy) {
+            // 「把已在 shso 里的文件再加一次」与旧 destinationExists 的 newPath==oldPath
+            // 例外同义：不判占用，让 cp 自己报错（旧行为就是 cp 失败）。
+            if (destinationPath.trimEnd('/') != sourcePath.trimEnd('/')) {
+                sb.append("if [ \$rc = 0 ] && { [ -e \"\$3\" ] || [ -L \"\$3\" ]; }; then rc=")
+                    .append(ADD_SHSO_DEST_EXISTS).append("; fi\n")
+            }
+            sb.append("if [ \$rc = 0 ]; then\n")
+            sb.append("if [ -d \"\$1\" ]; then\n")
+            sb.append("cp -r \"\$1\" \"\$3\" || rc=").append(ADD_SHSO_COPY_FAILED).append('\n')
+            sb.append("if [ \$rc = 0 ]; then ").append(CHMOD_RECURSIVE_777)
+                .append(" \"\$3\" || rc=").append(ADD_SHSO_COPY_FAILED).append("; fi\n")
+            sb.append("else\n")
+            sb.append("cp \"\$1\" \"\$3\" || rc=").append(ADD_SHSO_COPY_FAILED).append('\n')
+            sb.append("if [ \$rc = 0 ]; then chmod 777 \"\$3\" || rc=")
+                .append(ADD_SHSO_COPY_FAILED).append("; fi\n")
+            sb.append("fi\nfi\n")
+            if (autoDeleteSource) {
+                sb.append("if [ \$rc = 0 ]; then rm -rf -- \"\$1\" || rc=")
+                    .append(ADD_SHSO_DELETE_SOURCE_FAILED).append("; fi\n")
+            }
+        }
+        sb.append("echo \"RC:\$rc\"\n")
+        sb.append("echo ").append(ADD_TO_SHSO_DONE_MARKER).append('\n')
+        return sb.toString()
+    }
+
+    /**
+     * 解析输出。完成标记整行比对；`RC:` 取最后一条（脚本只有一个终止点，
+     * 出现多条说明输出被截断，取最后一条更保守 —— `done` 才是唯一闸门）。
+     */
+    internal fun parseAddToShsoOutput(output: String): AddToShsoParse {
+        var done = false
+        var code: Int? = null
+        for (line in output.lineSequence()) {
+            if (line == ADD_TO_SHSO_DONE_MARKER) {
+                done = true
+                continue
+            }
+            if (!line.startsWith("RC:")) continue
+            code = line.substring(3).trim().toIntOrNull() ?: code
+        }
+        return AddToShsoParse(done, code)
+    }
+    // ────────────────────────────────────────────────────────────────────
+    // 批量原地拷贝（多选菜单「原地拷贝」）
+    //
+    // 旧路径：FilePage 逐项 copyFile()，每项一条 su。M 个文件 = M 条 su，
+    // 而真正耗时的只有 cp 本身；其余全是 ProcessBuilder 与授权检查的往返。
+    // ────────────────────────────────────────────────────────────────────
+
+    /** 单段拷贝命令的 UTF-8 字节上限（与 [MOVE_SEGMENT_MAX_BYTES] 同口径）。 */
+    internal const val COPY_SEGMENT_MAX_BYTES = 2900
+
+    /** 段完成标记：整行比对。缺标记 = 该段没执行。 */
+    internal const val COPY_SEGMENT_DONE_MARKER = "SHSO_COPY_OK"
+
+    /**
+     * 连续失败多少段就停发后续段（与 [MOVE_SEGMENT_MAX_CONSECUTIVE_FAILURES] 同口径）。
+     *
+     * 取 2 而不是 1：一段超时往往只是段内有大文件，su 本身没坏。
+     * 取 2 也把「su 挂死」的最坏等待封在 2 段超时内 ——
+     * 否则 1000 个文件会依次发出 20 段注定失败的命令，最后还要逐项回捞 1000 次。
+     */
+    private const val COPY_SEGMENT_MAX_CONSECUTIVE_FAILURES = 2
+
+    /** 段超时：基线 120s 与旧逐项 copyFile 一致（它不传 timeout，走 120s 默认值）。 */
+    private const val COPY_SEGMENT_TIMEOUT_BASE_MS = 120_000L
+    private const val COPY_SEGMENT_TIMEOUT_PER_ITEM_MS = 20_000L
+    private const val COPY_SEGMENT_TIMEOUT_MAX_MS = 600_000L
+
+    /** 一个待拷贝项：源 + 已拆好的基名/后缀（拆分必须在 Kotlin 侧做，见 [splitCopyName]）。 */
+    internal data class CopyPlanItem(val source: String, val base: String, val suffix: String)
+
+    /**
+     * 批量拷贝结果：与 [BatchMoveResult] 同一套分档语义。
+     *
+     * [copied] 是**落盘路径**（`dir/name_n.ext`），按完成顺序累积 —— 段是顺序处理的，
+     * 因此这个顺序稳定可复现。不做「新路径反查源路径」的排序：
+     * 调用方只取条数，反查是 O(n²) 且在同目录近似名（`a.txt` 与 `a_27.txt`）下不可靠。
+     *
+     * [unprocessed] 与 [failed] 必须分开：「su 没送达」不等于「拷贝失败」，
+     * 混为一谈会让用户在授权弹窗卡住时看到 1000 条假失败
+     * （同 [BatchMoveResult] 的 failed / unprocessed 分档）。
+     */
+    data class BatchCopyResult(
+        /** 实际落盘的新路径，按完成顺序。 */
+        val copied: List<String> = emptyList(),
+        /** 明确失败的源路径（`cp` 失败 / 同级重名过多）。 */
+        val failed: List<String> = emptyList(),
+        /** 未能确认结果的源路径（段缺失、无回执、断路器跳闸后未发送）。 */
+        val unprocessed: List<String> = emptyList(),
+        /** 源路径 → 失败原因。 */
+        val reasons: Map<String, String> = emptyMap()
+    ) {
+        val failedCount: Int get() = failed.size
+        val unprocessedCount: Int get() = unprocessed.size
+    }
+
+    internal data class CopySegmentParse(
+        val done: Boolean,
+        val codes: Array<Char?>,
+        val paths: Array<String?>
+    )
+
+    /**
+     * 单段拷贝命令：`set --` 三字段打包，一个 while 顺序处理全部项。
+     *
+     * 每条都有依据：
+     * - 父目录用参数展开「去掉最后一段」现算，不作为字段传（省一条路径的字节），
+     *   与 `File(path).parent` 对绝对路径结论一致；
+     * - 每项开头重置 `n=0`：唯一名**仍然**从 0 起探测，前项已占用的名字会让它自动递增；
+     * - `( set -C; : > "$d" )` 是 O_EXCL 原子占位，**这是唯一性来源**，与 copyFile 同源；
+     * - `cp -p` + `chmod a-s,go-w` 保留源权限且只减不增（与 copyFile 同口径）；
+     * - 占位成功后立即 `break`，失败则同步递增 —— 不存在「探测到空位再另起一步占用」的窗口；
+     * - `cp` / `chmod` 失败必须 `rm -f` 释放占位名，否则残留 0 字节文件；
+     * - `NM:`（候选名全占用）与 `NG:`（cp/chmod 失败）分开，两者文案不同，合并会骗人；
+     * - 单项失败**不终止整段**：外层 while 继续处理其余项（与逐项 copyFile 语义一致）；
+     * - 完成标记恒为最后一行。
+     */
+    internal fun buildCopySegmentCommand(items: List<CopyPlanItem>): String {
+        require(items.isNotEmpty()) { "空段无意义" }
+        val sb = StringBuilder(340 + items.size * 56)
+        sb.append("set --")
+        for (item in items) {
+            sb.append(' ').append(ShellEscapes.escapeShellArg(item.source))
+            sb.append(' ').append(ShellEscapes.escapeShellArg(item.base))
+            sb.append(' ').append(ShellEscapes.escapeShellArg(item.suffix))
+        }
+        sb.append('\n')
+        sb.append("i=0\n")
+        sb.append("while [ \$# -ge 3 ]; do\n")
+        sb.append("s=\$1; b=\$2; x=\$3; shift 3\n")
+        sb.append("p=\${s%/*}; n=0; ok=0\n")
+        sb.append("while [ \$n -lt $COPY_NAME_PROBE_LIMIT ]; do\n")
+        sb.append("d=\"\$p/\${b}_\$n\$x\"\n")
+        sb.append("if ( set -C; : > \"\$d\" ) 2>/dev/null; then\n")
+        sb.append("if cp -p \"\$s\" \"\$d\" 2>/dev/null && chmod a-s,go-w \"\$d\" 2>/dev/null; then ")
+        sb.append("printf 'OK:%d:%s\\n' \$i \"\$d\"; ok=1; else rm -f -- \"\$d\"; fi\n")
+        sb.append("break\n")
+        sb.append("fi\n")
+        sb.append("n=\$((n+1))\n")
+        sb.append("done\n")
+        sb.append("if [ \$ok = 0 ]; then if [ \$n -ge $COPY_NAME_PROBE_LIMIT ]; then ")
+        sb.append("printf 'NM:%d\\n' \$i; else printf 'NG:%d\\n' \$i; fi; fi\n")
+        sb.append("i=\$((i+1))\n")
+        sb.append("done\n")
+        sb.append("echo ").append(COPY_SEGMENT_DONE_MARKER).append('\n')
+        return sb.toString()
+    }
+
+    /** 单项字节成本：转义后的源 + 基名 + 后缀 + 3 个分隔空格。 */
+    internal fun copyItemCostBytes(item: CopyPlanItem): Int =
+        ShellEscapes.escapeShellArg(item.source).toByteArray(Charsets.UTF_8).size +
+            ShellEscapes.escapeShellArg(item.base).toByteArray(Charsets.UTF_8).size +
+            ShellEscapes.escapeShellArg(item.suffix).toByteArray(Charsets.UTF_8).size + 3
+
+    /** 段固定开销：由构造函数反测，脚本改动后不会与常量漂移。 */
+    internal val copySegmentOverheadBytes: Int by lazy {
+        val probe = CopyPlanItem("/", "", "")
+        buildCopySegmentCommand(listOf(probe)).toByteArray(Charsets.UTF_8).size - copyItemCostBytes(probe)
+    }
+
+    internal fun planCopySegments(items: List<CopyPlanItem>): List<List<CopyPlanItem>> =
+        chunkByBytes(items, copySegmentOverheadBytes, COPY_SEGMENT_MAX_BYTES) { copyItemCostBytes(it) }
+
+    internal fun copyItemFitsOneSegment(item: CopyPlanItem): Boolean =
+        copySegmentOverheadBytes + copyItemCostBytes(item) <= COPY_SEGMENT_MAX_BYTES
+
+    internal fun copySegmentTimeoutMs(itemCount: Int): Long =
+        (COPY_SEGMENT_TIMEOUT_BASE_MS + COPY_SEGMENT_TIMEOUT_PER_ITEM_MS * itemCount.coerceAtLeast(1))
+            .coerceAtMost(COPY_SEGMENT_TIMEOUT_MAX_MS)
+
+    /** 解析单段输出。状态行 `OK:<i>:<path>` / `NG:<i>` / `NM:<i>`，索引越界一律忽略。 */
+    internal fun parseCopySegmentOutput(output: String, count: Int): CopySegmentParse {
+        val codes = arrayOfNulls<Char>(count)
+        val paths = arrayOfNulls<String>(count)
+        var done = false
+        for (line in output.lineSequence()) {
+            if (line == COPY_SEGMENT_DONE_MARKER) {
+                done = true
+                continue
+            }
+            if (line.length < 4 || line[2] != ':') continue
+            val code = when {
+                line.startsWith("OK:") -> 'K'
+                line.startsWith("NG:") -> 'N'
+                line.startsWith("NM:") -> 'M'
+                else -> continue
+            }
+            val rest = line.substring(3)
+            val digits = rest.takeWhile { it.isDigit() }
+            val index = digits.toIntOrNull() ?: continue
+            if (index !in 0 until count) continue
+            codes[index] = code
+            if (code == 'K') {
+                val tail = rest.substring(digits.length)
+                if (tail.startsWith(":")) paths[index] = tail.substring(1)
+            }
+        }
+        return CopySegmentParse(done, codes, paths)
+    }
+
+    /**
+     * 批量原地拷贝：整批压进少数几条 su，每项仍各自原子取名。
+     *
+     * 段内顺序执行 ⇒ 唯一名语义与逐项 [copyFile] 一致（见施工文档 §4.2）。
+     * 与 [copyFile] 的两处差异：
+     *  · 失败原因只剩固定文案（`cp` 的 stderr 被丢弃，与 [moveBatch] 同一取舍）；
+     *  · 段缺完成标记 / 某项无回执时逐项回捞 [copyFile]（它有 Java 兜底），
+     *    **绝不**把「不知道」当成功；但连续失败达上限后不再逐项回捞 ——
+     *    那等于把断路器绕过去，su 挂死时仍会白跑 M 次。
+     */
+    suspend fun copyBatch(sources: List<String>): BatchCopyResult = withContext(Dispatchers.IO) {
+        // 尾斜杠会让 shell 的 `${s%/*}` 与 `File.parent` 得出不同父目录，先归一。
+        val unique = sources.map { it.trimEnd('/').ifEmpty { "/" } }.distinct()
+        if (unique.isEmpty()) return@withContext BatchCopyResult()
+
+        val copied = ArrayList<String>(unique.size)
+        val failed = ArrayList<String>()
+        val unprocessed = ArrayList<String>()
+        val reasons = HashMap<String, String>()
+
+        // ── 阶段 0：纯词法预检（零 fork）─────────────────────────────
+        val pending = ArrayList<CopyPlanItem>(unique.size)
+        for (source in unique) {
+            if (isUnsafePath(source)) {
+                failed += source
+                reasons[source] = "源路径包含非法字符"
+                continue
+            }
+            val name = File(source).name
+            if (name.isEmpty() || name == "." || name == "..") {
+                failed += source
+                reasons[source] = "源文件名无效"
+                continue
+            }
+            val (base, suffix) = splitCopyName(name)
+            pending += CopyPlanItem(source, base, suffix)
+        }
+        if (pending.isEmpty()) return@withContext BatchCopyResult(copied, failed, unprocessed, reasons)
+
+        // 无 ROOT：copyFile 全程不 fork（本地 stat + 文件流），逐项即可。
+        if (!preferRoot()) {
+            for (item in pending) {
+                val (ok, payload) = copyFile(item.source)
+                if (ok) copied += payload else {
+                    failed += item.source
+                    reasons[item.source] = payload
+                }
+            }
+            return@withContext BatchCopyResult(copied, failed, unprocessed, reasons)
+        }
+
+        // ── 阶段 1：分段批量 su ─────────────────────────────────────
+        val sendable = ArrayList<CopyPlanItem>(pending.size)
+        val tooBig = ArrayList<CopyPlanItem>()
+        for (item in pending) {
+            // 单项装不进一段：发出去只会被 su 整段丢弃，交给逐项回捞。
+            if (copyItemFitsOneSegment(item)) sendable += item else tooBig += item
+        }
+        var consecutiveFailures = 0
+        var suBroken = false
+        for (segment in planCopySegments(sendable)) {
+            if (consecutiveFailures >= COPY_SEGMENT_MAX_CONSECUTIVE_FAILURES) {
+                segment.forEach { unprocessed += it.source }
+                suBroken = true
+                continue
+            }
+            val (_, out) = RootService.runCommandSync(
+                buildCopySegmentCommand(segment),
+                timeoutMs = copySegmentTimeoutMs(segment.size)
+            )
+            val parsed = parseCopySegmentOutput(out, segment.size)
+            if (!parsed.done) {
+                // 缺完成标记 = 这一段没送达：状态未知，归「未完成」，绝不计成功。
+                segment.forEach { unprocessed += it.source }
+                consecutiveFailures++
+                continue
+            }
+            consecutiveFailures = 0
+            segment.forEachIndexed { index, item ->
+                when (parsed.codes[index]) {
+                    'K' -> {
+                        val landed = parsed.paths[index]
+                        if (landed.isNullOrEmpty()) unprocessed += item.source else copied += landed
+                    }
+                    'N' -> {
+                        failed += item.source
+                        reasons[item.source] = "拷贝文件失败"
+                    }
+                    'M' -> {
+                        failed += item.source
+                        reasons[item.source] = "同级重名过多，未找到可用的目标名"
+                    }
+                    // 段跑完但本项没有回执：可能已经拷好，不能断言失败。
+                    else -> unprocessed += item.source
+                }
+            }
+        }
+        tooBig.forEach { unprocessed += it.source }
+
+        // ── 阶段 2：逐项回捞（copyFile 自带 Java 兜底）──────────────
+        for (source in unprocessed.toList()) {
+            if (suBroken) {
+                reasons[source] = "ROOT 命令未完成"
+                continue
+            }
+            unprocessed.remove(source)
+            val (ok, payload) = copyFile(source)
+            if (ok) copied += payload else {
+                failed += source
+                reasons[source] = payload
+            }
+        }
+
+        val order = unique.withIndex().associate { (index, path) -> path to index }
+        BatchCopyResult(
+            copied = copied,
+            failed = failed.sortedBy { order[it] ?: Int.MAX_VALUE },
+            unprocessed = unprocessed.sortedBy { order[it] ?: Int.MAX_VALUE },
+            reasons = reasons
+        )
+    }
+    // ────────────────────────────────────────────────────────────────────
+    // 复制到指定目录：一条 su 完成「类型复核 + 冲突策略 + 拷贝 + 回捞」
+    // ────────────────────────────────────────────────────────────────────
+
+    /**
+     * 单条复制命令的 UTF-8 预算（2900，与其它批量命令同口径）。
+     *
+     * **只用于单测预算断言，代码里不做门禁**：本命令是单次操作、无法分段；
+     * 若真的超过 4085 字节说明路径已到 PATH_MAX 量级，`su -c` 会整段丢弃 →
+     * 缺完成标记 → 报「ROOT 命令未完成」，不会误报成功。
+     * 在 2900 处拒绝反而会误伤 2900~4085 之间「本来能跑」的深路径。
+     */
+    internal const val COPY_DIR_MAX_BYTES = 2900
+
+    internal const val COPY_DIR_DONE_MARKER = "SHSO_COPYDIR_OK"
+
+    /** 覆盖同名**目录**成功（用于回收旧目标子树的历史）。 */
+    internal const val COPY_DIR_OVERWROTE_MARKER = "OV:D"
+
+    /** 目录复制可能搬几百 MB；旧实现走 120s 默认值，这里显式给宽。 */
+    private const val COPY_TO_DIRECTORY_TIMEOUT_MS = 300_000L
+
+    internal data class CopyToDirectoryParse(
+        val done: Boolean,
+        val code: Int?,
+        val path: String?,
+        val removedDirectory: Boolean
+    )
+
+    /**
+     * 生成「复制到目录」的单条命令。
+     *
+     * 每条都有依据：
+     * - 源类型只判一次（`st`），既做「0/其它」拒绝，也决定 `cp -a` 还是 `cp -p`；
+     * - 目标必须是目录（`[ ! -d "$2" ] → rc=3`），把旧的三次类型探测压成一次判定；
+     * - **同名文件绝不先删**：`cp` 覆盖同类型文件就是替换，先删等于造出
+     *   「拷贝失败但目标已丢」的窗口（与 moveFile 的 OVERWRITE 注释同一理由）；
+     * - 同名**目录**才 `rm -rf`，且删除失败**直接判失败**（rc=6），
+     *   绝不下探 `cp` —— 否则 `cp src dst` 会落进残留目录内部，产生 X/X 嵌套；
+     * - RENAME 策略只换 `f`（`$4`），`$3` 保持原目标；
+     * - 回捞用 `[ ! -e "$f" ] && [ ! -L "$f" ]`：断链软链也算「没写出来」；
+     * - 完成标记恒为最后一行；`FP:` 回传**实际**落点（RENAME 时与入参不同）。
+     */
+    internal fun buildCopyToDirectoryCommand(
+        sourcePath: String,
+        destinationDirectory: String,
+        destinationPath: String,
+        renamedPath: String,
+        onConflict: MoveDestinationConflict
+    ): String {
+        val needsRenamed = onConflict == MoveDestinationConflict.RENAME
+        val sb = StringBuilder(600)
+        sb.append("set --")
+            .append(' ').append(ShellEscapes.escapeShellArg(sourcePath))
+            .append(' ').append(ShellEscapes.escapeShellArg(destinationDirectory))
+            .append(' ').append(ShellEscapes.escapeShellArg(destinationPath))
+        // 只有 RENAME 需要第四条路径：其余策略不传，省一条路径的字节。
+        if (needsRenamed) sb.append(' ').append(ShellEscapes.escapeShellArg(renamedPath))
+        sb.append('\n')
+        sb.append("st=x; f=\$3; rc=0\n")
+        sb.append("if [ -d \"\$1\" ]; then st=d\n")
+        sb.append("elif [ -f \"\$1\" ]; then st=f\n")
+        sb.append("elif [ -e \"\$1\" ] || [ -L \"\$1\" ]; then rc=2\n")
+        sb.append("else rc=1; fi\n")
+        sb.append("if [ \$rc = 0 ] && [ ! -d \"\$2\" ]; then rc=3; fi\n")
+        sb.append("if [ \$rc = 0 ] && { [ -e \"\$f\" ] || [ -L \"\$f\" ]; }; then\n")
+        when (onConflict) {
+            MoveDestinationConflict.SKIP -> sb.append("rc=4\n")
+            MoveDestinationConflict.RENAME -> sb.append(
+                "if [ -e \"\$4\" ] || [ -L \"\$4\" ]; then rc=5; else f=\$4; fi\n"
+            )
+            MoveDestinationConflict.OVERWRITE -> {
+                sb.append("if [ -d \"\$f\" ]; then\n")
+                sb.append("if rm -rf -- \"\$f\" 2>/dev/null; then echo ")
+                    .append(COPY_DIR_OVERWROTE_MARKER).append("; else rc=6; fi\n")
+                sb.append("fi\n")
+            }
+        }
+        sb.append("fi\n")
+        sb.append("if [ \$rc = 0 ]; then\n")
+        sb.append("if [ \$st = d ]; then cp -a \"\$1\" \"\$f\" || rc=7\n")
+        sb.append("else cp -p \"\$1\" \"\$f\" || rc=7; fi\n")
+        sb.append("if [ \$rc = 0 ] && { [ ! -e \"\$f\" ] && [ ! -L \"\$f\" ]; }; then rc=7; fi\n")
+        sb.append("fi\n")
+        sb.append("echo \"RC:\$rc\"\n")
+        sb.append("echo \"FP:\$f\"\n")
+        sb.append("echo ").append(COPY_DIR_DONE_MARKER).append('\n')
+        return sb.toString()
+    }
+
+    internal fun parseCopyToDirectoryOutput(output: String): CopyToDirectoryParse {
+        var done = false
+        var code: Int? = null
+        var path: String? = null
+        var removed = false
+        for (line in output.lineSequence()) {
+            when {
+                line == COPY_DIR_DONE_MARKER -> done = true
+                line == COPY_DIR_OVERWROTE_MARKER -> removed = true
+                line.startsWith("RC:") -> code = line.substring(3).trim().toIntOrNull() ?: code
+                line.startsWith("FP:") -> path = line.substring(3)
+            }
+        }
+        return CopyToDirectoryParse(done, code, path, removed)
     }
 }
