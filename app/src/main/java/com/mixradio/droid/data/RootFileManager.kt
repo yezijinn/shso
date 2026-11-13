@@ -839,15 +839,13 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
           val newPath = if (parent.endsWith("/")) "$parent$sanitized" else "$parent/$sanitized"
 
           // 目标已存在时必须拒绝，不能直接覆盖。
-          // 原实现两条路径都是「无条件替换」：root 走 `mv`（GNU/BSD mv 默认覆盖），
-          // 非 root 走 `File.renameTo`（JDK 明确「若目标已存在则结果依赖平台」，
-          // Linux 上同样是 rename(2) 覆盖）。于是：
-          //   · 批量重命名把 `notes.txt` 改成 `report_0.txt`，而同目录里已存在
-          //     **不在选择集内**的 `report_0.txt` → 该文件被静默销毁；
-          //   · 单文件重命名同理，用户看到「重命名成功」而另一个文件已消失。
-          // 「覆盖」只应由用户显式选择（见 moveFile 的 MoveDestinationConflict），
-          // 重命名这里没有该选项，故一律拒绝。
-          if (destinationExists(newPath, oldPath)) {
+          // 旧实现两条路径都是「无条件替换」：root 走 mv（默认覆盖），
+          // 非 root 走 File.renameTo（Linux 同为 rename(2) 覆盖）。
+          // 覆盖只应由用户显式选择，重命名没有该选项，故一律拒绝。
+          // 本地看得见就先拒：0 次 su 解决绝大多数冲突。
+          val occupiedLocally = newPath != oldPath &&
+              runCatching { File(newPath).exists() }.getOrDefault(false)
+          if (occupiedLocally) {
               return@withContext Pair(false, "目标已存在：$sanitized")
           }
 
@@ -861,8 +859,21 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         if (preferRoot()) {
             val escapedOld = RootService.escapeShellArg(oldPath)
             val escapedNew = RootService.escapeShellArg(newPath)
-            val (code, _) = RootService.runCommandSync("mv $escapedOld $escapedNew")
-            if (code == 0) return@withContext renamed()
+            // 一条 su 完成「不覆盖判定 + 改名」。旧实现是
+            // 存在性单独一趟 su + mv 另一趟 su，同目标探测两趟。
+            // 本地看不见（受保护路径）时，这里与 mv 同进程内补判，消除 TOCTOU。
+            val guard = if (newPath == oldPath) {
+                ""
+            } else {
+                "if [ -e $escapedNew ] || [ -L $escapedNew ]; then printf 'EXISTS\\n'; exit 2; fi\n"
+            }
+            val (code, out) = RootService.runCommandSync(
+                guard + "mv $escapedOld $escapedNew 2>/dev/null && printf 'MOVED\\n'"
+            )
+            if (code == 2 && out.contains("EXISTS")) {
+                return@withContext Pair(false, "目标已存在：$sanitized")
+            }
+            if (code == 0 && out.contains("MOVED")) return@withContext renamed()
         }
         try {
             if (File(oldPath).renameTo(File(newPath))) return@withContext renamed()
@@ -950,6 +961,18 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
 
         val destinationPath = if (destinationNormalized == "/") "/$sourceName" else "$destinationNormalized/$sourceName"
 
+        // 目标就是源本身（把条目移进它自己所在的目录）。
+        // 下面 OVERWRITE 分支对目录会先 delete(destinationPath) —— 那正是源本身，
+        // 会删掉源后再也搬不回来。RENAME 是真改名，不在此拦。
+        if (destinationPath == sourceNormalized && onConflict != MoveDestinationConflict.RENAME) {
+            return@withContext if (sourceType == 2) {
+                Pair(false, "目标与源相同，不能覆盖自身")
+            } else {
+                // 文件 rename(2) 到自身是成功空操作；moveHistory(from==to) 亦为空操作。
+                Pair(true, "移动成功")
+            }
+        }
+
         fun destExists(): Boolean =
             localType(destinationPath) != 0 ||
                 (RootService.isRootGranted == true && rootType(destinationPath) != 0)
@@ -1031,6 +1054,575 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         Pair(false, "移动失败")
     }
 
+    // ────────────────────────────────────────────────────────────────────
+    // 批量移动
+    //
+    // 旧路径：FilePage 逐项 moveFile()。`/sdcard` 下每项至少一次 su
+    // （destExists 的 root 兜底），受保护路径 3~5 次；picker 入口还要先逐项
+    // moveDestinationCollides（又 +1 su/项）。400 项 = 400~800 su ≈ 60~120s，
+    // 而真正的 rename/copy 占比不到 5%，其余全是 su 往返。
+    //
+    // 这里把整批压进少数几条 su：一条 `set --` 打包，一个 while 循环逐项
+    // 判定冲突 + mv + 回捞，su 次数从 O(N) 降到 O(命令字节 / 2900)。
+    //
+    // 与 moveFile 的语义逐条对齐见施工文档 §3.6。moveFile 只加了一处
+    // 「目标即源」守卫（数据丢失修复），其余一字未改：
+    // PerfAndNestingRegressionTest:253-262 锁死了它的结构（destExists 恰好一次）。
+    // ────────────────────────────────────────────────────────────────────
+
+    /** 单段移动命令的 UTF-8 字节上限（与 [DELETE_SEGMENT_MAX_BYTES] 同口径与理由）。 */
+    internal const val MOVE_SEGMENT_MAX_BYTES = 2900
+
+    /** 段完成标记：**整行**精确比对。缺标记 = 该段没执行（su 被拒 / 超时 / 命令被丢弃）。 */
+    internal const val MOVE_SEGMENT_DONE_MARKER = "SHSO_MOVE_OK"
+
+    /** 冲突探测段的完成标记。 */
+    internal const val MOVE_PROBE_DONE_MARKER = "SHSO_PROBE_OK"
+
+    /** 冲突探测段超时：探测只做 test，正常在 1s 内返回。 */
+    private const val MOVE_PROBE_TIMEOUT_MS = 15_000L
+
+    private const val MOVE_SEGMENT_TIMEOUT_BASE_MS = 20_000L
+    private const val MOVE_SEGMENT_TIMEOUT_PER_ITEM_MS = 500L
+    private const val MOVE_SEGMENT_TIMEOUT_MAX_MS = 120_000L
+
+    /** 连续失败 2 段就停发后续段：一段超时往往只是段内有跨挂载点大目录，su 本身没坏。 */
+    private const val MOVE_SEGMENT_MAX_CONSECUTIVE_FAILURES = 2
+
+    /** 一个待移动项：源、计划目标、冲突改名后的备选目标。 */
+    internal data class MovePlanItem(
+        val source: String,
+        val destination: String,
+        val renamed: String
+    )
+
+    /**
+     * 批量移动结果：与 [BatchDeleteResult] 同一套分档语义。
+     *
+     * - [moved]       已确认移动（源已不在、目标已出现）；
+     * - [failed]      明确失败（冲突跳过 / 改名目标已存在 / 源不在 / mv 失败）；
+     * - [unprocessed] 状态未知（段命令没跑完、单项超长、或段跑完但该项没回执），**绝不**计成功；
+     * - [rejected]    上游 [isUnsafePath] 或文件名校验拒掉的路径，连尝试都没有。
+     *
+     * 失败原因的表达能力会真实退化：没有逐项 errno 了，只剩固定文案。
+     * 取舍与 [deleteBatch] 一致。
+     */
+    data class BatchMoveResult(
+        val moved: List<String> = emptyList(),
+        val failed: List<String> = emptyList(),
+        val unprocessed: List<String> = emptyList(),
+        val rejected: List<String> = emptyList(),
+        val reasons: Map<String, String> = emptyMap()
+    ) {
+        val failedCount: Int get() = failed.size + unprocessed.size + rejected.size
+
+        /** 逐项失败明细，沿用 FilePage 旧文案格式「名称（原因）」。 */
+        fun failureLines(): List<String> {
+            val out = ArrayList<String>(failedCount)
+            failed.forEach { out += "${File(it).name}（${reasons[it] ?: "移动失败"}）" }
+            unprocessed.forEach { out += "${File(it).name}（未完成）" }
+            rejected.forEach { out += "${File(it).name}（${reasons[it] ?: "路径包含非法字符"}）" }
+            return out
+        }
+    }
+
+    /** 冲突改名目标：在扩展名前插入 `_new`（file.txt → file_new.txt）。与 [moveFile] 同口径。 */
+    private fun renamedInDestination(sourceName: String, destinationNormalized: String): String {
+        val dot = sourceName.lastIndexOf('.')
+        val newName = if (dot > 0) {
+            "${sourceName.substring(0, dot)}_new${sourceName.substring(dot)}"
+        } else {
+            "${sourceName}_new"
+        }
+        return joinPath(destinationNormalized, newName)
+    }
+
+    /** 本地类型判定（2=目录 1=文件 3=其它 0=看不到）。与 [moveFile] 内的同义实现一致。 */
+    private fun moveLocalType(path: String): Int = try {
+        val file = File(path)
+        when {
+            file.isDirectory -> 2
+            file.isFile -> 1
+            file.exists() -> 3
+            else -> 0
+        }
+    } catch (_: Exception) {
+        0
+    }
+
+    /** ROOT 下的类型判定。整批只判一次（整批只有一个目标目录）。 */
+    private suspend fun moveRootType(path: String): Int {
+        val escaped = ShellEscapes.escapeShellArg(path)
+        val (code, output) = RootService.runCommandSync(
+            "if [ -d $escaped ]; then echo dir; elif [ -f $escaped ]; then echo file; " +
+                "elif [ -e $escaped ]; then echo other; fi"
+        )
+        if (code != 0) return 0
+        return when (output.trim()) {
+            "dir" -> 2
+            "file" -> 1
+            "other" -> 3
+            else -> 0
+        }
+    }
+
+    private fun moveLocalExists(path: String): Boolean = try {
+        File(path).exists()
+    } catch (_: Exception) {
+        false
+    }
+
+    /**
+     * 批量移动：整批一次调用，内部按 UTF-8 字节分段，每段一条 su。
+     *
+     * 每段内一个 while 循环逐项处理：判源是否还在 → 判目标占用 →
+     * 按 [onConflict] 走改名或覆盖 → `mv` → 立即回捞（源是否消失、目标是否出现）。
+     *
+     * 与逐项 [moveFile] 的差别只有两处：
+     *  · `mv` 的 stderr 被丢弃，失败原因固定为「移动失败」（批量下逐项 errno 无法稳定收集）；
+     *  · FIFO/socket 不做拒绝（`moveFile` 的 sourceType==3 分支），直接交给 `mv`。
+     */
+    suspend fun moveBatch(
+        sources: List<String>,
+        destinationDirectory: String,
+        onConflict: MoveDestinationConflict = MoveDestinationConflict.SKIP
+    ): BatchMoveResult = withContext(Dispatchers.IO) {
+        val unique = sources.distinct()
+        if (unique.isEmpty()) return@withContext BatchMoveResult()
+
+        val moved = ArrayList<String>(unique.size)
+        val failed = ArrayList<String>()
+        val unprocessed = ArrayList<String>()
+        val rejected = ArrayList<String>()
+        val reasons = HashMap<String, String>()
+
+        // 唯一的「计失败」出口：明细与原因必须同时落地。
+        fun fail(source: String, reason: String) {
+            failed += source
+            reasons[source] = reason
+        }
+
+        // shell 路径下唯一的「计成功」出口：历史迁移与计数必须同时发生。
+        // 任何新增的成功分支绕过它，都会留下指向旧路径的孤儿历史键。
+        fun markMoved(source: String, finalPath: String, overwroteDirectory: Boolean) {
+            // OVERWRITE 删掉同名目录时，那棵子树的历史必须一并回收（与 delete() 同口径）；
+            // 顺序不能反：先回收目标侧旧历史，再把源历史搬过去。
+            if (overwroteDirectory) EditHistoryManager.forget(finalPath)
+            EditHistoryManager.moveHistory(source, finalPath)
+            moved += source
+        }
+
+        fun result(): BatchMoveResult {
+            val order = unique.withIndex().associate { (index, path) -> path to index }
+            fun sorted(items: List<String>): List<String> =
+                items.sortedBy { order[it] ?: Int.MAX_VALUE }
+            return BatchMoveResult(
+                moved = sorted(moved),
+                failed = sorted(failed),
+                unprocessed = sorted(unprocessed),
+                rejected = sorted(rejected),
+                reasons = reasons
+            )
+        }
+
+        val destNormalized = destinationDirectory.trimEnd('/').ifEmpty { "/" }
+
+        // ── 阶段 0：纯词法预检（零 su）────────────────────────────────
+        val pending = ArrayList<MovePlanItem>(unique.size)
+        for (source in unique) {
+            // 与 moveFile 一致：标记失效不看移动结果，且必须**逐路径**调
+            // （函数体是 `if (path == DEFAULT_SHSO_DIR)` 条件判定，批入口只调一次会漏）。
+            invalidateShsoDirIfAffected(source)
+            if (isUnsafePath(source)) {
+                rejected += source
+                reasons[source] = "路径包含非法字符"
+                continue
+            }
+            if (isUnsafePath(destNormalized)) {
+                rejected += source
+                reasons[source] = "目标路径包含非法字符"
+                continue
+            }
+            val name = File(source).name
+            if (name.isEmpty() || name == "." || name == "..") {
+                rejected += source
+                reasons[source] = "源文件名无效"
+                continue
+            }
+            val sourceNormalized = source.trimEnd('/').ifEmpty { "/" }
+            if (sourceNormalized == destNormalized) {
+                fail(source, "目标目录不能与源路径相同")
+                continue
+            }
+            // 对文件不可能误中（文件不能包含子路径），故无条件判，比 moveFile 更保守。
+            if (destNormalized.startsWith("$sourceNormalized/")) {
+                fail(source, "不能将文件夹移动到自身或其子目录")
+                continue
+            }
+            val destinationPath = joinPath(destNormalized, name)
+            if (destinationPath == sourceNormalized) {
+                // 移进自己所在的目录：moveFile 的 renameTo(同路径) 是成功空操作；
+                // RENAME 策略下则是真改名（a.txt → a_new.txt），必须交给 shell。
+                // 这一支同时挡住 OVERWRITE 对自身的预删（见 moveFile 的同名守卫）。
+                when (onConflict) {
+                    MoveDestinationConflict.OVERWRITE -> markMoved(source, sourceNormalized, false)
+                    MoveDestinationConflict.SKIP ->
+                        fail(source, "目标文件夹中已存在同名项目（跳过）")
+                    MoveDestinationConflict.RENAME ->
+                        pending += MovePlanItem(source, destinationPath, renamedInDestination(name, destNormalized))
+                }
+                continue
+            }
+            pending += MovePlanItem(source, destinationPath, renamedInDestination(name, destNormalized))
+        }
+        if (pending.isEmpty()) return@withContext result()
+
+        // 一次取定的 ROOT 结论：目标目录判定与「走不走 su」必须用同一个值，
+        // 否则两次 preferRoot() 各等一轮探测，且可能前后不一致。
+        val useRoot = preferRoot()
+
+        // 目标目录必须是文件夹：整批判一次（moveFile 是每项判一次，同一目标纯属重复）。
+        val destinationType = moveLocalType(destNormalized).let { local ->
+            if (local != 0) local else if (useRoot) moveRootType(destNormalized) else 0
+        }
+        if (destinationType != 2) {
+            pending.forEach { fail(it.source, "目标路径不是文件夹或不可访问") }
+            return@withContext result()
+        }
+
+        // 无 ROOT：逐项走 moveFile（其内部只有本地 stat 与 renameTo，零 su），行为不变。
+        if (!useRoot) {
+            for (item in pending) {
+                val (ok, message) = moveFile(item.source, destNormalized, onConflict)
+                if (ok) moved += item.source else fail(item.source, message)
+            }
+            return@withContext result()
+        }
+
+        // ── 阶段 1：分段批量 su ───────────────────────────────────────
+        val sendable = ArrayList<MovePlanItem>(pending.size)
+        for (item in pending) {
+            // 单项本身装不进一段：发出去只会被 su 整段丢弃，直接判未完成
+            // （与 deleteBatch 的 deletePathFitsOneSegment 同一道预判）。
+            if (moveItemFitsOneSegment(item, onConflict)) sendable += item else unprocessed += item.source
+        }
+        var consecutiveFailures = 0
+        for (segment in planMoveSegments(sendable, onConflict)) {
+            if (consecutiveFailures >= MOVE_SEGMENT_MAX_CONSECUTIVE_FAILURES) {
+                segment.forEach { unprocessed += it.source }
+                continue
+            }
+            val (_, out) = RootService.runCommandSync(
+                buildMoveSegmentCommand(segment, onConflict),
+                timeoutMs = moveSegmentTimeoutMs(segment.size)
+            )
+            val parsed = parseMoveSegmentOutput(out, segment.size)
+            if (!parsed.done) {
+                // 缺完成标记 = 这一段根本没执行：su 停在授权窗、被拒、超时被杀，
+                // 或命令超长被整段丢弃。判「未完成」，**绝不**计成功。
+                segment.forEach { unprocessed += it.source }
+                consecutiveFailures++
+                continue
+            }
+            consecutiveFailures = 0
+            segment.forEachIndexed { index, item ->
+                val code = parsed.codes[index]
+                when (code) {
+                    'K', 'D' -> markMoved(
+                        item.source,
+                        // 历史必须跟到**实际**落点：RENAME 冲突时是 _new 名。
+                        if (parsed.targets[index] == 'r') item.renamed else item.destination,
+                        code == 'D'
+                    )
+                    'S' -> fail(item.source, "目标文件夹中已存在同名项目（跳过）")
+                    'C' -> fail(item.source, "自动改名后的目标也已存在")
+                    'X' -> fail(item.source, "源文件不存在或不可访问")
+                    // 段跑完了但这一项没有回执：状态未知（可能已搬走），
+                    // 断言「移动失败」是错的，归「未完成」。
+                    null -> unprocessed += item.source
+                    else -> fail(item.source, "移动失败")
+                }
+            }
+        }
+        result()
+    }
+
+    /**
+     * 供 UI 决定是否弹冲突框：整批一次探测（分段），返回「目标已存在」的源路径。
+     *
+     * 旧写法 `targets.any { moveDestinationCollides(it, dest) }` 是 **M 次 su**，
+     * 只为回答一个是/否。这里同样走 `set --` 打包 + shell 内建 test。
+     *
+     * 探测没跑完时**按有冲突处理**（宁可多弹一次框），最终由 [moveBatch] 内的
+     * 逐项判定兜底 —— 绝不在「不知道」的情况下直接覆盖。
+     */
+    suspend fun moveBatchConflicts(
+        sources: List<String>,
+        destinationDirectory: String
+    ): List<String> = withContext(Dispatchers.IO) {
+        val destNormalized = destinationDirectory.trimEnd('/').ifEmpty { "/" }
+        if (isUnsafePath(destNormalized)) return@withContext sources
+
+        val unique = sources.distinct()
+        val hits = ArrayList<String>()
+        val unresolved = ArrayList<Pair<String, String>>(unique.size)
+        for (source in unique) {
+            if (isUnsafePath(source)) continue
+            val name = File(source).name
+            if (name.isEmpty() || name == "." || name == "..") continue
+            val destPath = joinPath(destNormalized, name)
+            if (moveLocalExists(destPath)) hits += source else unresolved += source to destPath
+        }
+        if (unresolved.isNotEmpty() && preferRoot()) {
+            // 分段只按**目标路径**打包，命中项直接取自段内的 pair —— 不再用段内索引
+            // 去索引全局表（那会在多段时错位甚至越界）。
+            for (segment in planMoveProbeSegments(unresolved)) {
+                val destinations = segment.map { it.second }
+                val (_, out) = RootService.runCommandSync(
+                    buildDestProbeCommand(destinations),
+                    timeoutMs = MOVE_PROBE_TIMEOUT_MS
+                )
+                val parsed = parseDestProbeOutput(out, destinations.size)
+                if (!parsed.done) {
+                    // 探测没跑完：按「有冲突」处理，宁可多弹一次框。
+                    segment.forEach { hits += it.first }
+                    continue
+                }
+                parsed.hitIndices.forEach { hits += segment[it].first }
+            }
+        }
+        val order = unique.withIndex().associate { (index, path) -> path to index }
+        hits.sortedBy { order[it] ?: Int.MAX_VALUE }
+    }
+
+    /** 单项在段命令里的字节成本：转义后长度 + 字段分隔空格。 */
+    internal fun moveItemCostBytes(item: MovePlanItem, onConflict: MoveDestinationConflict): Int {
+        val source = ShellEscapes.escapeShellArg(item.source).toByteArray(Charsets.UTF_8).size
+        val destination = ShellEscapes.escapeShellArg(item.destination).toByteArray(Charsets.UTF_8).size
+        return if (onConflict == MoveDestinationConflict.RENAME) {
+            source + destination +
+                ShellEscapes.escapeShellArg(item.renamed).toByteArray(Charsets.UTF_8).size + 3
+        } else {
+            source + destination + 2
+        }
+    }
+
+    /**
+     * 段命令的固定开销：由构造函数反测，脚本改动后不会与常量漂移。
+     *
+     * 取**三种策略的最大值**（RENAME 打包三字段、OVERWRITE 脚本最长）：
+     * 装箱一律按最大值预算，对任何策略都不会超限，也不依赖「谁更大」的静态假设。
+     */
+    internal val moveSegmentOverheadBytes: Int by lazy {
+        val probe = MovePlanItem("/", "/", "/")
+        listOf(
+            MoveDestinationConflict.SKIP,
+            MoveDestinationConflict.OVERWRITE,
+            MoveDestinationConflict.RENAME
+        ).maxOf { policy ->
+            buildMoveSegmentCommand(listOf(probe), policy).toByteArray(Charsets.UTF_8).size -
+                moveItemCostBytes(probe, policy)
+        }
+    }
+
+    /** 单项单独成段时是否装得下。超长路径无法经 `su -c` 送达，调用方直接判未完成。 */
+    internal fun moveItemFitsOneSegment(item: MovePlanItem, onConflict: MoveDestinationConflict): Boolean =
+        moveSegmentOverheadBytes + moveItemCostBytes(item, onConflict) <= MOVE_SEGMENT_MAX_BYTES
+
+    /**
+     * 按预算装箱，保序不丢项。单项超上限时仍单独成段（是否可发出由调用方判）。
+     *
+     * 与 [planDeleteSegments] 的内联装箱同构；删除侧是禁改区，故不强行合并。
+     */
+    private fun <T> chunkByBytes(items: List<T>, overhead: Int, cost: (T) -> Int): List<List<T>> {
+        if (items.isEmpty()) return emptyList()
+        val out = ArrayList<List<T>>()
+        var current = ArrayList<T>()
+        var bytes = overhead
+        for (item in items) {
+            val itemCost = cost(item)
+            if (current.isNotEmpty() && bytes + itemCost > MOVE_SEGMENT_MAX_BYTES) {
+                out += current
+                current = ArrayList()
+                bytes = overhead
+            }
+            current += item
+            bytes += itemCost
+        }
+        if (current.isNotEmpty()) out += current
+        return out
+    }
+
+    internal fun planMoveSegments(
+        items: List<MovePlanItem>,
+        onConflict: MoveDestinationConflict
+    ): List<List<MovePlanItem>> =
+        chunkByBytes(items, moveSegmentOverheadBytes) { moveItemCostBytes(it, onConflict) }
+
+    internal fun planMoveProbeSegments(
+        targets: List<Pair<String, String>>
+    ): List<List<Pair<String, String>>> =
+        chunkByBytes(targets, moveSegmentOverheadBytes) {
+            ShellEscapes.escapeShellArg(it.second).toByteArray(Charsets.UTF_8).size + 1
+        }
+
+    /** 段超时：真正耗时的是跨挂载点的大目录 mv（复制 + 删除），不是命令解析。 */
+    internal fun moveSegmentTimeoutMs(itemCount: Int): Long =
+        (MOVE_SEGMENT_TIMEOUT_BASE_MS + MOVE_SEGMENT_TIMEOUT_PER_ITEM_MS * itemCount.coerceAtLeast(1))
+            .coerceAtMost(MOVE_SEGMENT_TIMEOUT_MAX_MS)
+
+    /**
+     * 单段移动命令：一条 `set --` 打包全部字段，一个 while 循环逐项处理。
+     *
+     * 逐项展开成 `if` 时每项约 300 字节，2900 字节只装 9 项；打包后每项约 92 字节。
+     * 每条都有依据：
+     * - 全程只用 shell 内建（test / printf / echo）与 mv，su 内每项只 fork 一个 mv；
+     * - 目标存在判定放在 `mv` **之前**（SKIP），窗口缩到同一进程内的微秒级；
+     * - 回捞用 `[ ! -e ] && [ ! -L ]` + `[ -e ] || [ -L ]`：断链软链也算搬到了；
+     * - OVERWRITE 删除同名目录失败时**直接判失败**，绝不下探 mv ——
+     *   否则 `mv src dst` 会落进残留目录内部，产生 X/X 嵌套（moveFile 是拒绝的）；
+     * - 完成标记**无条件**打印且是最后一句：命令被整段丢弃时不会有它；
+     * - 路径一律 [ShellEscapes.escapeShellArg]。
+     */
+    internal fun buildMoveSegmentCommand(
+        items: List<MovePlanItem>,
+        onConflict: MoveDestinationConflict
+    ): String {
+        require(items.isNotEmpty()) { "空段无意义" }
+        val sb = StringBuilder(300 + items.size * 96)
+        sb.append("set --")
+        for (item in items) {
+            sb.append(' ').append(ShellEscapes.escapeShellArg(item.source))
+            sb.append(' ').append(ShellEscapes.escapeShellArg(item.destination))
+            if (onConflict == MoveDestinationConflict.RENAME) {
+                sb.append(' ').append(ShellEscapes.escapeShellArg(item.renamed))
+            }
+        }
+        sb.append('\n')
+        sb.append("i=0\n")
+        when (onConflict) {
+            MoveDestinationConflict.SKIP -> {
+                sb.append("while [ \$# -ge 2 ]; do\n")
+                sb.append("s=\$1; d=\$2; shift 2\n")
+                sb.append("if [ ! -e \"\$s\" ] && [ ! -L \"\$s\" ]; then printf 'X:%d\\n' \$i\n")
+                sb.append("elif [ -e \"\$d\" ] || [ -L \"\$d\" ]; then printf 'S:%d\\n' \$i\n")
+                sb.append("elif mv \"\$s\" \"\$d\" 2>/dev/null && [ ! -e \"\$s\" ] && [ ! -L \"\$s\" ] " +
+                    "&& { [ -e \"\$d\" ] || [ -L \"\$d\" ]; }; then printf 'K:%d:d\\n' \$i\n")
+                sb.append("else printf 'N:%d\\n' \$i; fi\n")
+                sb.append("i=\$((i+1))\n")
+                sb.append("done\n")
+            }
+            MoveDestinationConflict.OVERWRITE -> {
+                sb.append("while [ \$# -ge 2 ]; do\n")
+                sb.append("s=\$1; d=\$2; shift 2\n")
+                sb.append("if [ ! -e \"\$s\" ] && [ ! -L \"\$s\" ]; then printf 'X:%d\\n' \$i\n")
+                sb.append("elif [ -d \"\$d\" ]; then\n")
+                // 同名文件交给 mv 原子覆盖；同名目录只能先删（rename(2) 不能覆盖非空目录）。
+                // 删除失败必须拒绝：残余目录会让 mv 把源搬进它内部（X/X 嵌套）。
+                sb.append("if ! rm -rf -- \"\$d\" 2>/dev/null; then printf 'N:%d\\n' \$i\n")
+                sb.append("elif mv \"\$s\" \"\$d\" 2>/dev/null && [ ! -e \"\$s\" ] && [ ! -L \"\$s\" ] " +
+                    "&& { [ -e \"\$d\" ] || [ -L \"\$d\" ]; }; then printf 'D:%d:d\\n' \$i\n")
+                sb.append("else printf 'N:%d\\n' \$i; fi\n")
+                sb.append("elif mv \"\$s\" \"\$d\" 2>/dev/null && [ ! -e \"\$s\" ] && [ ! -L \"\$s\" ] " +
+                    "&& { [ -e \"\$d\" ] || [ -L \"\$d\" ]; }; then printf 'K:%d:d\\n' \$i\n")
+                sb.append("else printf 'N:%d\\n' \$i; fi\n")
+                sb.append("i=\$((i+1))\n")
+                sb.append("done\n")
+            }
+            MoveDestinationConflict.RENAME -> {
+                sb.append("while [ \$# -ge 3 ]; do\n")
+                sb.append("s=\$1; d=\$2; r=\$3; shift 3\n")
+                sb.append("if [ ! -e \"\$s\" ] && [ ! -L \"\$s\" ]; then printf 'X:%d\\n' \$i\n")
+                sb.append("elif [ -e \"\$d\" ] || [ -L \"\$d\" ]; then\n")
+                sb.append("if [ -e \"\$r\" ] || [ -L \"\$r\" ]; then printf 'C:%d\\n' \$i\n")
+                sb.append("elif mv \"\$s\" \"\$r\" 2>/dev/null && [ ! -e \"\$s\" ] && [ ! -L \"\$s\" ] " +
+                    "&& { [ -e \"\$r\" ] || [ -L \"\$r\" ]; }; then printf 'K:%d:r\\n' \$i\n")
+                sb.append("else printf 'N:%d\\n' \$i; fi\n")
+                sb.append("elif mv \"\$s\" \"\$d\" 2>/dev/null && [ ! -e \"\$s\" ] && [ ! -L \"\$s\" ] " +
+                    "&& { [ -e \"\$d\" ] || [ -L \"\$d\" ]; }; then printf 'K:%d:d\\n' \$i\n")
+                sb.append("else printf 'N:%d\\n' \$i; fi\n")
+                sb.append("i=\$((i+1))\n")
+                sb.append("done\n")
+            }
+        }
+        sb.append("echo ").append(MOVE_SEGMENT_DONE_MARKER).append('\n')
+        return sb.toString()
+    }
+
+    /** 单段冲突探测命令：内建 test 逐个判，输出命中索引。 */
+    internal fun buildDestProbeCommand(destinations: List<String>): String {
+        require(destinations.isNotEmpty()) { "空段无意义" }
+        val sb = StringBuilder(96 + destinations.size * 48)
+        sb.append("set --")
+        for (destination in destinations) {
+            sb.append(' ').append(ShellEscapes.escapeShellArg(destination))
+        }
+        sb.append('\n')
+        sb.append("i=0\n")
+        sb.append("while [ \$# -ge 1 ]; do\n")
+        sb.append("if [ -e \"\$1\" ] || [ -L \"\$1\" ]; then printf 'E:%d\\n' \$i; fi\n")
+        sb.append("shift 1; i=\$((i+1))\n")
+        sb.append("done\n")
+        sb.append("echo ").append(MOVE_PROBE_DONE_MARKER).append('\n')
+        return sb.toString()
+    }
+
+    /** 单段移动输出解析结果：[codes] 每项状态码，[targets] 成功项落点（d=原名 r=改名）。 */
+    internal data class MoveSegmentParse(
+        val done: Boolean,
+        val codes: Array<Char?>,
+        val targets: Array<Char?>
+    )
+
+    /**
+     * 解析单段输出。完成标记按**整行**比对；
+     * 状态行格式 `<码>:<段内索引>[:<落点>]`，索引越界 / 未知码一律忽略。
+     *
+     * 用索引而不是回显路径：路径里可能有 `:`、换行、`OK:` 前缀，
+     * 回显会造成解析歧义与字节膨胀，索引天然免疫。
+     */
+    internal fun parseMoveSegmentOutput(output: String, count: Int): MoveSegmentParse {
+        val codes = arrayOfNulls<Char>(count)
+        val targets = arrayOfNulls<Char>(count)
+        var done = false
+        for (line in output.lineSequence()) {
+            if (line == MOVE_SEGMENT_DONE_MARKER) {
+                done = true
+                continue
+            }
+            if (line.length < 3 || line[1] != ':') continue
+            val code = line[0]
+            if (code != 'K' && code != 'D' && code != 'X' && code != 'S' && code != 'C' && code != 'N') continue
+            val rest = line.substring(2)
+            val digits = rest.takeWhile { it.isDigit() }
+            val index = digits.toIntOrNull() ?: continue
+            if (index !in 0 until count) continue
+            codes[index] = code
+            val tail = rest.substring(digits.length)
+            if (tail.startsWith(":r")) targets[index] = 'r'
+            if (tail.startsWith(":d")) targets[index] = 'd'
+        }
+        return MoveSegmentParse(done, codes, targets)
+    }
+
+    /** 探测段解析结果：[hitIndices] 为「目标已存在」的段内索引。 */
+    internal data class MoveProbeParse(val done: Boolean, val hitIndices: Set<Int>)
+
+    internal fun parseDestProbeOutput(output: String, count: Int): MoveProbeParse {
+        var done = false
+        val hits = LinkedHashSet<Int>()
+        for (line in output.lineSequence()) {
+            if (line == MOVE_PROBE_DONE_MARKER) {
+                done = true
+                continue
+            }
+            if (!line.startsWith("E:")) continue
+            val index = line.substring(2).trim().toIntOrNull() ?: continue
+            if (index in 0 until count) hits += index
+        }
+        return MoveProbeParse(done, hits)
+    }
+
     /**
      * 把源文件/文件夹**复制**到目标目录（与 [moveFile] 同口径，但保留源）。
      *
@@ -1096,6 +1688,11 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         if (destinationType != 2) return@withContext Pair(false, "目标路径不是文件夹或不可访问")
 
         val destinationPath = if (destinationNormalized == "/") "/$sourceName" else "$destinationNormalized/$sourceName"
+        // 目标就是源本身：OVERWRITE 会先 delete(destinationPath) 删掉源，
+        // 再从一条已不存在的路径复制。RENAME 落到 name_new，语义正确，不拦。
+        if (destinationPath == sourceNormalized && onConflict != MoveDestinationConflict.RENAME) {
+            return@withContext Pair(false, "目标与源相同，不能覆盖自身")
+        }
         fun destExists(): Boolean =
             localType(destinationPath) != 0 ||
                 (RootService.isRootGranted == true && rootType(destinationPath) != 0)

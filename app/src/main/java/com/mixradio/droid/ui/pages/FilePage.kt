@@ -509,6 +509,10 @@ fun FilePage(
         // 仅首屏（确实没有任何历史列表）才需要骨架屏，由 pane.isLoading && 列表为空 判定。
         pane.listIsStale = pane.displayFileList.isNotEmpty()
         pane.refreshJobRef[0] = scope.launch {
+            // 本代列举发起前的 ROOT 结论 + 本代是否走了 su。
+            // 二者共同决定收尾时「这份空」是否权威（见自愈判据）。
+            val rootBeforeLoad = RootService.isRootGranted
+            var listedViaRoot = false
             try {
                 // 单次调用同时判定「目录是否存在」与「条目有哪些」。
                 // 旧实现先 pathExists() 再 listFiles()，是两次独立的 su 调用：
@@ -544,6 +548,10 @@ fun FilePage(
                         }
                         // 已有更新的刷新接替（切目录或重复刷新）：本次结果过期，直接丢弃。
                         if (gen != pane.refreshGenRef[0]) return@launch
+                        // 本代是否走了 su：发起前 root 已定 true，或发起后落定为 true。
+                        // listDirectory 只在 root 为 null 时先试本地，且本地为空才等探测，
+                        // 故这两种都说明这次列举走的是 su。su 的空是权威结论，不重读。
+                        listedViaRoot = rootBeforeLoad != false && RootService.isRootGranted == true
                         // 两个状态之间没有挂起点：只产生一次重组，不会出现「新目录列表 + 旧排序结果」的中间帧
                         pane.fileList = loaded
                         pane.displayFileList = display
@@ -579,16 +587,31 @@ fun FilePage(
                     // 允许依赖它们的重算协程工作。
                     pane.loadingGenRef[0] = -1
                     pane.isLoading = false
-                    // 收尾后做一次「静默空列表」自愈检查（冷启动异常守护）。
-                    // 此处不能只看聚焦列：右列同样会冷启动失败，而它不在委托可见范围内。
+                    // 收尾后的「静默空列表」守护。
+                    //
+                    // 只为一件事存在：冷启动首帧列举与 ROOT 探测并发时，本地通道
+                    // 可能把「无权访问」呈现成空目录。此时无错误、只有空。
+                    //
+                    // 旧判据「无错误 + 空」把合法空目录也重读一次：用户进空文件夹
+                    // 看到列表刷两次。修法两条：
+                    //  1. 判据看 pane.fileList（权威结果）。displayFileList 因搜索词
+                    //     过滤为空不是「目录为空」，拿它判会白刷一趟。
+                    //  2. 空还要「来源不可信」才重读：su 拿到的空是权威结论，
+                    //     本地在 ROOT 未落定时拿到的空才可能是假空。
                     if (pane.directoryLoadError == null && !pane.directoryLoadFailed &&
-                        !pane.retriedForEmptyOnce
+                        pane.fileList.isEmpty() && !pane.retriedForEmptyOnce && !listedViaRoot
                     ) {
                         pane.retriedForEmptyOnce = true
                         scope.launch {
                             delay(PANE_RETRY_DELAY_MS)
-                            val stillSilent = pane.displayFileList.isEmpty() && !pane.isLoading &&
-                                pane.directoryLoadError == null && !pane.directoryLoadFailed
+                            // 目录已切走：这一代作废，不能拿它去刷别的目录。
+                            if (gen != pane.refreshGenRef[0]) return@launch
+                            // ROOT 已明确判不可用则本地口径是最终事实，重读只会白刷。
+                            // 仍未落定或已落定 true：这一代本地空可能是假空，必须重读。
+                            val rootNotDenied = RootService.isRootGranted != false
+                            val stillSilent = rootNotDenied && pane.fileList.isEmpty() &&
+                                !pane.isLoading && !pane.directoryLoadFailed &&
+                                pane.directoryLoadError == null
                             if (stillSilent) refreshPane(paneIndex)
                         }
                     }
@@ -681,18 +704,36 @@ fun FilePage(
             isMoving = true
             var ok = 0
             var fail = 0
-            targets.forEach { sourcePath ->
-                val (success) = RootFileManager.moveFile(sourcePath, destination, onConflict = conflict)
-                if (success) ok++ else fail++
+            var failures: List<String> = emptyList()
+            try {
+                // 一次调用跑完整批：内部按字节分段，每段一条 su 带整段判定与 mv。
+                // 逐项 moveFile 时每项至少一次 su，400 项约一分钟。
+                val result = RootFileManager.moveBatch(targets, destination, onConflict = conflict)
+                ok = result.moved.size
+                fail = result.failedCount
+                failures = result.failureLines()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                fail = targets.size
+                failures = listOf(e.message ?: "未知错误")
+            } finally {
+                withContext(NonCancellable + Dispatchers.Main) {
+                    isMoving = false
+                    selectedPaths.clear()
+                    multiSelectMode = false
+                    // 落点由 picker 任选，可能就是另一列的当前目录：两列都刷。
+                    refreshBothPanes()
+                    feedbackMessage = if (fail == 0) {
+                        "已移动 $ok 项"
+                    } else {
+                        buildString {
+                            append("移动完成：$ok 成功 / $fail 失败")
+                            if (failures.isNotEmpty()) append("：${failures.take(2).joinToString("；")}")
+                        }
+                    }
+                }
             }
-            isMoving = false
-            feedbackMessage = if (fail == 0) "已移动 $ok 项" else "移动完成：$ok 成功 / $fail 失败"
-            selectedPaths.clear()
-            multiSelectMode = false
-            // 落点由 picker 任选，可能就是另一列的当前目录：两列都刷。
-            // 不做「落点串比另一列目录」：别名归一化后仍会漏，而漏刷代价
-            // （目标列留旧列表）远大于多刷一趟 su（移动本身已是 N 趟）。
-            refreshBothPanes()
         }
     }
 
@@ -2291,33 +2332,58 @@ fun FilePage(
                 moveFiles = null
                 actionJobScope.launch {
                     isMoving = true
-                    // 先探测是否存在同名冲突，有冲突则弹出决策框
-                    val conflicted = targets.any {
-                        RootFileManager.moveDestinationCollides(it, destinationDirectory)
+                    // 冲突探测整批一次。旧写法 targets.any { moveDestinationCollides }
+                    // 是 M 次 su，只为回答一个是/否。
+                    val collisions = try {
+                        RootFileManager.moveBatchConflicts(targets, destinationDirectory)
+                    } catch (e: CancellationException) {
+                        isMoving = false
+                        throw e
+                    } catch (_: Exception) {
+                        // 探测失败不等于无冲突：按「有冲突」弹框，由 moveBatch 逐项判定兜底。
+                        targets
                     }
-                    if (conflicted) {
+                    if (collisions.isNotEmpty()) {
                         conflictTargets = targets
                         conflictDestination = destinationDirectory
+                        // 先复位：否则冲突框里选策略时 runMoveWithConflict 的
+                        // if (isMoving) return 会把这次选择吞掉。
                         isMoving = false
                         showConflictDialog = true
-                    } else {
-                        var ok = 0
-                        var fail = 0
-                        targets.forEach { sourcePath ->
-                            // 走 SKIP 而非默认的 OVERWRITE：探测与执行之间目标可能被并发写入，
-                            // 此时静默覆盖会直接销毁别人的文件；不覆盖、按失败计数更符合本入口语义。
-                            val (success) = RootFileManager.moveFile(
-                                sourcePath, destinationDirectory, onConflict = MoveDestinationConflict.SKIP
-                            )
-                            if (success) ok++ else fail++
+                        return@launch
+                    }
+                    var ok = 0
+                    var fail = 0
+                    var failures: List<String> = emptyList()
+                    try {
+                        // 探测与执行之间目标可能被并发写入：走 SKIP 不覆盖，按失败计数。
+                        val result = RootFileManager.moveBatch(
+                            targets, destinationDirectory, onConflict = MoveDestinationConflict.SKIP
+                        )
+                        ok = result.moved.size
+                        fail = result.failedCount
+                        failures = result.failureLines()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        fail = targets.size
+                        failures = listOf(e.message ?: "未知错误")
+                    } finally {
+                        withContext(NonCancellable + Dispatchers.Main) {
+                            isMoving = false
+                            selectedPaths.clear()
+                            multiSelectMode = false
+                            // 目标目录可能正是另一列的当前目录：两列都刷
+                            refreshBothPanes()
+                            feedbackMessage = if (fail == 0) {
+                                "已移动 $ok 项"
+                            } else {
+                                buildString {
+                                    append("移动完成：$ok 成功 / $fail 失败")
+                                    if (failures.isNotEmpty()) append("：${failures.take(2).joinToString("；")}")
+                                }
+                            }
                         }
-                        isMoving = false
-                        feedbackMessage = if (fail == 0) "已移动 $ok 项" else "移动完成：$ok 成功 / $fail 失败"
-                        // 移动完成后退出多选态并回到普通浏览
-                        selectedPaths.clear()
-                        multiSelectMode = false
-                        // 目标目录可能正是另一列的当前目录：两列都刷
-                        refreshBothPanes()
                     }
                 }
             }

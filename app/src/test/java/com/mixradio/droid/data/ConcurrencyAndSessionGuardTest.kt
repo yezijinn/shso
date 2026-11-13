@@ -139,8 +139,8 @@ class ConcurrencyAndSessionGuardTest {
         assertTrue(s.contains("private fun invalidateShsoDirIfAffected(path: String)"))
         assertTrue(s.contains("if (path == DEFAULT_SHSO_DIR) shsoDirEnsured = false"))
         assertEquals(
-            "删除（单项 + 批量）/ 改名 / 移走四个入口外加声明处，应恰好 5 处",
-            5,
+            "删除（单项 + 批量）/ 移动（单项 + 批量）/ 改名 / 移走六个入口外加声明处，应恰好 6 处",
+            6,
             Regex("invalidateShsoDirIfAffected\\(").findAll(s).count()
         )
     }
