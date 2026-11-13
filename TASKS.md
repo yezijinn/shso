@@ -12,15 +12,15 @@
 
 ---
 
-## 当前状态速览（2026-11-07）
+## 当前状态速览（2026-11-13）
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步；最新 tag `20261014` → `796de4c`（2026-10-14 发版提交），其后 HEAD `41b78e3`（A150）只在 `main`；`20261013` 与 `b3d7739` 见 § A149 |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步；最新 tag `20261113` → `df343ee`（A155 发版提交，其后 `04098c8` 修发版工作流已并入）；`20261112` 与 `bff23d1` 见 § A154 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 751 tests / 0 failures / 0 errors / 1 skipped（A152 `testDebugUnitTest`，XML 汇总与源码 `@Test` 计数一致；新增 25 项分段/接线/存储/移动护栏） |
+| 单元测试 | 773 tests / 0 failures / 0 errors / 1 skipped（A155 `testDebugUnitTest`，XML 汇总与源码 `@Test` 计数一致；新增 22 项 su 浪费合并护栏） |
 | lint | 0 errors（A152 `lintRelease` BUILD SUCCESSFUL） |
-| release 体积 | **33,454,489 字节**（约 33.4 MB，十进制），sha256 `C58EE3FF7399954F33FE2C2D18072D81BBC03A72CFCC172B944F88F18FD321A2`；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
+| release 体积 | **33,470,873 字节**（约 33.5 MB，十进制），sha256 `2541557C61630182CA58A649B73C8A9CA064B33BCBBBD7A8563AC2BBE2BBC591`（tag `20261113`）；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
 | 执行环境 | **全量内置**（A151）：`assets/env.bin` VERSION 6 携带完整 aarch64 工具链 —— bash / busybox（358 applet）/ curl / GNU 与 coreutils / git（客户端）/ python3 / openssl / ssh / rsync，首次启动解压到私有目录；归档内 `bin/sh` 不由 busybox 提供（busybox sh applet 直跑会 SIGSEGV，applets 亦不含 sh），前缀缺 sh 时由 `TermuxPrefix` 建链指向 `/system/bin/sh`，真机已验证；Termux 前缀符号链接避免 `LD_LIBRARY_PATH` 污染；`GIT_PAGER=cat` 规避未内置分页器导致的 `fatal: unable to execute pager`；可下载扩展包已删除，不再有「按设计缺失」的工具 |
 | 执行矩阵 | A151 真机（127.0.0.1:16384 / Redmi K70 23113RKC6C）安装成功、MainActivity 前台稳定；首解后 `VERSION=6`，`env.tmp`/`env.old`/`envpack` 均不存在，旧 `env/bin/sh` 缺失，前缀 `sh`/`ash`/`hush`/`mash` 全部链到 `/system/bin/sh`；应用执行绝对 shebang `#!/data/data/com.termux/files/usr/bin/sh` 输出 `ABS_SH_OK`；绝对 `python3.14`/`python3`/`python`/`env`/`sh`/`bash` 与 `libcrypto`/`libz` 链接在位，`libexec/git-core`、`share/git-core`、`etc/tls/openssl.cnf`、`lib/python3.14` 补链到位；执行链不再导出 `LD_LIBRARY_PATH`；Python 3.14.6（含 sqlite3/ssl）、git 2.56.0（含 `git init/add/commit/log`）、OpenSSL 3.6.5、OpenSSH 10.6p1、rsync 3.5.1、GNU sed/tar/wget/grep/find、zstd 1.5.7、xz 5.8.4 均执行成功；日志无 FATAL EXCEPTION / CANNOT LINK / SIGSEGV。A150 的 35/36 为非交互套件历史值（`tests/suite.sh` 不在仓库，未重跑） |
 | 真机 | `$DEVICE`（Android 10 / 1080×2280 / Magisk root） |
@@ -90,6 +90,24 @@
 - [x] **真机验证**：400 个 `/sdcard` 微小文件端到端删除 1.35s（0 次 su）；400 个受保护路径
       10 段 2.27s；指向目录的软链只删链接、目标完好；无崩溃、无残留 su 进程。
 - [x] **文档**：`更新日志.md` 同日补 4 条；本表测试数/哈希同步。
+
+### A155. su 浪费第二轮修尽（2026-11-13）
+
+- [x] **五项 su 浪费全部修尽**：`addFileToShso`（移除 `ensureShsoDir` 调用、目录创建并入同条 su）、
+       多选原地拷贝（`FilePage` 改调 `copyBatch`、复用 `chunkByBytes` 分段、O_EXCL 占位保唯一名）、
+       `TextCompare` 同名探测（root 时单条 su 内 while 探测，本地快路径仅未授权 root 走）、
+       `ApkInstaller` 分片拷贝（单包安装 `cp`+`pm install`+`rm` 合并为单条 su；
+       分包 `install-write` 依协议约束仅合并 su、`pm` 逐片写不可合并，已定性非降级）、
+       `copyToDirectory`（合并为单条 su 状态机）。
+- [x] **护栏**：`ConcurrencyAndSessionGuardTest` 计数 6→8；新增 `SuWasteRound2Test`（22 用例）。
+- [x] **构建**：773 tests / 0 failures / 0 errors / 1 skipped；`lintRelease`/`assembleRelease`/
+       `verifyReleasePayload` 全绿；`publish-release.yml` 在线发版成功（run `43409271677`）。
+       该工作流首跑因 `setup-android@v4.0.1` 默认装已下架 `tools` 包失败，对齐 `build-apk.yml`
+       加 `packages: platform-tools` 后通过。
+- [x] **真机**：`127.0.0.1:16416`（PJJ110）`install -r` 成功，启动无 FATAL，su 操作正常，进程存活。
+- [x] **发版**：tag `20261113` Latest，apk 33,470,873 字节，
+       sha256 `2541557C61630182CA58A649B73C8A9CA064B33BCBBBD7A8563AC2BBE2BBC591`；
+       删除 `20261112` 旧附件。
 
 ### A151. 扩展包下线、工具链全量内置（2026-11-07）
 
