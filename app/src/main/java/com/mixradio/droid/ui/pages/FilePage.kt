@@ -2222,8 +2222,13 @@ fun FilePage(
                         startExtract(item)
                     }
 
-                    // 免解压浏览：只读 central directory / 逐条取流，不整体落盘，
-                    // 因此**不**受当前目录可写性限制（不解压、不写目标目录）。
+                }
+
+                // 免解压浏览：只读 central directory / 逐条取流，不整体落盘，
+                // 因此**不**受当前目录可写性限制（不解压、不写目标目录）。
+                // 安装包（APK/XAPK/APKS/ASPk/APKM）物理上是 ZIP，同样支持浏览，
+                // 但数据层强制只读（写回会作废签名），不会出现在自动解压入口。
+                if (item.isArchive || item.isInstallable) {
                     ActionTextRow("浏览压缩内容", AuroraTokens.AccentViolet) {
                         showActionDialog = false
                         resetArchiveWriteStatus()

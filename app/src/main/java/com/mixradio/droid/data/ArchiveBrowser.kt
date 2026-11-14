@@ -39,10 +39,16 @@ import org.apache.commons.compress.archivers.sevenz.SevenZFile
  *  - 抽取的临时文件落在 app 私有 cache 的**按条目隔离的子目录**，文件名是净化后的条目名。
  *
  * ## 能力边界（诚实结论，UI 必须照此禁用入口）
- *  - ZIP 未加密：可浏览 / 可打开 / **可写回**；
+ *  - ZIP 未加密（非安装包）：可浏览 / 可打开 / **可写回**；
+ *  - **安装包（APK / XAPK / APKS / ASPK / APKM）**：物理格式是 ZIP，可浏览、图片可看，
+ *    但**强制只读**——写回会作废签名，`list` 给 `WriteSupport.NONE` 且 `replaceEntry` 硬拒绝；
  *  - ZIP 加密、7Z、TAR、单文件压缩：可浏览、图片可看，**文本不提供打开、不可写回**；
  *  - 包本体 app 不可读（root-only 目录）：直接报不可浏览 —— `su` 只解决写，不解决读；
  *  - rar 不在 [ArchiveExtractor.isKnownArchive] 内，本层报「暂不支持浏览该格式」。
+ *
+ * 安装包识别走 [ArchiveExtractor.browseContainerKindOf]：它把安装包额外归为 ZIP **仅供浏览**，
+ * [ArchiveExtractor.isKnownArchive] 与 [ArchiveExtractor.containerKindOf] 不变，
+ * 因此安装包不会混入「自动解压」，也拿不到写回路径。
  */
 object ArchiveBrowser {
 
@@ -65,6 +71,9 @@ object ArchiveBrowser {
 
     private const val UNREADABLE = "该压缩包位于应用不可读取的位置，无法浏览；可先复制到可读目录"
     private const val NOT_ZIP_WRITABLE = "仅 ZIP 支持写回；当前格式只能浏览"
+    /** 安装包只读原因：写回会改动条目字节，签名作废，无法再安装。 */
+    private const val INSTALLER_READ_ONLY =
+        "安装包为只读浏览：修改包内条目会使签名失效，无法安装"
 
     /** 写回能力。UI 只据此决定「打开编辑」是否可用，不自行推断格式。 */
     enum class WriteSupport { NONE, ZIP_REWRITE }
@@ -250,14 +259,16 @@ object ArchiveBrowser {
         password: String?,
         rootGranted: Boolean
     ): BrowseResult = withContext(Dispatchers.IO) {
-        val kind = ArchiveExtractor.containerKindOf(archivePath)
+        val kind = ArchiveExtractor.browseContainerKindOf(archivePath)
             ?: return@withContext BrowseResult.Failure("暂不支持浏览该格式")
         val archive = File(archivePath)
         if (!archive.isFile) return@withContext BrowseResult.Failure("压缩包不存在或不可读")
         if (!archive.canRead()) return@withContext BrowseResult.Failure(UNREADABLE)
+        // 安装包强制只读：无论目录是否可写、是否授权 ROOT，都不给写回能力。
+        val readOnlyInstaller = ArchiveExtractor.isInstallerPackage(archivePath)
         try {
             when (kind) {
-                ArchiveExtractor.ContainerKind.ZIP -> listZip(archive, rootGranted)
+                ArchiveExtractor.ContainerKind.ZIP -> listZip(archive, rootGranted, readOnlyInstaller)
                 ArchiveExtractor.ContainerKind.SEVENZ -> listSevenZ(archive, password)
                 ArchiveExtractor.ContainerKind.TAR -> listTar(archive)
                 ArchiveExtractor.ContainerKind.SINGLE -> listSingle(archive)
@@ -269,7 +280,7 @@ object ArchiveBrowser {
         }
     }
 
-    private fun listZip(archive: File, rootGranted: Boolean): BrowseResult {
+    private fun listZip(archive: File, rootGranted: Boolean, readOnlyInstaller: Boolean = false): BrowseResult {
         // 预算前置：先读尾部拿条目数，再让 zip4j 分配 FileHeader（顺序不能反）。
         try {
             ArchiveExtractor.probeZipEntryCountOrThrow(archive.path)
@@ -304,7 +315,11 @@ object ArchiveBrowser {
                     )
                 )
             }
-            val reason = zipWriteBlockReason(archive, encrypted, rootGranted)
+            val reason = if (readOnlyInstaller) {
+                INSTALLER_READ_ONLY
+            } else {
+                zipWriteBlockReason(archive, encrypted, rootGranted)
+            }
             return BrowseResult.Success(
                 ArchiveInfo(
                     kind = ArchiveExtractor.ContainerKind.ZIP,
@@ -461,7 +476,7 @@ object ArchiveBrowser {
         password: String?,
         cacheDir: File
     ): OpenResult = withContext(Dispatchers.IO) {
-        val kind = ArchiveExtractor.containerKindOf(archivePath)
+        val kind = ArchiveExtractor.browseContainerKindOf(archivePath)
             ?: return@withContext OpenResult.Failure("暂不支持浏览该格式")
         if (isUnsafeEntryPath(entryPath)) return@withContext OpenResult.Failure("条目路径越界")
         val archive = File(archivePath)
@@ -701,6 +716,11 @@ object ArchiveBrowser {
         rootGranted: Boolean
     ): WriteResult {
         val archive = File(archivePath)
+        // 安装包一律拒绝写回：物理上是 ZIP，但改任一字节都会让签名失效。
+        // 这是数据层硬闸，不依赖 UI 是否禁用了编辑入口。
+        if (ArchiveExtractor.isInstallerPackage(archivePath)) {
+            return WriteResult.Failure(INSTALLER_READ_ONLY)
+        }
         if (ArchiveExtractor.containerKindOf(archivePath) != ArchiveExtractor.ContainerKind.ZIP) {
             return WriteResult.Failure(NOT_ZIP_WRITABLE)
         }

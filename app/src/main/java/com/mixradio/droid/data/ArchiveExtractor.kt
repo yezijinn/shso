@@ -136,6 +136,25 @@ object ArchiveExtractor {
     }
 
     /**
+     * 是否为手机安装包（APK / XAPK / APKS / ASPK / APKM）。
+     *
+     * 这些容器的物理格式都是 ZIP，但**不进 [isKnownArchive]**：它们有专门的「安装」入口，
+     * 不该混进「自动解压」。此处单独识别，仅供「浏览压缩内容」判格式用。
+     * 用 [realExtensionOf] 保证与 [FileItem] 的 `.1` 尾缀、大小写口径完全一致。
+     */
+    fun isInstallerPackage(name: String): Boolean =
+        realExtensionOf(name) in INSTALLABLE_EXTENSIONS
+
+    /**
+     * 浏览用的容器类型：在 [containerKindOf] 基础上，额外把安装包当作 ZIP。
+     *
+     * 只读浏览专用 —— [containerKindOf] 与 [isKnownArchive] 保持不变，
+     * 因此安装包不会被「自动解压」，也拿不到写回能力。
+     */
+    fun browseContainerKindOf(name: String): ContainerKind? =
+        if (isInstallerPackage(name)) ContainerKind.ZIP else containerKindOf(name)
+
+    /**
      * 识别压缩包类型；未知格式返回 null。
      *
      * 后缀比对必须用**区域无关**的小写化（Kotlin 的无参 `lowercase()`，等价 `Locale.ROOT`）。
