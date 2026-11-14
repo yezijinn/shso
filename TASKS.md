@@ -20,7 +20,7 @@
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
 | 单元测试 | 795 tests / 0 failures / 0 errors / 1 skipped（A156 `testDebugUnitTest`，XML 汇总与源码 `@Test` 计数一致；新增 5 个测试类 / 22 用例） |
 | lint | 0 errors（A156 `lintRelease` BUILD SUCCESSFUL） |
-| release 体积 | **33,487,257 字节**（约 33.5 MB，十进制），sha256 `EC66CE62E25E236A92EC23D409E504B7315BE7020DB648D2E4FC1405120CAB7D`（tag `20261114`）；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
+| release 体积 | **33,487,257 字节**（约 33.5 MB，十进制），sha256 `CF88DD991A4E14CACB750F78FCF21FE75C6F592CBC4E93FC923F644F131AADEF`（tag `20261114`，GitHub/Gitee 双端一致；CI 在线构建产物）；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
 | 执行环境 | **全量内置**（A151）：`assets/env.bin` VERSION 6 携带完整 aarch64 工具链 —— bash / busybox（358 applet）/ curl / GNU 与 coreutils / git（客户端）/ python3 / openssl / ssh / rsync，首次启动解压到私有目录；归档内 `bin/sh` 不由 busybox 提供（busybox sh applet 直跑会 SIGSEGV，applets 亦不含 sh），前缀缺 sh 时由 `TermuxPrefix` 建链指向 `/system/bin/sh`，真机已验证；Termux 前缀符号链接避免 `LD_LIBRARY_PATH` 污染；`GIT_PAGER=cat` 规避未内置分页器导致的 `fatal: unable to execute pager`；可下载扩展包已删除，不再有「按设计缺失」的工具 |
 | 执行矩阵 | A151 真机（127.0.0.1:16384 / Redmi K70 23113RKC6C）安装成功、MainActivity 前台稳定；首解后 `VERSION=6`，`env.tmp`/`env.old`/`envpack` 均不存在，旧 `env/bin/sh` 缺失，前缀 `sh`/`ash`/`hush`/`mash` 全部链到 `/system/bin/sh`；应用执行绝对 shebang `#!/data/data/com.termux/files/usr/bin/sh` 输出 `ABS_SH_OK`；绝对 `python3.14`/`python3`/`python`/`env`/`sh`/`bash` 与 `libcrypto`/`libz` 链接在位，`libexec/git-core`、`share/git-core`、`etc/tls/openssl.cnf`、`lib/python3.14` 补链到位；执行链不再导出 `LD_LIBRARY_PATH`；Python 3.14.6（含 sqlite3/ssl）、git 2.56.0（含 `git init/add/commit/log`）、OpenSSL 3.6.5、OpenSSH 10.6p1、rsync 3.5.1、GNU sed/tar/wget/grep/find、zstd 1.5.7、xz 5.8.4 均执行成功；日志无 FATAL EXCEPTION / CANNOT LINK / SIGSEGV。A150 的 35/36 为非交互套件历史值（`tests/suite.sh` 不在仓库，未重跑） |
 | 真机 | `$DEVICE`（Android 10 / 1080×2280 / Magisk root） |
@@ -120,7 +120,7 @@
 - [x] **护栏**：`ArchiveBrowserPathTest` / `ArchiveBrowserZipTest`（真 zip 写回 + 其它条目字节不变）/ `ArchiveBrowserFormatsTest`（7z/tar/tgz 浏览）。
 - [x] **构建**：795 tests / 0 失败；`lintRelease` / `assembleRelease` / `verifyReleasePayload` 全绿；versionCode `20261114` 与 tag 一致。
 - [x] **真机**：`127.0.0.1:16416`（PJJ110）`install -r` 成功；实测「浏览压缩内容」列目录、进/退子目录、文本编辑保存写回（readme.txt 18B→33B，内容 `hello archiveEDITED_20261114`，其它条目不变）、包内 PNG 直接看图、提取 APK 页按包名/应用名（含大小写）过滤；0 FATAL。
-- [x] **发版**：tag `20261114` Latest，apk 33,487,257 字节，sha256 `EC66CE62…CAB7D`；删除 `20261113` 旧附件。
+- [x] **发版**：tag `20261114` 双端纯数字，GitHub/Gitee 均有 Release + 附件，apk 33,487,257 字节，sha256 `CF88DD99…ADEF`（在线构建，双端一致）；删除 GitHub `20261113` 与 Gitee `20261112` 旧附件。
 
 ### A151. 扩展包下线、工具链全量内置（2026-11-07）
 
