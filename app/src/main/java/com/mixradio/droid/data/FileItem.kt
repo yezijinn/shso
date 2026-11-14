@@ -124,9 +124,21 @@ data class FileItem(
     /** 是否为已知压缩包（zip/tar/tgz/7z/gz/xz/bz2/lz4 等）——长按菜单据此显示「自动解压文件」。 */
     val isArchive: Boolean = !isDirectory && ArchiveExtractor.isKnownArchive(realArchiveName)
 
+    /** 是否常见视频（按扩展名；`ts`/`mts` 归文本，见 [VIDEO_EXTENSIONS]）。 */
+    val isVideo: Boolean = !isDirectory && realExtension in VIDEO_EXTENSIONS
+
+    /** 是否常见音频。 */
+    val isAudio: Boolean = !isDirectory && realExtension in AUDIO_EXTENSIONS
+
+    /** 视频或音频：动作菜单据此给出「播放」入口。 */
+    val isMedia: Boolean = isVideo || isAudio
+
     /**
      * 无扩展名（`Dockerfile`、`Makefile`、`hosts`、`crontab`）或点开头的隐藏配置（`.gitignore`）
      * 按文本处理——这类文件在扩展名白名单里查不到，但绝大多数是纯文本。
+     *
+     * 点开头分支额外排除媒体：`.mp4` / `.mp3` 这类「下载器留下的点开头媒体」若按文本处理，
+     * 图标是 TXT、菜单首位是「编辑文本」，真正该做的播放反而排到后面。
      *
      * 对外可见：外部唤起需要据此判断「谓词无法区分类型、应以 MIME 为准」。
      */
@@ -135,9 +147,10 @@ data class FileItem(
         val dots = name.count { it == '.' }
         if (dots == 0) return@run true
         // Keep dot-prefixed configuration files text-like, but preserve
-        // known action types such as .apk, .zip, .sh and .png.
+        // known action types such as .apk, .zip, .sh, .png and media.
         name.startsWith(".") && dots == 1 &&
-            !isInstallable && !isSupportedExecutable && !isViewableImage && !isArchive
+            !isInstallable && !isSupportedExecutable && !isViewableImage &&
+            !isArchive && !isMedia
     }
 
     /** 是否常见文本文档（可编辑保存）。 */

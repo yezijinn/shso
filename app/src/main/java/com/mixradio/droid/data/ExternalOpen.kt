@@ -150,13 +150,21 @@ object ExternalOpenHub {
 
 /**
  * 外部唤起（OPEN 模式）的动作。`BROWSE` 表示无法判定，退回定位 + 动作菜单。
+ *
+ * `PLAY_MEDIA` 与 `VIEW_IMAGE` 并列而非合并：播放器需要视频 surface / 音频焦点，
+ * 与图片查看器是两套 UI，合并会让「播放」这个动作在 FilePage 里再次分流。
  */
-enum class ExternalAction { INSTALL, EXECUTE, VIEW_IMAGE, EDIT_TEXT, EXTRACT, BROWSE }
+enum class ExternalAction { INSTALL, EXECUTE, VIEW_IMAGE, PLAY_MEDIA, EDIT_TEXT, EXTRACT, BROWSE }
 
 /** MIME → 动作；无法判定返回 null。发送方给的 MIME 可能不准，故只作兜底。 */
 fun actionForMimeType(mimeType: String?): ExternalAction? = when {
     mimeType.isNullOrBlank() -> null
     mimeType.startsWith("image/", ignoreCase = true) -> ExternalAction.VIEW_IMAGE
+    // 视频/音频：无扩展名的分享目标（相册、下载器临时文件）最常见的形态，
+    // 不在这里接住就会被「无扩展名 = 文本」的既有语义丢进编辑器。
+    // 必须排在 "text/" 之前：部分发送方给 .mkv 的 MIME 是 "text/plain"（误判）。
+    mimeType.startsWith("video/", ignoreCase = true) -> ExternalAction.PLAY_MEDIA
+    mimeType.startsWith("audio/", ignoreCase = true) -> ExternalAction.PLAY_MEDIA
     mimeType.startsWith("text/", ignoreCase = true) -> ExternalAction.EDIT_TEXT
     mimeType.equals("application/json", ignoreCase = true) || mimeType.endsWith("+json", ignoreCase = true) ->
         ExternalAction.EDIT_TEXT
@@ -185,7 +193,9 @@ fun decideExternalAction(
     isViewableImage: Boolean,
     isEditableText: Boolean,
     isArchive: Boolean,
-    mimeType: String?
+    mimeType: String?,
+    /** 新增：扩展名命中视频/音频集合。带默认值，既有调用点（含单测）无需改动。 */
+    isMedia: Boolean = false
 ): ExternalAction {
     if (isExtensionless) {
         // 无扩展名：安装 / 执行不受影响（谓词本就依赖扩展名，此处必为假），以 MIME 为准
@@ -195,6 +205,7 @@ fun decideExternalAction(
         isInstallable -> ExternalAction.INSTALL
         isSupportedExecutable -> ExternalAction.EXECUTE
         isViewableImage -> ExternalAction.VIEW_IMAGE
+        isMedia -> ExternalAction.PLAY_MEDIA
         isEditableText -> ExternalAction.EDIT_TEXT
         isArchive -> ExternalAction.EXTRACT
         // 扩展名未知：尽力用 MIME，仍无结论退回定位 + 动作菜单

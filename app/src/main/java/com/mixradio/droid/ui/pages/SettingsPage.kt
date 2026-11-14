@@ -367,13 +367,16 @@ fun SettingsPage(
                 onClick = { showStorageBreakdown = true }
             )
 
-            // 检查更新
-            // 右侧胶囊与权限行一致；点击胶囊/整行触发检查，亮起 3 秒后自动回关
+            // 检查更新：右侧与「存储组成」一致，走 AuroraArrowPreference 默认 chevron 箭头。
+            // 没有胶囊可亮了，进行态必须落到摘要行 —— 否则点了之后界面毫无反馈，
+            // 两源最长 20s，用户只会以为按钮坏了。
             AuroraArrowPreference(
                 title = "检查更新",
-                summary = "检查 gitee / github 是否发布了新的版本",
-                statusSwitch = updateChecking,
-                statusSwitchEnabled = true,
+                summary = if (updateChecking) {
+                    "正在检查 gitee / github…"
+                } else {
+                    "检查 gitee / github 是否发布了新的版本"
+                },
                 onClick = {
                     if (!updateChecking) {
                         updateChecking = true

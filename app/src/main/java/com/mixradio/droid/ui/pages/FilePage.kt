@@ -92,6 +92,8 @@ import com.mixradio.droid.data.ExternalOpen
 import com.mixradio.droid.data.ExternalOpenHub
 import com.mixradio.droid.data.FileItem
 import com.mixradio.droid.data.FileItemSaver
+import com.mixradio.droid.data.fileExtensionLabel
+import com.mixradio.droid.data.isFontFileItem
 import com.mixradio.droid.data.FilePermissionMetadata
 import com.mixradio.droid.data.decideExternalAction
 import com.mixradio.droid.data.INTERNAL_STORAGE_LABEL
@@ -118,6 +120,7 @@ import com.mixradio.droid.ui.components.FileSelectScopeDialog
 import com.mixradio.droid.ui.components.FileSelectScopeOption
 import com.mixradio.droid.ui.components.FileShortcutButton
 import com.mixradio.droid.ui.components.ImageViewerDialog
+import com.mixradio.droid.ui.components.MediaPlayerDialog
 import com.mixradio.droid.ui.components.InstallConfirmDialog
 import com.mixradio.droid.ui.components.TextEditorDialog
 import com.mixradio.droid.ui.components.applyFileViewSettings
@@ -330,6 +333,12 @@ fun FilePage(
     var viewerImageIndex by rememberSaveable { mutableIntStateOf(0) }
     var showTextEditorDialog by rememberSaveable { mutableStateOf(false) }
     var viewerTargetItem by rememberSaveable(stateSaver = FileItemSaver) { mutableStateOf<FileItem?>(null) }
+    // 媒体播放：与图片/文本同理，用 rememberSaveable 让旋屏不静默关掉播放器；
+    // 目标用 FileItemSaver 快照，避免被外部唤起改写 selectedItem 后作用到别的文件。
+    var showMediaPlayerDialog by rememberSaveable { mutableStateOf(false) }
+    var mediaPlayerTarget by rememberSaveable(stateSaver = FileItemSaver) {
+        mutableStateOf<FileItem?>(null)
+    }
 
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameInput by remember { mutableStateOf("") }
@@ -978,11 +987,17 @@ fun FilePage(
             isViewableImage = item.isViewableImage,
             isEditableText = item.isEditableText,
             isArchive = item.isArchive,
-            mimeType = mimeType
+            mimeType = mimeType,
+            isMedia = item.isMedia
         )) {
             ExternalAction.INSTALL -> pendingInstallItem = item
             ExternalAction.EXECUTE -> onExecuteFileAndNavigate(item.path, null)
             ExternalAction.VIEW_IMAGE -> openImageViewer(item)
+            // 直接进播放器：这是「打开一个媒体文件」的同义动作，没有需要用户再确认的副作用。
+            ExternalAction.PLAY_MEDIA -> {
+                mediaPlayerTarget = item
+                showMediaPlayerDialog = true
+            }
             ExternalAction.EDIT_TEXT -> openTextEditor(item)
             // 外部 OPEN 只定位并弹动作菜单；解压会写入多个文件，必须由用户明确点击。
             ExternalAction.EXTRACT -> {
@@ -1372,8 +1387,9 @@ fun FilePage(
                                         // key 只用唯一的 item.path：混入下标会在删除/排序导致位移时使后续项 key 全变，
                                         // LazyColumn 复用失效、整段重建（滚动抖动、状态错位）。path 由 listFiles 去重保证唯一。
                                         itemsIndexed(pane.displayFileList, key = { _, item -> item.path }) { _, item ->
-                                            val isExecutable = item.isExecutableScript || item.isExecutableBinary
-                                            val isFontFile = !item.isDirectory && (item.name.endsWith(".ttf", ignoreCase = true) || item.name.endsWith(".otf", ignoreCase = true))
+                                            // 字体预览按钮与行首图标共用同一判据（原先各写一遍，
+                                            // 大小写/目录判定稍有出入就会出现「图标 TTF 却没有预览按钮」）。
+                                            val isFontFile = isFontFileItem(item)
 
                                             Column(modifier = Modifier.fillMaxWidth()) {
                                                 // 刷新期间旧列表仍可见（不造成空白闪烁），用轻微降透明度表达
@@ -1449,8 +1465,10 @@ fun FilePage(
                                                         .padding(horizontal = if (compact) 6.dp else 16.dp, vertical = 0.dp),
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
-                                                // 类型图标：无底色方框、左右零间隙，直接裸文字
-                                                // 文本文件优先显示**具体语言**（由已导入语法包决定），无法识别时才用通用 TXT
+                                                // 类型图标：无底色方框、左右零间隙，直接裸文字。
+                                                // 有专门图标的类型保持既有文案；没有的用扩展名文本
+                                                // （ZIP / RAR / MP4 / WAV）。双列窄列下长文件名被截断时，
+                                                // 扩展名比通用 📄 更能说明「这是什么」。
                                                 Text(
                                                     text = when {
                                                         item.isDirectory -> "📁"
@@ -1460,10 +1478,16 @@ fun FilePage(
                                                         isFontFile -> if (item.name.endsWith(".otf", ignoreCase = true)) "OTF" else "TTF"
                                                         item.isViewableImage -> "IMG"
                                                         item.isEditableText -> SyntaxPackTags.tagFor(context, item.name) ?: "TXT"
-                                                        else -> "📄"
+                                                        else -> fileExtensionLabel(item) ?: "?"
                                                     },
-                                                    fontSize = if (item.isDirectory || (!isExecutable && !isFontFile && !item.isInstallable && !item.isViewableImage && !item.isEditableText)) 16.sp else 11.sp,
+                                                    // 只有目录的 📁 用 16sp；扩展名文本与既有 SH/APK/IMG 同为 11sp，
+                                                    // 否则窄列里图标会挤掉文件名。
+                                                    fontSize = if (item.isDirectory) 16.sp else 11.sp,
                                                     fontWeight = FontWeight.Bold,
+                                                    // 超长扩展名已在 fileExtensionLabel 截断；双保险不让它换行撑破行高
+                                                    maxLines = 1,
+                                                    softWrap = false,
+                                                    overflow = TextOverflow.Clip,
                                                     color = when {
                                                         item.isDirectory -> AuroraTokens.Accent
                                                         item.isExecutableScript -> AuroraTokens.Accent
@@ -2230,6 +2254,18 @@ fun FilePage(
                     }
                 }
 
+                // 播放：常见视频 / 音频。framework MediaPlayer 直出，零第三方依赖。
+                if (item.isMedia) {
+                    ActionTextRow(
+                        label = if (item.isVideo) "播放视频" else "播放音频",
+                        color = AuroraTokens.AccentBright
+                    ) {
+                        showActionDialog = false
+                        mediaPlayerTarget = item
+                        showMediaPlayerDialog = true
+                    }
+                }
+
                 // 编辑文本：txt/md/json/xml/yaml/conf/properties 等
                 if (item.isEditableText) {
                     ActionTextRow("编辑文本", AuroraTokens.AccentViolet) {
@@ -2910,6 +2946,17 @@ fun FilePage(
                 showImageViewerDialog = false
                 viewerImageList = emptyList()
                 viewerImageIndex = 0
+            }
+        )
+    }
+
+    // 媒体播放弹窗（视频走 SurfaceView，音频只出声）。播放不改盘，关闭无需刷新。
+    if (showMediaPlayerDialog && mediaPlayerTarget != null) {
+        MediaPlayerDialog(
+            item = mediaPlayerTarget!!,
+            onDismiss = {
+                showMediaPlayerDialog = false
+                mediaPlayerTarget = null
             }
         )
     }

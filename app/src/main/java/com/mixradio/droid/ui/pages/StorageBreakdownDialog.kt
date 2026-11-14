@@ -139,7 +139,8 @@ fun StorageBreakdownDialog(onDismissRequest: () -> Unit) {
                         SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(data.generatedAtMillis))
                     }
                     Text(
-                        "统计时间 $stamp · 数字为磁盘字节数 · 软链不跟随计数",
+                        "统计时间 $stamp · 数字为磁盘字节数 · 软链不跟随计数 · " +
+                            "共享存储（Download）不计入",
                         color = AuroraTokens.TextSecondary, fontSize = 11.sp
                     )
                     Spacer(Modifier.height(4.dp))
@@ -153,7 +154,9 @@ fun StorageBreakdownDialog(onDismissRequest: () -> Unit) {
 
                     SectionTitle("运行期数据（本机实际占用）")
                     data.runtime.groupBy { it.group }.forEach { (group, items) ->
-                        GroupHeader(group)
+                        // 组小计让「内置环境总共占多少」仍然一眼可见，
+                        // 又不必在列表里塞一条与各组件重复相加的总数条目。
+                        GroupHeader(group, items.sumOf { if (it.unavailable) 0L else it.bytes })
                         items.forEach { ItemRow(it) }
                         Spacer(Modifier.height(6.dp))
                     }
@@ -213,14 +216,22 @@ private fun SectionTitle(text: String) {
 }
 
 @Composable
-private fun GroupHeader(group: String) {
-    Text(
-        group,
-        color = AuroraTokens.AccentBright,
-        fontSize = 12.sp,
-        fontWeight = FontWeight.Medium,
-        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
-    )
+private fun GroupHeader(group: String, totalBytes: Long) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = group,
+            color = AuroraTokens.AccentBright,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f)
+        )
+        Text(text = humanBytes(totalBytes), color = AuroraTokens.TextSecondary, fontSize = 11.sp)
+    }
 }
 
 @Composable

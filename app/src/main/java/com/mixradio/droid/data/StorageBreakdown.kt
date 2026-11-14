@@ -7,13 +7,19 @@ import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.file.Files
 
 /**
  * 本应用在本机占用的全部存储成分。
  *
- * 口径：磁盘字节数。运行期数据按目录递归累加常规文件大小；符号链接按链接本身计入，
- * 不跟随，避免「内置环境 + Termux 前缀」成百上千条软链被重复统计。
- * APK 自身组成是安装包的静态构成，与运行期数据是两套账，分开列。
+ * 两套账，互不相加：
+ * 1. **运行期数据**：磁盘实际字节，按目录递归累加常规文件。符号链接不跟随、也不计自身 ——
+ *    内置环境里有 373 条软链（busybox applet / git 子命令），跟随计数会把同一份二进制
+ *    重复算几十遍。
+ * 2. **APK 安装包**：安装包内部构成（静态），取 ZIP 条目的压缩后大小。
+ *
+ * 共享存储（Download）**不计入**：那里的文件归用户所有，不是本应用的占用；
+ * 且 Download 下的 APK 无法与用户自己的文件区分，统计它只会把别人的文件算进来。
  */
 object StorageBreakdown {
 
@@ -38,20 +44,90 @@ object StorageBreakdown {
     }
 
     /**
-     * 递归累加常规文件大小；符号链接跳过（其 length() 会读到链接目标，成百上千条
-     * busybox/git 链会把同一份二进制反复计入）。不存在或不可读返回 null。
+     * `filesDir/env` 的顶层组成部分。
+     *
+     * [top] 为 null 表示「顶层常规文件」（只有 VERSION），按文件求和而不是目录递归。
+     * 顺序即展示顺序：可执行文件在前，版本标记在末。
      */
-    private fun dirBytes(path: String): Long? {
-        val root = File(path)
+    internal data class EnvComponent(
+        val top: String?,
+        val label: String,
+        val note: String,
+    )
+
+    /**
+     * 与 `assets/env.bin` 的顶层结构一一对应（实测：bin / lib / libexec / share / etc /
+     * 根 VERSION）。改这里必须同步 `tools/build_env_bin.py` 的归档布局，
+     * 否则 UI 会凭空多出 0 字节条目。
+     */
+    internal val ENV_COMPONENTS: List<EnvComponent> = listOf(
+        EnvComponent(
+            "bin",
+            "bin（可执行文件）",
+            "bash、busybox、git、python3、curl、openssl、ssh、rsync 与 GNU sed/tar/wget/grep/find；" +
+                "另有指向 busybox 的 applet 入口（软链，不计字节）"
+        ),
+        EnvComponent(
+            "lib",
+            "lib（共享库与标准库）",
+            "python3.14 标准库主体，以及 libcrypto / libssl / libz / libcurl 等 .so"
+        ),
+        EnvComponent(
+            "libexec",
+            "libexec（git 辅助程序）",
+            "git-core 下的子命令与辅助程序，只在 git 执行对应操作时才加载"
+        ),
+        EnvComponent(
+            "share",
+            "share（只读数据）",
+            "applets.txt 清单、git-core 模板、terminfo 等只读资源"
+        ),
+        EnvComponent(
+            "etc",
+            "etc（配置与证书）",
+            "tls/ 证书目录与 openssl.cnf、cert.pem —— curl / openssl 校验服务端证书的来源"
+        ),
+        EnvComponent(
+            null,
+            "根文件（VERSION）",
+            "只有 VERSION 一个文件（内容为环境版本号）；版本缺失或与内置不符即整目录重建"
+        ),
+    )
+
+    /**
+     * 递归累加常规文件大小；符号链接跳过（其 length() 会读到链接目标，
+     * 成百上千条 busybox/git 链会把同一份二进制反复计入）。不存在或不可读返回 null。
+     */
+    internal fun sumRegularFileBytes(root: File): Long? {
         if (!root.exists()) return null
         return try {
             var total = 0L
             root.walkTopDown().forEach { f ->
                 if (!f.isFile) return@forEach
-                if (java.nio.file.Files.isSymbolicLink(f.toPath())) return@forEach
+                if (Files.isSymbolicLink(f.toPath())) return@forEach
                 total += f.length()
             }
             total
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** 目录字节数（不存在返回 null，由 [item] 归一为 0）。 */
+    private fun dirBytes(path: String): Long? = sumRegularFileBytes(File(path))
+
+    /**
+     * 目录下**顶层常规文件**的字节和（不递归、不计软链）。
+     *
+     * 用于 env 的根文件（VERSION）：走 [dirBytes] 会把 bin/lib/... 全部重复算一遍。
+     */
+    internal fun topLevelFileBytes(dirPath: String): Long? {
+        val root = File(dirPath)
+        if (!root.isDirectory) return null
+        return try {
+            root.listFiles()
+                ?.filter { it.isFile && !Files.isSymbolicLink(it.toPath()) }
+                ?.sumOf { it.length() } ?: 0L
         } catch (_: Exception) {
             null
         }
@@ -94,19 +170,26 @@ object StorageBreakdown {
         val cacheDir = app.cacheDir.absolutePath
         val prefsDir = File(dataDir, "shared_prefs").absolutePath
         val hasRoot = RootService.isRootGranted == true
-        val internal = INTERNAL_STORAGE_PATH
 
         val r = ArrayList<Item>()
 
-        // ── 1. 应用私有目录（filesDir 树）──────────────────────────────
-        r += item("内置环境", "工具链解压目录", "$filesDir/env",
-            dirBytes("$filesDir/env"), "首次执行时从 env.bin 解压，约 71 MB 源文件")
+        // ── 1. 内置环境：env 解压目录按顶层组件分列 ──────────────────────
+        // 不再给整个 env 目录放一条总数：组小计由存储页按组求和显示，
+        // 再放一条总数会与 6 条组件重复计入 runtimeTotal。
+        val envRoot = "$filesDir/env"
+        for (component in ENV_COMPONENTS) {
+            val path = if (component.top == null) envRoot else "$envRoot/${component.top}"
+            val bytes = if (component.top == null) topLevelFileBytes(envRoot) else dirBytes(path)
+            r += item("内置环境", component.label, path, bytes, component.note)
+        }
         r += item("内置环境", "升级暂存", "$filesDir/env.tmp",
-            dirBytes("$filesDir/env.tmp"), "升级过程临时目录")
+            dirBytes("$filesDir/env.tmp"), "升级过程临时目录，失败即删")
         r += item("内置环境", "升级备份", "$filesDir/env.old",
-            dirBytes("$filesDir/env.old"), "升级失败时保留的旧版副本")
+            dirBytes("$filesDir/env.old"), "升级失败时保留的旧版副本，环境可用时启动即删")
         r += item("内置环境", "旧版扩展包", "$filesDir/envpack",
             dirBytes("$filesDir/envpack"), "旧版遗留，启动即清理")
+
+        // ── 2. 语法包 / 私有数据 ────────────────────────────────────────
         r += item("语法包", "导入的语法文件", "$filesDir/syntax",
             dirBytes("$filesDir/syntax"), "用户导入的 Monarch 语法包，APK 不内置")
         r += item("私有数据", "files 其它", filesDir,
@@ -118,11 +201,12 @@ object StorageBreakdown {
         r += item("私有数据", "shared_prefs 其它", prefsDir,
             otherPrefsBytes(prefsDir), "其余偏好文件", hasRoot = hasRoot)
 
-        // ── 2. 应用私有 cache 树 ──────────────────────────────────────
+        // ── 3. 应用私有 cache 树 ──────────────────────────────────────
         r += item("应用缓存", "cache 全部", cacheDir,
-            dirBytes(cacheDir), "安装确认暂存、XAPK 解压、分享副本、对比临时等", hasRoot = hasRoot)
+            dirBytes(cacheDir), "安装确认暂存、XAPK 解压、分享副本、播放副本、对比临时等",
+            hasRoot = hasRoot)
 
-        // ── 3. 私有目录下不使用的系统子目录（显式标注 0）──────────────
+        // ── 4. 私有目录下不使用的系统子目录（显式标注 0）──────────────
         r += Item("私有数据", "databases", File(dataDir, "databases").absolutePath,
             dirBytes(File(dataDir, "databases").absolutePath) ?: 0, "本应用不使用 SQLite")
         r += Item("私有数据", "no_backup", File(dataDir, "no_backup").absolutePath,
@@ -130,9 +214,10 @@ object StorageBreakdown {
         r += Item("私有数据", "code_cache", File(dataDir, "code_cache").absolutePath,
             dirBytes(File(dataDir, "code_cache").absolutePath) ?: 0, "系统管理的运行时代码缓存")
 
-        // ── 4. ROOT 侧、落在本应用之外的产出 ───────────────────────────
+        // ── 5. ROOT 侧、落在本应用之外的产出 ───────────────────────────
         r += item("shso 工作目录", "添加到 shso 的文件", RootFileManager.DEFAULT_SHSO_DIR,
-            if (hasRoot) rootDirBytes(RootFileManager.DEFAULT_SHSO_DIR) else dirBytes(RootFileManager.DEFAULT_SHSO_DIR),
+            if (hasRoot) rootDirBytes(RootFileManager.DEFAULT_SHSO_DIR)
+            else dirBytes(RootFileManager.DEFAULT_SHSO_DIR),
             "「添加到 shso」的真实落点，root 创建 0777", rootOnly = true, hasRoot = hasRoot)
         r += item("shso 工作目录", "安装临时包", "/data/local/tmp",
             if (hasRoot) rootTmpBytes() else null,
@@ -141,20 +226,12 @@ object StorageBreakdown {
         r += item("ART 编译产物", "oat / dalvik-cache", oat.first,
             oat.second, "系统编译产物，随使用增长", rootOnly = true, hasRoot = hasRoot)
 
-        // ── 5. 共享存储（公共 Download）───────────────────────────────
-        val inbox = "$internal/Download/shso"
-        r += item("共享存储", "收件箱 Download/shso", inbox,
-            dirBytes(inbox), "分享 / 打开方式的副本落点", hasRoot = hasRoot)
-        val dl = "$internal/Download"
-        r += item("共享存储", "提取的 APK（Download）", dl,
-            extractedApkBytes(dl), "提取 APK 产出的 *.APK", hasRoot = hasRoot)
-        r += Item("共享存储", "Android/data 私有目录", "$internal/Android/data/${context.packageName}",
-            dirBytes("$internal/Android/data/${context.packageName}") ?: 0, "本应用不写入外部私有目录")
-
         // ── 6. APK 自身静态组成 ───────────────────────────────────────
         val a = ArrayList<Item>()
         a += Item("APK 组成", "内置环境归档 env.bin", "assets/env.bin",
-            assetBytes(context, "env.bin"), "内置 aarch64 工具链压缩包")
+            assetBytes(context, "env.bin"),
+            "gzip 压缩的 aarch64 工具链；解包后即上方「内置环境」的 6 项" +
+                "（bin / lib / libexec / share / etc / 根文件），未压缩合计约 71.5 MB")
         a += Item("APK 组成", "编辑器主题", "assets/sora-themes/shso-dark.json",
             assetBytes(context, "sora-themes/shso-dark.json"), "Sora Editor 主题")
         a += Item("APK 组成", "classes.dex", "classes.dex",
@@ -168,7 +245,7 @@ object StorageBreakdown {
         Report(r, a, System.currentTimeMillis(), apkFileBytes(context))
     }
 
-    /** files 目录减去已单列的 env/env.tmp/env.old/envpack/syntax，避免重复计数。 */
+    /** files 目录减去已单列的 env 系列 / syntax，避免重复计数。 */
     private fun otherFilesBytes(filesDir: String): Long? {
         val skip = setOf("env", "env.tmp", "env.old", "envpack", "syntax")
         val root = File(filesDir)
@@ -177,7 +254,7 @@ object StorageBreakdown {
             var total = 0L
             root.walkTopDown().forEach { f ->
                 if (!f.isFile) return@forEach
-                if (java.nio.file.Files.isSymbolicLink(f.toPath())) return@forEach
+                if (Files.isSymbolicLink(f.toPath())) return@forEach
                 val top = f.absolutePath.removePrefix(filesDir).trimStart('/')
                     .split('/').firstOrNull()
                 if (top == null || top !in skip) total += f.length()
@@ -237,17 +314,6 @@ object StorageBreakdown {
             o2.lineSequence().mapNotNull { it.trim().toLongOrNull() }.forEach { total += it; ok = true }
         }
         return label to if (ok) total else null
-    }
-
-    /** Download 目录里本应用提取的 *.APK（不把用户其它文件算进来）。 */
-    private fun extractedApkBytes(download: String): Long? {
-        val root = File(download)
-        if (!root.exists()) return null
-        return try {
-            root.listFiles()
-                ?.filter { it.isFile && it.name.endsWith(".APK", ignoreCase = true) }
-                ?.sumOf { it.length() } ?: 0L
-        } catch (_: Exception) { null }
     }
 
     /** APK 内 asset 的压缩后体积；压缩型 asset 不能走 openFd（会抛异常）。 */
