@@ -23,37 +23,48 @@ import java.io.RandomAccessFile
  * 恶意/畸形归档（zip bomb 的变体）可以只靠「条目数爆炸」就把应用 OOM 掉，
  * 预算检查形同虚设。
  *
+ * ## 必须与 zip4j 的实际解析口径对齐（zip4j 2.11.6，javap 核对）
+ *
+ * - `locateOffsetOfEndOfCentralDirectory`：先试 `len-22`，不中则**反向逐字节找签名并直接返回**，
+ *   **不校验注释长度、不要求 EOCD 结束于 EOF**；最低覆盖到 `len-65558`。
+ *   因此「zip4j 会采用哪个候选」= **尾部窗口内最后一处 EOCD 签名**。
+ * - `readZipComment` 把 `readFully` 的 IOException 吞成 null —— EOCD 的注释长度字段可以被
+ *   任意撒谎而 zip4j 照常解析。**所以注释长度不能用来筛掉候选**：筛掉一个 zip4j 仍会解析的
+ *   候选，等于把预算检查交给攻击者（探针返回 null 时调用方直接放行）。
+ * - `readCentralDirectory` 是 `for (i = 0; i < count; i++)` **计数驱动**，`sizeOfCentralDirectory`
+ *   全程不参与，`count` 取自 EOCD（非 ZIP64 上限 65535）或 ZIP64 记录（8 字节，无界）。
+ *   故真正的 OOM 边界 = **zip4j 采用的那个候选声明的计数**。
+ *
  * ## 为什么不能只读尾部自报字段
  *
- * EOCD 里的「本盘/总条目数」是**攻击者可控**的：中央目录实际写上百万条 header 记录、
- * 该字段写 1，预检就得到 1 → 放行；而 zip4j 的 `HeaderReader` 是**从中央目录起点逐条扫到
- * EOCD 签名为止**、不以自报计数为上界 → 百万个 `FileHeader` 一次性进堆 → OOM。
+ * EOCD 里的「本盘/总条目数」是**攻击者可控**的：中央目录实际写上万条 header 记录、
+ * 该字段写 1，只信它就得到 1 → 放行。结构遍历（逐条走中央目录、不构造任何对象）
+ * 给出精确值，是「自报值撒谎」的兜底；它不能替代上面的计数预筛，因为候选可能走不动而
+ * zip4j 仍按声明的 count 分配。
  *
  * ## 为什么不能改用 cdSize 折算
  *
  * 中央目录里每条 header 记录**至少** 46 字节，故 `cdSize / 46` 是条目数的**上界**
  * （`N ≤ cdSize / 46`），不是下界。把它与自报值取大者虽然堵住了上面的漏判，
- * 却会**误拒合法归档**：文件名占几十字节时每条记录远大于 46 字节，折算值成倍放大。
+ * 却会**误拒合法归档**：条目名占几十字节时每条记录远大于 46 字节，折算值成倍放大。
  *
  * 实测：条目名约 65 字节的合法 ZIP，9000 条目被折算成 22228，触发 20000 的上限而被
  * 拒绝 —— 报错文案还写着「条目数超过 20000」，与事实相反。而 1~3 万文件的大型 APK
  * 很常见，等效真实上限被压到 8000 条上下。
  *
- * ## 本实现：零分配的结构遍历
- *
- * 精确条目数其实不需要信任任何自报字段：**逐条走中央目录**即可。每条记录的下一条位置由
- * 其固定头里的三个长度字段（名长/extra 长/注释长）唯一确定，所以能从 `cdOffset` 一路
- * 顺序跳到 `cdOffset + cdSize`，数出**真实**条目数。
- *
- * 这个遍历只读字节、不构造任何对象，因此「预算前置」依然成立：
+ * ## 本实现
  *
  * ```
- * 逐条读 46 字节定长头 → 跳过变长部分 → 计数
- *     计数达到上限？→ 立即返回（零分配）
- *     走完 cdSize？ → 得到精确条目数
+ * 读尾部窗口 → 收集**全部** EOCD 签名位置（不按注释长度过滤）
+ *     最后一个签名（zip4j 唯一会采用的候选）是 ZIP64 哨兵？→ 无法核验 → 按超限拒绝
+ *     逐候选：自报计数 ≥ 上限？→ 按超限拒绝
+ *             计数字段是 ZIP64 哨兵？→ 非最后一处则跳过（它是包内归档的 EOCD）
+ *             结构遍历能走通 → 精确条目数，取各候选最大值
+ *             走不动 → 跳过（zip4j 在该候选上同样读不出 header；且它的计数已过预筛）
  * ```
  *
- * 既不漏判（完全不信自报字段），也不误判（给出精确值而非放大的上界）。
+ * 既误拒（内嵌归档的 EOCD 不再否决外层），也不漏判（zip4j 真正采用的那个候选一旦
+ * 不可核验就 fail-closed；撒谎的计数由结构遍历兜底）。
  */
 internal object ZipEntryCountProbe {
 
@@ -69,8 +80,16 @@ internal object ZipEntryCountProbe {
     /** 中央目录单条 header 记录的定长部分长度。 */
     const val CENTRAL_DIR_HEADER_SIZE = 46
 
-    /** 读尾部所需的最大字节数：EOCD 固定部分 + 最长注释。 */
-    const val TAIL_WINDOW = EOCD_MIN_SIZE + MAX_COMMENT_LENGTH
+    /**
+     * 读尾部所需的最大字节数：EOCD 固定部分 + 最长注释 + 1。
+     *
+     * **那个 +1 不是随手加的**：zip4j 的反查从 `len-23` 起最多 65536 次，最低能命中
+     * `len-65558`。窗口只取 65557 时，尾随垃圾正好 65536 字节的归档会落在
+     * 「zip4j 命中、探针看不到」的那一字节夹缝里 —— 探针返回 null、调用方直接放行，
+     * 而 zip4j 照常解析出全部条目（实测：21000 条归档 + 65536 字节尾随垃圾，
+     * zip4j 读满 21000 个头，探针返回 null）。
+     */
+    const val TAIL_WINDOW = EOCD_MIN_SIZE + MAX_COMMENT_LENGTH + 1
 
     /**
      * 允许遍历的中央目录字节上限。
@@ -85,52 +104,70 @@ internal object ZipEntryCountProbe {
     /**
      * 从**文件尾部字节**读出自报条目数。纯函数，便于 JVM 单测。
      *
+     * 只采信**自洽**的候选（起点 + 22 + 注释长度不越出窗口）：本函数只负责读「一个
+     * 可信 EOCD 的自报值」，越界注释的候选按伪造处理。真正的预算判定不用它。
+     *
      * @param tail 文件最后一段字节（调用方需保证覆盖 TAIL_WINDOW 或整个文件）
      * @param fileSize 文件总长度
      * @return 自报条目数；无法确定返回 null
      */
     fun entryCountFromTail(tail: ByteArray, fileSize: Long): Int? {
-        val eocd = locateEocd(tail, fileSize) ?: return null
+        if (tail.size < EOCD_MIN_SIZE || fileSize < tail.size) return null
+        val eocd = locateEocd(tail) ?: return null
         val raw = readShortLE(tail, eocd + 10)
         // 0xFFFF == ZIP64 哨兵，真实值在 ZIP64 扩展记录里；本项目上限远低于 65535，
         // 按超限处理既正确又省掉一套 ZIP64 解析。
         return raw
     }
 
-    /**
-     * 定位自洽的 EOCD。
-     *
-     * 不用「EOCD 结束位置必须正好等于文件长度」的严格判据：zip4j 2.11.1
-     * `HeaderReader.locateOffsetOfEndOfCentralDirectoryByReverseSeek` 反向逐字节找签名后
-     * **直接返回，不做 EOF 对齐或注释长度校验**（已用 javap 核对字节码）。所以「真 EOCD
-     * 之后还挂着垃圾字节」的 zip（拼接下载、对齐填充、自定义工具追加）zip4j 能照常解析，
-     * 严格判据会判成「非 zip」返回 null，预算检查被静默绕过 —— 正是本探针要防的事。
-     *
-     * 注释区可以伪造签名，因此要求候选**自洽**（起点 + 22 + 注释长度不超过文件长度），
-     * 并在自洽候选里取**自报条目数最大**的那个（相同则取更靠后的，即反向扫描时先遇到的
-     * 真 EOCD 之前的最后一个）。这样无论 zip4j 最终反查命中哪个候选，拿到的自报值都不
-     * 小于它，预检因此偏保守而非漏判。
-     */
-    private fun locateEocd(tail: ByteArray, fileSize: Long): Int? {
-        if (tail.size < EOCD_MIN_SIZE || fileSize < tail.size) return null
+    /** 自洽候选里自报条目数最大的那个（相同取更靠后的）。仅供 [entryCountFromTail]。 */
+    private fun locateEocd(tail: ByteArray): Int? {
         var bestOffset: Int? = null
         var bestCount = -1
-        var i = 0
-        while (i + EOCD_MIN_SIZE <= tail.size) {
-            if (readIntLE(tail, i) == EOCD_SIGNATURE) {
-                val commentLength = readShortLE(tail, i + 20)
-                val endExclusive = i.toLong() + EOCD_MIN_SIZE + commentLength.toLong()
-                if (endExclusive <= fileSize) {
-                    val count = readShortLE(tail, i + 10)
-                    if (count >= bestCount) {
-                        bestCount = count
-                        bestOffset = i
-                    }
-                }
+        for (i in locateSignatureOffsets(tail)) {
+            // 自洽判据必须落在**窗口内**：`i` 是 tail 内偏移，故只能与 tail.size 比较。
+            if (i + EOCD_MIN_SIZE + readShortLE(tail, i + 20) > tail.size) continue
+            val count = readShortLE(tail, i + 10)
+            if (count >= bestCount) {
+                bestCount = count
+                bestOffset = i
             }
-            i++
         }
         return bestOffset
+    }
+
+    /**
+     * 窗口内**全部** EOCD 签名位置（升序）。
+     *
+     * 刻意**不**按注释长度过滤：zip4j 的 `readZipComment` 把越界注释的 IOException 吞成
+     * null，注释字段撒谎的 EOCD 它照样采用。过滤掉这些候选 = 让 [exactEntryCount] 对
+     * zip4j 会解析的归档返回 null，预算检查被静默绕过。
+     */
+    private fun locateSignatureOffsets(tail: ByteArray): List<Int> {
+        if (tail.size < EOCD_MIN_SIZE) return emptyList()
+        val out = ArrayList<Int>(2)
+        var i = 0
+        while (i + EOCD_MIN_SIZE <= tail.size) {
+            if (readIntLE(tail, i) == EOCD_SIGNATURE) out += i
+            i++
+        }
+        return out
+    }
+
+    /**
+     * 单个候选的遍历结果。
+     *
+     * 必须区分「超限」与「走不动」：前者要立刻拒绝整个归档（真超限 / 自报值撒谎），
+     * 后者只说明**这个候选不是外层 EOCD**（典型：包内 STORE 的 APK/ZIP 自带 EOCD），
+     * 跳过它即可，不能因此把外层判成超限。
+     */
+    private sealed interface WalkOutcome {
+        /** 走完中央目录，得到精确条目数；[walkedBytes] 计入共享遍历预算。 */
+        data class Counted(val entries: Int, val walkedBytes: Long) : WalkOutcome
+        /** 真实条目数已达上限，或中央目录体积超出遍历闸门 —— 立即按超限拒绝。 */
+        object OverLimit : WalkOutcome
+        /** 该候选的中央目录走不动（签名不符 / 越界 / ZIP64）—— 只跳过这一条。 */
+        object Unwalkable : WalkOutcome
     }
 
     /**
@@ -138,8 +175,8 @@ internal object ZipEntryCountProbe {
      *
      * @param maxEntries 预算上限；计数达到它即提前返回，避免为超大归档空跑
      * @return 精确条目数；达到/超过 [maxEntries] 时返回不小于它的值；
-     *         归档结构性损坏（遍历走不下去）时同样返回不小于上限的值（fail-closed），
-     *         只有「根本不是 ZIP」才返回 null 交由后续解析器报错
+     *         归档结构性损坏或 zip4j 采用的候选无法核验时同样返回不小于上限的值（fail-closed），
+     *         只有「尾部窗口内根本没有 EOCD 签名」才返回 null 交由后续解析器报错
      */
     fun exactEntryCount(file: File, maxEntries: Int): Int? {
         if (!file.isFile) return null
@@ -151,55 +188,95 @@ internal object ZipEntryCountProbe {
             val tail = ByteArray(window)
             raf.seek(fileSize - window)
             raf.readFully(tail)
-            val eocd = locateEocd(tail, fileSize) ?: return@use null
+            val candidates = locateSignatureOffsets(tail)
+            // 窗口内没有任何 EOCD 签名：不是 ZIP（或尾部已被破坏），交给下游解析器报真错。
+            if (candidates.isEmpty()) return@use null
 
-            // 自报值只作廉价预筛：达到上限就不必再遍历，也避免为明显超限的归档付 I/O。
-            val selfReported = readShortLE(tail, eocd + 10)
-            if (selfReported >= maxEntries) return@use maxEntries
-
-            val rawSize = readIntLE(tail, eocd + 12)
-            val rawOffset = readIntLE(tail, eocd + 16)
-            // 负值 = 对应字段是 0xFFFFFFFF，即 ZIP64：真实偏移/体积在 ZIP64 扩展记录里，
-            // 本实现不解析那套结构。自报值又已经被攻击者控制，此时回退它等于把预算检查
-            // 交给对方 → 直接按超限拒绝。
-            if (rawSize < 0 || rawOffset < 0) return@use maxEntries
-            if (rawSize == 0) return@use 0
-
-            val cdSize = rawSize.toLong()
-            val cdOffset = rawOffset.toLong() and 0xFFFFFFFFL
-            // 越界的中央目录是自相矛盾的构造；自报值不可信，只能保守拒绝。
-            if (cdOffset > fileSize || cdOffset + cdSize > fileSize) return@use maxEntries
-
-            // 体积闸门：每条记录最大约 196KB，「上限条数 × 单条最大」会逼近 4GB。
-            // 32MB 对应平均每条 1.6KB，真实归档平均在 100 字节量级。
-            if (cdSize > MAX_WALK_BYTES) return@use maxEntries
-
-            var pos = cdOffset
-            val cdEnd = cdOffset + cdSize
-            val header = ByteArray(CENTRAL_DIR_HEADER_SIZE)
-            var count = 0
-            while (pos < cdEnd) {
-                if (count >= maxEntries) return@use maxEntries
-                if (pos + CENTRAL_DIR_HEADER_SIZE > cdEnd) return@use maxEntries
-                raf.seek(pos)
-                raf.readFully(header)
-                if (readIntLE(header, 0) != CENTRAL_DIR_SIGNATURE) {
-                    // 中央目录里出现非 header 签名 = 结构性损坏。zip4j 的
-                    // readCentralDirectoryHeader 在同一位置也会抛
-                    // ZipException("Invalid central directory file header signature")，
-                    // 即它不会再分配对象；这里仍按超限返回，不依赖对下游行为的假设。
-                    return@use maxEntries
-                }
-                val nameLen = readShortLE(header, 28)
-                val extraLen = readShortLE(header, 30)
-                val commentLen = readShortLE(header, 32)
-                val next = pos + CENTRAL_DIR_HEADER_SIZE + nameLen + extraLen + commentLen
-                if (next > cdEnd) return@use maxEntries
-                pos = next
-                count++
+            // zip4j 反向找签名后**直接返回**，因此窗口内**最后一处**签名才是它会采用的候选。
+            // 这个候选若无法核验（ZIP64 哨兵：真实计数/偏移在不解析的扩展记录里），
+            // 必须 fail-closed —— 跳过它等于把预算检查交给包里那条小归档。
+            val latest = candidates.last()
+            if (readIntLE(tail, latest + 12) < 0 || readIntLE(tail, latest + 16) < 0) {
+                return@use maxEntries
             }
-            count
+
+            // 语义：每个能走通的候选都要数一遍，取最大值 —— 无论最终哪个候选生效，
+            // 分配量都不会超过我们已核过的数。走不通的候选不是「坏包」，只是「这不是外层 EOCD」。
+            var best: Int? = null
+            var budget = MAX_WALK_BYTES.toLong()
+            for (eocd in candidates) {
+                if (budget <= 0L) return@use maxEntries
+                val outcome = walkCentralDirectory(raf, tail, eocd, maxEntries, eocd == latest)
+                when (outcome) {
+                    is WalkOutcome.OverLimit -> return@use maxEntries
+                    is WalkOutcome.Unwalkable -> Unit
+                    is WalkOutcome.Counted -> {
+                        budget -= outcome.walkedBytes
+                        val prev = best
+                        if (prev == null || outcome.entries > prev) best = outcome.entries
+                    }
+                }
+            }
+            // 所有候选都走不动 = 结构不可解析；自报值不可信，只能 fail-closed。
+            best ?: maxEntries
         }
+    }
+
+    /** 从 [eocd] 这个候选出发，结构遍历它自己的中央目录。 */
+    private fun walkCentralDirectory(
+        raf: RandomAccessFile,
+        tail: ByteArray,
+        eocd: Int,
+        maxEntries: Int,
+        isLatest: Boolean
+    ): WalkOutcome {
+        // 自报值只作廉价预筛：达到上限就不必再遍历，也避免为明显超限的归档付 I/O。
+        val selfReported = readShortLE(tail, eocd + 10)
+        if (selfReported >= maxEntries) return WalkOutcome.OverLimit
+
+        val rawSize = readIntLE(tail, eocd + 12)
+        val rawOffset = readIntLE(tail, eocd + 16)
+        // 负值 = 字段是 0xFFFFFFFF，即 ZIP64：真实偏移/体积在 ZIP64 扩展记录里，本实现不解析。
+        // 最后一处签名已在上层按超限拒绝；走到这里的只可能是包内归档的 EOCD，跳过安全
+        //（它声明的计数已过上面的预筛，zip4j 即使采用它也只会分配 < maxEntries 个头）。
+        if (rawSize < 0 || rawOffset < 0) {
+            return if (isLatest) WalkOutcome.OverLimit else WalkOutcome.Unwalkable
+        }
+        if (rawSize == 0) return WalkOutcome.Counted(0, 0L)
+
+        val cdSize = rawSize.toLong()
+        val cdOffset = rawOffset.toLong() and 0xFFFFFFFFL
+        // 越界的中央目录属于自相矛盾的构造：这个候选无效，换下一个。
+        if (cdOffset > raf.length() || cdOffset + cdSize > raf.length()) {
+            return if (isLatest) WalkOutcome.OverLimit else WalkOutcome.Unwalkable
+        }
+        // 体积闸门：每条记录最大约 196KB，「上限条数 × 单条最大」会逼近 4GB。
+        // 32MB 对应平均每条 1.6KB，真实归档平均在 100 字节量级。
+        if (cdSize > MAX_WALK_BYTES) return WalkOutcome.OverLimit
+
+        val header = ByteArray(CENTRAL_DIR_HEADER_SIZE)
+        var pos = cdOffset
+        val cdEnd = cdOffset + cdSize
+        var count = 0
+        while (pos < cdEnd) {
+            if (count >= maxEntries) return WalkOutcome.OverLimit
+            if (pos + CENTRAL_DIR_HEADER_SIZE > cdEnd) return WalkOutcome.Unwalkable
+            raf.seek(pos)
+            raf.readFully(header)
+            if (readIntLE(header, 0) != CENTRAL_DIR_SIGNATURE) {
+                // 非 header 签名：这个候选的中央目录不在它声称的位置（典型为包内归档的
+                // EOCD）。跳过；zip4j 在这个候选上同样读不出 header。
+                return WalkOutcome.Unwalkable
+            }
+            val nameLen = readShortLE(header, 28)
+            val extraLen = readShortLE(header, 30)
+            val commentLen = readShortLE(header, 32)
+            val next = pos + CENTRAL_DIR_HEADER_SIZE + nameLen + extraLen + commentLen
+            if (next > cdEnd) return WalkOutcome.Unwalkable
+            pos = next
+            count++
+        }
+        return WalkOutcome.Counted(count, cdSize)
     }
 
     /**

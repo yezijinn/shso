@@ -12,15 +12,15 @@
 
 ---
 
-## 当前状态速览（2026-11-14）
+## 当前状态速览（2026-11-15）
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步；最新 tag `20261114`（A158 同日第三次覆盖发版）；`20261113` 见 § A155 |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步；最新 tag `20261115`（A159）；`20261114` 见 § A158 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 832 tests / 0 failures / 0 errors / 1 skipped（A158 `testDebugUnitTest`，XML 汇总与源码 `@Test` 计数一致；新增 `InstallerBrowseTest` 8 用例） |
-| lint | 0 errors（A158 `lintRelease` BUILD SUCCESSFUL） |
-| release 体积 | **33,503,641 字节**（约 33.5 MB，十进制），sha256 `B5D8F297ED17EE08A10927FF1776CF36A9058B59F890809F13B8DAA41A343C28`（tag `20261114`；本地构建）；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
+| 单元测试 | 843 tests / 0 failures / 0 errors / 1 skipped（A159 `testDebugUnitTest`，XML 汇总与源码 `@Test` 计数一致；新增 `ZipEntryCountProbeHardeningTest` 11 用例） |
+| lint | 0 errors（A159 `lintRelease` BUILD SUCCESSFUL） |
+| release 体积 | **33,503,641 字节**（约 33.5 MB，十进制），sha256 `E480693A3EC4D68D70093134776925C379D339CB4EA3DEF0918208DFCF1E9C26`（tag `20261115`；本地构建）；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
 | 执行环境 | **全量内置**（A151）：`assets/env.bin` VERSION 6 携带完整 aarch64 工具链 —— bash / busybox（358 applet）/ curl / GNU 与 coreutils / git（客户端）/ python3 / openssl / ssh / rsync，首次启动解压到私有目录；归档内 `bin/sh` 不由 busybox 提供（busybox sh applet 直跑会 SIGSEGV，applets 亦不含 sh），前缀缺 sh 时由 `TermuxPrefix` 建链指向 `/system/bin/sh`，真机已验证；Termux 前缀符号链接避免 `LD_LIBRARY_PATH` 污染；`GIT_PAGER=cat` 规避未内置分页器导致的 `fatal: unable to execute pager`；可下载扩展包已删除，不再有「按设计缺失」的工具 |
 | 执行矩阵 | A151 真机（127.0.0.1:16384 / Redmi K70 23113RKC6C）安装成功、MainActivity 前台稳定；首解后 `VERSION=6`，`env.tmp`/`env.old`/`envpack` 均不存在，旧 `env/bin/sh` 缺失，前缀 `sh`/`ash`/`hush`/`mash` 全部链到 `/system/bin/sh`；应用执行绝对 shebang `#!/data/data/com.termux/files/usr/bin/sh` 输出 `ABS_SH_OK`；绝对 `python3.14`/`python3`/`python`/`env`/`sh`/`bash` 与 `libcrypto`/`libz` 链接在位，`libexec/git-core`、`share/git-core`、`etc/tls/openssl.cnf`、`lib/python3.14` 补链到位；执行链不再导出 `LD_LIBRARY_PATH`；Python 3.14.6（含 sqlite3/ssl）、git 2.56.0（含 `git init/add/commit/log`）、OpenSSL 3.6.5、OpenSSH 10.6p1、rsync 3.5.1、GNU sed/tar/wget/grep/find、zstd 1.5.7、xz 5.8.4 均执行成功；日志无 FATAL EXCEPTION / CANNOT LINK / SIGSEGV。A150 的 35/36 为非交互套件历史值（`tests/suite.sh` 不在仓库，未重跑） |
 | 真机 | `$DEVICE`（Android 10 / 1080×2280 / Magisk root） |
@@ -108,6 +108,16 @@
 - [x] **发版**：tag `20261113` Latest，apk 33,470,873 字节，
        sha256 `2541557C61630182CA58A649B73C8A9CA064B33BCBBBD7A8563AC2BBE2BBC591`；
        删除 `20261112` 旧附件。
+
+### A159. 修复归档条目数探针误判（2026-11-15）
+
+- [x] **真 BUG**：`ZipEntryCountProbe` 把内嵌 STORE 归档（如 `.xapk` 里的 base.apk）的 EOCD 当成外层 EOCD，用内层偏移去外层走中央目录，必然走不动 → fail-closed 报「条目数超过 20000」。后果：XAPK/APKS/APKM 与「装了一堆 APK 的 zip」的浏览、自动解压、XAPK 安装三方面全部失效，报错与事实相反。
+- [x] **修复**：探针改为收集窗口内全部 EOCD 签名、逐候选遍历取最大值；走不动的候选跳过而非否决；ZIP64 最后一处签名 fail-closed；注释长度不用于筛候选（zip4j 会吞掉注释越界异常）；`TAIL_WINDOW` +1 覆盖 zip4j 反查窗口 65558。保留反 zip-bomb 语义：自报撒谎、真超限、全失败均仍按超限拒绝。
+- [x] **对抗复核**：Stage 2 的初版修复会引入两处 P0 回退（注释过滤 → 预算检查被绕过；ZIP64 候选跳过 → 漏判），Stage 3 用 javap + 构造用例证伪并给出修正版；本轮落地的是修正版。
+- [x] **护栏**：新增 `ZipEntryCountProbeHardeningTest` 11 用例（内嵌 STORE 归档最后/非最后、CD 损坏、浏览+自动解压可用、DEFLATE、注释撒谎不绕过、ZIP64 哨兵 fail-closed、自报超限候选、65536 尾随垃圾、窗口边界、合法大归档）；既有 `InstallAndBudgetHardeningTest` 45 项零回归。
+- [x] **构建**：843 tests / 0 失败；`lintRelease`/`assembleRelease`/`verifyReleasePayload` 全绿；APK 33,503,641 字节，sha256 `E480693A…C26`，versionCode `20261115`。
+- [x] **真机**：`127.0.0.1:16416` 实测 `bundle.xapk`（3 条含 STORE 200 条 base.apk）浏览正常显示「ZIP · 共 3 项」；`packed.zip` 自动解压产出 `readme.txt` + `bundle/base.apk`；0 FATAL。
+- [x] **发版**：新建 tag `20261115`，双端发布，删除 `20261114` 旧附件。
 
 ### A158. 安装包只读浏览（2026-11-14）
 
