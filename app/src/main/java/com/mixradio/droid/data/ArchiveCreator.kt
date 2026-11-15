@@ -42,16 +42,7 @@ object ArchiveCreator {
             val zipBin = embeddedZip ?: "zip"
             val libDir = if (embeddedZip != null) EmbeddedEnv.libDir else null
 
-            val escapedParent = RootService.escapeShellArg(parent)
-            val escapedZip = RootService.escapeShellArg(targetZipPath)
-            val escapedNames = names.joinToString(" ") { RootService.escapeShellArg(it) }
-            val libExport = if (libDir != null) {
-                "LD_LIBRARY_PATH=" + RootService.escapeShellArg(libDir) + ":${'$'}LD_LIBRARY_PATH "
-            } else ""
-
-            val cmd = "cd $escapedParent && rm -f $escapedZip && " +
-                libExport + RootService.escapeShellArg(zipBin) + " -r -q $escapedZip $escapedNames && " +
-                "test -s $escapedZip"
+            val cmd = buildCreateZipCommand(parent, zipBin, targetZipPath, libDir, names)
             val (code, out) = RootService.runCommandSync(cmd, timeoutMs = 180_000L)
             if (code == 0) {
                 true to "已创建压缩包: ${File(targetZipPath).name}"
@@ -59,4 +50,30 @@ object ArchiveCreator {
                 false to "创建压缩包失败: " + out.trim().take(200).ifEmpty { "退出码 $code" }
             }
         }
+
+    /**
+     * 拼出打包命令（纯函数，可 JVM 单测）。
+     *
+     * **`--` 不可省**：`zip` 把任何以 `-` 开头的 argv 当选项，直到显式终止符。
+     * 名为 `-m` 的文件会被当成「打包后删除源文件」，`-P` 当成口令，`-x` 让后续名字变排除表。
+     * 加 `--` 之后全部按普通文件名入包，目录递归 `-r` 不受影响。
+     * `--` 之后不得再出现任何选项。
+     */
+    internal fun buildCreateZipCommand(
+        parent: String,
+        zipBin: String,
+        targetZipPath: String,
+        libDir: String?,
+        names: List<String>
+    ): String {
+        val escapedParent = RootService.escapeShellArg(parent)
+        val escapedZip = RootService.escapeShellArg(targetZipPath)
+        val escapedNames = names.joinToString(" ") { RootService.escapeShellArg(it) }
+        val libExport = if (libDir != null) {
+            "LD_LIBRARY_PATH=" + RootService.escapeShellArg(libDir) + ":${'$'}LD_LIBRARY_PATH "
+        } else ""
+        return "cd $escapedParent && rm -f $escapedZip && " +
+            libExport + RootService.escapeShellArg(zipBin) + " -r -q $escapedZip -- $escapedNames && " +
+            "test -s $escapedZip"
+    }
 }

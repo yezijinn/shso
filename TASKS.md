@@ -12,15 +12,15 @@
 
 ---
 
-## 当前状态速览（2026-11-15）
+## 当前状态速览（2026-11-16）
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步；最新 tag `20261115`（A159）；`20261114` 见 § A158 |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步；最新 tag `20261116`（A160）；`20261115` 见 § A159 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 843 tests / 0 failures / 0 errors / 1 skipped（A159 `testDebugUnitTest`，XML 汇总与源码 `@Test` 计数一致；新增 `ZipEntryCountProbeHardeningTest` 11 用例） |
-| lint | 0 errors（A159 `lintRelease` BUILD SUCCESSFUL） |
-| release 体积 | **33,503,641 字节**（约 33.5 MB，十进制），sha256 `E480693A3EC4D68D70093134776925C379D339CB4EA3DEF0918208DFCF1E9C26`（tag `20261115`；本地构建）；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
+| 单元测试 | 854 tests / 0 failures / 0 errors / 1 skipped（A160 `testDebugUnitTest`，XML 汇总与源码 `@Test` 计数一致；新增 `ZipEntryCountProbeZip64Test` 7 用例、`ArchiveCreatorCommandTest` 4 用例） |
+| lint | 0 errors（A160 `lintRelease` BUILD SUCCESSFUL） |
+| release 体积 | **33,503,641 字节**（约 33.5 MB，十进制），sha256 `CA908E2FA60DF7D52CD3022150F1DF2E0DD187F7949A7C7BC53A36D28D6B5153`（tag `20261116`；本地构建）；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
 | 执行环境 | **全量内置**（A151）：`assets/env.bin` VERSION 6 携带完整 aarch64 工具链 —— bash / busybox（358 applet）/ curl / GNU 与 coreutils / git（客户端）/ python3 / openssl / ssh / rsync，首次启动解压到私有目录；归档内 `bin/sh` 不由 busybox 提供（busybox sh applet 直跑会 SIGSEGV，applets 亦不含 sh），前缀缺 sh 时由 `TermuxPrefix` 建链指向 `/system/bin/sh`，真机已验证；Termux 前缀符号链接避免 `LD_LIBRARY_PATH` 污染；`GIT_PAGER=cat` 规避未内置分页器导致的 `fatal: unable to execute pager`；可下载扩展包已删除，不再有「按设计缺失」的工具 |
 | 执行矩阵 | A151 真机（127.0.0.1:16384 / Redmi K70 23113RKC6C）安装成功、MainActivity 前台稳定；首解后 `VERSION=6`，`env.tmp`/`env.old`/`envpack` 均不存在，旧 `env/bin/sh` 缺失，前缀 `sh`/`ash`/`hush`/`mash` 全部链到 `/system/bin/sh`；应用执行绝对 shebang `#!/data/data/com.termux/files/usr/bin/sh` 输出 `ABS_SH_OK`；绝对 `python3.14`/`python3`/`python`/`env`/`sh`/`bash` 与 `libcrypto`/`libz` 链接在位，`libexec/git-core`、`share/git-core`、`etc/tls/openssl.cnf`、`lib/python3.14` 补链到位；执行链不再导出 `LD_LIBRARY_PATH`；Python 3.14.6（含 sqlite3/ssl）、git 2.56.0（含 `git init/add/commit/log`）、OpenSSL 3.6.5、OpenSSH 10.6p1、rsync 3.5.1、GNU sed/tar/wget/grep/find、zstd 1.5.7、xz 5.8.4 均执行成功；日志无 FATAL EXCEPTION / CANNOT LINK / SIGSEGV。A150 的 35/36 为非交互套件历史值（`tests/suite.sh` 不在仓库，未重跑） |
 | 真机 | `$DEVICE`（Android 10 / 1080×2280 / Magisk root） |
@@ -108,6 +108,16 @@
 - [x] **发版**：tag `20261113` Latest，apk 33,470,873 字节，
        sha256 `2541557C61630182CA58A649B73C8A9CA064B33BCBBBD7A8563AC2BBE2BBC591`；
        删除 `20261112` 旧附件。
+
+### A160. 修复 ZIP64 预算绕过与打包注入（2026-11-16）
+
+- [x] **BUG-1（高危）**：`ZipEntryCountProbe` 只看 EOCD，不看 ZIP64 扩展记录。zip4j 2.11.6 只要 EOCD 前 20 字节有合法 locator，就改用记录里的 `totalEntries/cdOffset`。后果：22MB 归档可让 zip4j 分配 50 万个 `FileHeader`（浏览/解压/安装三条链预算全绕过）；带哨兵 EOCD 的合法 ZIP64 归档反而被判「超过 20000」。实跑：`probe=1`、`zip4j=60000`。
+- [x] **修复**：探针解析最后一处 EOCD 前的 ZIP64 locator，命中则用记录的 `totalEntries(+32)/cdSize(+40)/cdOffset(+48)` 判定；记录不可核验即 fail-closed；`TAIL_WINDOW` 加 20 字节覆盖 locator（65558→65578）；越界判据改减法防 Long 溢出。反 zip-bomb 语义不变。
+- [x] **BUG-2（高危）**：`ArchiveCreator` 把文件名原样拼进 `zip` 命令。名为 `-m` 的文件被 Info-ZIP 当成「打包后删除源文件」选项，命令成功返回、源文件被删、界面报「已创建压缩包」。真机 Zip 3.0 实测 `rc=0` 且 `a.txt` 消失。修复：命令补 `--` 选项终止符，抽出 `buildCreateZipCommand` 纯函数。
+- [x] **护栏**：新增 `ZipEntryCountProbeZip64Test`（7 用例：预算绕过、合法 ZIP64 精确计数、窗口边界、locator/签名 fail-closed、无 locator 哨兵）与 `ArchiveCreatorCommandTest`（4 用例）。既有 `InstallAndBudgetHardeningTest` 45 项、`ZipEntryCountProbeHardeningTest` 11 项、`EmbeddedEnvContractTest` 13 项零回归。
+- [x] **构建**：854 tests / 0 失败；`lintRelease`/`assembleRelease`/`verifyReleasePayload` 全绿；APK 33,503,641 字节，sha256 `CA908E2F…B5153`，versionCode `20261116`。
+- [x] **真机**：`127.0.0.1:16416` 实测 ZIP64 攻击包立刻报「条目数超过 20000」不 OOM；合法 ZIP64 正常浏览「共 5 项」；`-m` 打包后源文件保留、`-m.zip` 内含 `-m` 条目；0 FATAL。
+- [x] **发版**：新建 tag `20261116`，双端发布，删除 `20261115` 旧附件。
 
 ### A159. 修复归档条目数探针误判（2026-11-15）
 

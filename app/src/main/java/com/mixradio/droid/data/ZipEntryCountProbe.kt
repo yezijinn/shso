@@ -55,16 +55,19 @@ import java.io.RandomAccessFile
  * ## 本实现
  *
  * ```
- * 读尾部窗口 → 收集**全部** EOCD 签名位置（不按注释长度过滤）
- *     最后一个签名（zip4j 唯一会采用的候选）是 ZIP64 哨兵？→ 无法核验 → 按超限拒绝
- *     逐候选：自报计数 ≥ 上限？→ 按超限拒绝
- *             计数字段是 ZIP64 哨兵？→ 非最后一处则跳过（它是包内归档的 EOCD）
+ * 读尾部窗口（含 ZIP64 locator）→ 收集**全部** EOCD 签名位置（不按注释长度过滤）
+ *     最后一个签名（zip4j 唯一会采用的候选）前 20 字节有 locator？
+ *         记录可核验 → 三要素改取记录值（totalEntries/cdSize/cdOffset）
+ *         记录不可核验 → 按超限拒绝（zip4j 会照它解析）
+ *     逐候选：生效计数 ≥ 上限？→ 按超限拒绝
+ *             计数字段是 ZIP64 哨兵且无 locator？→ 非最后一处则跳过（包内归档的 EOCD）
  *             结构遍历能走通 → 精确条目数，取各候选最大值
  *             走不动 → 跳过（zip4j 在该候选上同样读不出 header；且它的计数已过预筛）
  * ```
  *
  * 既误拒（内嵌归档的 EOCD 不再否决外层），也不漏判（zip4j 真正采用的那个候选一旦
- * 不可核验就 fail-closed；撒谎的计数由结构遍历兜底）。
+ * 不可核验就 fail-closed；撒谎的计数由结构遍历兜底）。合法 ZIP64 归档不再被判超限，
+ * 而是给出记录里的精确条目数。
  */
 internal object ZipEntryCountProbe {
 
@@ -80,16 +83,32 @@ internal object ZipEntryCountProbe {
     /** 中央目录单条 header 记录的定长部分长度。 */
     const val CENTRAL_DIR_HEADER_SIZE = 46
 
+    /** ZIP64 中央目录结束记录 locator 的签名。 */
+    private const val ZIP64_LOCATOR_SIGNATURE = 0x07064b50
+
+    /** ZIP64 中央目录结束记录的签名。 */
+    private const val ZIP64_EOCD_SIGNATURE = 0x06064b50
+
+    /** ZIP64 locator 固定长度；它贴在 EOCD 前 20 字节。 */
+    private const val ZIP64_LOCATOR_SIZE = 20
+
+    /** ZIP64 结束记录定长部分长度（totalEntries/cdSize/cdOffset 全在其中）。 */
+    private const val ZIP64_EOCD_MIN_SIZE = 56
+
     /**
-     * 读尾部所需的最大字节数：EOCD 固定部分 + 最长注释 + 1。
+     * 读尾部所需的最大字节数：EOCD 固定部分 + 最长注释 + 1 + ZIP64 locator。
      *
-     * **那个 +1 不是随手加的**：zip4j 的反查从 `len-23` 起最多 65536 次，最低能命中
-     * `len-65558`。窗口只取 65557 时，尾随垃圾正好 65536 字节的归档会落在
-     * 「zip4j 命中、探针看不到」的那一字节夹缝里 —— 探针返回 null、调用方直接放行，
-     * 而 zip4j 照常解析出全部条目（实测：21000 条归档 + 65536 字节尾随垃圾，
-     * zip4j 读满 21000 个头，探针返回 null）。
+     * 每一项都有依据，少一项就是一条绕过：
+     * - 那个 +1：zip4j 的反查从 `len-23` 起最多 65536 次，最低能命中 `len-65558`。
+     *   窗口只取 65557 时，尾随垃圾正好 65536 字节的归档会落在「zip4j 命中、探针看不到」
+     *   的夹缝里 —— 探针返回 null、调用方直接放行，而 zip4j 照常解析出全部条目。
+     * - ZIP64 locator：zip4j 采用的最远候选在 `len-65558`，它的 locator 贴在候选前 20 字节，
+     *   即 `len-65578`。窗口不含这 20 字节，就无法判断「这个 EOCD 后面跟着扩展记录」：
+     *   攻击者把 locator 挪到窗口外，探针看到的是自报 1 条的普通 EOCD，zip4j 用的却是记录里
+     *   的 60000 条（实测：`probe=1`、`zip4j=60000`）。加满 20 字节后，凡 zip4j 可达的候选
+     *   在窗口内偏移必 ≥ 20，locator 必在窗口内。
      */
-    const val TAIL_WINDOW = EOCD_MIN_SIZE + MAX_COMMENT_LENGTH + 1
+    const val TAIL_WINDOW = EOCD_MIN_SIZE + MAX_COMMENT_LENGTH + 1 + ZIP64_LOCATOR_SIZE
 
     /**
      * 允许遍历的中央目录字节上限。
@@ -106,6 +125,9 @@ internal object ZipEntryCountProbe {
      *
      * 只采信**自洽**的候选（起点 + 22 + 注释长度不越出窗口）：本函数只负责读「一个
      * 可信 EOCD 的自报值」，越界注释的候选按伪造处理。真正的预算判定不用它。
+     *
+     * **不得用于预算判定**：它对 ZIP64 返回 `0xFFFF` 原值，既不解析扩展记录也不做结构遍历，
+     * 真实条目数可能远大于该值。预算判定只走 [probe]。
      *
      * @param tail 文件最后一段字节（调用方需保证覆盖 TAIL_WINDOW 或整个文件）
      * @param fileSize 文件总长度
@@ -192,13 +214,8 @@ internal object ZipEntryCountProbe {
             // 窗口内没有任何 EOCD 签名：不是 ZIP（或尾部已被破坏），交给下游解析器报真错。
             if (candidates.isEmpty()) return@use null
 
-            // zip4j 反向找签名后**直接返回**，因此窗口内**最后一处**签名才是它会采用的候选。
-            // 这个候选若无法核验（ZIP64 哨兵：真实计数/偏移在不解析的扩展记录里），
-            // 必须 fail-closed —— 跳过它等于把预算检查交给包里那条小归档。
+            // zip4j 反向找签名后直接返回，因此窗口内**最后一处**签名才是它会采用的候选。
             val latest = candidates.last()
-            if (readIntLE(tail, latest + 12) < 0 || readIntLE(tail, latest + 16) < 0) {
-                return@use maxEntries
-            }
 
             // 语义：每个能走通的候选都要数一遍，取最大值 —— 无论最终哪个候选生效，
             // 分配量都不会超过我们已核过的数。走不通的候选不是「坏包」，只是「这不是外层 EOCD」。
@@ -206,7 +223,19 @@ internal object ZipEntryCountProbe {
             var budget = MAX_WALK_BYTES.toLong()
             for (eocd in candidates) {
                 if (budget <= 0L) return@use maxEntries
-                val outcome = walkCentralDirectory(raf, tail, eocd, maxEntries, eocd == latest)
+                val isLatest = eocd == latest
+                // 最后一处候选若前面贴着 ZIP64 locator，zip4j 会**完全改用扩展记录里的
+                // totalEntries / cdOffset / cdSize**（javap 核实：EOCD 自报总数非 0 时无条件读
+                // locator，命中就把 zip64Format 置真，取值函数随即全部改走记录）。
+                var zip64: Zip64View? = null
+                if (isLatest) {
+                    when (val z = zip64View(raf, tail, eocd, maxEntries)) {
+                        is Zip64Probe.Broken -> return@use maxEntries
+                        is Zip64Probe.Found -> zip64 = z.view
+                        is Zip64Probe.Absent -> Unit
+                    }
+                }
+                val outcome = walkCentralDirectory(raf, tail, eocd, maxEntries, isLatest, zip64)
                 when (outcome) {
                     is WalkOutcome.OverLimit -> return@use maxEntries
                     is WalkOutcome.Unwalkable -> Unit
@@ -222,32 +251,46 @@ internal object ZipEntryCountProbe {
         }
     }
 
-    /** 从 [eocd] 这个候选出发，结构遍历它自己的中央目录。 */
+    /**
+     * 从 [eocd] 这个候选出发，结构遍历它自己的中央目录。
+     *
+     * @param zip64 非 null 时三要素一律取该视图（来自 ZIP64 扩展记录），EOCD 自报值不再可信
+     */
     private fun walkCentralDirectory(
         raf: RandomAccessFile,
         tail: ByteArray,
         eocd: Int,
         maxEntries: Int,
-        isLatest: Boolean
+        isLatest: Boolean,
+        zip64: Zip64View?
     ): WalkOutcome {
         // 自报值只作廉价预筛：达到上限就不必再遍历，也避免为明显超限的归档付 I/O。
-        val selfReported = readShortLE(tail, eocd + 10)
+        // ZIP64 时这里就是记录里的 totalEntries —— 它正是 zip4j 要分配的条数。
+        val selfReported = zip64?.declaredEntries ?: readShortLE(tail, eocd + 10)
         if (selfReported >= maxEntries) return WalkOutcome.OverLimit
 
-        val rawSize = readIntLE(tail, eocd + 12)
-        val rawOffset = readIntLE(tail, eocd + 16)
-        // 负值 = 字段是 0xFFFFFFFF，即 ZIP64：真实偏移/体积在 ZIP64 扩展记录里，本实现不解析。
-        // 最后一处签名已在上层按超限拒绝；走到这里的只可能是包内归档的 EOCD，跳过安全
-        //（它声明的计数已过上面的预筛，zip4j 即使采用它也只会分配 < maxEntries 个头）。
-        if (rawSize < 0 || rawOffset < 0) {
-            return if (isLatest) WalkOutcome.OverLimit else WalkOutcome.Unwalkable
+        val cdSize: Long
+        val cdOffset: Long
+        if (zip64 != null) {
+            cdSize = zip64.cdSize
+            cdOffset = zip64.cdOffset
+        } else {
+            val rawSize = readIntLE(tail, eocd + 12)
+            val rawOffset = readIntLE(tail, eocd + 16)
+            // 负值 = 字段是 0xFFFFFFFF 且前面没有合法 locator：自相矛盾，无真值可核验。
+            // 最后一处候选 fail-closed；包内归档的 EOCD 直接跳过。
+            if (rawSize < 0 || rawOffset < 0) {
+                return if (isLatest) WalkOutcome.OverLimit else WalkOutcome.Unwalkable
+            }
+            if (rawSize == 0) return WalkOutcome.Counted(0, 0L)
+            cdSize = rawSize.toLong()
+            cdOffset = rawOffset.toLong() and 0xFFFFFFFFL
         }
-        if (rawSize == 0) return WalkOutcome.Counted(0, 0L)
-
-        val cdSize = rawSize.toLong()
-        val cdOffset = rawOffset.toLong() and 0xFFFFFFFFL
-        // 越界的中央目录属于自相矛盾的构造：这个候选无效，换下一个。
-        if (cdOffset > raf.length() || cdOffset + cdSize > raf.length()) {
+        if (cdSize == 0L) return WalkOutcome.Counted(0, 0L)
+        // 越界判据一律用减法：ZIP64 的 cdSize/cdOffset 是 8 字节，`cdOffset + cdSize` 可被
+        // 构造成 Long 溢出（0x7FFF… + 1 变负）从而绕过 `>` 比较。
+        val fileLength = raf.length()
+        if (cdOffset > fileLength || cdSize > fileLength - cdOffset) {
             return if (isLatest) WalkOutcome.OverLimit else WalkOutcome.Unwalkable
         }
         // 体积闸门：每条记录最大约 196KB，「上限条数 × 单条最大」会逼近 4GB。
@@ -277,6 +320,75 @@ internal object ZipEntryCountProbe {
             count++
         }
         return WalkOutcome.Counted(count, cdSize)
+    }
+
+    /** 候选声明的中央目录位置。ZIP64 时三个值全部来自扩展记录，不是 EOCD 自报值。 */
+    private class Zip64View(
+        val declaredEntries: Int,
+        val cdSize: Long,
+        val cdOffset: Long,
+    )
+
+    /** 最后一处 EOCD 的 ZIP64 探查结果。 */
+    private sealed interface Zip64Probe {
+        /** EOCD 前 20 字节没有 locator 签名：按普通 EOCD 处理。 */
+        object Absent : Zip64Probe
+        /** 记录可用。 */
+        data class Found(val view: Zip64View) : Zip64Probe
+        /** 有 locator 但记录不可核验：zip4j 会照它解析，必须 fail-closed。 */
+        object Broken : Zip64Probe
+    }
+
+    /**
+     * 解析最后一处 EOCD 的 ZIP64 扩展记录。
+     *
+     * zip4j 2.11.6（javap 核实）：EOCD 自报总数非 0 时读 `eocd-20` 的 locator，命中就置
+     * zip64Format，随后 cdOffset 与 count 全部改取记录值（count 取记录 +32 总条目数）。
+     * 记录里的 totalEntries/cdSize/cdOffset 都是 8 字节小端：+32/+40/+48。
+     */
+    private fun zip64View(
+        raf: RandomAccessFile,
+        tail: ByteArray,
+        eocd: Int,
+        maxEntries: Int
+    ): Zip64Probe {
+        // 窗口已含 locator（见 [TAIL_WINDOW]）；小于 20 说明该 EOCD 距文件头不足 20 字节，
+        // 磁盘上不存在它的 locator，zip4j 自己 seek 负值也会抛 IOException，按普通 EOCD 处理。
+        if (eocd < ZIP64_LOCATOR_SIZE) return Zip64Probe.Absent
+        val locatorAt = eocd - ZIP64_LOCATOR_SIZE
+        if (readIntLE(tail, locatorAt) != ZIP64_LOCATOR_SIGNATURE) return Zip64Probe.Absent
+
+        // locator：签名(4) + 本盘号(4) + 记录绝对偏移(8) + 总盘数(4)。
+        val recordOffset = readLongLE(tail, locatorAt + 8)
+        val length = raf.length()
+        if (recordOffset < 0L || recordOffset > length - ZIP64_EOCD_MIN_SIZE) {
+            return Zip64Probe.Broken
+        }
+        val record = ByteArray(ZIP64_EOCD_MIN_SIZE)
+        try {
+            raf.seek(recordOffset)
+            raf.readFully(record)
+        } catch (_: Exception) {
+            return Zip64Probe.Broken
+        }
+        if (readIntLE(record, 0) != ZIP64_EOCD_SIGNATURE) return Zip64Probe.Broken
+
+        val total = readLongLE(record, 32)
+        val cdSize = readLongLE(record, 40)
+        val cdOffset = readLongLE(record, 48)
+        if (total < 0L || cdSize < 0L || cdOffset < 0L) return Zip64Probe.Broken
+        if (cdOffset > length || cdSize > length - cdOffset) return Zip64Probe.Broken
+
+        // 声明量本身就是要分配的量：达到上限立刻按超限拒绝，不必再看结构。
+        val declared = if (total > maxEntries.toLong()) maxEntries else total.toInt()
+        return Zip64Probe.Found(Zip64View(declared, cdSize, cdOffset))
+    }
+
+    /** 8 字节小端（ZIP64 字段）。 */
+    private fun readLongLE(buf: ByteArray, offset: Int): Long {
+        var value = 0L
+        for (k in 0 until 8) value = value or ((buf[offset + k].toLong() and 0xFFL) shl (8 * k))
+        return value
     }
 
     /**
