@@ -202,6 +202,14 @@ private var isExtracting by mutableStateOf(false)
 private var isCopying by mutableStateOf(false)
 private var isMoving by mutableStateOf(false)
 
+/**
+ * 打包进行中标志：进程级，与 [actionJobScope] 同生命周期。
+ *
+ * 打包命令的前缀是 `rm -f <target>`：两路并发对同一条目操作时，两次 [ArchiveCreator.uniqueZipTarget]
+ * 会探测到同一个「尚不存在」的目标名，后者把前者刚写好的归档删掉重写。
+ */
+private var isArchiving by mutableStateOf(false)
+
 @Composable
 fun FilePage(
     appSettings: AppSettings,
@@ -845,23 +853,38 @@ fun FilePage(
         }
     }
 
-    // 添加到压缩包：同目录生成 <名>.zip
+    // 添加到压缩包：同目录生成 <名>.zip；与源同名或已存在时自动改名（命令前缀会 rm -f 目标）
     fun addToArchive(item: FileItem) {
+        if (isArchiving) return
         val parent = File(item.path).parent ?: currentDirectory
-        val base = item.name.substringBeforeLast('.', item.name).ifEmpty { item.name }
-        val zipPath = if (parent == "/") "/$base.zip" else "$parent/$base.zip"
+        isArchiving = true
         actionJobScope.launch {
-            val (ok, msg) = ArchiveCreator.createZip(listOf(item.path), zipPath)
-            feedbackMessage = msg
-            if (ok) refresh()
+            try {
+                val zipPath = ArchiveCreator.uniqueZipTarget(parent, item.name) {
+                    RootFileManager.pathExists(it)
+                }
+                if (zipPath == null) {
+                    feedbackMessage = "同名压缩包过多，未创建（未改动任何文件）"
+                    return@launch
+                }
+                val (ok, msg) = ArchiveCreator.createZip(listOf(item.path), zipPath)
+                feedbackMessage = msg
+                if (ok) refresh()
+            } finally {
+                isArchiving = false
+            }
         }
     }
 
     // 复制到另一列目录
+    // 默认 OVERWRITE 会静默替换目标列的同名项（同名**目录**是递归删除）：另一列里那个
+    // 文件夹连同内容会在「已复制」提示下消失。与「原地拷贝」同法：永不覆盖，冲突自动改名。
     fun copyToOtherPane(item: FileItem) {
         val dest = otherPaneDirectory()
         actionJobScope.launch {
-            val (ok, msg) = RootFileManager.copyToDirectory(item.path, dest)
+            val (ok, msg) = RootFileManager.copyToDirectory(
+                item.path, dest, onConflict = MoveDestinationConflict.RENAME
+            )
             feedbackMessage = msg
             // 目标在另一列：两列都刷新（本次列表也可能因排序/节流需要重排）
             if (ok) refreshBothPanes()
@@ -869,13 +892,42 @@ fun FilePage(
     }
 
     // 移动到另一列目录
+    // moveFile 默认 OVERWRITE，对同名**目录**目标是 delete() 递归删除，随后才搬入源：
+    // 用户只看得到「移动成功」，另一列里那个文件夹连同内容已经没了。与「移动文件」共用同一套
+    // 冲突弹窗（覆盖 / 自动改名 / 同名不动），无冲突时按 SKIP 执行，避免探测与执行之间被并发写入。
     fun moveToOtherPane(item: FileItem) {
         val dest = otherPaneDirectory()
+        if (isMoving) return
+        // 两列同目录时目标路径就是源本身：moveBatch 的 OVERWRITE 会先删同名目录（= 删源）再搬，
+        // 搬不动、源已没了。这里与「同步列」同口径直接拦掉。
+        fun normPath(path: String) = path.trimEnd('/').ifEmpty { "/" }
+        if (normPath(File(item.path).parent ?: "/") == normPath(dest)) {
+            feedbackMessage = "两列已在同一目录"
+            return
+        }
         actionJobScope.launch {
-            val (ok, msg) = RootFileManager.moveFile(item.path, dest)
-            feedbackMessage = msg
-            // 源在聚焦列、目标在另一列：两列都刷新
-            if (ok) refreshBothPanes()
+            isMoving = true
+            try {
+                // 探测失败不等于无冲突：按「有冲突」弹框，由后面的 SKIP 兜底。
+                val collided = runCatching {
+                    RootFileManager.moveDestinationCollides(item.path, dest)
+                }.getOrElse { true }
+                if (collided) {
+                    conflictTargets = listOf(item.path)
+                    conflictDestination = dest
+                    showConflictDialog = true
+                    return@launch
+                }
+                val (ok, msg) = RootFileManager.moveFile(
+                    item.path, dest, onConflict = MoveDestinationConflict.SKIP
+                )
+                feedbackMessage = msg
+                // 源在聚焦列、目标在另一列：两列都刷新
+                if (ok) refreshBothPanes()
+            } finally {
+                // 冲突弹窗里选策略时 runMoveWithConflict 有 `if (isMoving) return`，必须先复位。
+                isMoving = false
+            }
         }
     }
 
@@ -2335,7 +2387,11 @@ fun FilePage(
 
                 // 右列：新增动作（输出到另一列目录 / 打包 / 打开方式）
                 Column(modifier = Modifier.weight(1f)) {
-                    ActionTextRow("添加到压缩包", AuroraTokens.Accent) {
+                    ActionTextRow(
+                        if (isArchiving) "正在打包…" else "添加到压缩包",
+                        AuroraTokens.Accent,
+                        enabled = !isArchiving
+                    ) {
                         showActionDialog = false
                         addToArchive(item)
                     }

@@ -23,6 +23,10 @@ object ArchiveCreator {
     suspend fun createZip(sourcePaths: List<String>, targetZipPath: String): Pair<Boolean, String> =
         withContext(Dispatchers.IO) {
             if (sourcePaths.isEmpty()) return@withContext Pair(false, "没有可打包的项目")
+            // 目标与源同名时命令前缀会先删掉唯一的源，zip 再报 Nothing to do —— 必须前置拒绝。
+            sourceCollisionReason(sourcePaths, targetZipPath)?.let {
+                return@withContext Pair(false, it)
+            }
             // 冷启动时后台解压可能尚未完成：先确保内置环境就绪，再读取其目录；
             // 失败（资产缺失 / 解压失败）才退回系统 zip，与旧行为一致。
             val envReady = runCatching {
@@ -50,6 +54,69 @@ object ArchiveCreator {
                 false to "创建压缩包失败: " + out.trim().take(200).ifEmpty { "退出码 $code" }
             }
         }
+
+    /**
+     * 目标名与源同名的兜底拒绝。
+     *
+     * [buildCreateZipCommand] 的前缀是 `rm -f <target>`：目标名一旦与某个源相同，唯一的源
+     * 会先被删掉，随后 `zip` 因「没有可打包的东西」退出 12 —— 用户只看到「创建失败」，
+     * 数据已经没了（实机：`zip error: Nothing to do!`，rc=12，`test -s` rc=1）。
+     */
+    internal fun sourceCollisionReason(sourcePaths: List<String>, targetZipPath: String): String? =
+        if (sourcePaths.any { samePath(it, targetZipPath) }) {
+            "目标压缩包与待打包文件同名，已取消（未改动任何文件）"
+        } else {
+            null
+        }
+
+    /** 归一后比较两个路径；软链 / `.` / `..` 由 [File.getCanonicalPath] 处理，不可解析时退回绝对路径。 */
+    private fun samePath(a: String, b: String): Boolean {
+        val fa = File(a)
+        val fb = File(b)
+        return runCatching { fa.canonicalPath == fb.canonicalPath }
+            .getOrElse { fa.absolutePath == fb.absolutePath }
+    }
+
+    /**
+     * 为 [itemName] 选一个**不会撞名**的 zip 目标名。
+     *
+     * 规则：`<base>.zip`；若它与源同名（`foo.zip` → `foo.zip`，正是本条缺陷的触发形态）或
+     * 已被占用，退到 `<全名>.zip`、`<base>(2).zip`…；99 次仍冲突返回 null。
+     *
+     * 两条硬约束：
+     * 1. **绝不返回源路径**（命令前缀 `rm -f <target>` 会先删掉它）。比较按小写进行：
+     *    共享存储上存在大小写不敏感卷，`a.ZIP` 与 `a.zip` 是同一个文件。
+     * 2. **绝不返回已存在的路径**（否则静默覆盖用户原有归档）。
+     *
+     * [taken] 声明为 suspend：ROOT 目录（如 `/data/adb`）用应用自身 `File.exists()` 恒为
+     * false，必须由调用方传 `RootFileManager.pathExists`（内部走 `su test -e`）。
+     */
+    internal suspend fun uniqueZipTarget(
+        parent: String,
+        itemName: String,
+        taken: suspend (String) -> Boolean = { File(it).exists() }
+    ): String? {
+        fun join(name: String) = if (parent == "/") "/$name" else "$parent/$name"
+        val lower = itemName.lowercase()
+        fun isSourceName(name: String) = name.lowercase() == lower
+        val base = itemName.substringBeforeLast('.', itemName).ifEmpty { itemName }
+        val derivedName = "$base.zip"
+        if (isSourceName(derivedName)) {
+            // 派生名与源同名：先退到全名，保证永不返回源路径。
+            val full = join("$itemName.zip")
+            if (!taken(full)) return full
+        } else {
+            val derived = join(derivedName)
+            if (!taken(derived)) return derived
+        }
+        for (n in 2..99) {
+            val altName = "$base($n).zip"
+            if (isSourceName(altName)) continue
+            val alt = join(altName)
+            if (!taken(alt)) return alt
+        }
+        return null
+    }
 
     /**
      * 拼出打包命令（纯函数，可 JVM 单测）。

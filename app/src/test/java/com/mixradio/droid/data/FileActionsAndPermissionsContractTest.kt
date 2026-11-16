@@ -84,15 +84,22 @@ class FileActionsAndPermissionsContractTest {
     @Test
     fun crossPaneActionsRefreshBothPanes() {
         assertTrue("需有双列刷新工具", filePage.contains("fun refreshBothPanes()"))
-        val copyIdx = filePage.indexOf("fun copyToOtherPane(")
-        val moveIdx = filePage.indexOf("fun moveToOtherPane(")
-        val extractIdx = filePage.indexOf("fun extractTo(")
-        assertTrue("copyToOtherPane 应双列刷新",
-            filePage.substring(copyIdx, (copyIdx + 700).coerceAtMost(filePage.length)).contains("refreshBothPanes()"))
-        assertTrue("moveToOtherPane 应双列刷新",
-            filePage.substring(moveIdx, (moveIdx + 700).coerceAtMost(filePage.length)).contains("refreshBothPanes()"))
-        assertTrue("extractTo 应双列刷新",
-            filePage.substring(extractIdx, (extractIdx + 1200).coerceAtMost(filePage.length)).contains("refreshBothPanes()"))
+        // 按函数体切，不用固定字符窗口：动作体加了注释/冲突探测就会把收尾刷出 700 字窗口，
+        // 于是「明明有刷新」也报失败。
+        fun bodyOf(start: String, end: String): String =
+            filePage.substringAfter(start).substringBefore(end)
+        assertTrue(
+            "copyToOtherPane 应双列刷新",
+            bodyOf("fun copyToOtherPane(", "fun moveToOtherPane(").contains("refreshBothPanes()")
+        )
+        assertTrue(
+            "moveToOtherPane 应双列刷新",
+            bodyOf("fun moveToOtherPane(", "// 打开方式").contains("refreshBothPanes()")
+        )
+        assertTrue(
+            "extractTo 应双列刷新",
+            bodyOf("fun extractTo(", "// 添加到压缩包").contains("refreshBothPanes()")
+        )
     }
 
     /** 「打开方式」需共享副本并声明 provider 路径。 */

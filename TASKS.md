@@ -16,11 +16,11 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步；最新 tag `20261116`（A160）；`20261115` 见 § A159 |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步；最新 tag `20261116`（A161 同日覆盖）；`20261116` 首次发布见 § A160；`20261115` 见 § A159 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 854 tests / 0 failures / 0 errors / 1 skipped（A160 `testDebugUnitTest`，XML 汇总与源码 `@Test` 计数一致；新增 `ZipEntryCountProbeZip64Test` 7 用例、`ArchiveCreatorCommandTest` 4 用例） |
-| lint | 0 errors（A160 `lintRelease` BUILD SUCCESSFUL） |
-| release 体积 | **33,503,641 字节**（约 33.5 MB，十进制），sha256 `CA908E2FA60DF7D52CD3022150F1DF2E0DD187F7949A7C7BC53A36D28D6B5153`（tag `20261116`；本地构建）；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
+| 单元测试 | 865 tests / 0 failures / 0 errors / 1 skipped（A161 `testDebugUnitTest --rerun-tasks`，XML 汇总 103 suites；新增 `ArchiveCreatorTargetTest` 9 用例、`PaneConflictWiringTest` 2 用例） |
+| lint | 0 errors（A161 `lintRelease` BUILD SUCCESSFUL） |
+| release 体积 | **33,503,641 字节**（约 33.5 MB，十进制），sha256 `4E79070ED99A36D3D55EB88AED2AAB3D641F532EF9AE86D0E6EAA5E9FC28B0BF`（tag `20261116` A161 同日覆盖；本地构建）；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
 | 执行环境 | **全量内置**（A151）：`assets/env.bin` VERSION 6 携带完整 aarch64 工具链 —— bash / busybox（358 applet）/ curl / GNU 与 coreutils / git（客户端）/ python3 / openssl / ssh / rsync，首次启动解压到私有目录；归档内 `bin/sh` 不由 busybox 提供（busybox sh applet 直跑会 SIGSEGV，applets 亦不含 sh），前缀缺 sh 时由 `TermuxPrefix` 建链指向 `/system/bin/sh`，真机已验证；Termux 前缀符号链接避免 `LD_LIBRARY_PATH` 污染；`GIT_PAGER=cat` 规避未内置分页器导致的 `fatal: unable to execute pager`；可下载扩展包已删除，不再有「按设计缺失」的工具 |
 | 执行矩阵 | A151 真机（127.0.0.1:16384 / Redmi K70 23113RKC6C）安装成功、MainActivity 前台稳定；首解后 `VERSION=6`，`env.tmp`/`env.old`/`envpack` 均不存在，旧 `env/bin/sh` 缺失，前缀 `sh`/`ash`/`hush`/`mash` 全部链到 `/system/bin/sh`；应用执行绝对 shebang `#!/data/data/com.termux/files/usr/bin/sh` 输出 `ABS_SH_OK`；绝对 `python3.14`/`python3`/`python`/`env`/`sh`/`bash` 与 `libcrypto`/`libz` 链接在位，`libexec/git-core`、`share/git-core`、`etc/tls/openssl.cnf`、`lib/python3.14` 补链到位；执行链不再导出 `LD_LIBRARY_PATH`；Python 3.14.6（含 sqlite3/ssl）、git 2.56.0（含 `git init/add/commit/log`）、OpenSSL 3.6.5、OpenSSH 10.6p1、rsync 3.5.1、GNU sed/tar/wget/grep/find、zstd 1.5.7、xz 5.8.4 均执行成功；日志无 FATAL EXCEPTION / CANNOT LINK / SIGSEGV。A150 的 35/36 为非交互套件历史值（`tests/suite.sh` 不在仓库，未重跑） |
 | 真机 | `$DEVICE`（Android 10 / 1080×2280 / Magisk root） |
@@ -108,6 +108,18 @@
 - [x] **发版**：tag `20261113` Latest，apk 33,470,873 字节，
        sha256 `2541557C61630182CA58A649B73C8A9CA064B33BCBBBD7A8563AC2BBE2BBC591`；
        删除 `20261112` 旧附件。
+
+### A161. 修复打包与跨列动作删除数据（2026-11-16 同日覆盖）
+
+- [x] **BUG-1（高危）**：`FilePage.addToArchive` 对 `foo.zip` 派生同名目标 `foo.zip`。`ArchiveCreator` 命令前缀 `rm -f <target>` 先删唯一源文件，`zip` 退 12「Nothing to do」，界面报失败。真机实测源文件消失且不可恢复。
+- [x] **BUG-2**：打包无进行中标志。两次并发对同一派生名互删成品，双成功提示、只剩一份。真机 3/3 复现。
+- [x] **BUG-3（高危）**：`moveToOtherPane` 漏传冲突策略，走默认 `OVERWRITE`。同名目录目标先被 `delete()` 递归删除再搬入，用户只看到「移动成功」。
+- [x] **BUG-4**：`copyToOtherPane` 同样走默认 `OVERWRITE`，静默替换同名文件、递归删同名目录。
+- [x] **修复**：`ArchiveCreator` 新增 `sourceCollisionReason` 前置拒绝与 `uniqueZipTarget`（撞名自动改名、ROOT 感知探测、99 次耗尽拒绝）；`addToArchive` 加进程级 `isArchiving` 守卫与菜单禁用态；`moveToOtherPane` 复用既有冲突弹窗 + SKIP 兜底 + 同目录拦截；`copyToOtherPane` 改 `RENAME`。
+- [x] **护栏**：新增 `ArchiveCreatorTargetTest`（9 用例）、`PaneConflictWiringTest`（2 用例）；修正 `FileActionsAndPermissionsContractTest` 固定字窗口切片为按函数体切（断言强度不变）。
+- [x] **构建**：865 tests / 0 失败；`lintRelease`/`assembleRelease`/`verifyReleasePayload` 全绿；APK 33,503,641 字节，sha256 `4E79070E…B0BF`，versionCode `20261116`。
+- [x] **真机**：`127.0.0.1:16416` release 安装成功，`MainActivity` 前台（oom_adj=0）、0 FATAL。
+- [x] **发版**：tag `20261116` 同日覆盖，双端发布，删除 `20261115` 旧附件。
 
 ### A160. 修复 ZIP64 预算绕过与打包注入（2026-11-16）
 
