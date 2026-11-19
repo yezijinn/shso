@@ -82,23 +82,32 @@ class MediaPlayerWiringContractTest {
     }
 
     @Test
-    fun `进度跳转必须延后到音轨就绪且不得倍速态直 seek`() {
-        // 回归：刚点开播放就拖进度条立即 seekTo，音轨尚未建立 → 画面正常但静音，
-        // 关窗重进新建播放器才恢复。所有 seek 必须走延迟窗口，seek 前倍速归 1。
-        assertTrue("须有音轨建立缓冲常量", dialog.contains("SEEK_SETTLE_MS"))
+    fun `进度跳转须重建音轨且不得干扰播完续播`() {
+        // 回归：起播阶段 seek 会让部分音轨编码的解码器失效 → 画面正常但静音，
+        // 关窗重进才恢复。修复须等真正播放后 pause→seek→seekComplete 重建音轨，
+        // 并用 userSeekInFlight 守卫避免播完 seekTo(0) 被误 start 死循环。
         assertTrue("须登记跳转目标", dialog.contains("pendingSeekMs = target"))
         assertTrue(
-            "延迟 seek 必须在首次 start 后计时",
-            dialog.contains("SEEK_SETTLE_MS - (SystemClock.uptimeMillis() - first)")
+            "须等真正开始播放后才 seek",
+            dialog.contains("while (waited < 2000 && !runCatching { mp.isPlaying }")
         )
+        assertTrue("seek 前须 pause", dialog.contains("if (wasPlaying) runCatching { mp.pause() }"))
         assertTrue("seek 前须把倍速归 1", dialog.contains("speedParams(1f)"))
         assertTrue("seek 后须恢复用户倍速", dialog.contains("pushSpeed(speed)"))
+        assertTrue(
+            "seekComplete 回调须 setVolume 重建音轨并恢复播放",
+            dialog.contains("p.setVolume(1f, 1f)") && dialog.contains("if (!p.isPlaying) p.start()")
+        )
+        assertTrue(
+            "须用 userSeekInFlight 守卫，避免播完 seekTo(0) 被误 start 死循环",
+            dialog.contains("if (!userSeekInFlight) return@setOnSeekCompleteListener")
+        )
         assertTrue(
             "续播跳转也须走延迟队列，不得在 prepared 回调里直接 seek",
             !dialog.contains("runCatching { p.seekTo(resume) }")
         )
         assertTrue("prepare 前拖动须暂存而非丢弃", dialog.contains("pendingSeekMs = resume"))
-        assertTrue("播放器重建须清首次 start 时间", dialog.contains("firstStartAtMs = 0L"))
+        assertTrue("播放器重建须清进行中标志", dialog.contains("userSeekInFlight = false"))
     }
 
     @Test
