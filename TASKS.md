@@ -16,11 +16,11 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步；最新 tag `20261116`（A161 同日覆盖）；`20261116` 首次发布见 § A160；`20261115` 见 § A159 |
+| 分支 | `main`，与 GitHub / Gitee 双端 `main` 同步；最新 tag `20261116`（A162 同日覆盖）；`20261116` 首次发布见 § A160；`20261115` 见 § A159 |
 | 许可 | **GPL-3.0-or-later**（2026-10-02 由 Apache-2.0 切换，强 Copyleft） |
-| 单元测试 | 865 tests / 0 failures / 0 errors / 1 skipped（A161 `testDebugUnitTest --rerun-tasks`，XML 汇总 103 suites；新增 `ArchiveCreatorTargetTest` 9 用例、`PaneConflictWiringTest` 2 用例） |
+| 单元测试 | 874 tests / 0 failures / 0 errors / 1 skipped（A162 `testDebugUnitTest --rerun-tasks`，XML 汇总 104 suites；新增 `PathIdentityGuardTest` 9 用例） |
 | lint | 0 errors（A161 `lintRelease` BUILD SUCCESSFUL） |
-| release 体积 | **33,503,641 字节**（约 33.5 MB，十进制），sha256 `4E79070ED99A36D3D55EB88AED2AAB3D641F532EF9AE86D0E6EAA5E9FC28B0BF`（tag `20261116` A161 同日覆盖；本地构建）；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
+| release 体积 | **33,503,641 字节**（约 33.5 MB，十进制），sha256 `ECC785A54CC8111A40EEE36A3950BCCC987263EB79A1F154A31145300164B4FF`（tag `20261116` A162 同日覆盖；本地构建）；`verifyReleasePayload` BUILD SUCCESSFUL（输出「内置环境完整」）；`assets/env.bin` 30,513,138 字节（VERSION 6 / 1635 条目 / 373 软链，已剔除 magic.mgc、scalar、git 服务端辅助程序与 pydoc_data） |
 | 执行环境 | **全量内置**（A151）：`assets/env.bin` VERSION 6 携带完整 aarch64 工具链 —— bash / busybox（358 applet）/ curl / GNU 与 coreutils / git（客户端）/ python3 / openssl / ssh / rsync，首次启动解压到私有目录；归档内 `bin/sh` 不由 busybox 提供（busybox sh applet 直跑会 SIGSEGV，applets 亦不含 sh），前缀缺 sh 时由 `TermuxPrefix` 建链指向 `/system/bin/sh`，真机已验证；Termux 前缀符号链接避免 `LD_LIBRARY_PATH` 污染；`GIT_PAGER=cat` 规避未内置分页器导致的 `fatal: unable to execute pager`；可下载扩展包已删除，不再有「按设计缺失」的工具 |
 | 执行矩阵 | A151 真机（127.0.0.1:16384 / Redmi K70 23113RKC6C）安装成功、MainActivity 前台稳定；首解后 `VERSION=6`，`env.tmp`/`env.old`/`envpack` 均不存在，旧 `env/bin/sh` 缺失，前缀 `sh`/`ash`/`hush`/`mash` 全部链到 `/system/bin/sh`；应用执行绝对 shebang `#!/data/data/com.termux/files/usr/bin/sh` 输出 `ABS_SH_OK`；绝对 `python3.14`/`python3`/`python`/`env`/`sh`/`bash` 与 `libcrypto`/`libz` 链接在位，`libexec/git-core`、`share/git-core`、`etc/tls/openssl.cnf`、`lib/python3.14` 补链到位；执行链不再导出 `LD_LIBRARY_PATH`；Python 3.14.6（含 sqlite3/ssl）、git 2.56.0（含 `git init/add/commit/log`）、OpenSSL 3.6.5、OpenSSH 10.6p1、rsync 3.5.1、GNU sed/tar/wget/grep/find、zstd 1.5.7、xz 5.8.4 均执行成功；日志无 FATAL EXCEPTION / CANNOT LINK / SIGSEGV。A150 的 35/36 为非交互套件历史值（`tests/suite.sh` 不在仓库，未重跑） |
 | 真机 | `$DEVICE`（Android 10 / 1080×2280 / Magisk root） |
@@ -108,6 +108,17 @@
 - [x] **发版**：tag `20261113` Latest，apk 33,470,873 字节，
        sha256 `2541557C61630182CA58A649B73C8A9CA064B33BCBBBD7A8563AC2BBE2BBC591`；
        删除 `20261112` 旧附件。
+
+### A162. 修复路径别名与大小写变体删除数据（2026-11-16 同日覆盖）
+
+- [x] **BUG-1（高危）**：`/sdcard/Download` 与 `/storage/emulated/0/Download` 是同一物理目录。`moveFile`/`moveBatch` 的目标即源判据用字面串比，别名写法下漏判。OVERWRITE 分支先 `rm -rf` 删源目录，界面只报「移动失败」。真机同 `dev:ino` 复现。
+- [x] **BUG-2**：`copyToDirectory` 同族字面漏判。别名写法下「复制进自己子目录」触发 `copyRecursively` 层层自我复制，直到存储耗尽。JVM 探针实测自嵌套成立。
+- [x] **BUG-3（高危）**：共享存储大小写不敏感（真机 `/sdcard/dOwnLoad` 与 `/sdcard/Download` 同 inode），realpath 不折叠大小写。跳转框手输大小写变体即可绕过判据，同样删源。
+- [x] **修复**：`RootFileManager` 新增 `samePhysicalPath`（归一别名 / canonicalPath / inode 仅目录 / 判不同兜底四层）与 `isPhysicallyInside`（逐级向上物理比对）；`moveFile`/`moveBatch`/`copyToDirectory` 七处判据改物理判等与归一前缀；`FilePage.moveToOtherPane` 两列同目录守卫改用物理判等。
+- [x] **护栏**：新增 `PathIdentityGuardTest`（9 用例，强切片按函数体、inode 大小写变体、物理层级正/负例）；修正 `MoveBatchContractTest` 自身目标断言按物理判等。修正前序宽切片导致的「回退仍绿」假绿。
+- [x] **构建**：874 tests / 0 失败；`lintRelease`/`assembleRelease`/`verifyReleasePayload` 全绿；APK 33,503,641 字节，sha256 `ECC785A5…B4FF`，versionCode `20261116`。
+- [x] **真机**：`127.0.0.1:16416` release 安装成功，`MainActivity` 前台（oom_adj=0）、0 FATAL；签名校验通过。
+- [x] **发版**：tag `20261116` 同日覆盖，双端发布，删除旧附件。
 
 ### A161. 修复打包与跨列动作删除数据（2026-11-16 同日覆盖）
 

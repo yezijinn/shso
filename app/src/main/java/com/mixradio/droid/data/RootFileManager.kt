@@ -950,6 +950,63 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         return runCatching { File(newPath).exists() }.getOrDefault(false)
     }
 
+    /**
+     * 两个路径是否指向**同一个文件/目录**（比物理身份，不比字符串写法）。
+     *
+     * 必要性：`/sdcard/A` 与 `/storage/emulated/0/A`、`/sdcard/download` 与
+     * `/sdcard/Download`（共享存储大小写不敏感）、软链与其目标、`x/./y` 与 `x/y`
+     * 字面完全不同，却是同一份数据。OVERWRITE 分支对同名**目录**目标是先 `rm -rf`
+     * 再搬 —— 一旦「目标」其实是源自己，删的就是源，随后 `mv` 必然失败：用户只看到
+     * 「移动失败」，目录连同内容已经没了（真机实测：两路径 `stat` 同 dev:ino，
+     * 段脚本回 `N:0`，源目录被清空）。复制侧更糟：把目录复制进它自己会让
+     * `copyRecursively` 把刚落地的目标目录当成源的子项，自己复制自己直到耗尽存储。
+     *
+     * 四层判据，从最便宜到最贵：
+     * 1. 归一 `/sdcard` 别名后逐字相等（纯字符串，覆盖最常见的别名）；
+     * 2. 各自 canonicalPath 相等（覆盖任意软链与 `.` / `..`）；
+     * 3. 两侧都是目录时按 inode 判等（`Files.isSameFile`）。共享存储大小写不敏感，
+     *    而 realpath / canonicalPath **不折叠大小写**（真机实测 `/sdcard/download`
+     *    仍解析成 `/storage/emulated/0/download`，与 `/storage/emulated/0/Download`
+     *    同 inode），只有 inode 能判等。文件不走这一层：目标目录里的**硬链接**与源
+     *    同 inode，判等会让「移动」变成静默空操作却回「移动成功」；文件漏判只会得到
+     *    一条失败提示，不会删数据，故宁可漏判。
+     * 4. 任一侧解析不出（不存在 / 不可 stat）时**判不同**（不误拦正常移动）。
+     */
+    internal fun samePhysicalPath(a: String, b: String): Boolean {
+        fun norm(p: String): String =
+            ExternalOpen.normalizeSdCardAlias(p.trimEnd('/').ifEmpty { "/" })
+        val na = norm(a)
+        val nb = norm(b)
+        if (na == nb) return true
+        val ca = runCatching { File(na).canonicalPath }.getOrNull()
+        val cb = runCatching { File(nb).canonicalPath }.getOrNull()
+        if (ca != null && ca == cb) return true
+        return runCatching {
+            File(na).isDirectory && File(nb).isDirectory &&
+                Files.isSameFile(File(na).toPath(), File(nb).toPath())
+        }.getOrDefault(false)
+    }
+
+    /**
+     * [child] 是否就是 [parent]，或落在它**内部**（逐级向上按物理身份比对）。
+     *
+     * 前缀判据只能挡同一套写法：`/sdcard/D/sub` 与 `/sdcard/dOwnLoad/D` 前缀比不出来
+     * （大小写不同），可它们物理上是父子 —— 复制目录进自己的子目录会让
+     * `copyRecursively` 层层自我复制到存储耗尽。向上逐级比对能同时覆盖大小写变体、
+     * 软链祖先与 `.` / `..` 写法。层级上限只为防御异常路径，不参与正确性。
+     */
+    internal fun isPhysicallyInside(child: String, parent: String): Boolean {
+        var cur: String? = child.trimEnd('/').ifEmpty { "/" }
+        var depth = 0
+        while (cur != null && depth < 256) {
+            if (samePhysicalPath(cur, parent)) return true
+            if (cur == "/") return false
+            cur = File(cur).parent
+            depth++
+        }
+        return false
+    }
+
     suspend fun moveFile(
         sourcePath: String,
         destinationDirectory: String,
@@ -968,7 +1025,9 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
 
         val sourceNormalized = sourcePath.trimEnd('/').ifEmpty { "/" }
         val destinationNormalized = destinationDirectory.trimEnd('/').ifEmpty { "/" }
-        if (sourceNormalized == destinationNormalized) {
+        // 判据同「目标即源」一档：别名 / 软链 / 大小写变体写法下两者是同一个目录，
+        // 后面 `destinationPath = dest/name` 就正好是源本身。
+        if (samePhysicalPath(sourceNormalized, destinationNormalized)) {
             return@withContext Pair(false, "目标目录不能与源路径相同")
         }
         fun localType(path: String): Int = try {
@@ -1002,7 +1061,10 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         }
         if (sourceType == 0) return@withContext Pair(false, "源文件不存在或不可访问")
         if (sourceType == 3) return@withContext Pair(false, "源路径不是普通文件或文件夹")
-        if (sourceType == 2 && destinationNormalized.startsWith("$sourceNormalized/")) {
+        if (sourceType == 2 &&
+            ExternalOpen.normalizeSdCardAlias(destinationNormalized)
+                .startsWith(ExternalOpen.normalizeSdCardAlias(sourceNormalized) + "/")
+        ) {
             return@withContext Pair(false, "不能将文件夹移动到自身或其子目录")
         }
 
@@ -1016,7 +1078,9 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         // 目标就是源本身（把条目移进它自己所在的目录）。
         // 下面 OVERWRITE 分支对目录会先 delete(destinationPath) —— 那正是源本身，
         // 会删掉源后再也搬不回来。RENAME 是真改名，不在此拦。
-        if (destinationPath == sourceNormalized && onConflict != MoveDestinationConflict.RENAME) {
+        // 判据必须是「同一物理条目」：/sdcard/A 与 /storage/emulated/0/A 是同一份数据，
+        // 字面比较会把它们当成两个路径，于是 OVERWRITE 先删源、再从一个不存在的路径搬。
+        if (samePhysicalPath(destinationPath, sourceNormalized) && onConflict != MoveDestinationConflict.RENAME) {
             return@withContext if (sourceType == 2) {
                 Pair(false, "目标与源相同，不能覆盖自身")
             } else {
@@ -1302,17 +1366,21 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
                 continue
             }
             val sourceNormalized = source.trimEnd('/').ifEmpty { "/" }
-            if (sourceNormalized == destNormalized) {
+            // 同一目录的两种写法（/sdcard/A 与 /storage/emulated/0/A、大小写变体）字面不等，物理相同。
+            if (samePhysicalPath(sourceNormalized, destNormalized)) {
                 fail(source, "目标目录不能与源路径相同")
                 continue
             }
             // 对文件不可能误中（文件不能包含子路径），故无条件判，比 moveFile 更保守。
-            if (destNormalized.startsWith("$sourceNormalized/")) {
+            // 前缀比较先归一 /sdcard 别名，理由同 moveFile。
+            if (ExternalOpen.normalizeSdCardAlias(destNormalized)
+                    .startsWith(ExternalOpen.normalizeSdCardAlias(sourceNormalized) + "/")
+            ) {
                 fail(source, "不能将文件夹移动到自身或其子目录")
                 continue
             }
             val destinationPath = joinPath(destNormalized, name)
-            if (destinationPath == sourceNormalized) {
+            if (samePhysicalPath(destinationPath, sourceNormalized)) {
                 // 移进自己所在的目录：moveFile 的 renameTo(同路径) 是成功空操作；
                 // RENAME 策略下则是真改名（a.txt → a_new.txt），必须交给 shell。
                 // 这一支同时挡住 OVERWRITE 对自身的预删（见 moveFile 的同名守卫）。
@@ -1708,17 +1776,24 @@ suspend fun rename(oldPath: String, newName: String): Pair<Boolean, String> = wi
         }
         val sourceNormalized = sourcePath.trimEnd('/').ifEmpty { "/" }
         val destinationNormalized = destinationDirectory.trimEnd('/').ifEmpty { "/" }
-        if (sourceNormalized == destinationNormalized) {
+        // 与 moveFile / moveBatch 同口径：/sdcard/A 与 /storage/emulated/0/A 是同一目录。
+        // 字面比较漏判的后果不只是删源 —— 复制目录进它自己时，目标落在源内部，
+        // copyRecursively 会把刚落地的目标当子项再复制一遍，层层自我复制到存储耗尽。
+        if (samePhysicalPath(sourceNormalized, destinationNormalized)) {
             return@withContext Pair(false, "目标目录不能与源路径相同")
         }
-        if (destinationNormalized.startsWith("$sourceNormalized/")) {
+        if (ExternalOpen.normalizeSdCardAlias(destinationNormalized)
+                .startsWith(ExternalOpen.normalizeSdCardAlias(sourceNormalized) + "/") ||
+            // 前缀只挡同一套写法；大小写变体 / 软链祖先要靠物理层级判定。
+            isPhysicallyInside(destinationNormalized, sourceNormalized)
+        ) {
             return@withContext Pair(false, "不能复制到自身或子目录")
         }
 
         val destinationPath = joinPath(destinationNormalized, sourceName)
         // 目标就是源本身：OVERWRITE 会先删同名目录（= 删源）再从一条已不存在的路径复制。
-        // RENAME 落到 name_new，语义正确，不拦。
-        if (destinationPath == sourceNormalized && onConflict != MoveDestinationConflict.RENAME) {
+        // RENAME 落到 name_new（源的兄弟），语义正确，不拦。判据与 moveFile 同口径（物理身份）。
+        if (samePhysicalPath(destinationPath, sourceNormalized) && onConflict != MoveDestinationConflict.RENAME) {
             return@withContext Pair(false, "目标与源相同，不能覆盖自身")
         }
         val renamedPath = renamedInDestination(sourceName, destinationNormalized)

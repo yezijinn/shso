@@ -77,7 +77,10 @@ class MoveBatchContractTest {
     @Test
     fun `目标即源不得删除自身`() {
         val s = rfm()
-        assertTrue("moveFile 须有自身目标守卫", s.contains("if (destinationPath == sourceNormalized && onConflict != MoveDestinationConflict.RENAME)"))
+        assertTrue(
+            "moveFile 须有自身目标守卫（按同一物理路径判等，别名 / 软链不漏判）",
+            s.contains("if (samePhysicalPath(destinationPath, sourceNormalized) && onConflict != MoveDestinationConflict.RENAME)")
+        )
         assertTrue("目录须拒绝覆盖自身", s.contains("\"目标与源相同，不能覆盖自身\""))
     }
 

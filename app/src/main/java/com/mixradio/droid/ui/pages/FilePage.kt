@@ -900,8 +900,10 @@ fun FilePage(
         if (isMoving) return
         // 两列同目录时目标路径就是源本身：moveBatch 的 OVERWRITE 会先删同名目录（= 删源）再搬，
         // 搬不动、源已没了。这里与「同步列」同口径直接拦掉。
-        fun normPath(path: String) = path.trimEnd('/').ifEmpty { "/" }
-        if (normPath(File(item.path).parent ?: "/") == normPath(dest)) {
+        // 判等必须按**同一物理目录**，不能按字符串：两列可能分别是 /sdcard/A 与
+        // /storage/emulated/0/A（同一目录的两种写法）、大小写变体，或经软链互指。
+        // 漏拦的后果与同目录完全一样。口径与 refresh()（:665，normalizeSdCardAlias）一致。
+        if (RootFileManager.samePhysicalPath(File(item.path).parent ?: "/", dest)) {
             feedbackMessage = "两列已在同一目录"
             return
         }
