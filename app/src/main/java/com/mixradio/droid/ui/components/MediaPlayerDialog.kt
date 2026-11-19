@@ -3,7 +3,9 @@
 
 package com.mixradio.droid.ui.components
 
+import android.app.Activity
 import android.content.Context
+import android.content.pm.ActivityInfo
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -143,6 +145,8 @@ fun MediaPlayerDialog(item: FileItem, onDismiss: () -> Unit) {
     var pendingSeekMs by remember { mutableIntStateOf(-1) }
     /** 长按加速期间为 true（由手势层写，速度 effect 读）。 */
     var pressed by remember { mutableStateOf(false) }
+    /** 画面是否已锁定横屏。跨旋屏 Activity 重建保留，按钮文案据此切换。 */
+    var landscapeLocked by rememberSaveable { mutableStateOf(false) }
 
     // 旋转重建后从上次位置续播。播放器本身必然重建，位置单独保存即可。
     var resumeAtMs by rememberSaveable { mutableIntStateOf(0) }
@@ -180,6 +184,26 @@ fun MediaPlayerDialog(item: FileItem, onDismiss: () -> Unit) {
                 if (displayTarget === holder) displayTarget = null
             }
         }
+    }
+
+    /**
+     * 切换横屏锁定 / 还原。
+     *
+     * 用 requestedOrientation 硬锁横屏而非依赖物理旋转：用户可在任意握持姿态下把画面转横。
+     * 再次点击回到未指定（跟随系统）。方向是 Activity 级状态，存 rememberSaveable 跨重建保留，
+     * 以便旋屏后按钮仍显示正确文案。
+     */
+    fun toggleOrientation() {
+        val activity = contextActivity(context) ?: return
+        val next = !landscapeLocked
+        runCatching {
+            activity.requestedOrientation = if (next) {
+                ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            } else {
+                ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
+        }
+        landscapeLocked = next
     }
 
     fun takeAudioFocus() {
@@ -433,6 +457,27 @@ fun MediaPlayerDialog(item: FileItem, onDismiss: () -> Unit) {
         }
     }
 
+    // 旋屏 Activity 重建后重新应用方向锁：requestedOrientation 是 Activity 级状态，
+    // 重建过程系统可能已改写，这里用保存的 landscapeLocked 恢复成用户选择。
+    LaunchedEffect(landscapeLocked) {
+        val activity = contextActivity(context) ?: return@LaunchedEffect
+        val want = if (landscapeLocked) {
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+        if (activity.requestedOrientation != want) {
+            runCatching { activity.requestedOrientation = want }
+        }
+    }
+
+    /** 真正关闭播放器：先还原方向，再回调外层关窗，避免横屏锁遗留到整个应用。 */
+    fun dismissPlayer() {
+        landscapeLocked = false
+        restoreOrientation(context)
+        onDismiss()
+    }
+
     // ── 9. 删除 ROOT 副本：以 tempCopy 为键，组合被销毁（含旋屏）即触发 ──
     // tempCopy 由 null 变 File 时，旧 effect 的 onDispose 拿到 null（空操作），
     // 新 effect 持有真实 File；关窗/旋屏时该 composable 离开组合，onDispose
@@ -443,7 +488,7 @@ fun MediaPlayerDialog(item: FileItem, onDismiss: () -> Unit) {
     }
 
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { dismissPlayer() },
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
@@ -479,12 +524,23 @@ fun MediaPlayerDialog(item: FileItem, onDismiss: () -> Unit) {
                             color = AuroraTokens.TextSecondary
                         )
                     }
+                    // 旋转：视频可用，锁横屏 / 还原。音频无画面不显示。
+                    if (isVideo) {
+                        Text(
+                            text = if (landscapeLocked) "还原" else "旋转",
+                            style = AuroraTextStyles.footnote2,
+                            color = AuroraTokens.TextSecondary,
+                            modifier = Modifier
+                                .clickable { toggleOrientation() }
+                                .padding(horizontal = 8.dp, vertical = 6.dp)
+                        )
+                    }
                     Text(
                         text = "✕",
                         style = AuroraTextStyles.title3,
                         color = AuroraTokens.Text,
                         modifier = Modifier
-                            .clickable(onClick = onDismiss)
+                            .clickable(onClick = { dismissPlayer() })
                             .padding(horizontal = 10.dp, vertical = 6.dp)
                     )
                 }
@@ -657,6 +713,19 @@ fun MediaPlayerDialog(item: FileItem, onDismiss: () -> Unit) {
             }
         }
     }
+}
+
+/** 把当前 context 当作 Activity；非 Activity context 返回 null（预览/测试环境下不崩）。 */
+private fun contextActivity(context: Context): Activity? = context as? Activity
+
+/**
+ * 恢复 Activity 方向跟随系统。
+ *
+ * 播放器关闭 / 组合销毁时调用：横屏锁定若遗留，会导致退出播放器后整个应用仍是横屏。
+ * 用 SCREEN_ORIENTATION_UNSPECIFIED 回到系统默认行为。
+ */
+private fun restoreOrientation(context: Context) {
+    runCatching { contextActivity(context)?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
 }
 
 /** 视频/音频的音频属性（影响音量键归属与系统混音策略）。 */

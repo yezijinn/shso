@@ -102,6 +102,22 @@ class MediaPlayerWiringContractTest {
     }
 
     @Test
+    fun `视频旋转按钮须锁横屏且关闭时还原方向`() {
+        // 旋转是 Activity 级状态：锁横屏必须经 requestedOrientation；
+        // 关闭播放器必须还原 UNSPECIFIED，否则退出后整个应用横屏锁死。
+        assertTrue("须声明横屏旋转", dialog.contains("SCREEN_ORIENTATION_LANDSCAPE"))
+        assertTrue("须还原系统方向", dialog.contains("SCREEN_ORIENTATION_UNSPECIFIED"))
+        assertTrue("须有旋转状态且跨重建保留", dialog.contains("landscapeLocked by rememberSaveable"))
+        assertTrue("关闭时须还原方向", dialog.contains("restoreOrientation(context)"))
+        assertTrue(
+            "关闭按钮与返回键都走还原，不得直接 onDismiss",
+            !dialog.contains("clickable(onClick = onDismiss)") &&
+                dialog.contains("onDismissRequest = { dismissPlayer() }")
+        )
+        assertTrue("旋转按钮仅视频可见", dialog.contains("if (isVideo)"))
+    }
+
+    @Test
     fun `root 复制必须改回应用属主`() {
         // 回归：cp 以 root 执行、文件属主是 root，只 chmod 600 应用读不了，播放必失败。
         assertTrue("cp 后必须 chown 回应用 uid", source.contains("chown"))
