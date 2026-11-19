@@ -82,6 +82,26 @@ class MediaPlayerWiringContractTest {
     }
 
     @Test
+    fun `进度跳转必须延后到音轨就绪且不得倍速态直 seek`() {
+        // 回归：刚点开播放就拖进度条立即 seekTo，音轨尚未建立 → 画面正常但静音，
+        // 关窗重进新建播放器才恢复。所有 seek 必须走延迟窗口，seek 前倍速归 1。
+        assertTrue("须有音轨建立缓冲常量", dialog.contains("SEEK_SETTLE_MS"))
+        assertTrue("须登记跳转目标", dialog.contains("pendingSeekMs = target"))
+        assertTrue(
+            "延迟 seek 必须在首次 start 后计时",
+            dialog.contains("SEEK_SETTLE_MS - (SystemClock.uptimeMillis() - first)")
+        )
+        assertTrue("seek 前须把倍速归 1", dialog.contains("speedParams(1f)"))
+        assertTrue("seek 后须恢复用户倍速", dialog.contains("pushSpeed(speed)"))
+        assertTrue(
+            "续播跳转也须走延迟队列，不得在 prepared 回调里直接 seek",
+            !dialog.contains("runCatching { p.seekTo(resume) }")
+        )
+        assertTrue("prepare 前拖动须暂存而非丢弃", dialog.contains("pendingSeekMs = resume"))
+        assertTrue("播放器重建须清首次 start 时间", dialog.contains("firstStartAtMs = 0L"))
+    }
+
+    @Test
     fun `root 复制必须改回应用属主`() {
         // 回归：cp 以 root 执行、文件属主是 root，只 chmod 600 应用读不了，播放必失败。
         assertTrue("cp 后必须 chown 回应用 uid", source.contains("chown"))

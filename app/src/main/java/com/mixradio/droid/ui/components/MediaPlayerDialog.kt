@@ -40,6 +40,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -86,6 +87,14 @@ private const val TAP_SLACK_MS = 40L
 private const val BOOST_SPEED = 2f
 
 /**
+ * 首次 start 后到允许 seek 的最小间隔：给音频轨道建立留出时间。
+ *
+ * 刚点开就拖进度条时若立即 seekTo，framework MediaPlayer 的音频轨道可能尚未就绪，
+ * 结果是画面正常、声音消失（关窗重进因新建播放器而恢复）。补足这段间隔再 seek。
+ */
+private const val SEEK_SETTLE_MS = 300L
+
+/**
  * 媒体播放弹窗（视频 + 音频）。
  *
  * 依赖取向：只用 framework 的 [MediaPlayer]，不引入 media3/exoplayer ——
@@ -128,6 +137,10 @@ fun MediaPlayerDialog(item: FileItem, onDismiss: () -> Unit) {
     var displayTarget by remember { mutableStateOf<SurfaceHolder?>(null) }
     /** 已 prepare 但还在等 surface：等到了才 start()。 */
     var needsStart by remember { mutableStateOf(false) }
+    /** 首次真正开始播放的时刻（SystemClock），用于给 seek 留出音频轨道建立时间。 */
+    var firstStartAtMs by remember { mutableLongStateOf(0L) }
+    /** prepare 前用户拖动的跳转目标：prepare 就绪后补做，不丢这次操作。 */
+    var pendingSeekMs by remember { mutableIntStateOf(-1) }
     /** 长按加速期间为 true（由手势层写，速度 effect 读）。 */
     var pressed by remember { mutableStateOf(false) }
 
@@ -217,6 +230,7 @@ fun MediaPlayerDialog(item: FileItem, onDismiss: () -> Unit) {
         if (!runCatching { mp.start() }.isSuccess) return
         playing = true
         needsStart = false
+        if (firstStartAtMs == 0L) firstStartAtMs = SystemClock.uptimeMillis()
         // start() 之后补下发差额：MediaPlayer 会**保留**上一次的 PlaybackParams。
         // 若只在 speed != 1f 时下发，「按住加速中播完/切后台 → 松开 → 再点播放」
         // 就会出现 UI 1× 而实际 2×（applySpeed 在非播放态只写 speed、不下发）。
@@ -268,7 +282,8 @@ fun MediaPlayerDialog(item: FileItem, onDismiss: () -> Unit) {
             durationMs = runCatching { p.duration }.getOrDefault(0).coerceAtLeast(0)
             val resume = resumeAtMs
             if (resume > 0 && (durationMs <= 0 || resume < durationMs - 500)) {
-                runCatching { p.seekTo(resume) }
+                // 续播跳转也走推迟执行：start 前 seek 同样会让音轨失效。
+                pendingSeekMs = resume
                 positionMs = resume
             }
             attachSurfaceAndStart()
@@ -296,6 +311,9 @@ fun MediaPlayerDialog(item: FileItem, onDismiss: () -> Unit) {
         player = mp
         // 新播放器的参数是默认 1×，账面同步，避免沿用上一个实例的记录。
         appliedSpeed = 1f
+        // 新实例的音频轨道要重新建立；旧实例的首次 start 时间、暂存跳转一概作废。
+        firstStartAtMs = 0L
+        pendingSeekMs = -1
         try {
             mp.setDataSource(path)
             mp.prepareAsync()
@@ -364,18 +382,38 @@ fun MediaPlayerDialog(item: FileItem, onDismiss: () -> Unit) {
         }
     }
 
-    // ── 6. 拖动进度：停手 160ms 后才 seek，位置回填完再交还 ticker ───────
+    // ── 6. 拖动进度：停手 160ms 后登记跳转，真正 seek 交给统一的延迟 effect ──
     LaunchedEffect(scrubFraction) {
         val fraction = scrubFraction ?: return@LaunchedEffect
         delay(160)
         val target = if (durationMs > 0) (fraction * durationMs).toInt() else 0
-        val mp = player ?: return@LaunchedEffect
-        if (!prepared) return@LaunchedEffect
-        runCatching { mp.seekTo(target) }
         positionMs = target
         resumeAtMs = target
+        pendingSeekMs = target
         delay(240)
         scrubFraction = null
+    }
+
+    // ── 6b. 统一延迟 seek：所有跳转都等音频轨道稳定后再下发 ────────────────
+    // 刚点开播放就跳转、续播跳转都走这里。framework MediaPlayer 在首次 start 附近
+    // seek 会让音轨失效（画面正常、没声音，关窗重进才恢复）；等 SEEK_SETTLE_MS
+    // 并将倍速归 1 后再 seek，是避免静音的关键。
+    LaunchedEffect(pendingSeekMs, prepared) {
+        val target = pendingSeekMs
+        if (target < 0) return@LaunchedEffect
+        val mp = player ?: return@LaunchedEffect
+        if (!prepared) return@LaunchedEffect
+        val first = firstStartAtMs
+        val settle =
+            if (first > 0L) SEEK_SETTLE_MS - (SystemClock.uptimeMillis() - first) else SEEK_SETTLE_MS
+        if (settle > 0) delay(settle)
+        val restoreSpeed = appliedSpeed
+        if (restoreSpeed != 1f) runCatching { mp.setPlaybackParams(speedParams(1f)) }
+        runCatching { mp.seekTo(target) }
+        pendingSeekMs = -1
+        if (restoreSpeed != 1f && runCatching { mp.isPlaying }.getOrDefault(false)) {
+            pushSpeed(speed)
+        }
     }
 
     // ── 7. 进后台暂停 ──────────────────────────────────────────────────
